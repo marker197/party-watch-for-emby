@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  emby-trakt-suite:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: emby-trakt-suite
+    ports:
+      - "${SUITE_PORT:-8000}:8000"       # Main API + Dashboard
+      - "${WS_PORT:-8001}:8001"          # WebSocket (Watch Party)
+    environment:
+      # -- Trakt --
+      TRAKT_CLIENT_ID: ${TRAKT_CLIENT_ID}
+      TRAKT_CLIENT_SECRET: ${TRAKT_CLIENT_SECRET}
+      # -- Emby --
+      EMBY_URL: ${EMBY_URL:-http://emby:8096}
+      EMBY_API_KEY: ${EMBY_API_KEY}
+      # -- Redis (with password) --
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      # -- Postgres (with strong password) --
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      # -- Feature toggles --
+      ENABLE_SMART_QUEUE: ${ENABLE_SMART_QUEUE:-true}
+      ENABLE_ML_PREDICTOR: ${ENABLE_ML_PREDICTOR:-true}
+      ENABLE_UNIVERSE_DISCOVERY: ${ENABLE_UNIVERSE_DISCOVERY:-true}
+      ENABLE_WATCH_PARTY: ${ENABLE_WATCH_PARTY:-true}
+      # -- Security --
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8000}
+      # -- Scheduler --
+      SMART_QUEUE_CRON: ${SMART_QUEUE_CRON:-0 2 * * *}
+      UNIVERSE_SCAN_CRON: ${UNIVERSE_SCAN_CRON:-0 3 * * 0}
+      ML_RETRAIN_CRON: ${ML_RETRAIN_CRON:-0 4 * * 1}
+      # -- Logging --
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - models:/app/models
+      - cache:/app/cache
+      - logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - emby-trakt
+    # ✅ SECURITY: Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+
+  redis:
+    image: redis:7-alpine
+    container_name: emby-trakt-redis
+    # ✅ SECURITY: Added authentication with password
+    command: redis-server --requirepass "${REDIS_PASSWORD}" --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - emby-trakt
+    # ✅ SECURITY: Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: emby-trakt-postgres
+    environment:
+      # ✅ SECURITY: Strong password required (no default)
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - emby-trakt
+    # ✅ SECURITY: Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+volumes:
+  redis-data:
+  postgres-data:
+  models:
+  cache:
+  logs:
+
+networks:
+  emby-trakt:
+    driver: bridge
+

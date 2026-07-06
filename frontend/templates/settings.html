@@ -1,0 +1,1164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings - Emby-Trakt Suite</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface-hover: #22263a;
+      --border: #2a2e3e;
+      --text: #e0e0e6;
+      --text-dim: #8b8fa3;
+      --accent: #6c5ce7;
+      --accent-light: #a29bfe;
+      --green: #00b894;
+      --orange: #fdcb6e;
+      --red: #e17055;
+      --blue: #74b9ff;
+      --radius: 10px;
+      --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    .header {
+      padding: 28px 32px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header h1 { font-size: 1.5rem; font-weight: 700; }
+
+    .container { max-width: 800px; margin: 0 auto; padding: 28px 32px; }
+
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+
+    .section h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-group:last-child { margin-bottom: 0; }
+
+    .label {
+      display: block;
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: var(--text);
+    }
+
+    .label-desc {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      display: block;
+      margin-top: 2px;
+    }
+
+    .input-field {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.9rem;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+
+    .input-field:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(108, 92, 231, 0.1);
+    }
+
+    .input-field:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    /* Toggle switch */
+    .toggle-group {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px;
+      background: var(--surface-hover);
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }
+
+    .toggle-group:last-child { margin-bottom: 0; }
+
+    .toggle-label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .toggle-label .title {
+      font-weight: 600;
+    }
+
+    .toggle-label .desc {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 48px;
+      height: 24px;
+      background: var(--border);
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .toggle-switch.active { background: var(--green); }
+
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: white;
+      top: 2px;
+      left: 2px;
+      transition: transform 0.2s;
+    }
+
+    .toggle-switch.active::after {
+      transform: translateX(24px);
+    }
+
+    /* Button group */
+    .btn-group {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 10px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-blue { background: var(--blue); color: var(--bg); }
+    .btn-blue:hover { opacity: 0.85; }
+    .btn-blue:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-danger { background: var(--red); color: white; }
+    .btn-danger:hover { opacity: 0.85; }
+
+    /* Status badge */
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: 4px;
+      margin-top: 8px;
+    }
+
+    .status.success { background: rgba(0, 184, 148, 0.15); color: var(--green); }
+    .status.error { background: rgba(225, 112, 85, 0.15); color: var(--red); }
+    .status.loading { background: rgba(116, 185, 255, 0.15); color: var(--blue); }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    /* Danger zone */
+    .danger-zone {
+      border: 2px solid var(--red);
+      background: rgba(225, 112, 85, 0.05);
+    }
+
+    .danger-zone h2 { color: var(--red); }
+
+    /* Cron syntax hint */
+    .cron-hint {
+      background: var(--surface-hover);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      margin-top: 8px;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .cron-hint code {
+      background: var(--bg);
+      padding: 2px 4px;
+      border-radius: 3px;
+      color: var(--accent);
+    }
+
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.7);
+      z-index: 2000;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal.active { display: flex; }
+
+    .modal-content {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      max-width: 400px;
+      width: 90%;
+    }
+
+    .modal-content h2 { margin-bottom: 12px; }
+    .modal-content p { color: var(--text-dim); margin-bottom: 16px; }
+
+    .modal-buttons {
+      display: flex;
+      gap: 8px;
+    }
+
+    .modal-buttons .btn { flex: 1; }
+  </style>
+</head>
+<body>
+<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
+    <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
+    <a href="/universes" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🌌 Universes</a>
+    <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
+    <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
+    <a href="/settings" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">⚙️ Settings</a>
+    <a href="/watch-party" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
+</nav>
+
+  <div class="header">
+    <h1>⚙️ Settings</h1>
+  </div>
+
+  <div class="container">
+    <!-- Trakt Credentials -->
+    <div class="section">
+      <h2>🎯 Trakt Configuration</h2>
+
+      <div class="form-group">
+        <label class="label">
+          Client ID
+          <span class="label-desc">From Trakt.tv OAuth applications</span>
+        </label>
+        <input 
+          type="password" 
+          class="input-field" 
+          id="traktClientId"
+          placeholder="••••••••••••••••••••"
+        >
+      </div>
+
+      <div class="form-group">
+        <label class="label">
+          Client Secret
+          <span class="label-desc">From Trakt.tv OAuth applications</span>
+        </label>
+        <input 
+          type="password" 
+          class="input-field" 
+          id="traktClientSecret"
+          placeholder="••••••••••••••••••••"
+        >
+      </div>
+
+      <div class="btn-group">
+        <button class="btn btn-blue" id="testTrakt">🔗 Test Connection</button>
+        <button class="btn btn-blue" id="saveTrakt" disabled>💾 Save Changes</button>
+      </div>
+      <div id="traktStatus"></div>
+    </div>
+
+    <!-- Emby Credentials -->
+    <div class="section">
+      <h2>📺 Emby Configuration</h2>
+
+      <div class="form-group">
+        <label class="label">
+          Server URL
+          <span class="label-desc">e.g. http://192.168.1.100:8096</span>
+        </label>
+        <input 
+          type="text" 
+          class="input-field" 
+          id="embyUrl"
+          placeholder="http://localhost:8096"
+        >
+      </div>
+
+      <div class="form-group">
+        <label class="label">
+          API Key
+          <span class="label-desc">From Emby Settings → API Keys</span>
+        </label>
+        <input 
+          type="password" 
+          class="input-field" 
+          id="embyApiKey"
+          placeholder="••••••••••••••••••••"
+        >
+      </div>
+
+      <div class="btn-group">
+        <button class="btn btn-blue" id="testEmby">📡 Test Connection</button>
+        <button class="btn btn-blue" id="saveEmby" disabled>💾 Save Changes</button>
+      </div>
+      <div id="embyStatus"></div>
+    </div>
+
+    <!-- Feature Toggles -->
+    <div class="section">
+      <h2>✨ Feature Toggles</h2>
+
+      <div class="toggle-group">
+        <div class="toggle-label">
+          <span class="title">Smart Watch Queue</span>
+          <span class="desc">Auto-generate intelligent queue from Trakt data</span>
+        </div>
+        <div class="toggle-switch active" data-feature="smart_queue"></div>
+      </div>
+
+      <div class="toggle-group">
+        <div class="toggle-label">
+          <span class="title">ML Rating Predictor</span>
+          <span class="desc">Predict ratings for unwatched items</span>
+        </div>
+        <div class="toggle-switch active" data-feature="ml_predictor"></div>
+      </div>
+
+      <div class="toggle-group">
+        <div class="toggle-label">
+          <span class="title">Universe Discovery</span>
+          <span class="desc">Automatically organize shared movie universes</span>
+        </div>
+        <div class="toggle-switch active" data-feature="universe_discovery"></div>
+      </div>
+
+      <div class="toggle-group">
+        <div class="toggle-label">
+          <span class="title">Watch Party Sync</span>
+          <span class="desc">Real-time playback sync for multiple users</span>
+        </div>
+        <div class="toggle-switch active" data-feature="watch_party"></div>
+      </div>
+
+      <button class="btn btn-blue" id="saveFeatures" style="width: 100%; margin-top: 12px;">💾 Save Features</button>
+    </div>
+
+    <!-- Scheduler Configuration -->
+    <div class="section">
+      <h2>🕐 Scheduler Configuration</h2>
+
+      <div class="form-group">
+        <label class="label">Smart Queue Refresh</label>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+          <select class="input-field" id="schedSmartQueueFreq" style="width: auto; min-width: 120px;">
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+          <select class="input-field" id="schedSmartQueueDay" style="width: auto; min-width: 130px; display: none;">
+            <option value="0">Sunday</option><option value="1">Monday</option>
+            <option value="2">Tuesday</option><option value="3">Wednesday</option>
+            <option value="4">Thursday</option><option value="5">Friday</option>
+            <option value="6">Saturday</option>
+          </select>
+          <input type="number" class="input-field" id="schedSmartQueueHour" min="1" max="12" value="2" style="width: 70px;">
+          <span style="color: var(--text-dim);">:</span>
+          <input type="number" class="input-field" id="schedSmartQueueMin" min="0" max="59" value="0" style="width: 70px;">
+          <select class="input-field" id="schedSmartQueueAmPm" style="width: auto; min-width: 80px;">
+            <option value="AM">AM</option><option value="PM">PM</option>
+          </select>
+          <span style="font-size: 0.78rem; color: var(--text-dim);">UTC</span>
+        </div>
+        <input type="hidden" id="cronSmartQueue" value="0 2 * * *">
+      </div>
+
+      <div class="form-group">
+        <label class="label">ML Model Retraining</label>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+          <select class="input-field" id="schedMLRetrainFreq" style="width: auto; min-width: 120px;">
+            <option value="daily">Daily</option>
+            <option value="weekly" selected>Weekly</option>
+          </select>
+          <select class="input-field" id="schedMLRetrainDay" style="width: auto; min-width: 130px;">
+            <option value="0">Sunday</option><option value="1" selected>Monday</option>
+            <option value="2">Tuesday</option><option value="3">Wednesday</option>
+            <option value="4">Thursday</option><option value="5">Friday</option>
+            <option value="6">Saturday</option>
+          </select>
+          <input type="number" class="input-field" id="schedMLRetrainHour" min="1" max="12" value="4" style="width: 70px;">
+          <span style="color: var(--text-dim);">:</span>
+          <input type="number" class="input-field" id="schedMLRetrainMin" min="0" max="59" value="0" style="width: 70px;">
+          <select class="input-field" id="schedMLRetrainAmPm" style="width: auto; min-width: 80px;">
+            <option value="AM" selected>AM</option><option value="PM">PM</option>
+          </select>
+          <span style="font-size: 0.78rem; color: var(--text-dim);">UTC</span>
+        </div>
+        <input type="hidden" id="cronMLRetrain" value="0 4 * * 1">
+      </div>
+
+      <div class="form-group">
+        <label class="label">Universe Scan</label>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+          <select class="input-field" id="schedUniverseScanFreq" style="width: auto; min-width: 120px;">
+            <option value="daily">Daily</option>
+            <option value="weekly" selected>Weekly</option>
+          </select>
+          <select class="input-field" id="schedUniverseScanDay" style="width: auto; min-width: 130px;">
+            <option value="0" selected>Sunday</option><option value="1">Monday</option>
+            <option value="2">Tuesday</option><option value="3">Wednesday</option>
+            <option value="4">Thursday</option><option value="5">Friday</option>
+            <option value="6">Saturday</option>
+          </select>
+          <input type="number" class="input-field" id="schedUniverseScanHour" min="1" max="12" value="3" style="width: 70px;">
+          <span style="color: var(--text-dim);">:</span>
+          <input type="number" class="input-field" id="schedUniverseScanMin" min="0" max="59" value="0" style="width: 70px;">
+          <select class="input-field" id="schedUniverseScanAmPm" style="width: auto; min-width: 80px;">
+            <option value="AM" selected>AM</option><option value="PM">PM</option>
+          </select>
+          <span style="font-size: 0.78rem; color: var(--text-dim);">UTC</span>
+        </div>
+        <input type="hidden" id="cronUniverseScan" value="0 3 * * 0">
+      </div>
+
+      <button class="btn btn-blue" id="saveCrons" style="width: 100%;">💾 Save Schedules</button>
+    </div>
+
+    <!-- Database Backup -->
+    <div class="section">
+      <h2>💾 Database Backup</h2>
+      <p style="color:var(--text-dim);margin-bottom:16px;">Create a backup of all data (users, watch parties, ML models, universes, ratings). Download to keep safe, or upload to restore.</p>
+
+      <div class="form-group" style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-blue" id="btnBackup" onclick="createBackup()">📦 Create Backup</button>
+        <a class="btn btn-green" id="btnDownloadBackup" style="display:none;text-decoration:none;" href="#">⬇ Download</a>
+      </div>
+      <div id="backupStatus" style="font-size:0.82rem;margin-top:8px;"></div>
+
+      <div class="form-group" style="margin-top:16px;">
+        <label>Restore from backup</label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="file" id="restoreFile" accept=".sql" style="font-size:0.82rem;" />
+          <button class="btn btn-danger" onclick="restoreBackup()">⬆ Restore</button>
+        </div>
+        <div style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;">⚠ Restore overwrites all current data. Container restart recommended after restore.</div>
+      </div>
+      <div id="restoreStatus" style="font-size:0.82rem;margin-top:8px;"></div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:20px 0;">
+
+      <h3 style="font-size:1rem;margin-bottom:8px;">🌌 Universes Export / Import</h3>
+      <p style="color:var(--text-dim);font-size:0.82rem;margin-bottom:12px;">Export all universes (built-in and custom) as a JSON file, or import from a previously exported file. Existing universes are skipped during import.</p>
+
+      <div class="form-group" style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-blue" id="btnExportUniverses" onclick="exportUniverses()">📤 Export Universes</button>
+      </div>
+      <div id="exportUniversesStatus" style="font-size:0.82rem;margin-top:8px;"></div>
+
+      <div class="form-group" style="margin-top:12px;">
+        <label>Import universes</label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="file" id="importUniverseFile" accept=".json" style="font-size:0.82rem;" />
+          <button class="btn btn-blue" onclick="importUniverses()">📥 Import</button>
+        </div>
+      </div>
+      <div id="importUniversesStatus" style="font-size:0.82rem;margin-top:8px;"></div>
+    </div>
+
+    <!-- Radarr Servers -->
+    <div class="section">
+      <h2>📥 Radarr Integration</h2>
+      <p style="color:var(--text-dim);margin-bottom:16px;">Connect up to 2 Radarr servers for sending missing universe items to download. Typically one for 1080p and one for 4K.</p>
+
+      <div id="radarrServers">
+        <div class="form-group radarr-server" data-idx="0">
+          <label>Server 1</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <input type="text" class="radarr-name" placeholder="Name (e.g. Radarr 1080p)" style="flex:1;min-width:140px;" />
+            <input type="text" class="radarr-url" placeholder="http://192.168.1.x:7878" style="flex:2;min-width:200px;" />
+            <input type="text" class="radarr-key" placeholder="API Key" style="flex:2;min-width:180px;" />
+            <button class="btn btn-blue" style="padding:8px 12px;font-size:0.78rem;" onclick="testRadarr(0)">Test</button>
+          </div>
+          <span class="radarr-status" style="font-size:0.78rem;margin-top:4px;display:block;"></span>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" id="addRadarrBtn" onclick="addRadarrServer()">+ Add Second Server</button>
+        <button class="btn btn-blue" onclick="saveRadarrServers()">💾 Save Radarr Servers</button>
+      </div>
+    </div>
+
+    <!-- Danger Zone -->
+    <div class="section danger-zone">
+      <h2>⚠️ Danger Zone</h2>
+
+      <p style="color: var(--text-dim); margin-bottom: 16px;">
+        These actions cannot be undone. Proceed with caution.
+      </p>
+
+      <div class="form-group">
+        <button class="btn btn-danger" id="clearCache" style="width: 100%;">
+          🗑️ Clear Cache
+        </button>
+        <div style="font-size: 0.8rem; color: var(--text-dim); margin-top: 4px;">
+          Removes all cached library data. Will be rebuilt on next sync.
+        </div>
+      </div>
+
+      <div class="form-group">
+        <button class="btn btn-danger" id="resetCredentials" style="width: 100%;">
+          🔐 Reset OAuth Credentials
+        </button>
+        <div style="font-size: 0.8rem; color: var(--text-dim); margin-top: 4px;">
+          Disconnects all Trakt accounts. Must re-authenticate.
+        </div>
+      </div>
+
+      <div class="form-group">
+        <button class="btn btn-danger" id="factoryReset" style="width: 100%;">
+          🔄 Factory Reset (Delete All Data)
+        </button>
+        <div style="font-size: 0.8rem; color: var(--text-dim); margin-top: 4px;">
+          Erases all data, settings, and models. Restarts from scratch.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirmation Modal -->
+  <div class="modal" id="confirmModal">
+    <div class="modal-content">
+      <h2 id="confirmTitle">Confirm Action</h2>
+      <p id="confirmMessage"></p>
+      <div class="modal-buttons">
+        <button class="btn btn-blue" id="confirmCancel">Cancel</button>
+        <button class="btn btn-danger" id="confirmOk">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let pendingAction = null;
+    let autoSaveTimeout = null;
+
+    async function init() {
+      loadSettings();
+      loadRadarrServers();
+      setupEventListeners();
+    }
+
+    async function loadSettings() {
+      try {
+        const response = await fetch('/api/settings');
+        if (response.ok) {
+          const settings = await response.json();
+          populateForm(settings);
+        }
+      } catch (error) {
+        console.error('Error loading settings:', error);
+      }
+    }
+
+    function populateForm(settings) {
+      document.getElementById('traktClientId').value = settings.trakt_client_id || '';
+      document.getElementById('traktClientSecret').value = settings.trakt_client_secret || '';
+      document.getElementById('embyUrl').value = settings.emby_url || '';
+      document.getElementById('embyApiKey').value = settings.emby_api_key || '';
+
+      // Parse cron into UI fields
+      cronToUI('SmartQueue', settings.cron_smart_queue || '0 2 * * *');
+      cronToUI('MLRetrain', settings.cron_ml_retrain || '0 4 * * 1');
+      cronToUI('UniverseScan', settings.cron_universe_scan || '0 3 * * 0');
+
+      // Set feature toggles
+      Object.entries(settings.features || {}).forEach(([feature, enabled]) => {
+        const toggle = document.querySelector(`[data-feature="${feature}"]`);
+        if (toggle && enabled) {
+          toggle.classList.add('active');
+        }
+      });
+    }
+
+    function setupEventListeners() {
+      // Trakt
+      document.getElementById('testTrakt').addEventListener('click', () => testTrakt());
+      document.getElementById('saveTrakt').addEventListener('click', () => saveTrakt());
+      document.getElementById('traktClientId').addEventListener('input', enableButton('saveTrakt'));
+      document.getElementById('traktClientSecret').addEventListener('input', enableButton('saveTrakt'));
+
+      // Emby
+      document.getElementById('testEmby').addEventListener('click', () => testEmby());
+      document.getElementById('saveEmby').addEventListener('click', () => saveEmby());
+      document.getElementById('embyUrl').addEventListener('input', enableButton('saveEmby'));
+      document.getElementById('embyApiKey').addEventListener('input', enableButton('saveEmby'));
+
+      // Features
+      document.querySelectorAll('.toggle-switch').forEach(toggle => {
+        toggle.addEventListener('click', () => toggle.classList.toggle('active'));
+      });
+      document.getElementById('saveFeatures').addEventListener('click', () => saveFeatures());
+
+      // Crons
+      document.getElementById('saveCrons').addEventListener('click', () => saveCrons());
+
+      // Danger zone
+      document.getElementById('clearCache').addEventListener('click', () => {
+        showConfirmation(
+          'Clear Cache?',
+          'This will remove all cached library data. It will be rebuilt on next sync. This cannot be undone.',
+          () => clearCache()
+        );
+      });
+
+      document.getElementById('resetCredentials').addEventListener('click', () => {
+        showConfirmation(
+          'Reset OAuth Credentials?',
+          'All Trakt accounts will be disconnected. You must re-authenticate. This cannot be undone.',
+          () => resetCredentials()
+        );
+      });
+
+      document.getElementById('factoryReset').addEventListener('click', () => {
+        showConfirmation(
+          'Factory Reset?',
+          'ALL data will be permanently deleted. This action cannot be undone!',
+          () => factoryReset()
+        );
+      });
+
+      // Modal
+      document.getElementById('confirmCancel').addEventListener('click', hideConfirmation);
+      document.getElementById('confirmOk').addEventListener('click', () => {
+        if (pendingAction) {
+          pendingAction();
+          hideConfirmation();
+        }
+      });
+    }
+
+    function enableButton(buttonId) {
+      return () => {
+        document.getElementById(buttonId).disabled = false;
+      };
+    }
+
+    async function testTrakt() {
+      const btn = document.getElementById('testTrakt');
+      btn.disabled = true;
+      btn.textContent = '🔗 Testing...';
+
+      try {
+        const response = await fetch('/api/settings/test-connection', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            service: 'trakt',
+            client_id: document.getElementById('traktClientId').value,
+            client_secret: document.getElementById('traktClientSecret').value
+          })
+        });
+
+        if (response.ok) {
+          showStatus('traktStatus', 'Connection successful!', 'success');
+        } else {
+          showStatus('traktStatus', 'Connection failed. Check credentials.', 'error');
+        }
+      } catch (error) {
+        showStatus('traktStatus', `Error: ${error.message}`, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🔗 Test Connection';
+      }
+    }
+
+    async function testEmby() {
+      const btn = document.getElementById('testEmby');
+      btn.disabled = true;
+      btn.textContent = '📡 Testing...';
+
+      try {
+        const response = await fetch('/api/settings/test-connection', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            service: 'emby',
+            url: document.getElementById('embyUrl').value,
+            api_key: document.getElementById('embyApiKey').value
+          })
+        });
+
+        if (response.ok) {
+          showStatus('embyStatus', 'Connection successful!', 'success');
+        } else {
+          showStatus('embyStatus', 'Connection failed. Check URL and API key.', 'error');
+        }
+      } catch (error) {
+        showStatus('embyStatus', `Error: ${error.message}`, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '📡 Test Connection';
+      }
+    }
+
+    async function saveTrakt() {
+      const data = {
+        trakt_client_id: document.getElementById('traktClientId').value,
+        trakt_client_secret: document.getElementById('traktClientSecret').value
+      };
+
+      try {
+        const response = await fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (response.ok) {
+          showStatus('traktStatus', 'Settings saved!', 'success');
+          document.getElementById('saveTrakt').disabled = true;
+        } else {
+          showStatus('traktStatus', 'Error saving settings', 'error');
+        }
+      } catch (error) {
+        showStatus('traktStatus', `Error: ${error.message}`, 'error');
+      }
+    }
+
+    async function saveEmby() {
+      const data = {
+        emby_url: document.getElementById('embyUrl').value,
+        emby_api_key: document.getElementById('embyApiKey').value
+      };
+
+      try {
+        const response = await fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (response.ok) {
+          showStatus('embyStatus', 'Settings saved!', 'success');
+          document.getElementById('saveEmby').disabled = true;
+        } else {
+          showStatus('embyStatus', 'Error saving settings', 'error');
+        }
+      } catch (error) {
+        showStatus('embyStatus', `Error: ${error.message}`, 'error');
+      }
+    }
+
+    async function saveFeatures() {
+      const features = {};
+      document.querySelectorAll('.toggle-switch').forEach(toggle => {
+        const feature = toggle.dataset.feature;
+        features[feature] = toggle.classList.contains('active');
+      });
+
+      try {
+        const response = await fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ features })
+        });
+
+        if (response.ok) {
+          showNotification('Features saved!');
+        }
+      } catch (error) {
+        console.error('Error saving features:', error);
+      }
+    }
+
+    // --- Cron ↔ UI converters ---
+    function cronToUI(prefix, cron) {
+      const parts = cron.split(/\s+/);
+      if (parts.length < 5) return;
+      const minute = parseInt(parts[0]) || 0;
+      let hour24 = parseInt(parts[1]) || 0;
+      const dow = parts[4]; // * = daily, 0-6 = specific day
+
+      const freqEl = document.getElementById('sched' + prefix + 'Freq');
+      const dayEl = document.getElementById('sched' + prefix + 'Day');
+      const hourEl = document.getElementById('sched' + prefix + 'Hour');
+      const minEl = document.getElementById('sched' + prefix + 'Min');
+      const ampmEl = document.getElementById('sched' + prefix + 'AmPm');
+
+      if (dow === '*') {
+        freqEl.value = 'daily';
+        dayEl.style.display = 'none';
+      } else {
+        freqEl.value = 'weekly';
+        dayEl.style.display = '';
+        dayEl.value = dow;
+      }
+
+      let ampm = 'AM';
+      let h12 = hour24;
+      if (hour24 === 0) { h12 = 12; ampm = 'AM'; }
+      else if (hour24 < 12) { h12 = hour24; ampm = 'AM'; }
+      else if (hour24 === 12) { h12 = 12; ampm = 'PM'; }
+      else { h12 = hour24 - 12; ampm = 'PM'; }
+
+      hourEl.value = h12;
+      minEl.value = minute;
+      ampmEl.value = ampm;
+
+      // Toggle day visibility on freq change
+      freqEl.onchange = () => {
+        dayEl.style.display = freqEl.value === 'weekly' ? '' : 'none';
+      };
+    }
+
+    function uiToCron(prefix) {
+      const freq = document.getElementById('sched' + prefix + 'Freq').value;
+      const day = document.getElementById('sched' + prefix + 'Day').value;
+      let hour = parseInt(document.getElementById('sched' + prefix + 'Hour').value) || 0;
+      const min = parseInt(document.getElementById('sched' + prefix + 'Min').value) || 0;
+      const ampm = document.getElementById('sched' + prefix + 'AmPm').value;
+
+      // Convert 12h to 24h
+      if (ampm === 'AM' && hour === 12) hour = 0;
+      else if (ampm === 'PM' && hour !== 12) hour += 12;
+
+      const dow = freq === 'weekly' ? day : '*';
+      return `${min} ${hour} * * ${dow}`;
+    }
+
+    async function saveCrons() {
+      const data = {
+        cron_smart_queue: uiToCron('SmartQueue'),
+        cron_ml_retrain: uiToCron('MLRetrain'),
+        cron_universe_scan: uiToCron('UniverseScan')
+      };
+
+      try {
+        const response = await fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+
+        if (response.ok) {
+          showNotification('Schedules saved!');
+        }
+      } catch (error) {
+        console.error('Error saving crons:', error);
+      }
+    }
+
+    async function clearCache() {
+      try {
+        await fetch('/cache/clear', { method: 'POST' });
+        showNotification('Cache cleared!');
+      } catch (error) {
+        console.error('Error clearing cache:', error);
+      }
+    }
+
+    async function resetCredentials() {
+      try {
+        await fetch('/api/settings/reset-oauth', { method: 'POST' });
+        showNotification('OAuth credentials reset. Please re-authenticate.');
+      } catch (error) {
+        console.error('Error resetting credentials:', error);
+      }
+    }
+
+    async function factoryReset() {
+      try {
+        await fetch('/api/settings/factory-reset', { method: 'POST' });
+        showNotification('Factory reset complete. Reloading...');
+        setTimeout(() => location.reload(), 1000);
+      } catch (error) {
+        console.error('Error:', error);
+      }
+    }
+
+    function showConfirmation(title, message, callback) {
+      document.getElementById('confirmTitle').textContent = title;
+      document.getElementById('confirmMessage').textContent = message;
+      document.getElementById('confirmModal').classList.add('active');
+      pendingAction = callback;
+    }
+
+    function hideConfirmation() {
+      document.getElementById('confirmModal').classList.remove('active');
+      pendingAction = null;
+    }
+
+    function showStatus(elementId, message, type) {
+      const div = document.getElementById(elementId);
+      div.innerHTML = `<div class="status ${type}"><div class="status-dot"></div> ${message}</div>`;
+    }
+
+    function showNotification(message) {
+      // Implement toast notification
+      console.log(message);
+      alert(message); // Fallback
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Database Backup / Restore
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function createBackup() {
+      const btn = document.getElementById('btnBackup');
+      const status = document.getElementById('backupStatus');
+      btn.disabled = true; btn.textContent = '📦 Creating…';
+      status.textContent = '';
+      try {
+        const r = await fetch('/api/db/backup', {method:'POST'});
+        const d = await r.json();
+        if (d.status === 'ok') {
+          const sizeKB = Math.round(d.size_bytes / 1024);
+          status.innerHTML = `<span style="color:var(--green);">✓ Backup created (${sizeKB} KB)</span>`;
+          const dl = document.getElementById('btnDownloadBackup');
+          dl.href = `/api/db/backup/${d.backup_id}`;
+          dl.download = d.filename;
+          dl.style.display = '';
+        } else {
+          status.innerHTML = `<span style="color:var(--red);">✗ ${d.reason || 'Failed'}</span>`;
+        }
+      } catch(e) {
+        status.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
+      }
+      btn.disabled = false; btn.textContent = '📦 Create Backup';
+    }
+
+    async function restoreBackup() {
+      const file = document.getElementById('restoreFile').files[0];
+      if (!file) return alert('Select a .sql backup file first');
+      if (!confirm('⚠ This will OVERWRITE all current data with the backup. Are you sure?')) return;
+
+      const status = document.getElementById('restoreStatus');
+      status.innerHTML = '<span style="color:var(--text-dim);">Restoring…</span>';
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const r = await fetch('/api/db/restore', {method:'POST', body: formData});
+        const d = await r.json();
+        if (d.status === 'ok') {
+          status.innerHTML = `<span style="color:var(--green);">✓ ${d.message}</span>`;
+        } else {
+          status.innerHTML = `<span style="color:var(--red);">✗ ${d.reason || 'Failed'}</span>`;
+        }
+      } catch(e) {
+        status.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
+      }
+    }
+
+    // Universe Export / Import
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function exportUniverses() {
+      const btn = document.getElementById('btnExportUniverses');
+      const status = document.getElementById('exportUniversesStatus');
+      btn.disabled = true; btn.textContent = '📤 Exporting…';
+      status.textContent = '';
+      try {
+        const r = await fetch('/api/universes/export');
+        const data = await r.json();
+        if (data.universes) {
+          const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `universes-export-${new Date().toISOString().slice(0,10)}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          status.innerHTML = `<span style="color:var(--green);">✓ Exported ${data.count} universes</span>`;
+        } else {
+          status.innerHTML = `<span style="color:var(--red);">✗ Export failed</span>`;
+        }
+      } catch(e) {
+        status.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
+      }
+      btn.disabled = false; btn.textContent = '📤 Export Universes';
+    }
+
+    async function importUniverses() {
+      const file = document.getElementById('importUniverseFile').files[0];
+      if (!file) return alert('Select a .json universe export file first');
+
+      const status = document.getElementById('importUniversesStatus');
+      status.innerHTML = '<span style="color:var(--text-dim);">Importing…</span>';
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const r = await fetch('/api/universes/import', {method: 'POST', body: formData});
+        const d = await r.json();
+        if (d.status === 'ok') {
+          status.innerHTML = `<span style="color:var(--green);">✓ Created ${d.created} universes (${d.skipped} skipped — already exist)</span>`;
+        } else {
+          status.innerHTML = `<span style="color:var(--red);">✗ ${d.reason || 'Failed'}</span>`;
+        }
+      } catch(e) {
+        status.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Radarr Servers
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function loadRadarrServers() {
+      try {
+        const r = await fetch('/api/radarr/servers');
+        const d = await r.json();
+        const servers = d.servers || [];
+        if (servers.length === 0) return;
+
+        // Populate first server
+        const s0 = document.querySelector('.radarr-server[data-idx="0"]');
+        if (s0 && servers[0]) {
+          s0.querySelector('.radarr-name').value = servers[0].name || '';
+          s0.querySelector('.radarr-url').value = servers[0].url || '';
+          s0.querySelector('.radarr-key').value = servers[0].api_key || '';
+        }
+
+        // Add and populate second server if exists
+        if (servers.length > 1) {
+          addRadarrServer();
+          const s1 = document.querySelector('.radarr-server[data-idx="1"]');
+          if (s1) {
+            s1.querySelector('.radarr-name').value = servers[1].name || '';
+            s1.querySelector('.radarr-url').value = servers[1].url || '';
+            s1.querySelector('.radarr-key').value = servers[1].api_key || '';
+          }
+        }
+      } catch(e) { console.warn('Failed to load Radarr servers:', e); }
+    }
+
+    function addRadarrServer() {
+      const container = document.getElementById('radarrServers');
+      if (container.querySelectorAll('.radarr-server').length >= 2) return;
+      const btn = document.getElementById('addRadarrBtn');
+      btn.style.display = 'none';
+
+      const div = document.createElement('div');
+      div.className = 'form-group radarr-server';
+      div.dataset.idx = '1';
+      div.innerHTML = `
+        <label>Server 2</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input type="text" class="radarr-name" placeholder="Name (e.g. Radarr 4K)" style="flex:1;min-width:140px;" />
+          <input type="text" class="radarr-url" placeholder="http://192.168.1.x:7879" style="flex:2;min-width:200px;" />
+          <input type="text" class="radarr-key" placeholder="API Key" style="flex:2;min-width:180px;" />
+          <button class="btn btn-blue" style="padding:8px 12px;font-size:0.78rem;" onclick="testRadarr(1)">Test</button>
+          <button class="btn" style="background:var(--red);padding:8px 12px;font-size:0.78rem;" onclick="removeRadarrServer()">✕</button>
+        </div>
+        <span class="radarr-status" style="font-size:0.78rem;margin-top:4px;display:block;"></span>
+      `;
+      container.appendChild(div);
+    }
+
+    function removeRadarrServer() {
+      const s = document.querySelector('.radarr-server[data-idx="1"]');
+      if (s) s.remove();
+      document.getElementById('addRadarrBtn').style.display = '';
+    }
+
+    async function testRadarr(idx) {
+      const row = document.querySelector(`.radarr-server[data-idx="${idx}"]`);
+      if (!row) return;
+      const url = row.querySelector('.radarr-url').value.trim();
+      const key = row.querySelector('.radarr-key').value.trim();
+      const status = row.querySelector('.radarr-status');
+      if (!url || !key) { status.textContent = '⚠ URL and API key required'; status.style.color = 'var(--orange)'; return; }
+      status.textContent = 'Testing…'; status.style.color = 'var(--text-dim)';
+      try {
+        const r = await fetch('/api/radarr/test', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({url, api_key: key})
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          status.textContent = `✓ Connected — Radarr ${d.version}`; status.style.color = 'var(--green)';
+        } else {
+          status.textContent = `✗ ${d.message}`; status.style.color = 'var(--red)';
+        }
+      } catch(e) { status.textContent = `✗ ${e.message}`; status.style.color = 'var(--red)'; }
+    }
+
+    async function saveRadarrServers() {
+      const servers = [];
+      document.querySelectorAll('.radarr-server').forEach(row => {
+        const name = row.querySelector('.radarr-name').value.trim();
+        const url = row.querySelector('.radarr-url').value.trim();
+        const key = row.querySelector('.radarr-key').value.trim();
+        if (url && key) servers.push({name: name || `Radarr ${servers.length+1}`, url, api_key: key});
+      });
+      try {
+        const r = await fetch('/api/radarr/servers', {
+          method: 'PUT', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({servers})
+        });
+        const d = await r.json();
+        showNotification(`Radarr servers saved (${d.servers} server${d.servers !== 1 ? 's' : ''})`);
+      } catch(e) { showNotification('Failed to save: ' + e.message); }
+    }
+
+    init();
+  </script>
+</body>
+</html>

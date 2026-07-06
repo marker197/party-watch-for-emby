@@ -1,0 +1,259 @@
+/**
+ * Bulk Actions UI Styles
+ * Toolbar, checkboxes, progress indicators
+ */
+
+/* Bulk Toolbar */
+.bulk-toolbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: var(--primary);
+    color: white;
+    padding: 1rem;
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    animation: slideDown 0.2s ease-out;
+}
+
+.bulk-toolbar.hidden {
+    display: none;
+}
+
+@keyframes slideDown {
+    from {
+        transform: translateY(-100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+.bulk-toolbar-content {
+    max-width: 1400px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 2rem;
+}
+
+/* Bulk Info */
+.bulk-info {
+    font-weight: 500;
+    font-size: 0.95rem;
+}
+
+.bulk-count {
+    display: inline-block;
+}
+
+/* Bulk Actions Container */
+.bulk-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+/* Bulk Buttons */
+.bulk-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    background: rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: white;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.bulk-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.3);
+    border-color: rgba(255, 255, 255, 0.5);
+}
+
+.bulk-btn:active:not(:disabled) {
+    transform: scale(0.98);
+}
+
+.bulk-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.bulk-btn i {
+    font-size: 1rem;
+}
+
+/* Divider */
+.bulk-divider {
+    width: 1px;
+    height: 24px;
+    background: rgba(255, 255, 255, 0.2);
+    margin: 0 0.5rem;
+}
+
+/* Dropdown Menu */
+.bulk-dropdown {
+    position: relative;
+}
+
+.bulk-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 0.5rem;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    min-width: 200px;
+    z-index: 1001;
+}
+
+.bulk-menu.hidden {
+    display: none;
+}
+
+.bulk-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 0.75rem 1rem;
+    border: none;
+    background: none;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.bulk-menu-item:hover {
+    background: var(--bg-secondary);
+}
+
+.bulk-menu-item i {
+    font-size: 1rem;
+    color: var(--primary);
+}
+
+.bulk-menu-item.bulk-danger {
+    color: var(--error);
+}
+
+.bulk-menu-item.bulk-danger i {
+    color: var(--error);
+}
+
+.bulk-menu-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 0.5rem 0;
+}
+
+/* Progress Container */
+.bulk-progress-container {
+    padding: 1rem 2rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(0, 0, 0, 0.1);
+}
+
+.bulk-progress-container.hidden {
+    display: none;
+}
+
+.bulk-progress-info {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+}
+
+.bulk-progress-text {
+    font-weight: 500;
+}
+
+.bulk-progress-percent {
+    font-weight: bold;
+}
+
+.bulk-progress-bar {
+    width: 100%;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.bulk-progress-fill {
+    height: 100%;
+    background: rgba(255, 255, 255, 0.8);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+/* Checkboxes */
+.bulk-item-checkbox {
+    margin-right: 0.75rem;
+    cursor: pointer;
+    width: 18px;
+    height: 18px;
+    accent-color: var(--primary);
+}
+
+.bulk-item-checkbox:hover {
+    transform: scale(1.1);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .bulk-toolbar-content {
+        flex-direction: column;
+        gap: 1rem;
+        align-items: flex-start;
+    }
+
+    .bulk-info {
+        width: 100%;
+    }
+
+    .bulk-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .bulk-btn {
+        font-size: 0.85rem;
+        padding: 0.4rem 0.8rem;
+    }
+
+    .bulk-divider {
+        display: none;
+    }
+
+    .bulk-menu {
+        left: auto;
+        right: 0;
+    }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+    .bulk-menu {
+        background: var(--bg-secondary);
+        border-color: var(--border);
+    }
+
+    .bulk-menu-item:hover {
+        background: var(--bg-tertiary);
+    }
+}

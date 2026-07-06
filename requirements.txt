@@ -1,0 +1,47 @@
+# -- Web framework --
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+python-multipart==0.0.20
+jinja2==3.1.6
+
+# -- Async HTTP client --
+httpx==0.28.1
+
+# -- WebSocket / real-time --
+python-socketio[asyncio]==5.12.1
+
+# -- Database --
+sqlalchemy[asyncio]==2.0.41
+asyncpg==0.30.0
+alembic==1.15.2
+psycopg[binary]==3.2.9
+
+# -- Redis --
+redis[hiredis]==5.3.0
+
+# -- Scheduler --
+apscheduler==3.11.0
+
+# -- ML / Data --
+scikit-learn==1.6.1
+pandas==2.2.3
+numpy==2.2.6
+joblib==1.5.1
+
+# -- Config / Env --
+pydantic==2.11.3
+pydantic-settings==2.9.1
+
+# -- Logging --
+structlog==25.4.0
+
+# ✅ SECURITY: JWT authentication
+PyJWT==2.9.0
+
+# ✅ SECURITY: Rate limiting
+slowapi==0.1.9
+
+# -- Testing --
+pytest==8.4.1
+pytest-asyncio==1.0.0
+

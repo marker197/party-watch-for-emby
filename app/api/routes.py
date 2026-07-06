@@ -1,0 +1,1864 @@
+"""REST API routes for the Emby-Trakt Suite."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from datetime import datetime, timedelta
+
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.models.schema import User, QueueItem, Prediction, MLModel, Universe, UniverseItem
+from app.utils.database import get_db
+from app.utils.trakt_client import TraktClient
+from app.utils.library_cache import LibraryCache
+from app.utils.emby_client import EmbyClient
+from app.utils.redis_cache import get_redis
+
+# ✅ SECURITY: Import auth module
+from app.security.auth import get_current_user, require_user_ownership, issue_tokens
+
+from app.services.smart_queue.service import SmartQueueService
+from app.services.ml_predictor.service import MLPredictorService
+from app.services.universe_discovery.service import UniverseDiscoveryService
+from app.services.watch_party.service import WatchPartyService
+from app.utils.database import async_session as async_session_ctx
+
+
+async def _first_emby_user_id() -> str | None:
+    """Return the emby_user_id of the first linked user (for user-scoped queries)."""
+    async with async_session_ctx() as db:
+        user = (await db.execute(
+            select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+        )).scalars().first()
+    return user.emby_user_id if user else None
+from app.services.rating_bias_detector.service import RatingBiasDetectorService
+
+smart_queue_svc = SmartQueueService()
+ml_predictor_svc = MLPredictorService()
+universe_svc = UniverseDiscoveryService()
+watch_party_svc = WatchPartyService()
+bias_detector_svc = RatingBiasDetectorService()
+
+log = structlog.get_logger()
+
+router = APIRouter()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Health
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/health")
+async def health():
+    cache_stats = await LibraryCache.get_stats()
+    return {
+        "status": "ok",
+        "features": {
+            "smart_queue": settings.enable_smart_queue,
+            "ml_predictor": settings.enable_ml_predictor,
+            "universe_discovery": settings.enable_universe_discovery,
+            "watch_party": settings.enable_watch_party,
+        },
+        "library_cache": cache_stats,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Auth — Trakt device-code OAuth
+# ═══════════════════════════════════════════════════════════════════════════
+
+class LinkRequest(BaseModel):
+    emby_user_id: str
+    emby_username: str = ""
+
+
+class LinkPollRequest(BaseModel):
+    emby_user_id: str
+    device_code: str
+
+
+@router.post("/auth/trakt/device-code")
+async def trakt_device_code(body: LinkRequest, db: AsyncSession = Depends(get_db)):
+    """Start Trakt device-code flow.  Returns user_code + verification_url."""
+    user = (await db.execute(
+        select(User).where(User.emby_user_id == body.emby_user_id)
+    )).scalar_one_or_none()
+
+    if not user:
+        user = User(emby_user_id=body.emby_user_id, emby_username=body.emby_username)
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+
+    trakt = TraktClient()
+    try:
+        result = await trakt.get_device_code()
+    finally:
+        await trakt.close()
+
+    return {
+        "user_code": result["user_code"],
+        "verification_url": result["verification_url"],
+        "device_code": result["device_code"],
+        "expires_in": result["expires_in"],
+        "interval": result["interval"],
+    }
+
+
+@router.post("/auth/trakt/poll")
+async def trakt_poll(body: LinkPollRequest, db: AsyncSession = Depends(get_db)):
+    """Poll for completed Trakt authorisation."""
+    trakt = TraktClient()
+    try:
+        token_data = await trakt.poll_device_token(body.device_code)
+    finally:
+        await trakt.close()
+
+    if not token_data:
+        return {"status": "pending"}
+
+    user = (await db.execute(
+        select(User).where(User.emby_user_id == body.emby_user_id)
+    )).scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(404, "User not found — call device-code first")
+
+    user.trakt_access_token = token_data["access_token"]
+    user.trakt_refresh_token = token_data["refresh_token"]
+    user.trakt_token_expires = datetime.utcnow() + timedelta(seconds=token_data.get("expires_in", 7776000))
+
+    # fetch trakt username
+    authed = TraktClient(access_token=token_data["access_token"])
+    try:
+        me = await authed.get_me()
+        user.trakt_username = me.get("user", {}).get("username", "")
+    finally:
+        await authed.close()
+
+    await db.commit()
+
+    # ✅ SECURITY: Issue JWT tokens to user
+    tokens = await issue_tokens(user)
+
+    return {
+        "status": "linked",
+        "trakt_username": user.trakt_username,
+        "access_token": tokens.access_token,
+        "refresh_token": tokens.refresh_token,
+        "token_type": tokens.token_type,
+        "expires_in": tokens.expires_in,
+    }
+
+
+@router.get("/auth/users")
+async def list_users(db: AsyncSession = Depends(get_db)):
+    users = (await db.execute(select(User))).scalars().all()
+    now = datetime.utcnow()
+    result = []
+    for u in users:
+        expires = u.trakt_token_expires
+        token_info = {}
+        if expires:
+            delta = expires - now
+            total_secs = int(delta.total_seconds())
+            if total_secs > 0:
+                days = total_secs // 86400
+                token_info = {
+                    "token_expires": expires.isoformat(),
+                    "token_days_left": days,
+                    "token_status": "ok" if days > 7 else "expiring_soon" if days > 0 else "expired",
+                }
+            else:
+                token_info = {
+                    "token_expires": expires.isoformat(),
+                    "token_days_left": 0,
+                    "token_status": "expired",
+                }
+        result.append({
+            "id": u.id,
+            "emby_user_id": u.emby_user_id,
+            "emby_username": u.emby_username,
+            "trakt_username": u.trakt_username,
+            "linked": bool(u.trakt_access_token),
+            **token_info,
+        })
+    return result
+
+
+@router.get("/auth/emby-users")
+async def list_all_emby_users(db: AsyncSession = Depends(get_db)):
+    """Return all Emby server users, auto-creating DB records for any missing.
+
+    The watch party page needs every Emby user in the dropdown, not just
+    those who have been through the Trakt link flow.
+    """
+    emby = EmbyClient()
+    try:
+        emby_users = await emby.get_users()
+    except Exception as e:
+        raise HTTPException(502, f"Could not reach Emby server: {e}")
+
+    # Load existing DB users keyed by emby_user_id
+    existing = (await db.execute(select(User))).scalars().all()
+    by_emby_id = {u.emby_user_id: u for u in existing}
+
+    created = 0
+    for eu in emby_users:
+        eid = eu.get("Id", "")
+        if not eid:
+            continue
+        if eid not in by_emby_id:
+            new_user = User(
+                emby_user_id=eid,
+                emby_username=eu.get("Name", ""),
+            )
+            db.add(new_user)
+            by_emby_id[eid] = new_user
+            created += 1
+        else:
+            # Update username if it changed on the Emby side
+            db_user = by_emby_id[eid]
+            emby_name = eu.get("Name", "")
+            if emby_name and db_user.emby_username != emby_name:
+                db_user.emby_username = emby_name
+
+    if created:
+        await db.commit()
+        # Refresh to get auto-generated IDs
+        for u in by_emby_id.values():
+            await db.refresh(u)
+
+    now = datetime.utcnow()
+    result = []
+    for u in by_emby_id.values():
+        token_info = {}
+        if u.trakt_token_expires:
+            delta = u.trakt_token_expires - now
+            days = max(0, int(delta.total_seconds()) // 86400)
+            token_info = {
+                "token_status": "ok" if days > 7 else "expiring_soon" if days > 0 else "expired",
+                "token_days_left": days,
+            }
+        result.append({
+            "id": u.id,
+            "emby_user_id": u.emby_user_id,
+            "emby_username": u.emby_username,
+            "trakt_username": u.trakt_username,
+            "linked": bool(u.trakt_access_token),
+            **token_info,
+        })
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Feature #1 — Smart Watch Queue
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/queue/refresh")
+async def refresh_queue():
+    """Manually trigger a Smart Queue update for all users."""
+    asyncio.create_task(smart_queue_svc.run_for_all_users())
+    return {"status": "refresh_started"}
+
+
+@router.get("/queue/{user_id}")
+async def get_queue(
+    user_id: int,
+    limit: int = Query(30, ge=1, le=1000),  # ✅ SECURITY: Input validation
+    current_user: User = Depends(get_current_user),  # ✅ SECURITY: Authentication
+    db: AsyncSession = Depends(get_db),
+):
+    # ✅ SECURITY: Authorization check
+    require_user_ownership(current_user.id, user_id, "watch_queue")
+    
+    items = (await db.execute(
+        select(QueueItem)
+        .where(QueueItem.user_id == user_id)
+        .order_by(QueueItem.score.desc())
+        .limit(limit)
+    )).scalars().all()
+
+    ratings: dict[str, dict] = {}
+    try:
+        emby = EmbyClient()
+        for it in await emby.get_items_by_ids([i.emby_item_id for i in items if i.emby_item_id]):
+            ratings[str(it.get("Id"))] = {
+                "community_rating": it.get("CommunityRating"),
+                "official_rating": it.get("OfficialRating"),
+            }
+    except Exception:
+        pass
+
+    return [
+        {
+            "emby_item_id": i.emby_item_id,
+            "title": i.title,
+            "type": i.item_type,
+            "source": i.source,
+            "score": i.score,
+            "trending_rank": i.trakt_trending_rank,
+            "played": i.played,
+            "played_at": i.played_at.isoformat() if i.played_at else None,
+            "community_rating": ratings.get(str(i.emby_item_id), {}).get("community_rating"),
+            "official_rating": ratings.get(str(i.emby_item_id), {}).get("official_rating"),
+        }
+        for i in items
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Feature #2 — ML Rating Predictor
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/ml/train/{user_id}")
+async def train_model(
+    user_id: int,
+    current_user: User = Depends(get_current_user),  # ✅ SECURITY
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger model training for a specific user."""
+    require_user_ownership(current_user.id, user_id, "ml_training")  # ✅ SECURITY
+    
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    if not user.trakt_access_token:
+        raise HTTPException(400, "User not linked to Trakt")
+    result = await ml_predictor_svc.train_for_user(user)
+    return result
+
+
+@router.get("/ml/predictions/{user_id}")
+async def get_predictions(
+    user_id: int,
+    limit: int = Query(50, ge=1, le=500),  # ✅ SECURITY: Input validation
+    current_user: User = Depends(get_current_user),  # ✅ SECURITY
+):
+    require_user_ownership(current_user.id, user_id, "predictions")  # ✅ SECURITY
+    return await ml_predictor_svc.get_predictions(user_id, limit)
+
+
+@router.get("/ml/model/{user_id}")
+async def get_model_info(
+    user_id: int,
+    current_user: User = Depends(get_current_user),  # ✅ SECURITY
+    db: AsyncSession = Depends(get_db),
+):
+    require_user_ownership(current_user.id, user_id, "model_info")  # ✅ SECURITY
+    
+    model = (await db.execute(
+        select(MLModel).where(MLModel.user_id == user_id, MLModel.is_active == True)
+    )).scalar_one_or_none()
+    if not model:
+        return {"status": "no_model"}
+
+    # Genre insights from the latest bias analysis, if one exists
+    genre_insights = None
+    try:
+        from app.models.schema import RatingBias
+        bias = (await db.execute(
+            select(RatingBias).where(RatingBias.user_id == user_id)
+        )).scalar_one_or_none()
+        if bias and bias.analysis_json:
+            genre_stats = bias.analysis_json.get("genre_biases", {})
+            top = sorted(genre_stats.items(), key=lambda kv: kv[1].get("count", 0), reverse=True)[:6]
+            genre_insights = {
+                genre: {
+                    "delta": s.get("bias_score", 0.0),
+                    "user_avg": s.get("avg", 0.0),
+                    "trakt_avg": round(s.get("avg", 0.0) - s.get("bias_score", 0.0), 1),
+                }
+                for genre, s in top
+            }
+    except Exception:
+        genre_insights = None
+
+    import math
+    def _finite(v):
+        return v if (v is not None and isinstance(v, (int, float)) and math.isfinite(v)) else None
+    mae_val = _finite(model.mae)
+    r2_val = _finite(model.r2)
+
+    return {
+        "version": model.version,
+        "training_samples": model.training_samples,
+        "mae": mae_val,
+        "r2": r2_val,
+        "accuracy": r2_val,
+        "feature_count": model.feature_count,
+        "genre_insights": genre_insights,
+        "trained_at": model.trained_at.isoformat() if model.trained_at else None,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Feature #3 — Shared Universe Discovery
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/universes/scan")
+async def scan_universes():
+    """Trigger a full universe scan."""
+    asyncio.create_task(universe_svc.run_scan())
+    return {"status": "scan_started"}
+
+
+@router.get("/api/universes")
+async def list_universes():
+    return await universe_svc.get_universes()
+
+
+@router.post("/api/universes")
+async def create_universe(payload: dict):
+    """Create a new custom universe.
+
+    Payload: {"name": "...", "description": "..."}
+    """
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return {"status": "error", "reason": "name_required"}
+
+    description = (payload.get("description") or "").strip() or None
+
+    # Generate slug from name
+    import re
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    if not slug:
+        return {"status": "error", "reason": "invalid_name"}
+
+    async with async_session_ctx() as db:
+        # Check for duplicate name or slug
+        existing = (await db.execute(
+            select(Universe).where(
+                (Universe.name == name) | (Universe.slug == slug)
+            )
+        )).scalar_one_or_none()
+        if existing:
+            return {"status": "error", "reason": "universe_already_exists"}
+
+        universe = Universe(
+            name=name,
+            slug=slug,
+            description=description,
+            total_items=0,
+        )
+        db.add(universe)
+        await db.commit()
+        await db.refresh(universe)
+
+    return {
+        "status": "ok",
+        "id": universe.id,
+        "name": universe.name,
+        "slug": universe.slug,
+    }
+
+
+@router.delete("/api/universes/{universe_id}")
+async def delete_universe(universe_id: int):
+    """Delete an entire universe and all its items."""
+    async with async_session_ctx() as db:
+        universe = (await db.execute(
+            select(Universe).where(Universe.id == universe_id)
+        )).scalar_one_or_none()
+        if not universe:
+            return {"status": "error", "reason": "universe_not_found"}
+
+        name = universe.name
+        await db.delete(universe)  # cascade deletes items
+        await db.commit()
+    return {"status": "ok", "removed": name}
+
+
+@router.get("/api/universes/export")
+async def export_universes():
+    """Export all universes and their items as JSON for backup/transfer."""
+    async with async_session_ctx() as db:
+        universes = (await db.execute(select(Universe))).scalars().all()
+        result = []
+        for u in universes:
+            items = (await db.execute(
+                select(UniverseItem).where(UniverseItem.universe_id == u.id)
+                .order_by(UniverseItem.release_order)
+            )).scalars().all()
+            result.append({
+                "name": u.name,
+                "slug": u.slug,
+                "description": u.description,
+                "items": [
+                    {
+                        "title": i.title,
+                        "year": i.year,
+                        "item_type": i.item_type,
+                        "release_order": i.release_order,
+                        "chronological_order": i.chronological_order,
+                        "trakt_id": i.trakt_id,
+                        "imdb_id": i.imdb_id,
+                        "tmdb_id": i.tmdb_id,
+                    }
+                    for i in items
+                ],
+            })
+    return {"universes": result, "count": len(result)}
+
+
+@router.post("/api/universes/import")
+async def import_universes(request: Request):
+    """Import universes from JSON. Skips universes that already exist (by slug).
+
+    Accepts either raw JSON body or multipart form upload with field 'file'.
+    """
+    import json as _json
+
+    content_type = request.headers.get("content-type", "")
+    if "multipart" in content_type:
+        form = await request.form()
+        upload = form.get("file")
+        if not upload:
+            return {"status": "error", "reason": "no_file"}
+        raw = await upload.read()
+        try:
+            data = _json.loads(raw)
+        except _json.JSONDecodeError:
+            return {"status": "error", "reason": "invalid_json"}
+    else:
+        data = await request.json()
+
+    universe_list = data.get("universes", [])
+    if not universe_list:
+        return {"status": "error", "reason": "no_universes_in_payload"}
+
+    created = 0
+    skipped = 0
+
+    async with async_session_ctx() as db:
+        for u_data in universe_list:
+            name = (u_data.get("name") or "").strip()
+            slug = (u_data.get("slug") or "").strip()
+            if not name or not slug:
+                skipped += 1
+                continue
+
+            existing = (await db.execute(
+                select(Universe).where(Universe.slug == slug)
+            )).scalar_one_or_none()
+            if existing:
+                skipped += 1
+                continue
+
+            universe = Universe(
+                name=name,
+                slug=slug,
+                description=u_data.get("description"),
+                total_items=len(u_data.get("items", [])),
+            )
+            db.add(universe)
+            await db.flush()
+
+            for item_data in u_data.get("items", []):
+                db.add(UniverseItem(
+                    universe_id=universe.id,
+                    title=item_data.get("title", "Unknown"),
+                    year=item_data.get("year"),
+                    item_type=item_data.get("item_type", "movie"),
+                    release_order=item_data.get("release_order", 0),
+                    chronological_order=item_data.get("chronological_order", 0),
+                    trakt_id=item_data.get("trakt_id"),
+                    imdb_id=item_data.get("imdb_id"),
+                    tmdb_id=item_data.get("tmdb_id"),
+                    in_library=False,
+                    watched=False,
+                ))
+
+            created += 1
+
+        await db.commit()
+
+    return {"status": "ok", "created": created, "skipped": skipped}
+
+
+@router.post("/api/universes/{universe_id}/reorder")
+async def reorder_universe(universe_id: int, payload: dict):
+    """Reorder items within a universe and recreate the Emby playlist.
+
+    Payload: {"item_ids": ["emby_id_1", "emby_id_2", ...]}
+    The order of IDs is the new playlist order.
+    """
+    item_ids = payload.get("item_ids", [])
+    if not item_ids:
+        return {"status": "error", "reason": "no_item_ids"}
+
+    async with async_session_ctx() as db:
+        universe = (await db.execute(
+            select(Universe).where(Universe.id == universe_id)
+        )).scalar_one_or_none()
+        if not universe:
+            return {"status": "error", "reason": "universe_not_found"}
+
+        first_user = (await db.execute(
+            select(User).order_by(User.id)
+        )).scalars().first()
+        emby_user_id = first_user.emby_user_id if first_user else None
+
+    emby = EmbyClient()
+    playlist_name = f"🌌 {universe.name}"
+    playlist_id = await emby.recreate_playlist(
+        playlist_name, item_ids, user_id=emby_user_id,
+    )
+    return {"status": "ok", "playlist_id": playlist_id, "items": len(item_ids)}
+
+
+@router.post("/api/universes/{universe_id}/items")
+async def add_universe_item(universe_id: int, payload: dict):
+    """Add a custom item to a universe.
+
+    Payload: {"title": "...", "year": 2024, "imdb_id": "tt1234567", "item_type": "movie"}
+    """
+    title = (payload.get("title") or "").strip()
+    if not title:
+        return {"status": "error", "reason": "title_required"}
+
+    year = payload.get("year")
+    imdb_id = (payload.get("imdb_id") or "").strip() or None
+    tmdb_id = (payload.get("tmdb_id") or "").strip() or None
+    item_type = payload.get("item_type", "movie")
+
+    async with async_session_ctx() as db:
+        universe = (await db.execute(
+            select(Universe).where(Universe.id == universe_id)
+        )).scalar_one_or_none()
+        if not universe:
+            return {"status": "error", "reason": "universe_not_found"}
+
+        # Determine next release_order
+        max_order = (await db.execute(
+            select(func.max(UniverseItem.release_order)).where(
+                UniverseItem.universe_id == universe_id
+            )
+        )).scalar() or 0
+
+        new_item = UniverseItem(
+            universe_id=universe_id,
+            title=title,
+            year=int(year) if year else None,
+            imdb_id=imdb_id,
+            tmdb_id=tmdb_id,
+            item_type=item_type,
+            release_order=max_order + 1,
+            chronological_order=max_order + 1,
+            in_library=False,
+            watched=False,
+        )
+        db.add(new_item)
+        universe.total_items = (universe.total_items or 0) + 1
+        await db.commit()
+        await db.refresh(new_item)
+
+    # Trigger a library match for the new item
+    asyncio.create_task(universe_svc.run_scan())
+
+    return {
+        "status": "ok",
+        "item_id": new_item.id,
+        "title": new_item.title,
+        "message": f"Added '{title}' — library match running in background",
+    }
+
+
+@router.delete("/api/universes/{universe_id}/items/{item_id}")
+async def remove_universe_item(universe_id: int, item_id: int):
+    """Remove a custom item from a universe."""
+    async with async_session_ctx() as db:
+        item = (await db.execute(
+            select(UniverseItem).where(
+                UniverseItem.id == item_id,
+                UniverseItem.universe_id == universe_id,
+            )
+        )).scalar_one_or_none()
+        if not item:
+            return {"status": "error", "reason": "item_not_found"}
+
+        title = item.title
+        await db.delete(item)
+
+        universe = (await db.execute(
+            select(Universe).where(Universe.id == universe_id)
+        )).scalar_one_or_none()
+        if universe and universe.total_items:
+            universe.total_items = max(0, universe.total_items - 1)
+
+        await db.commit()
+    return {"status": "ok", "removed": title}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Feature #4 — Watch Party
+# ═══════════════════════════════════════════════════════════════════════════
+
+class CreatePartyRequest(BaseModel):
+    host_user_id: int
+    emby_item_id: str
+
+
+class JoinPartyRequest(BaseModel):
+    code: str
+    user_id: int
+
+
+@router.post("/party/create")
+async def create_party(body: CreatePartyRequest):
+    try:
+        return await watch_party_svc.create_party(body.host_user_id, body.emby_item_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@router.post("/party/join")
+async def join_party(body: JoinPartyRequest):
+    result = await watch_party_svc.join_party(body.code, body.user_id)
+    if not result:
+        raise HTTPException(404, "Party not found or has ended")
+    return result
+
+
+@router.post("/party/{code}/end")
+async def end_party(code: str):
+    await watch_party_svc.end_party(code)
+    return {"status": "ended"}
+
+
+@router.post("/party/{code}/start")
+async def start_party_playback(code: str):
+    """Start playback on all participants' Emby sessions simultaneously."""
+    return await watch_party_svc.start_playback(code)
+
+
+@router.get("/party/{code}/sessions")
+async def list_party_sessions(code: str):
+    """List active Emby sessions for party participants (device picker)."""
+    return await watch_party_svc.list_sessions_for_party(code)
+
+
+@router.post("/party/{code}/start-selected")
+async def start_selected_playback(code: str, payload: dict):
+    """Start playback on specific devices only.
+
+    Payload: {"session_ids": ["sid1", "sid2"], "emby_item_id": "optional_override"}
+    """
+    session_ids = payload.get("session_ids", [])
+    item_id = payload.get("emby_item_id")
+    if not session_ids:
+        raise HTTPException(400, "No sessions selected")
+    return await watch_party_svc.start_playback_on_sessions(code, session_ids, item_id)
+
+
+@router.post("/party/{code}/pause")
+async def pause_party_playback(code: str):
+    """Toggle pause/play on all participants' Emby sessions."""
+    return await watch_party_svc.pause_all(code)
+
+
+@router.post("/party/{code}/seek")
+async def seek_party_playback(code: str, payload: dict):
+    """Seek all participants to a specific position.
+
+    Payload: {"position_ticks": int}
+    """
+    position_ticks = payload.get("position_ticks", 0)
+    return await watch_party_svc.seek_all(code, position_ticks)
+
+
+@router.get("/party/{code}")
+async def get_party(code: str):
+    result = await watch_party_svc.get_party(code)
+    if not result:
+        raise HTTPException(404, "Party not found")
+    return result
+
+
+@router.get("/parties")
+async def list_parties():
+    return await watch_party_svc.list_active_parties()
+
+
+@router.get("/parties/recent")
+async def list_recent_parties(limit: int = Query(10, ge=1, le=50)):
+    """Return recently ended parties for the watch party lobby."""
+    return await watch_party_svc.list_recent_parties(limit)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Emby Webhook receiver (Phase 2: feedback loop)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/webhook/emby")
+@router.post("/")
+async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
+    """Receive Emby webhooks for real-time events.
+
+    Emby sends webhooks as either:
+      - application/json (raw JSON body)
+      - multipart/form-data or form-urlencoded with a 'data' field containing JSON
+
+    Also registered at POST / as a fallback since Emby may be configured
+    with just the root URL.
+
+    Event types:
+      - PlaybackStart: user started playing an item
+      - PlaybackStop: user stopped playing an item
+      - ItemMarkedPlayed: user marked item as watched
+
+    On PlaybackStop / ItemMarkedPlayed:
+      1. Record feedback for Smart Queue scoring
+      2. Scrobble to Trakt watch history (if user has linked Trakt account)
+    """
+    import json as _json
+
+    # Parse payload from whatever format Emby sends
+    content_type = request.headers.get("content-type", "")
+    payload = {}
+
+    try:
+        if "application/json" in content_type:
+            payload = await request.json()
+        elif "form" in content_type or "multipart" in content_type:
+            form = await request.form()
+            raw = form.get("data", "{}")
+            payload = _json.loads(raw) if isinstance(raw, str) else {}
+        else:
+            # Try JSON first, fall back to reading body as text
+            body = await request.body()
+            if body:
+                try:
+                    payload = _json.loads(body)
+                except (ValueError, _json.JSONDecodeError):
+                    payload = {}
+    except Exception:
+        return {"status": "ignored", "reason": "unparseable_body"}
+
+    if not payload:
+        return {"status": "ignored", "reason": "empty_payload"}
+
+    # Emby uses "Event" (not "EventType") with lowercase dot-notation
+    # e.g. "playback.stop", "item.markplayed", "system.webhooktest"
+    event_type = payload.get("Event", "") or payload.get("EventType", "")
+    item_data = payload.get("Item", {})
+    user_data = payload.get("User", {})
+    session_data = payload.get("Session", {})
+
+    item_name = item_data.get("Name", "")
+    item_type_raw = item_data.get("Type", "")
+    emby_item_id = item_data.get("Id", "")
+    emby_user_id = user_data.get("Id", "")
+    emby_username = user_data.get("Name", "")
+
+    # Test webhooks and events without an item are acknowledged but not processed
+    if not emby_item_id or not emby_user_id:
+        return {"status": "ok", "event": event_type, "note": "no item/user data"}
+
+    # Find our user
+    user = (await db.execute(
+        select(User).where(User.emby_user_id == emby_user_id)
+    )).scalar_one_or_none()
+
+    if not user:
+        await _activity_log(
+            f"Webhook ignored: unknown Emby user {emby_username} ({emby_user_id})",
+            category="webhook",
+        )
+        return {"status": "ignored", "reason": "unknown_user"}
+
+    trakt_synced = False
+
+    # -- Helper: build a Trakt client with auto-refresh for this user ---------
+    async def _get_trakt_client():
+        async def _on_refresh(access, refresh, expires):
+            async with async_session() as _db:
+                u = await _db.get(User, user.id)
+                u.trakt_access_token = access
+                u.trakt_refresh_token = refresh
+                u.trakt_token_expires = expires
+                await _db.commit()
+
+        return TraktClient(
+            access_token=user.trakt_access_token,
+            refresh_token=user.trakt_refresh_token,
+            token_expires=user.trakt_token_expires,
+            token_refresh_callback=_on_refresh,
+        )
+
+    # -- Helper: build Trakt scrobble payload from webhook item data ----------
+    def _build_scrobble_payload():
+        provider_ids = item_data.get("ProviderIds", {})
+        trakt_ids = {}
+        if provider_ids.get("Imdb"):
+            trakt_ids["imdb"] = provider_ids["Imdb"]
+        if provider_ids.get("Tmdb"):
+            trakt_ids["tmdb"] = int(provider_ids["Tmdb"])
+        if provider_ids.get("Tvdb"):
+            trakt_ids["tvdb"] = int(provider_ids["Tvdb"])
+        if not trakt_ids:
+            return None
+
+        if item_type_raw == "Movie":
+            return {"movie": {"ids": trakt_ids}}
+        elif item_type_raw == "Episode":
+            series_ids = {}
+            series_provider = item_data.get("SeriesProviderIds", {})
+            if series_provider.get("Imdb"):
+                series_ids["imdb"] = series_provider["Imdb"]
+            if series_provider.get("Tmdb"):
+                series_ids["tmdb"] = int(series_provider["Tmdb"])
+            if series_provider.get("Tvdb"):
+                series_ids["tvdb"] = int(series_provider["Tvdb"])
+            return {
+                "show": {"ids": series_ids or trakt_ids},
+                "episode": {
+                    "season": item_data.get("ParentIndexNumber", 1),
+                    "number": item_data.get("IndexNumber", 1),
+                },
+            }
+        return None
+
+    # -- Helper: extract playback position ticks from webhook payload ---------
+    def _get_position_ticks():
+        """Emby sends position in various locations depending on event type."""
+        # Try Session.PlayState.PositionTicks (most common)
+        pos = session_data.get("PlayState", {}).get("PositionTicks", 0)
+        if pos:
+            return pos
+        # Try root-level PlaybackPositionTicks
+        pos = payload.get("PlaybackPositionTicks", 0)
+        if pos:
+            return pos
+        # Try PlaybackInfo
+        pos = payload.get("PlaybackInfo", {}).get("PositionTicks", 0)
+        return pos
+
+    # -- Helper: calculate playback progress as 0-100 -------------------------
+    def _calc_progress():
+        pos = _get_position_ticks()
+        duration = item_data.get("RunTimeTicks", 0)
+        if duration > 0 and pos > 0:
+            return min(99.9, max(1.0, pos / duration * 100))
+        # Trakt rejects progress < 1% with 422, so default to 1% minimum
+        return 1.0
+
+    # ── Match Emby event names ───────────────────────────────────────────────
+    # Emby uses lowercase dot-notation (playback.start) but some builds use
+    # PascalCase. Normalise to lowercase for matching.
+    event_lower = event_type.lower()
+
+    is_play_start = event_lower in ("playback.start", "playbackstart")
+    is_play_stop = event_lower in ("playback.stop", "playbackstop")
+    is_play_pause = event_lower in ("playback.pause", "playbackpause")
+    is_play_unpause = event_lower in ("playback.unpause", "playbackunpause",
+                                       "playback.resume", "playbackresume")
+    is_mark_played = event_lower in ("item.markplayed", "item.markedplayed",
+                                      "itemmarkplayed", "itemmarkedplayed")
+    is_watched = is_play_stop or is_mark_played
+
+    # ── playback.start → Trakt scrobble/start ("Watching…") ─────────────────
+    if is_play_start:
+        if user.trakt_access_token:
+            try:
+                trakt = await _get_trakt_client()
+                scrobble = _build_scrobble_payload()
+                if scrobble:
+                    progress = _calc_progress()
+                    await trakt.scrobble_start(scrobble, progress=progress)
+                    trakt_synced = True
+                    await _activity_log(f"▶ Trakt watching: {item_name}", category="trakt")
+            except Exception as e:
+                log.warning("webhook.trakt_scrobble_start_failed", error=str(e))
+                await _activity_log(f"⚠ Trakt start failed: {item_name} — {str(e)[:80]}", category="trakt")
+        return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
+
+    # ── playback.pause → Trakt scrobble/pause ───────────────────────────────
+    if is_play_pause:
+        if user.trakt_access_token:
+            progress = _calc_progress()
+            # Trakt rejects pause at >80% progress (considers it watched).
+            # Skip the scrobble — the stop event that follows will sync history.
+            if progress > 80:
+                await _activity_log(
+                    f"⏸ Paused near end: {item_name} ({progress:.0f}%) — skipped scrobble, stop will sync",
+                    category="trakt",
+                )
+            else:
+                try:
+                    trakt = await _get_trakt_client()
+                    scrobble = _build_scrobble_payload()
+                    if scrobble:
+                        await trakt.scrobble_pause(scrobble, progress=progress)
+                        trakt_synced = True
+                        pos_secs = _get_position_ticks() // 10000000
+                        mm, ss = divmod(pos_secs, 60)
+                        await _activity_log(
+                            f"⏸ Trakt paused: {item_name} at {mm}:{ss:02d} ({progress:.0f}%)",
+                            category="trakt",
+                        )
+                except Exception as e:
+                    err_str = str(e)
+                    if "422" in err_str:
+                        # Trakt rejected — likely near end of content, not a real error
+                        await _activity_log(
+                            f"⏸ Pause skipped by Trakt: {item_name} ({progress:.0f}%) — will sync on stop",
+                            category="trakt",
+                        )
+                    else:
+                        log.warning("webhook.trakt_scrobble_pause_failed", error=err_str)
+                        await _activity_log(f"⚠ Trakt pause failed: {item_name} — {err_str[:80]}", category="trakt")
+        return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
+
+    # ── playback.unpause → Trakt scrobble/start (resume) ────────────────────
+    if is_play_unpause:
+        if user.trakt_access_token:
+            try:
+                trakt = await _get_trakt_client()
+                scrobble = _build_scrobble_payload()
+                if scrobble:
+                    progress = _calc_progress()
+                    await trakt.scrobble_start(scrobble, progress=progress)
+                    trakt_synced = True
+                    pos_secs = _get_position_ticks() // 10000000
+                    mm, ss = divmod(pos_secs, 60)
+                    await _activity_log(
+                        f"▶ Trakt resumed: {item_name} at {mm}:{ss:02d} ({progress:.0f}%)",
+                        category="trakt",
+                    )
+            except Exception as e:
+                log.warning("webhook.trakt_scrobble_resume_failed", error=str(e))
+                await _activity_log(f"⚠ Trakt resume failed: {item_name} — {str(e)[:80]}", category="trakt")
+        return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
+
+    # ── playback.stop / item.markplayed → Trakt watch history ───────────────
+    if is_watched:
+        # Extract playback duration from session data
+        duration_ticks = session_data.get("PlayState", {}).get("PositionTicks", 0)
+
+        # Record feedback for Smart Queue
+        await smart_queue_svc.record_play(
+            user_id=user.id,
+            emby_item_id=emby_item_id,
+            duration_ticks=duration_ticks,
+        )
+
+        await _activity_log(
+            f"⏹ Stopped: {item_name} ({item_type_raw}) — {emby_username}",
+            category="playback",
+        )
+
+        # Scrobble to Trakt watch history if user has a token
+        if user.trakt_access_token:
+            try:
+                trakt = await _get_trakt_client()
+
+                # Build Trakt item from provider IDs in the webhook payload
+                provider_ids = item_data.get("ProviderIds", {})
+                trakt_ids = {}
+                if provider_ids.get("Imdb"):
+                    trakt_ids["imdb"] = provider_ids["Imdb"]
+                if provider_ids.get("Tmdb"):
+                    trakt_ids["tmdb"] = int(provider_ids["Tmdb"])
+                if provider_ids.get("Tvdb"):
+                    trakt_ids["tvdb"] = int(provider_ids["Tvdb"])
+
+                if trakt_ids:
+                    watched_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+                    if item_type_raw in ("Movie",):
+                        history_item = {
+                            "ids": trakt_ids,
+                            "watched_at": watched_at,
+                        }
+                        await trakt.add_to_history([history_item])
+                        trakt_synced = True
+                        log.info("webhook.trakt_history_synced",
+                                 type="movie", ids=trakt_ids, user=user.id)
+                        await _activity_log(
+                            f"✓ Synced to Trakt: {item_name} (movie)",
+                            category="trakt",
+                        )
+
+                    elif item_type_raw in ("Episode",):
+                        series_ids = {}
+                        series_provider = item_data.get("SeriesProviderIds", {})
+                        if series_provider.get("Imdb"):
+                            series_ids["imdb"] = series_provider["Imdb"]
+                        if series_provider.get("Tmdb"):
+                            series_ids["tmdb"] = int(series_provider["Tmdb"])
+                        if series_provider.get("Tvdb"):
+                            series_ids["tvdb"] = int(series_provider["Tvdb"])
+
+                        episode = {
+                            "watched_at": watched_at,
+                            "ids": trakt_ids,
+                        }
+                        season_num = item_data.get("ParentIndexNumber")
+                        episode_num = item_data.get("IndexNumber")
+                        if season_num is not None:
+                            episode["season"] = season_num
+                        if episode_num is not None:
+                            episode["number"] = episode_num
+
+                        show_item = {
+                            "_type": "show",
+                            "ids": series_ids or trakt_ids,
+                            "seasons": [{
+                                "number": season_num or 1,
+                                "episodes": [episode],
+                            }],
+                        }
+                        await trakt.add_to_history([show_item])
+                        trakt_synced = True
+                        log.info("webhook.trakt_history_synced",
+                                 type="episode", ids=trakt_ids, user=user.id)
+                        await _activity_log(
+                            f"✓ Synced to Trakt: {item_name} S{season_num or '?'}E{episode_num or '?'}",
+                            category="trakt",
+                        )
+                    else:
+                        await _activity_log(
+                            f"Skipped Trakt sync: {item_name} — unsupported type '{item_type_raw}'",
+                            category="trakt",
+                        )
+                else:
+                    await _activity_log(
+                        f"Skipped Trakt sync: {item_name} — no provider IDs (IMDB/TMDB/TVDB)",
+                        category="trakt",
+                    )
+
+            except Exception as e:
+                log.error("webhook.trakt_sync_failed", error=str(e), user=user.id)
+                await _activity_log(
+                    f"✗ Trakt sync failed: {item_name} — {str(e)[:80]}",
+                    category="trakt",
+                )
+        else:
+            await _activity_log(
+                f"Skipped Trakt sync: {item_name} — user has no Trakt token",
+                category="trakt",
+            )
+
+    if not is_watched:
+        # Unmatched event — log for debugging
+        await _activity_log(
+            f"📡 Unhandled webhook: {event_type} — {item_name}",
+            category="webhook",
+        )
+
+    return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
+
+
+# -- Activity log (Redis-backed, last 100 entries) ---------------------------
+
+async def _activity_log(message: str, category: str = "general"):
+    """Append an entry to the activity log in Redis."""
+    import json as _json
+    try:
+        r = await get_redis()
+        entry = _json.dumps({
+            "ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "cat": category,
+            "msg": message,
+        })
+        await r.lpush("activity_log", entry)
+        await r.ltrim("activity_log", 0, 99)  # keep last 100
+    except Exception:
+        pass  # logging should never crash the request
+
+
+@router.get("/api/activity")
+async def get_activity(
+    limit: int = Query(default=30, le=100),
+    category: str = Query(default=None),
+):
+    """Return recent activity log entries, optionally filtered by category."""
+    import json as _json
+    r = await get_redis()
+    # When filtering, scan the full list; otherwise respect limit
+    fetch_count = 99 if category else limit - 1
+    raw = await r.lrange("activity_log", 0, fetch_count)
+    entries = []
+    for item in raw:
+        try:
+            entry = _json.loads(item)
+            if category and entry.get("cat") != category:
+                continue
+            entries.append(entry)
+            if len(entries) >= limit:
+                break
+        except Exception:
+            pass
+    return entries
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Scheduler status
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/scheduler/status")
+async def scheduler_status():
+    """Return last-run status for each scheduled job."""
+    import json as _json
+    from app.main import _job_crons
+    r = await get_redis()
+    jobs = {}
+    for job_id, cron in _job_crons.items():
+        raw = await r.get(f"scheduler:status:{job_id}")
+        if raw:
+            data = _json.loads(raw)
+        else:
+            data = {"last_run": None, "status": "pending", "duration_s": None, "error": None}
+        data["cron"] = cron
+        jobs[job_id] = data
+    return jobs
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SSL Certificate Status
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/ssl/status")
+async def ssl_status():
+    """Return SSL certificate expiry info.
+
+    Reads the latest result written by the scheduled ssl_cert_check job.
+    If SSL_DOMAIN is not set, returns disabled status.
+    """
+    import json as _json
+    domain = settings.ssl_domain
+    if not domain:
+        return {"enabled": False, "message": "SSL_DOMAIN not set in .env"}
+
+    r = await get_redis()
+    raw = await r.get("ssl:cert_status")
+    if raw:
+        data = _json.loads(raw)
+        data["enabled"] = True
+        return data
+
+    # No cached result yet — do a live check
+    result = await _check_ssl_cert(domain)
+    result["enabled"] = True
+    return result
+
+
+async def _check_ssl_cert(domain: str) -> dict:
+    """Connect to domain over TLS and read certificate expiry."""
+    import ssl
+    import socket
+
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((domain, 443), timeout=10) as sock:
+            with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
+                cert = ssock.getpeercert()
+
+        not_after_str = cert.get("notAfter", "")
+        not_before_str = cert.get("notBefore", "")
+        # e.g. "Sep 28 12:00:00 2026 GMT"
+        from datetime import datetime as _dt
+        not_after = _dt.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z")
+        not_before = _dt.strptime(not_before_str, "%b %d %H:%M:%S %Y %Z")
+        days_left = (not_after - _dt.utcnow()).days
+
+        issuer_parts = dict(x[0] for x in cert.get("issuer", ()))
+        issuer = issuer_parts.get("organizationName", issuer_parts.get("commonName", "Unknown"))
+
+        subject_parts = dict(x[0] for x in cert.get("subject", ()))
+        cn = subject_parts.get("commonName", domain)
+
+        san = [entry[1] for entry in cert.get("subjectAltName", ())]
+
+        status = "ok" if days_left > 30 else "expiring_soon" if days_left > 7 else "critical" if days_left > 0 else "expired"
+
+        return {
+            "domain": domain,
+            "common_name": cn,
+            "issuer": issuer,
+            "not_before": not_before.strftime("%Y-%m-%d %H:%M:%S"),
+            "not_after": not_after.strftime("%Y-%m-%d %H:%M:%S"),
+            "days_left": days_left,
+            "status": status,
+            "san": san,
+            "checked_at": _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "error": None,
+        }
+
+    except Exception as e:
+        return {
+            "domain": domain,
+            "status": "error",
+            "days_left": None,
+            "error": str(e)[:200],
+            "checked_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Library Cache management (Phase 1)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/cache/rebuild")
+async def rebuild_cache():
+    """Manually trigger library cache rebuild."""
+    emby = EmbyClient()
+    uid = await _first_emby_user_id()
+    summary = await LibraryCache.index_library(emby, user_id=uid)
+    return {"status": "rebuilt", **summary}
+
+
+@router.get("/cache/stats")
+async def cache_stats():
+    return await LibraryCache.get_stats()
+
+
+@router.post("/cache/clear")
+async def clear_cache():
+    return await LibraryCache.clear()
+
+
+@router.get("/api/libraries")
+async def list_libraries():
+    """Return Emby library folders (virtual folders)."""
+    emby = EmbyClient()
+    return await emby.get_virtual_folders()
+
+
+@router.get("/api/libraries/stats")
+async def library_stats():
+    """Return media libraries (no collections/playlists) with item counts."""
+    emby = EmbyClient()
+    uid = await _first_emby_user_id()
+    folders = await emby.get_virtual_folders()
+    # Only media libraries — filter out boxsets, playlists, music, etc.
+    media_types = {"movies", "tvshows"}
+    results = []
+    for f in folders:
+        ct = f.get("collection_type", "")
+        if ct not in media_types:
+            continue
+        # Count items — Movie for movies, Series for tvshows (not seasons/episodes)
+        item_type = "Movie" if ct == "movies" else "Series"
+        try:
+            resp = await emby.get_items(
+                user_id=uid,
+                parent_id=f.get("item_id"),
+                item_type=item_type,
+                fields="",
+                limit=0,
+            )
+            count = resp.get("TotalRecordCount", 0)
+        except Exception:
+            count = 0
+        results.append({
+            "name": f.get("name", ""),
+            "collection_type": ct,
+            "item_count": count,
+        })
+    return results
+
+
+@router.get("/api/library/search")
+async def library_search(q: str = Query(..., min_length=2, max_length=100)):
+    """Search Emby library by title (used by the watch party item picker).
+
+    Returns resolution/quality info so users can distinguish 1080p from 4K
+    when duplicates exist.
+    """
+    emby = EmbyClient()
+    uid = await _first_emby_user_id()
+    resp = await emby.get_items(
+        user_id=uid,
+        search_term=q,
+        item_type=None,
+        fields="ProviderIds,Genres,Overview,People,Studios,RunTimeTicks,MediaSources",
+        limit=20,
+    )
+    results = []
+    for it in resp.get("Items", []):
+        if it.get("Type") not in ("Movie", "Series", "Episode"):
+            continue
+
+        # Extract resolution/quality from MediaSources
+        quality = ""
+        media_sources = it.get("MediaSources") or []
+        if media_sources:
+            ms = media_sources[0]
+            # Video stream resolution
+            for stream in ms.get("MediaStreams", []):
+                if stream.get("Type") == "Video":
+                    w = stream.get("Width", 0)
+                    h = stream.get("Height", 0)
+                    if w >= 3840 or h >= 2160:
+                        quality = "4K"
+                    elif w >= 1920 or h >= 1080:
+                        quality = "1080p"
+                    elif w >= 1280 or h >= 720:
+                        quality = "720p"
+                    elif w > 0:
+                        quality = f"{h}p"
+                    # Add HDR if present
+                    if stream.get("VideoRangeType") in ("HDR10", "HDR10Plus", "DolbyVision", "HLG"):
+                        quality += " HDR"
+                    elif stream.get("VideoRange") == "HDR":
+                        quality += " HDR"
+                    break
+            # Add container/codec info
+            container = ms.get("Container", "")
+            if container:
+                quality += f" ({container})" if quality else container
+
+        results.append({
+            "id": it.get("Id"),
+            "title": it.get("Name"),
+            "year": it.get("ProductionYear"),
+            "type": it.get("Type"),
+            "quality": quality,
+        })
+
+    return results[:15]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 3: Dashboard Polish — HTML Pages
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/universes", response_class=HTMLResponse)
+async def get_universes_page():
+    """Serve the universes visualization page."""
+    try:
+        with open("frontend/templates/universes.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Page not found</h1>"
+
+
+@router.get("/predictions", response_class=HTMLResponse)
+async def get_predictions_page():
+    """Serve the ML predictions chart page."""
+    try:
+        with open("frontend/templates/predictions.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Page not found</h1>"
+
+
+@router.get("/settings", response_class=HTMLResponse)
+async def get_settings_page():
+    """Serve the settings configuration page."""
+    try:
+        with open("frontend/templates/settings.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Page not found</h1>"
+
+
+@router.get("/watch-party", response_class=HTMLResponse)
+async def get_watch_party_page(code: str = None):
+    """Serve the watch party chat page."""
+    try:
+        with open("frontend/templates/watch_party.html", "r") as f:
+            html = f.read()
+        # Inject party code if provided
+        if code:
+            html = html.replace("const partyCode = null;", f"const partyCode = '{code}';")
+        return html
+    except FileNotFoundError:
+        return "<h1>Page not found</h1>"
+
+
+@router.get("/bias", response_class=HTMLResponse)
+async def get_bias_page():
+    """Serve the Rating Bias Detector analysis page."""
+    try:
+        with open("frontend/templates/bias_detector.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Page not found</h1>"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Rating Bias Detector API (Phase 4)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/bias/analyze/{user_id}")
+async def analyze_bias(user_id: int, db: AsyncSession = Depends(get_db)):
+    """Trigger bias analysis for a user."""
+    user = (await db.execute(
+        select(User).where(User.id == user_id)
+    )).scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    result = await bias_detector_svc.analyze_user(user)
+    return result
+
+
+@router.get("/bias/report/{user_id}")
+async def get_bias_report(user_id: int):
+    """Get full bias report for a user."""
+    report = await bias_detector_svc.get_bias_report(user_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Bias report not found. Run analysis first.")
+    return report
+
+
+@router.get("/bias/hidden-gems/{user_id}")
+async def get_hidden_gems(user_id: int, limit: int = 20):
+    """Get hidden gems (items user should rate higher based on patterns)."""
+    gems = await bias_detector_svc.get_hidden_gems(user_id, limit)
+    return {"gems": gems}
+
+
+@router.get("/bias/challenges/{user_id}")
+async def get_challenges(user_id: int):
+    """Get rating challenges to explore blind spots."""
+    challenges = await bias_detector_svc.get_challenges(user_id)
+    return {"challenges": challenges}
+
+
+@router.get("/bias/library-matches/{user_id}")
+async def get_library_matches(user_id: int, criteria: str):
+    """Find Emby library items matching a challenge/gem profile.
+    
+    criteria: genre:ACTION, era:1990s, against:diversity
+    """
+    matches = await bias_detector_svc.find_library_matches(user_id, criteria)
+    return {"matches": matches}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Database Backup / Restore
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _parse_db_url(url: str) -> tuple[str, str, str, str]:
+    """Parse DATABASE_URL into (user, password, host, dbname).
+
+    Handles: postgresql+asyncpg://user:pass@host:port/dbname
+    """
+    from urllib.parse import urlparse, unquote
+    parsed = urlparse(url)
+    user = unquote(parsed.username or "embytrakt")
+    password = unquote(parsed.password or "")
+    host = parsed.hostname or "postgres"
+    dbname = (parsed.path or "/embytrakt").lstrip("/")
+    return user, password, host, dbname
+
+@router.post("/api/db/backup")
+async def create_db_backup():
+    """Create a pg_dump backup and return a download token."""
+    import subprocess
+    import uuid
+
+    backup_dir = "/app/cache/backups"
+    os.makedirs(backup_dir, exist_ok=True)
+    backup_id = uuid.uuid4().hex[:12]
+    filename = f"emby-trakt-backup-{backup_id}.sql"
+    filepath = os.path.join(backup_dir, filename)
+
+    # Parse connection details from DATABASE_URL
+    # Format: postgresql+asyncpg://user:pass@host:port/dbname
+    db_url = os.environ.get("DATABASE_URL", "")
+    db_user, db_pass, db_host, db_name = _parse_db_url(db_url)
+
+    env = {**os.environ, "PGPASSWORD": db_pass}
+    try:
+        result = subprocess.run(
+            ["pg_dump", "-h", db_host, "-U", db_user, "-d", db_name, "-f", filepath],
+            capture_output=True, text=True, env=env, timeout=120,
+        )
+    except FileNotFoundError:
+        return {"status": "error", "reason": "pg_dump not found — rebuild the container image to install postgresql-client"}
+
+    if result.returncode != 0:
+        return {"status": "error", "reason": result.stderr[:300]}
+
+    size_bytes = os.path.getsize(filepath)
+    return {
+        "status": "ok",
+        "backup_id": backup_id,
+        "filename": filename,
+        "size_bytes": size_bytes,
+    }
+
+
+@router.get("/api/db/backup/{backup_id}")
+async def download_db_backup(backup_id: str):
+    """Download a previously created backup file."""
+    from fastapi.responses import FileResponse
+
+    filepath = f"/app/cache/backups/emby-trakt-backup-{backup_id}.sql"
+    if not os.path.isfile(filepath):
+        raise HTTPException(404, "Backup not found — create one first")
+    return FileResponse(
+        filepath,
+        media_type="application/sql",
+        filename=os.path.basename(filepath),
+    )
+
+
+@router.post("/api/db/restore")
+async def restore_db_backup(request: Request):
+    """Restore a database from an uploaded .sql backup.
+
+    Accepts multipart form upload with field 'file'.
+    WARNING: This overwrites all current data.
+    """
+    import subprocess
+
+    form = await request.form()
+    upload = form.get("file")
+    if not upload:
+        raise HTTPException(400, "No file uploaded")
+
+    restore_path = "/app/cache/backups/restore_upload.sql"
+    os.makedirs("/app/cache/backups", exist_ok=True)
+    contents = await upload.read()
+    with open(restore_path, "wb") as f:
+        f.write(contents)
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    db_user, db_pass, db_host, db_name = _parse_db_url(db_url)
+
+    env = {**os.environ, "PGPASSWORD": db_pass}
+    try:
+        result = subprocess.run(
+            ["psql", "-h", db_host, "-U", db_user, "-d", db_name, "-f", restore_path],
+            capture_output=True, text=True, env=env, timeout=120,
+        )
+    except FileNotFoundError:
+        os.remove(restore_path)
+        return {"status": "error", "reason": "psql not found — rebuild the container image to install postgresql-client"}
+
+    os.remove(restore_path)
+
+    if result.returncode != 0:
+        return {"status": "error", "reason": result.stderr[:300]}
+
+    return {"status": "ok", "message": "Database restored. Restart the container for changes to take full effect."}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Radarr Integration
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/radarr/servers")
+async def get_radarr_servers():
+    """Return configured Radarr servers from Redis."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get("radarr_servers")
+    if not raw:
+        return {"servers": []}
+    try:
+        return {"servers": _json.loads(raw)}
+    except Exception:
+        return {"servers": []}
+
+
+@router.put("/api/radarr/servers")
+async def save_radarr_servers(payload: dict):
+    """Save Radarr server configs to Redis.
+
+    Payload: {"servers": [{"name": "...", "url": "...", "api_key": "..."}, ...]}
+    Max 2 servers.
+    """
+    import json as _json
+    servers = payload.get("servers", [])[:2]
+    # Validate each server has required fields
+    clean = []
+    for s in servers:
+        if s.get("url") and s.get("api_key"):
+            clean.append({
+                "name": s.get("name", "Radarr"),
+                "url": s["url"].rstrip("/"),
+                "api_key": s["api_key"],
+            })
+    r = await get_redis()
+    await r.set("radarr_servers", _json.dumps(clean))
+    return {"status": "ok", "servers": len(clean)}
+
+
+@router.post("/api/radarr/test")
+async def test_radarr_connection(payload: dict):
+    """Test a Radarr server connection."""
+    from app.utils.radarr_client import RadarrClient
+    url = payload.get("url", "")
+    api_key = payload.get("api_key", "")
+    if not url or not api_key:
+        return {"status": "error", "message": "URL and API key required"}
+    client = RadarrClient(url, api_key)
+    result = await client.test_connection()
+    await client.close()
+    return result
+
+
+@router.post("/api/radarr/add")
+async def add_to_radarr(payload: dict):
+    """Add movies to a Radarr server.
+
+    Payload: {
+      "server_index": 0,
+      "movies": [{"tmdb_id": 123, "imdb_id": "tt...", "title": "...", "year": 2024}, ...]
+    }
+    """
+    import json as _json
+    from app.utils.radarr_client import RadarrClient
+
+    server_idx = payload.get("server_index", 0)
+    movies = payload.get("movies", [])
+    if not movies:
+        raise HTTPException(400, "No movies provided")
+
+    r = await get_redis()
+    raw = await r.get("radarr_servers")
+    if not raw:
+        raise HTTPException(400, "No Radarr servers configured — add one in Settings")
+    servers = _json.loads(raw)
+    if server_idx >= len(servers):
+        raise HTTPException(400, f"Server index {server_idx} out of range")
+
+    srv = servers[server_idx]
+    client = RadarrClient(srv["url"], srv["api_key"], name=srv["name"])
+
+    results = []
+    for movie in movies:
+        result = await client.add_movie(
+            tmdb_id=movie.get("tmdb_id"),
+            imdb_id=movie.get("imdb_id"),
+            title=movie.get("title", ""),
+            year=movie.get("year"),
+        )
+        results.append(result)
+
+    await client.close()
+
+    added = sum(1 for r in results if r.get("status") == "ok")
+    return {
+        "status": "ok",
+        "server": srv["name"],
+        "added": added,
+        "total": len(movies),
+        "results": results,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Settings API (Phase 3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class SettingsRequest(BaseModel):
+    trakt_client_id: str = None
+    trakt_client_secret: str = None
+    emby_url: str = None
+    emby_api_key: str = None
+    cron_smart_queue: str = None
+    cron_ml_retrain: str = None
+    cron_universe_scan: str = None
+    features: dict = None
+
+
+@router.get("/api/settings")
+async def read_settings():
+    """Read current settings from environment."""
+    return {
+        "trakt_client_id": os.getenv("TRAKT_CLIENT_ID", "")[:8] + "****" if os.getenv("TRAKT_CLIENT_ID") else "",
+        "trakt_client_secret": os.getenv("TRAKT_CLIENT_SECRET", "")[:8] + "****" if os.getenv("TRAKT_CLIENT_SECRET") else "",
+        "emby_url": os.getenv("EMBY_URL", ""),
+        "emby_api_key": os.getenv("EMBY_API_KEY", "")[:8] + "****" if os.getenv("EMBY_API_KEY") else "",
+        "cron_smart_queue": os.getenv("SMART_QUEUE_CRON", "0 2 * * *"),
+        "cron_ml_retrain": os.getenv("ML_RETRAIN_CRON", "0 4 * * 1"),
+        "cron_universe_scan": os.getenv("UNIVERSE_SCAN_CRON", "0 3 * * 0"),
+        "features": {
+            "smart_queue": os.getenv("ENABLE_SMART_QUEUE", "true").lower() == "true",
+            "ml_predictor": os.getenv("ENABLE_ML_PREDICTOR", "true").lower() == "true",
+            "universe_discovery": os.getenv("ENABLE_UNIVERSE_DISCOVERY", "true").lower() == "true",
+            "watch_party": os.getenv("ENABLE_WATCH_PARTY", "true").lower() == "true",
+        }
+    }
+
+
+@router.put("/api/settings")
+async def update_settings(request: SettingsRequest):
+    """Update settings (MVP: not persisted — values come from .env)."""
+    # TODO: persist settings to database or env file
+    return {
+        "status": "ok",
+        "message": "Noted — but settings are read from your .env file. "
+                   "Edit .env and restart the container to change values permanently.",
+    }
+
+
+class TestConnectionRequest(BaseModel):
+    service: str
+    client_id: str | None = None
+    client_secret: str | None = None
+    url: str | None = None
+    api_key: str | None = None
+
+
+@router.post("/api/settings/test-connection")
+async def test_connection(body: TestConnectionRequest):
+    """Test Trakt or Emby connection (uses credentials from .env)."""
+    service = body.service
+    if service == "trakt":
+        # Test Trakt API
+        try:
+            trakt = TraktClient()
+            # Simple test: try to get trending shows
+            result = await trakt.trending_shows()
+            await trakt.close()
+            return {"status": "ok"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    elif service == "emby":
+        # Test Emby API
+        try:
+            emby = EmbyClient()
+            info = await emby.get_system_info()
+            return {"status": "ok"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    return {"status": "error", "message": f"Unknown service: {service}"}
+
+
+@router.post("/api/settings/reset-oauth")
+async def reset_oauth(db: AsyncSession = Depends(get_db)):
+    """Clear all stored Trakt OAuth tokens (users must re-link)."""
+    users = (await db.execute(select(User))).scalars().all()
+    for user in users:
+        user.trakt_access_token = None
+        user.trakt_refresh_token = None
+        user.trakt_token_expires = None
+    await db.commit()
+    return {"status": "ok", "message": f"OAuth tokens cleared for {len(users)} user(s). Re-link on the Link page."}
+
+
+@router.post("/api/settings/factory-reset")
+async def factory_reset(db: AsyncSession = Depends(get_db)):
+    """Delete all users (cascades to ratings, predictions, queue) and clear the library cache."""
+    from sqlalchemy import delete as sa_delete
+    users = (await db.execute(select(User))).scalars().all()
+    count = len(users)
+    for user in users:
+        await db.delete(user)
+    await db.commit()
+    try:
+        await LibraryCache.clear()
+    except Exception:
+        pass
+    return {"status": "ok", "message": f"Factory reset complete. Removed {count} user(s) and cleared cache."}

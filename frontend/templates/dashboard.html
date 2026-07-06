@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Emby-Trakt Suite</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface-hover: #22263a;
+    --border: #2a2e3e;
+    --text: #e0e0e6;
+    --text-dim: #8b8fa3;
+    --accent: #6c5ce7;
+    --accent-light: #a29bfe;
+    --green: #00b894;
+    --orange: #fdcb6e;
+    --red: #e17055;
+    --blue: #74b9ff;
+    --radius: 10px;
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  .header {
+    padding: 28px 32px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .header h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  .header .version {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    background: var(--surface);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+
+  .container { max-width: 1200px; margin: 0 auto; padding: 28px 32px; }
+
+  /* Feature cards */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 20px;
+    margin-bottom: 32px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    transition: border-color 0.2s;
+  }
+
+  .card:hover { border-color: var(--accent); }
+
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+
+  .card-header h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .badge {
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.05em;
+  }
+
+  .badge-on { background: rgba(0,184,148,0.15); color: var(--green); }
+  .badge-off { background: rgba(225,112,85,0.15); color: var(--red); }
+
+  .card p { color: var(--text-dim); font-size: 0.88rem; margin-bottom: 16px; }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+    color: #fff;
+  }
+
+  .btn:hover { opacity: 0.85; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-accent { background: var(--accent); }
+  .btn-green { background: var(--green); }
+  .btn-blue { background: var(--blue); color: var(--bg); }
+  .btn-orange { background: var(--orange); color: var(--bg); }
+  .btn-sm { padding: 5px 10px; font-size: 0.75rem; }
+
+  /* Status section */
+  .status-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+  }
+
+  .status-chip {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 16px;
+    font-size: 0.82rem;
+  }
+
+  .status-chip .label { color: var(--text-dim); font-size: 0.72rem; display: block; margin-bottom: 2px; }
+  .status-chip .value { font-weight: 600; }
+
+  /* Log / output area */
+  .log-area {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+  }
+
+  .log-area .entry { margin-bottom: 4px; }
+  .log-area .entry.ok { color: var(--green); }
+  .log-area .entry.err { color: var(--red); }
+
+  /* Auth section */
+  .auth-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+
+  .auth-section h2 { font-size: 1.1rem; margin-bottom: 12px; }
+
+  .input-group {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .input-group input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 0.88rem;
+  }
+
+  .input-group input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .user-list { margin-top: 16px; }
+
+  .user-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .user-row:last-child { border-bottom: none; }
+  .user-row .name { font-weight: 600; }
+  .user-row .linked { color: var(--green); font-size: 0.82rem; }
+  .user-row .unlinked { color: var(--red); font-size: 0.82rem; }
+
+  /* User selector */
+  .user-selector {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+  }
+
+  .user-selector label {
+    color: var(--text-dim);
+    font-size: 0.88rem;
+    font-weight: 600;
+  }
+
+  .user-selector select {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 0.88rem;
+    cursor: pointer;
+    flex: 1;
+    max-width: 300px;
+  }
+
+  .user-selector select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .user-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: rgba(108, 92, 231, 0.1);
+    border-radius: 6px;
+    font-size: 0.82rem;
+    color: var(--accent-light);
+  }
+
+  /* Queue table with played status */
+  .queue-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    background: var(--surface);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .queue-table thead {
+    background: var(--surface-hover);
+  }
+
+  .queue-table th {
+    padding: 8px 10px;
+    text-align: left;
+    color: var(--text-dim);
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.75rem;
+  }
+
+  .queue-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.82rem;
+  }
+
+  .queue-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  .queue-table tbody tr:hover {
+    background: var(--surface-hover);
+  }
+
+  .queue-title {
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .queue-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .queue-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .queue-badge.played {
+    background: rgba(0, 184, 148, 0.15);
+    color: var(--green);
+  }
+
+  .queue-badge.unwatched {
+    background: rgba(116, 185, 255, 0.15);
+    color: var(--blue);
+  }
+
+  .queue-source {
+    color: var(--text-dim);
+    font-size: 0.78rem;
+  }
+
+  .queue-score {
+    color: var(--accent-light);
+    font-weight: 600;
+  }
+
+  .queue-timestamp {
+    color: var(--text-dim);
+    font-size: 0.78rem;
+    white-space: nowrap;
+  }
+
+  /* Cache stats */
+  .cache-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .cache-stat {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    text-align: center;
+    min-width: 100px;
+    flex: 1;
+  }
+
+  .cache-stat .label {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    display: block;
+    margin-bottom: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .cache-stat .value {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--accent-light);
+  }
+
+  @media (max-width: 720px) {
+    .grid { grid-template-columns: 1fr; }
+    .container { padding: 16px; }
+    .user-selector {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .user-selector select {
+      max-width: 100%;
+    }
+    .queue-table {
+      font-size: 0.75rem;
+    }
+    .queue-table th, .queue-table td {
+      padding: 8px;
+    }
+  }
+</style>
+</head>
+<body>
+<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
+    <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">Dashboard</a>
+    <a href="/universes" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🌌 Universes</a>
+    <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
+    <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
+    <a href="/settings" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
+    <a href="/watch-party" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
+</nav>
+
+
+<div class="header">
+  <h1>Emby-Trakt Suite</h1>
+  <span class="version">v0.1.0</span>
+</div>
+
+<div class="container">
+
+  <!-- User selector -->
+  <div class="user-selector">
+    <label for="userSelect">👤 Select User:</label>
+    <select id="userSelect" onchange="switchUser()">
+      <option value="">Loading users…</option>
+    </select>
+    <div class="user-indicator" id="userIndicator" style="display:none;">
+      <span id="indicatorText"></span>
+    </div>
+  </div>
+
+  <!-- Status bar -->
+  <div class="status-row" id="statusRow">
+    <div class="status-chip">
+      <span class="label">API</span>
+      <span class="value" id="apiStatus">Checking…</span>
+    </div>
+    <div class="status-chip">
+      <span class="label">Linked Users</span>
+      <span class="value" id="userCount">—</span>
+    </div>
+    <div class="status-chip" style="position:relative;cursor:default;" id="partyChip">
+      <span class="label">Active Parties</span>
+      <span class="value" id="partyCount">—</span>
+      <div id="partyTooltip" style="display:none;position:absolute;top:100%;left:50%;transform:translateX(-50%);margin-top:6px;background:var(--surface-hover);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:0.78rem;white-space:nowrap;z-index:10;box-shadow:0 4px 12px rgba(0,0,0,0.4);min-width:160px;"></div>
+    </div>
+    <div class="status-chip">
+      <span class="label">Library Cache</span>
+      <span class="value" id="cacheItems">—</span>
+    </div>
+  </div>
+
+  <!-- Cache & Library info -->
+  <div id="cacheStatsContainer" style="margin-bottom: 24px;">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">
+      <h3 style="margin:0; font-size: 0.95rem;">Cache &amp; Library</h3>
+      <button class="btn btn-blue btn-sm" onclick="rebuildCache()">Rebuild Cache</button>
+    </div>
+    <div class="cache-stats" id="cacheStats">
+      <div class="cache-stat">
+        <span class="label">Cached Keys</span>
+        <span class="value" id="statCachedKeys">—</span>
+      </div>
+      <div class="cache-stat">
+        <span class="label">Hit Rate</span>
+        <span class="value" id="statHitRate">—</span>
+      </div>
+      <div class="cache-stat">
+        <span class="label">Last Rebuild</span>
+        <span class="value" id="statLastRebuild">—</span>
+      </div>
+      <!-- library stats injected here by JS -->
+    </div>
+  </div>
+
+  <!-- Auth -->
+  <div class="auth-section">
+    <h2>🔗 Link Trakt Account</h2>
+    <div class="input-group">
+      <input id="embyUserId" placeholder="Emby User ID" />
+      <input id="embyUsername" placeholder="Emby Username" />
+      <button class="btn btn-accent" onclick="startLink()">Get Code</button>
+    </div>
+    <div id="authOutput" class="log-area" style="display:none; max-height:150px;"></div>
+    <div class="user-list" id="userList"></div>
+  </div>
+
+  <!-- Feature cards -->
+  <div class="grid">
+
+    <!-- #1 Smart Queue -->
+    <div class="card">
+      <div class="card-header">
+        <h2>🎯 Smart Watch Queue</h2>
+        <span class="badge {{ 'badge-on' if features.smart_queue else 'badge-off' }}">
+          {{ 'ON' if features.smart_queue else 'OFF' }}
+        </span>
+      </div>
+      <p>Trakt-powered recommendations ranked by watchlist, trending, friends, and calendar data. Updated daily.</p>
+      <button class="btn btn-accent" onclick="triggerQueue()">Refresh Now</button>
+      <button class="btn btn-blue btn-sm" id="btnToggleQueue" onclick="toggleQueue()">View Queue ▾</button>
+      <div id="queueOutput" class="log-area" style="display:none; margin-top:12px;"></div>
+    </div>
+
+    <!-- #2 ML Predictor -->
+    <div class="card">
+      <div class="card-header">
+        <h2>🤖 ML Rating Predictor</h2>
+        <span class="badge {{ 'badge-on' if features.ml_predictor else 'badge-off' }}">
+          {{ 'ON' if features.ml_predictor else 'OFF' }}
+        </span>
+      </div>
+      <p>Trains on your Trakt ratings to predict scores for unwatched library items. Retrains weekly.</p>
+      <button class="btn btn-green" onclick="trainModel()">Train Model</button>
+      <button class="btn btn-blue btn-sm" onclick="viewPredictions()">View Predictions</button>
+      <div id="mlOutput" class="log-area" style="display:none; margin-top:12px;"></div>
+    </div>
+
+    <!-- #3 Universe Discovery -->
+    <div class="card">
+      <div class="card-header">
+        <h2>🌌 Universe Discovery</h2>
+        <span class="badge {{ 'badge-on' if features.universe_discovery else 'badge-off' }}">
+          {{ 'ON' if features.universe_discovery else 'OFF' }}
+        </span>
+      </div>
+      <p>Detects MCU, Star Wars, DCEU and more in your library. Creates ordered collections automatically.</p>
+      <button class="btn btn-orange" onclick="scanUniverses()">Scan Library</button>
+      <button class="btn btn-blue btn-sm" onclick="viewUniverses()">View Universes</button>
+      <div id="universeOutput" class="log-area" style="display:none; margin-top:12px;"></div>
+    </div>
+
+  </div>
+
+  <!-- Smart Queue panel — full width below the cards grid -->
+  <div id="queuePanel" class="card" style="display:none; margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h3 style="font-size:0.95rem;">🎯 Smart Watch Queue</h3>
+      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleQueue()">✕ Close</button>
+    </div>
+    <div id="queueTable"></div>
+  </div>
+
+  <!-- Scheduler status -->
+  <div style="margin-bottom:24px;">
+    <h3 style="margin-bottom:8px; font-size:0.95rem;">⏱️ Scheduler</h3>
+    <div id="schedulerGrid" class="cache-stats">>
+      <div class="cache-stat"><span class="label">Loading…</span><span class="value" style="font-size:0.88rem;">—</span></div>
+    </div>
+  </div>
+
+  <!-- SSL certificate status (only shown if SSL_DOMAIN is set) -->
+  <div id="sslSection" style="margin-bottom:24px; display:none;">
+    <h3 style="margin-bottom:8px; font-size:0.95rem;">🔒 SSL Certificate</h3>
+    <div id="sslCard" class="cache-stats">
+      <div class="cache-stat"><span class="label">Checking…</span><span class="value" style="font-size:0.88rem;">—</span></div>
+    </div>
+  </div>
+
+  <!-- Activity log — loads from API + shows live client events -->
+  <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap;">
+    <h3 style="margin:0; font-size:0.95rem;">Activity Log</h3>
+    <div id="activityFilters" style="display:flex; gap:4px; flex-wrap:wrap;">
+      <button class="btn btn-sm activity-filter active" data-cat="" style="background:var(--accent);font-size:0.72rem;padding:3px 8px;" onclick="filterActivity(this,'')">All</button>
+      <button class="btn btn-sm activity-filter" data-cat="webhook" style="background:var(--surface-hover);font-size:0.72rem;padding:3px 8px;" onclick="filterActivity(this,'webhook')">📡 Webhook</button>
+      <button class="btn btn-sm activity-filter" data-cat="trakt" style="background:var(--surface-hover);font-size:0.72rem;padding:3px 8px;" onclick="filterActivity(this,'trakt')">🔄 Trakt</button>
+      <button class="btn btn-sm activity-filter" data-cat="playback" style="background:var(--surface-hover);font-size:0.72rem;padding:3px 8px;" onclick="filterActivity(this,'playback')">▶️ Playback</button>
+      <button class="btn btn-sm activity-filter" data-cat="general" style="background:var(--surface-hover);font-size:0.72rem;padding:3px 8px;" onclick="filterActivity(this,'general')">📋 General</button>
+    </div>
+  </div>
+  <div id="globalLog" class="log-area" style="max-height:250px;">Loading activity…</div>
+
+</div>
+
+<script>
+const API = '';  // same origin
+let currentUserId = null;
+let allUsers = [];
+
+// ═══════════════════════════════════════════════════════════════════════════
+// User Management
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function loadUsers() {
+  try {
+    const r = await fetch(API + '/auth/users');
+    allUsers = await r.json();
+    // Dashboard only shows Trakt-linked users
+    const linkedUsers = allUsers.filter(u => u.linked);
+    document.getElementById('userCount').textContent = linkedUsers.length;
+    
+    // Populate selector with linked users only
+    const select = document.getElementById('userSelect');
+    select.innerHTML = linkedUsers.map(u => 
+      `<option value="${u.id}">${u.emby_username || u.emby_user_id}${u.linked ? ' ✓' : ''}</option>`
+    ).join('');
+    
+    // Auto-select first linked user
+    if (linkedUsers.length > 0) {
+      select.value = linkedUsers[0].id;
+      switchUser();
+    }
+    
+    // Update user list below selector — linked users only
+    const list = document.getElementById('userList');
+    list.innerHTML = linkedUsers.map(u => {
+      let tokenHtml = '';
+      if (u.token_status) {
+        const icon = u.token_status === 'ok' ? '🟢' : u.token_status === 'expiring_soon' ? '🟡' : '🔴';
+        const label = u.token_status === 'expired' ? 'Token expired'
+          : u.token_days_left != null ? `${u.token_days_left}d left`
+          : '';
+        tokenHtml = ` <span style="font-size:0.72rem;opacity:0.7;">${icon} ${label}</span>`;
+      }
+      return `<div class="user-row">
+        <span class="name">${u.emby_username || u.emby_user_id}</span>
+        <span class="linked">✓ ${u.trakt_username}${tokenHtml}</span>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.error('Failed to load users:', e);
+  }
+}
+
+function switchUser() {
+  const select = document.getElementById('userSelect');
+  currentUserId = parseInt(select.value);
+  
+  if (!currentUserId) return;
+  
+  const user = allUsers.find(u => u.id === currentUserId);
+  if (user) {
+    const indicator = document.getElementById('userIndicator');
+    const text = document.getElementById('indicatorText');
+    text.textContent = `Using: ${user.emby_username || user.emby_user_id}`;
+    indicator.style.display = 'flex';
+    glog(`Switched to user: ${user.emby_username || user.emby_user_id}`, 'ok');
+    
+    // Refresh data for new user (no navigation — view buttons handle that)
+    loadParties();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Health & Status
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function rebuildCache() {
+  glog('Rebuilding library cache…', 'ok');
+  try {
+    const r = await fetch(API + '/cache/rebuild', {method: 'POST'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    glog(`Cache rebuilt: ${d.movies ?? 0} movies, ${d.series ?? 0} series, ${d.cached_entries ?? 0} keys`, 'ok');
+    await checkHealth();
+  } catch(e) {
+    glog('Cache rebuild failed: ' + e.message, 'err');
+  }
+}
+
+let activeCategory = '';  // '' means all
+
+function filterActivity(btn, cat) {
+  activeCategory = cat;
+  document.querySelectorAll('.activity-filter').forEach(b => {
+    b.classList.remove('active');
+    b.style.background = 'var(--surface-hover)';
+  });
+  btn.classList.add('active');
+  btn.style.background = 'var(--accent)';
+  loadActivity();
+}
+
+async function loadSchedulerStatus() {
+  try {
+    const r = await fetch(API + '/api/scheduler/status');
+    const jobs = await r.json();
+    const grid = document.getElementById('schedulerGrid');
+    if (!grid) return;
+
+    const entries = Object.entries(jobs);
+    if (!entries.length) {
+      grid.innerHTML = '<div class="cache-stat"><span class="label">No jobs registered yet</span><span class="value" style="font-size:0.88rem;">—</span></div>';
+      return;
+    }
+
+    const labels = {
+      library_cache_rebuild: '💾 Cache Rebuild',
+      smart_queue: '🎯 Smart Queue',
+      ml_retrain: '🤖 ML Retrain',
+      universe_scan: '🌌 Universe Scan',
+      bias_analysis: '🎓 Bias Analysis',
+      ssl_cert_check: '🔒 SSL Cert Check',
+    };
+
+    grid.innerHTML = entries.map(([id, j]) => {
+      const label = labels[id] || id;
+      const dot = j.status === 'ok' ? '🟢' : j.status === 'error' ? '🔴' : '⚪';
+      const lastRun = j.last_run
+        ? new Date(j.last_run + 'Z').toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
+        : 'Never';
+      const dur = j.duration_s != null ? `${j.duration_s}s` : '';
+      const errHtml = j.error ? `<span style="color:var(--red);font-size:0.68rem;display:block;margin-top:2px;word-break:break-all;">${j.error.substring(0,60)}</span>` : '';
+      return `<div class="cache-stat" style="text-align:left;padding:10px 14px;">
+        <span class="label" style="text-align:left;">${label}</span>
+        <span class="value" style="font-size:0.88rem;display:flex;align-items:center;gap:6px;">${dot} ${lastRun}</span>
+        <span style="color:var(--text-dim);font-size:0.7rem;">${j.cron || ''} ${dur ? '· ' + dur : ''}</span>
+        ${errHtml}
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.warn('Failed to load scheduler status:', e);
+  }
+}
+
+async function loadSSLStatus() {
+  try {
+    const r = await fetch(API + '/api/ssl/status');
+    const d = await r.json();
+    const section = document.getElementById('sslSection');
+    const card = document.getElementById('sslCard');
+    if (!section || !card) return;
+    if (!d.enabled) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+
+    if (d.error && !d.days_left && d.days_left !== 0) {
+      card.innerHTML = `<div class="cache-stat" style="text-align:left;padding:10px 14px;">
+        <span class="label" style="text-align:left;">🔴 ${d.domain || 'Unknown'}</span>
+        <span class="value" style="font-size:0.88rem;">Error</span>
+        <span style="color:var(--red);font-size:0.7rem;word-break:break-all;">${(d.error||'').substring(0,80)}</span>
+      </div>`;
+      return;
+    }
+
+    const dot = d.status === 'ok' ? '🟢' : d.status === 'expiring_soon' ? '🟡' : d.status === 'critical' ? '🔴' : d.status === 'expired' ? '⛔' : '⚪';
+    const expiry = d.not_after ? new Date(d.not_after + 'Z').toLocaleDateString([], {year:'numeric', month:'short', day:'numeric'}) : '?';
+    const checked = d.checked_at ? new Date(d.checked_at + 'Z').toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+
+    card.innerHTML = `<div class="cache-stat" style="text-align:left;padding:10px 14px;min-width:180px;">
+      <span class="label" style="text-align:left;">${d.domain || ''}</span>
+      <span class="value" style="font-size:0.88rem;display:flex;align-items:center;gap:6px;">${dot} ${d.days_left} days left</span>
+      <span style="color:var(--text-dim);font-size:0.7rem;">Expires ${expiry}</span>
+    </div>
+    <div class="cache-stat" style="text-align:left;padding:10px 14px;">
+      <span class="label" style="text-align:left;">Issuer</span>
+      <span class="value" style="font-size:0.88rem;">${d.issuer || '?'}</span>
+      <span style="color:var(--text-dim);font-size:0.7rem;">Checked ${checked}</span>
+    </div>`;
+  } catch(e) {
+    console.warn('Failed to load SSL status:', e);
+  }
+}
+
+async function loadActivity() {
+  try {
+    const url = activeCategory
+      ? API + `/api/activity?limit=30&category=${activeCategory}`
+      : API + '/api/activity?limit=30';
+    const r = await fetch(url);
+    const raw = await r.json();
+    // Filter out old generic "Webhook received" entries
+    const entries = raw.filter(e => !e.msg.startsWith('Webhook received'));
+    const el = document.getElementById('globalLog');
+    if (!el) return;
+
+    // Preserve any client-side entries added via glog() this session
+    const clientEntries = el.querySelectorAll('.entry.client-event');
+    const clientHtml = Array.from(clientEntries).map(e => e.outerHTML).join('');
+
+    if (!entries.length && !clientHtml) {
+      el.innerHTML = '<div class="entry" style="color:var(--text-dim);">No activity yet</div>';
+      return;
+    }
+    const apiHtml = entries.map(e => {
+      // Pick icon based on message content first, then category
+      let icon = '•';
+      const m = e.msg;
+      if (m.startsWith('▶ Trakt watching') || m.startsWith('▶ Trakt resumed')) icon = '▶️';
+      else if (m.startsWith('⏸')) icon = '⏸️';
+      else if (m.startsWith('⏹') || m.includes('stopped')) icon = '⏹️';
+      else if (m.startsWith('✓ Synced')) icon = '✅';
+      else if (m.startsWith('✓')) icon = '✅';
+      else if (m.startsWith('✗') || m.startsWith('⚠')) icon = '❌';
+      else if (m.includes('Watched:')) icon = '⏹️';
+      else if (m.includes('webhook')) icon = '📡';
+      else if (m.includes('party')) icon = '🎉';
+      else if (m.includes('Queue') || m.includes('queue')) icon = '🎯';
+      else if (m.includes('universe') || m.includes('Universe')) icon = '🌌';
+      else if (m.includes('ML') || m.includes('Train') || m.includes('predict')) icon = '🤖';
+      else if (m.includes('cache') || m.includes('Cache')) icon = '💾';
+      else if (e.cat === 'trakt') icon = '🔄';
+      else if (e.cat === 'webhook') icon = '📡';
+      const cls = m.startsWith('✓') ? 'ok' : (m.startsWith('✗') || m.startsWith('⚠')) ? 'err' : '';
+      return `<div class="entry ${cls}"><span style="opacity:0.45;font-size:0.78rem;">${e.ts.split(' ')[1]}</span>  ${icon} ${m}</div>`;
+    }).join('');
+    el.innerHTML = clientHtml + apiHtml;
+  } catch(e) {}
+}
+
+async function checkHealth() {
+  try {
+    const r = await fetch(API + '/health');
+    const d = await r.json();
+    document.getElementById('apiStatus').textContent = d.status === 'ok' ? '✓ Connected' : '✗ Error';
+
+    if (d.library_cache) {
+      const lc = d.library_cache;
+      document.getElementById('cacheItems').textContent = (lc.items || 0) + ' items';
+
+      // Update fixed cache stat values (don't rebuild HTML — library cards are appended separately)
+      const ck = document.getElementById('statCachedKeys');
+      const hr = document.getElementById('statHitRate');
+      const lr = document.getElementById('statLastRebuild');
+      if (ck) ck.textContent = lc.cached_keys || 0;
+      if (hr) hr.textContent = (lc.hit_rate || 0).toFixed(0) + '%';
+      if (lr) lr.textContent = lc.last_rebuild
+        ? new Date(lc.last_rebuild).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
+        : 'Never';
+    }
+
+    loadLibraries();
+  } catch(e) {
+    document.getElementById('apiStatus').textContent = '✗ Offline';
+  }
+}
+
+let librariesLoaded = false;
+async function loadLibraries() {
+  if (librariesLoaded) return;
+  try {
+    const r = await fetch(API + '/api/libraries/stats');
+    const libs = await r.json();
+
+    const container = document.getElementById('cacheStats');
+    if (!container) return;
+
+    // Remove any previously added library cards
+    container.querySelectorAll('.lib-card').forEach(el => el.remove());
+
+    const fragment = document.createDocumentFragment();
+    for (const lib of libs) {
+      const icon = lib.collection_type === 'movies' ? '🎬' : '📺';
+      const label = lib.collection_type === 'movies' ? 'Movies' : 'Series';
+      const div = document.createElement('div');
+      div.className = 'cache-stat lib-card';
+      div.innerHTML = `
+        <span class="label">${icon} ${lib.name}</span>
+        <span class="value">${lib.item_count}</span>
+        <span style="color:var(--text-dim);font-size:0.68rem;">${label}</span>
+      `;
+      fragment.appendChild(div);
+    }
+    container.appendChild(fragment);
+
+    librariesLoaded = true;
+  } catch(e) {
+    console.warn('Failed to load libraries:', e);
+  }
+}
+
+async function loadParties() {
+  try {
+    const r = await fetch(API + '/parties');
+    const parties = await r.json();
+    document.getElementById('partyCount').textContent = parties.length;
+
+    // Build tooltip content
+    const tooltip = document.getElementById('partyTooltip');
+    const chip = document.getElementById('partyChip');
+    if (!tooltip || !chip) return;
+
+    if (parties.length === 0) {
+      tooltip.innerHTML = '<span style="color:var(--text-dim);">No active parties</span>';
+    } else {
+      tooltip.innerHTML = parties.map(p => {
+        const users = (p.participants && p.participants.length)
+          ? p.participants.join(', ')
+          : 'no participants';
+        return `<div style="margin-bottom:4px;"><strong>${p.title}</strong><br><span style="color:var(--text-dim);">${p.code} · ${users}</span></div>`;
+      }).join('');
+    }
+
+    chip.onmouseenter = () => { tooltip.style.display = 'block'; };
+    chip.onmouseleave = () => { tooltip.style.display = 'none'; };
+  } catch(e) {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Logging
+// ═══════════════════════════════════════════════════════════════════════════
+
+function logTo(id, msg, cls='') {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.style.display = 'block';
+  const entry = document.createElement('div');
+  entry.className = 'entry ' + cls;
+  entry.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+  el.prepend(entry);
+  
+  // Limit to 50 entries
+  while (el.children.length > 50) {
+    el.removeChild(el.lastChild);
+  }
+}
+
+function glog(msg, cls='') {
+  const el = document.getElementById('globalLog');
+  if (!el) return;
+  const entry = document.createElement('div');
+  entry.className = 'entry client-event ' + cls;
+  entry.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+  el.prepend(entry);
+  while (el.querySelectorAll('.client-event').length > 20) {
+    const all = el.querySelectorAll('.client-event');
+    all[all.length - 1].remove();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Auth
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function startLink() {
+  const uid = document.getElementById('embyUserId').value;
+  const uname = document.getElementById('embyUsername').value;
+  if (!uid) return alert('Enter Emby User ID');
+
+  logTo('authOutput', 'Requesting device code…');
+  const r = await fetch(API + '/auth/trakt/device-code', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({emby_user_id: uid, emby_username: uname})
+  });
+  const d = await r.json();
+  logTo('authOutput', `Go to ${d.verification_url} and enter: ${d.user_code}`, 'ok');
+
+  // Poll
+  const interval = setInterval(async () => {
+    const pr = await fetch(API + '/auth/trakt/poll', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({emby_user_id: uid, device_code: d.device_code})
+    });
+    const pd = await pr.json();
+    if (pd.status === 'linked') {
+      clearInterval(interval);
+      logTo('authOutput', `Linked as ${pd.trakt_username}!`, 'ok');
+      glog(`User linked: ${pd.trakt_username}`, 'ok');
+      loadUsers();
+    }
+  }, (d.interval || 5) * 1000);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Feature #1: Smart Queue
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function triggerQueue() {
+  if (!currentUserId) return alert('Select a user first');
+  glog('Smart Queue refresh triggered…');
+  await fetch(API + '/queue/refresh', {method:'POST'});
+  logTo('queueOutput', 'Refresh started — check back in a minute', 'ok');
+}
+
+function toggleQueue() {
+  const panel = document.getElementById('queuePanel');
+  const btn = document.getElementById('btnToggleQueue');
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    btn.textContent = 'Hide Queue ▴';
+    viewQueue();
+  } else {
+    panel.style.display = 'none';
+    btn.textContent = 'View Queue ▾';
+  }
+}
+
+async function viewQueue() {
+  if (!currentUserId) return alert('Select a user first');
+  try {
+    const r = await fetch(API + `/queue/${currentUserId}?limit=20`);
+    const items = await r.json();
+    const el = document.getElementById('queueTable');
+    if (!Array.isArray(items) || items.length === 0) {
+      el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Queue is empty — click Refresh Queue, then check back in a minute.</div>';
+      return;
+    }
+    el.innerHTML = '<table class="queue-table"><thead><tr>' +
+      '<th style="width:30px;">#</th><th>Title</th><th style="width:80px;">Source</th><th style="width:55px;">Score</th><th style="width:80px;">Status</th><th style="width:60px;"></th>' +
+      '</tr></thead><tbody>' +
+      items.map((i, n) => {
+        const rating = (i.community_rating != null) ? ` <span style="color:var(--orange);font-size:0.78rem;">★${Number(i.community_rating).toFixed(1)}</span>` : '';
+        const statusBadge = i.played
+          ? '<span class="queue-badge played">✓</span>'
+          : '<span class="queue-badge unwatched">new</span>';
+        const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        const partyBtn = i.emby_item_id
+          ? `<button class="btn btn-sm" style="background:var(--accent);padding:2px 7px;font-size:0.7rem;" onclick="createPartyFromQueue('${i.emby_item_id}', '${safeTitle}')">🎉 Party</button>`
+          : '';
+        return `<tr>
+          <td style="color:var(--text-dim);font-size:0.78rem;">${n + 1}</td>
+          <td><span class="queue-title">${i.title}</span>${rating}</td>
+          <td class="queue-source">${i.source}</td>
+          <td class="queue-score">${i.score}</td>
+          <td>${statusBadge}</td>
+          <td>${partyBtn}</td>
+        </tr>`;
+      }).join('') +
+      '</tbody></table>';
+  } catch(e) {
+    document.getElementById('queueTable').innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+  }
+}
+
+async function apiError(r) {
+  try { const d = await r.json(); return d.detail || JSON.stringify(d); }
+  catch(_) { return 'HTTP ' + r.status; }
+}
+
+async function createPartyFromQueue(embyItemId, title) {
+  if (!currentUserId) return alert('Select a user first');
+  try {
+    const r = await fetch(API + '/party/create', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({host_user_id: currentUserId, emby_item_id: embyItemId})
+    });
+    if (!r.ok) throw new Error(await apiError(r));
+    const d = await r.json();
+    glog(`Watch party created from queue: ${d.code} — "${d.title}"`, 'ok');
+    if (confirm(`Party created! Code: ${d.code}\n\nOpen Watch Party page?`)) {
+      window.location.href = `/watch-party?code=${d.code}`;
+    }
+  } catch(e) {
+    glog('Error creating party: ' + e.message, 'err');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Feature #2: ML Rating Predictor
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function trainModel() {
+  if (!currentUserId) return alert('Select a user first');
+  glog('ML training triggered…');
+  logTo('mlOutput', 'Training started — this may take a few minutes…');
+  try {
+    const r = await fetch(API + `/ml/train/${currentUserId}`, {method:'POST'});
+    const d = await r.json();
+    logTo('mlOutput', `Result: ${JSON.stringify(d)}`, d.status === 'trained' ? 'ok' : 'err');
+    glog(`ML training: ${d.status}`, d.status === 'trained' ? 'ok' : 'err');
+  } catch(e) {
+    logTo('mlOutput', 'Training failed: ' + e.message, 'err');
+  }
+}
+
+function viewPredictions() {
+  window.location.href = '/predictions';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Feature #3: Universe Discovery
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function scanUniverses() {
+  glog('Universe scan triggered…');
+  await fetch(API + '/universes/scan', {method:'POST'});
+  logTo('universeOutput', 'Scan started…', 'ok');
+}
+
+async function viewUniverses() {
+  window.location.href = '/universes';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Initialization
+// ═══════════════════════════════════════════════════════════════════════════
+
+function init() {
+  checkHealth();
+  loadUsers();
+  loadParties();
+  loadActivity();
+  loadSchedulerStatus();
+  loadSSLStatus();
+  setInterval(loadActivity, 15000); // refresh every 15s
+  setInterval(checkHealth, 30000);
+  setInterval(loadParties, 60000);
+  setInterval(loadSchedulerStatus, 60000); // refresh scheduler every 60s
+  setInterval(loadSSLStatus, 300000); // refresh SSL every 5 min
+}
+
+// Start when page loads
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+</script>
+
+</body>
+</html>

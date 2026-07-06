@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rating Bias Detector — Emby-Trakt Suite</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --bg-light: #ffffff;
+            --bg-dark: #1a1a2e;
+            --text-light: #1f2937;
+            --text-dark: #f3f4f6;
+            --border: #e5e7eb;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-light);
+            color: var(--text-light);
+            transition: background-color 0.3s, color 0.3s;
+        }
+
+        body.dark-mode {
+            background: var(--bg-dark);
+            color: var(--text-dark);
+        }
+
+        header {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white;
+            padding: 2rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        header h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+        }
+
+        .header-controls {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .theme-toggle {
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.3s;
+        }
+
+        .theme-toggle:hover {
+            background: rgba(255,255,255,0.3);
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 2rem;
+            border-bottom: 2px solid var(--border);
+            flex-wrap: wrap;
+        }
+
+        .tab-btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            background: transparent;
+            color: var(--text-light);
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+            transition: all 0.3s;
+        }
+
+        body.dark-mode .tab-btn {
+            color: var(--text-dark);
+        }
+
+        .tab-btn.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.3s;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .button {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: background 0.3s;
+        }
+
+        .button:hover {
+            background: var(--primary-dark);
+        }
+
+        .button.secondary {
+            background: transparent;
+            color: var(--primary);
+            border: 2px solid var(--primary);
+        }
+
+        .button.secondary:hover {
+            background: var(--primary);
+            color: white;
+        }
+
+        .button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .card {
+            background: var(--bg-light);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            transition: all 0.3s;
+        }
+
+        body.dark-mode .card {
+            background: #252d42;
+            border-color: #3a4255;
+        }
+
+        .card:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-box {
+            background: var(--bg-light);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            text-align: center;
+            transition: all 0.3s;
+        }
+
+        body.dark-mode .stat-box {
+            background: #252d42;
+            border-color: #3a4255;
+        }
+
+        .stat-box:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--primary);
+            margin: 0.5rem 0;
+        }
+
+        .stat-label {
+            font-size: 0.9rem;
+            color: #6b7280;
+        }
+
+        body.dark-mode .stat-label {
+            color: #9ca3af;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-bottom: 2rem;
+        }
+
+        .gem-list, .challenge-list {
+            list-style: none;
+        }
+
+        .gem-item, .challenge-item {
+            background: var(--bg-light);
+            border-left: 4px solid var(--primary);
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 0.5rem;
+            transition: all 0.3s;
+        }
+
+        body.dark-mode .gem-item, body.dark-mode .challenge-item {
+            background: #252d42;
+        }
+
+        .gem-item:hover, .challenge-item:hover {
+            transform: translateX(4px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .gem-title, .challenge-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .gap-badge {
+            background: var(--warning);
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .difficulty {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .difficulty.easy {
+            background: var(--success);
+            color: white;
+        }
+
+        .difficulty.medium {
+            background: var(--warning);
+            color: white;
+        }
+
+        .difficulty.hard {
+            background: var(--error);
+            color: white;
+        }
+
+        .filter-bar {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .filter-input {
+            padding: 0.75rem;
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            font-size: 1rem;
+            flex: 1;
+            min-width: 200px;
+            background: var(--bg-light);
+            color: var(--text-light);
+        }
+
+        body.dark-mode .filter-input {
+            background: #252d42;
+            color: var(--text-dark);
+            border-color: #3a4255;
+        }
+
+        .filter-select {
+            padding: 0.75rem;
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            font-size: 1rem;
+            background: var(--bg-light);
+            color: var(--text-light);
+        }
+
+        body.dark-mode .filter-select {
+            background: #252d42;
+            color: var(--text-dark);
+            border-color: #3a4255;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #6b7280;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .alert {
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .alert.error {
+            background: #fee2e2;
+            color: #991b1b;
+            border-left: 4px solid var(--error);
+        }
+
+        .alert.success {
+            background: #dcfce7;
+            color: #166534;
+            border-left: 4px solid var(--success);
+        }
+
+        body.dark-mode .alert.error {
+            background: #7f1d1d;
+            color: #fecaca;
+        }
+
+        body.dark-mode .alert.success {
+            background: #1b4332;
+            color: #95d5b2;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--bg-light);
+            border-radius: 0.75rem;
+            padding: 2rem;
+            max-width: 500px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+
+        body.dark-mode .modal-content {
+            background: #252d42;
+        }
+
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1.5rem;
+            justify-content: flex-end;
+        }
+
+        @media (max-width: 768px) {
+            header {
+                flex-direction: column;
+                text-align: center;
+            }
+
+            header h1 {
+                font-size: 1.4rem;
+            }
+
+            .container {
+                padding: 1rem;
+            }
+
+            .tabs {
+                gap: 0;
+            }
+
+            .tab-btn {
+                flex: 1;
+                padding: 0.5rem;
+                font-size: 0.9rem;
+            }
+
+            .stat-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .filter-bar {
+                flex-direction: column;
+            }
+
+            .filter-input, .filter-select {
+                width: 100%;
+            }
+
+            .chart-container {
+                height: 250px;
+            }
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 0.5rem 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--primary);
+            transition: width 0.3s;
+        }
+
+        .breadcrumb {
+            color: #6b7280;
+            margin-bottom: 1rem;
+        }
+
+        .breadcrumb a {
+            color: var(--primary);
+            text-decoration: none;
+            margin: 0 0.25rem;
+        }
+
+        .breadcrumb a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
+    <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
+    <a href="/universes" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🌌 Universes</a>
+    <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
+    <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">🎓 Taste Profile</a>
+    <a href="/settings" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
+    <a href="/watch-party" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
+</nav>
+
+    <header>
+        <h1>🎯 Rating Bias Detector</h1>
+        <div class="header-controls">
+            <button class="theme-toggle" onclick="toggleTheme()">🌙 Dark Mode</button>
+        </div>
+    </header>
+
+    <div class="container">
+        <div id="alert" class="alert" style="display:none;"></div>
+
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
+            <button class="tab-btn" onclick="switchTab('genres')">Genre Analysis</button>
+            <button class="tab-btn" onclick="switchTab('eras')">Era Analysis</button>
+            <button class="tab-btn" onclick="switchTab('gems')">Hidden Gems</button>
+            <button class="tab-btn" onclick="switchTab('challenges')">Challenges</button>
+            <button class="tab-btn" onclick="switchTab('against')">Against Your Taste</button>
+        </div>
+
+        <!-- Overview Tab -->
+        <div id="overview" class="tab-content active">
+            <div class="stat-grid">
+                <div class="stat-box">
+                    <div class="stat-label">Total Ratings</div>
+                    <div class="stat-value" id="totalRatings">—</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Average Rating</div>
+                    <div class="stat-value" id="avgRating">—</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Median Rating</div>
+                    <div class="stat-value" id="medianRating">—</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Rating Std Dev</div>
+                    <div class="stat-value" id="stdDev">—</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Rating Distribution</h2>
+                <div class="chart-container">
+                    <canvas id="ratingCurveChart"></canvas>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Top Genres by Rating</h2>
+                <div class="chart-container">
+                    <canvas id="genreChart"></canvas>
+                </div>
+            </div>
+
+            <button class="button" onclick="triggerAnalysis()">🔄 Refresh Analysis</button>
+        </div>
+
+        <!-- Genre Analysis Tab -->
+        <div id="genres" class="tab-content">
+            <div class="filter-bar">
+                <input type="text" class="filter-input" id="genreFilter" placeholder="Filter genres..." onkeyup="filterGenres()">
+                <select class="filter-select" id="genreSort" onchange="sortGenres()">
+                    <option value="avg-desc">Highest Avg Rating</option>
+                    <option value="avg-asc">Lowest Avg Rating</option>
+                    <option value="count-desc">Most Ratings</option>
+                    <option value="count-asc">Fewest Ratings</option>
+                </select>
+            </div>
+            <div id="genreList"></div>
+        </div>
+
+        <!-- Era Analysis Tab -->
+        <div id="eras" class="tab-content">
+            <div class="card">
+                <h2>Rating by Decade</h2>
+                <div class="chart-container">
+                    <canvas id="eraChart"></canvas>
+                </div>
+            </div>
+            <div id="eraList"></div>
+        </div>
+
+        <!-- Hidden Gems Tab -->
+        <div id="gems" class="tab-content">
+            <p style="margin-bottom:1rem; color:#6b7280;">Items the community loves more than you've rated them. These are opportunities to revisit and rate higher!</p>
+            <div class="filter-bar">
+                <input type="text" class="filter-input" id="gemFilter" placeholder="Search gems..." onkeyup="filterGems()">
+            </div>
+            <ul id="gemsList" class="gem-list"></ul>
+        </div>
+
+        <!-- Challenges Tab -->
+        <div id="challenges" class="tab-content">
+            <p style="margin-bottom:1rem; color:#6b7280;">Personalized challenges to explore your rating blind spots and expand your taste!</p>
+            <div id="challengesList"></div>
+        </div>
+
+        <!-- Against Your Taste Tab -->
+        <div id="against" class="tab-content">
+            <p style="margin-bottom:1rem; color:#6b7280;">Step outside your comfort zone! These recommendations go against your typical rating patterns.</p>
+            <div id="againstList"></div>
+        </div>
+    </div>
+
+    <!-- Analysis Modal -->
+    <div id="analysisModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-title">Running Analysis...</div>
+            <div class="loading">
+                <div class="spinner"></div>
+                <p style="margin-top:1rem;">Analyzing your rating patterns...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let currentUser = null;
+        let biasReport = null;
+        let chartInstances = {};
+
+        // Theme Toggle
+        function toggleTheme() {
+            document.body.classList.toggle('dark-mode');
+            localStorage.setItem('theme', document.body.classList.contains('dark-mode') ? 'dark' : 'light');
+        }
+
+        // Load theme from localStorage
+        function loadTheme() {
+            if (localStorage.getItem('theme') === 'dark') {
+                document.body.classList.add('dark-mode');
+                document.querySelector('.theme-toggle').textContent = '☀️ Light Mode';
+            }
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', async () => {
+            loadTheme();
+            
+            // Get user from URL or localStorage
+            currentUser = localStorage.getItem('currentUserId') || '1';
+            localStorage.setItem('currentUserId', currentUser);
+
+            await loadBiasReport();
+        });
+
+        // Tab switching
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+
+            // Trigger chart resize if needed
+            setTimeout(() => {
+                Object.values(chartInstances).forEach(chart => chart?.resize?.());
+            }, 100);
+        }
+
+        // Load bias report
+        async function loadBiasReport() {
+            try {
+                const response = await fetch(`/bias/report/${currentUser}`);
+                if (!response.ok) {
+                    showAlert('No analysis found. Click "Refresh Analysis" to start!', 'error');
+                    return;
+                }
+                biasReport = await response.json();
+                renderDashboard();
+            } catch (error) {
+                showAlert('Error loading report: ' + error.message, 'error');
+            }
+        }
+
+        // Trigger analysis
+        async function triggerAnalysis() {
+            showModal('analysisModal', true);
+            try {
+                const response = await fetch(`/bias/analyze/${currentUser}`, { method: 'POST' });
+                const result = await response.json();
+                showModal('analysisModal', false);
+                
+                if (result.status === 'analyzed') {
+                    showAlert('✓ Analysis complete!', 'success');
+                    await loadBiasReport();
+                } else {
+                    showAlert('Analysis result: ' + result.status, 'error');
+                }
+            } catch (error) {
+                showModal('analysisModal', false);
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+
+        // Render dashboard
+        function renderDashboard() {
+            if (!biasReport) return;
+
+            const analysis = biasReport.analysis;
+            const overall = analysis.overall;
+
+            // Update stats
+            document.getElementById('totalRatings').textContent = overall.count;
+            document.getElementById('avgRating').textContent = overall.avg_rating.toFixed(1);
+            document.getElementById('medianRating').textContent = overall.median_rating.toFixed(1);
+            document.getElementById('stdDev').textContent = overall.std_dev.toFixed(2);
+
+            // Rating curve chart
+            renderRatingCurveChart(overall.rating_distribution);
+
+            // Genre chart
+            renderGenreChart(analysis.genre_biases);
+
+            // Era chart
+            renderEraChart(analysis.era_biases);
+
+            // Genre list
+            renderGenreList(analysis.genre_biases);
+
+            // Era list
+            renderEraList(analysis.era_biases);
+
+            // Hidden gems
+            renderHiddenGems(analysis.hidden_gems);
+
+            // Challenges
+            renderChallenges(analysis.challenges);
+
+            // Against taste
+            renderAgainstTaste(analysis.against_taste);
+        }
+
+        // Chart rendering
+        function renderRatingCurveChart(curve) {
+            const ctx = document.getElementById('ratingCurveChart')?.getContext('2d');
+            if (!ctx) return;
+
+            const labels = Object.keys(curve).sort((a, b) => parseFloat(a) - parseFloat(b));
+            const data = labels.map(l => curve[l]);
+
+            if (chartInstances.ratingCurve) chartInstances.ratingCurve.destroy();
+            chartInstances.ratingCurve = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Ratings at this score',
+                        data,
+                        backgroundColor: 'rgba(99, 102, 241, 0.6)',
+                        borderColor: 'rgba(99, 102, 241, 1)',
+                        borderWidth: 1,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: { y: { beginAtZero: true } }
+                }
+            });
+        }
+
+        function renderGenreChart(genres) {
+            const ctx = document.getElementById('genreChart')?.getContext('2d');
+            if (!ctx) return;
+
+            const sorted = Object.entries(genres)
+                .sort((a, b) => b[1].avg - a[1].avg)
+                .slice(0, 10);
+
+            const labels = sorted.map(([g]) => g.charAt(0).toUpperCase() + g.slice(1));
+            const data = sorted.map(([, s]) => s.avg);
+
+            if (chartInstances.genre) chartInstances.genre.destroy();
+            chartInstances.genre = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Avg Rating',
+                        data,
+                        backgroundColor: 'rgba(16, 185, 129, 0.6)',
+                        borderColor: 'rgba(16, 185, 129, 1)',
+                        borderWidth: 1,
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: { x: { min: 0, max: 10 } }
+                }
+            });
+        }
+
+        function renderEraChart(eras) {
+            const ctx = document.getElementById('eraChart')?.getContext('2d');
+            if (!ctx) return;
+
+            const labels = Object.keys(eras).sort();
+            const data = labels.map(e => eras[e].avg);
+
+            if (chartInstances.era) chartInstances.era.destroy();
+            chartInstances.era = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Avg Rating by Decade',
+                        data,
+                        borderColor: 'rgba(245, 158, 11, 1)',
+                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                        tension: 0.4,
+                        fill: true,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: true } },
+                    scales: { y: { min: 0, max: 10 } }
+                }
+            });
+        }
+
+        // Rendering functions
+        function renderGenreList(genres) {
+            const html = Object.entries(genres)
+                .sort((a, b) => b[1].avg - a[1].avg)
+                .map(([g, s]) => `
+                    <div class="card">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <h3 style="margin-bottom: 0.5rem;">${g.charAt(0).toUpperCase() + g.slice(1)}</h3>
+                                <div style="display: flex; gap: 1rem; color: #6b7280;">
+                                    <span>Avg: <strong>${s.avg.toFixed(1)}</strong>/10</span>
+                                    <span>Count: <strong>${s.count}</strong></span>
+                                    <span>Bias: <strong>${s.bias_score > 0 ? '+' : ''}${s.bias_score.toFixed(1)}</strong></span>
+                                </div>
+                                <div class="progress-bar" style="margin-top: 0.5rem;">
+                                    <div class="progress-fill" style="width: ${(s.avg / 10) * 100}%"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `)
+                .join('');
+            document.getElementById('genreList').innerHTML = html || '<p>No genres found</p>';
+        }
+
+        function renderEraList(eras) {
+            const html = Object.entries(eras)
+                .sort((a, b) => b[1].avg - a[1].avg)
+                .map(([e, s]) => `
+                    <div class="card">
+                        <h3 style="margin-bottom: 0.5rem;">${e}</h3>
+                        <div style="display: flex; gap: 1rem; color: #6b7280;">
+                            <span>Avg: <strong>${s.avg.toFixed(1)}</strong>/10</span>
+                            <span>Ratings: <strong>${s.count}</strong></span>
+                            <span>Range: <strong>${s.range}</strong></span>
+                        </div>
+                        <div class="progress-bar" style="margin-top: 0.5rem;">
+                            <div class="progress-fill" style="width: ${(s.avg / 10) * 100}%"></div>
+                        </div>
+                    </div>
+                `)
+                .join('');
+            document.getElementById('eraList').innerHTML = html || '<p>No eras found</p>';
+        }
+
+        function renderHiddenGems(gems) {
+            const html = gems.map(g => `
+                <li class="gem-item">
+                    <div class="gem-title">
+                        <span>${g.title}</span>
+                        <span class="gap-badge">Gap: ${g.gap}</span>
+                    </div>
+                    <p style="margin: 0.5rem 0; color: #6b7280; font-size: 0.9rem;">
+                        You rated: <strong>${g.your_rating}/10</strong> | Community: <strong>${g.community_rating}/10</strong>
+                    </p>
+                    <p style="margin: 0; color: #6b7280; font-size: 0.9rem;">${g.genres.join(', ')}</p>
+                </li>
+            `).join('');
+            document.getElementById('gemsList').innerHTML = html || '<p>No hidden gems found!</p>';
+        }
+
+        function renderChallenges(challenges) {
+            const html = challenges.map(c => `
+                <div class="challenge-item">
+                    <div class="challenge-title">
+                        <span>${c.name}</span>
+                        <span class="difficulty ${c.difficulty}">${c.difficulty.toUpperCase()}</span>
+                    </div>
+                    <p style="margin: 0; color: #6b7280; font-size: 0.95rem;">${c.description}</p>
+                </div>
+            `).join('');
+            document.getElementById('challengesList').innerHTML = html || '<p>No challenges available</p>';
+        }
+
+        function renderAgainstTaste(items) {
+            const html = items.map(item => `
+                <div class="challenge-item">
+                    <div class="challenge-title">
+                        <span>${item.name}</span>
+                        <span style="color: #f59e0b; font-weight: 600;">Gain: ${item.diversity_gain.toFixed(1)}</span>
+                    </div>
+                    <p style="margin: 0; color: #6b7280; font-size: 0.95rem;">${item.description}</p>
+                </div>
+            `).join('');
+            document.getElementById('againstList').innerHTML = html || '<p>No recommendations available</p>';
+        }
+
+        // Filter functions
+        function filterGenres() {
+            const term = document.getElementById('genreFilter').value.toLowerCase();
+            document.querySelectorAll('#genreList .card').forEach(card => {
+                const title = card.querySelector('h3').textContent.toLowerCase();
+                card.style.display = title.includes(term) ? 'block' : 'none';
+            });
+        }
+
+        function sortGenres() {
+            // Implement sort by moving cards
+        }
+
+        function filterGems() {
+            const term = document.getElementById('gemFilter').value.toLowerCase();
+            document.querySelectorAll('#gemsList .gem-item').forEach(item => {
+                const title = item.querySelector('.gem-title span').textContent.toLowerCase();
+                item.style.display = title.includes(term) ? 'block' : 'none';
+            });
+        }
+
+        // Utilities
+        function showAlert(message, type) {
+            const el = document.getElementById('alert');
+            el.textContent = message;
+            el.className = `alert ${type}`;
+            el.style.display = 'block';
+            setTimeout(() => { el.style.display = 'none'; }, 5000);
+        }
+
+        function showModal(id, show) {
+            document.getElementById(id).classList.toggle('active', show);
+        }
+    </script>
+</body>
+</html>

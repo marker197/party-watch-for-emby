@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Watch Party - Emby-Trakt Suite</title>
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface-hover: #22263a;
+      --border: #2a2e3e;
+      --text: #e0e0e6;
+      --text-dim: #8b8fa3;
+      --accent: #6c5ce7;
+      --accent-light: #a29bfe;
+      --green: #00b894;
+      --orange: #fdcb6e;
+      --red: #e17055;
+      --blue: #74b9ff;
+      --radius: 10px;
+      --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .container { max-width: 1100px; margin: 0 auto; padding: 28px 32px; width: 100%; }
+
+    .page-header {
+      margin-bottom: 28px;
+    }
+    .page-header h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 6px; }
+    .page-header p { color: var(--text-dim); font-size: 0.9rem; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 20px;
+      transition: border-color 0.2s;
+    }
+    .card:hover { border-color: var(--accent); }
+    .card h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+    @media (max-width: 720px) { .grid-2 { grid-template-columns: 1fr; } }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 16px; border: none; border-radius: 6px;
+      font-size: 0.82rem; font-weight: 600; cursor: pointer;
+      transition: opacity 0.2s; color: #fff;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-accent { background: var(--accent); }
+    .btn-green { background: var(--green); }
+    .btn-blue { background: var(--blue); color: var(--bg); }
+    .btn-red { background: var(--red); }
+    .btn-sm { padding: 5px 10px; font-size: 0.75rem; }
+
+    .input-group { display: flex; gap: 8px; margin-bottom: 10px; }
+    .input-group input {
+      flex: 1; padding: 8px 12px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--bg); color: var(--text); font-size: 0.88rem;
+    }
+    .input-group input:focus { outline: none; border-color: var(--accent); }
+
+    /* Party list */
+    .party-list { display: flex; flex-direction: column; gap: 10px; }
+    .party-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 8px; transition: border-color 0.2s;
+    }
+    .party-item:hover { border-color: var(--accent); }
+    .party-info { flex: 1; }
+    .party-title { font-weight: 600; font-size: 0.95rem; }
+    .party-meta { color: var(--text-dim); font-size: 0.78rem; margin-top: 2px; }
+    .party-badge {
+      padding: 3px 8px; border-radius: 4px; font-size: 0.7rem;
+      font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .party-badge.active { background: rgba(0,184,148,0.15); color: var(--green); }
+    .party-badge.waiting { background: rgba(253,203,110,0.15); color: var(--orange); }
+    .party-badge.playing { background: rgba(108,92,231,0.15); color: var(--accent-light); }
+    .party-badge.ended { background: rgba(139,143,163,0.1); color: var(--text-dim); }
+
+    .search-results {
+      max-height: 200px; overflow-y: auto; border: 1px solid var(--border);
+      border-radius: 6px; margin-bottom: 10px;
+    }
+    .search-result {
+      padding: 8px 12px; cursor: pointer; font-size: 0.85rem;
+      border-bottom: 1px solid var(--border); transition: background 0.15s;
+    }
+    .search-result:hover { background: var(--surface-hover); }
+    .search-result:last-child { border-bottom: none; }
+
+    .selected-item {
+      padding: 8px 12px; background: rgba(108,92,231,0.1); border-radius: 6px;
+      font-size: 0.85rem; color: var(--accent-light); margin-bottom: 10px;
+    }
+
+    .user-selector {
+      display: flex; align-items: center; gap: 12px; margin-bottom: 20px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 12px 16px;
+    }
+    .user-selector label { color: var(--text-dim); font-size: 0.88rem; font-weight: 600; }
+    .user-selector select {
+      padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
+      background: var(--bg); color: var(--text); font-size: 0.88rem; cursor: pointer; flex: 1; max-width: 300px;
+    }
+
+    .empty-state {
+      text-align: center; padding: 32px; color: var(--text-dim);
+    }
+    .empty-state .icon { font-size: 2.5rem; margin-bottom: 10px; }
+    .empty-state p { font-size: 0.88rem; }
+
+    /* ─── In-Party View ─── */
+    .party-view { display: none; flex-direction: column; flex: 1; min-height: 0; }
+    .party-view.active { display: flex; }
+
+    .lobby-view { display: block; }
+    .lobby-view.hidden { display: none; }
+
+    .party-header {
+      padding: 14px 20px; background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .party-header h2 { font-size: 1.05rem; font-weight: 700; }
+    .party-header .status { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; color: var(--text-dim); }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
+
+    .party-body { flex: 1; display: grid; grid-template-columns: 1fr 280px; min-height: 0; overflow: hidden; }
+    @media (max-width: 768px) { .party-body { grid-template-columns: 1fr; } .party-sidebar { display: none; } }
+
+    .chat-area { display: flex; flex-direction: column; border-right: 1px solid var(--border); }
+
+    .playback-bar {
+      display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border);
+      align-items: center; flex-wrap: wrap; background: var(--surface);
+    }
+    .playback-bar .status-text { font-size: 0.8rem; color: var(--text-dim); margin-left: auto; }
+
+    .messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 6px; }
+
+    .message { display: flex; gap: 8px; animation: slideIn 0.3s ease-out; }
+    @keyframes slideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+    .message.own .bubble { background: var(--accent); color: #fff; }
+    .message.system { justify-content: center; }
+    .message.system span { color: var(--text-dim); font-size: 0.78rem; opacity: 0.7; }
+
+    .avatar {
+      width: 28px; height: 28px; border-radius: 50%; background: var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.72rem; font-weight: 700; color: #fff; flex-shrink: 0;
+    }
+    .msg-body { flex: 1; max-width: 70%; }
+    .msg-name { font-weight: 600; font-size: 0.82rem; margin-bottom: 2px; }
+    .bubble {
+      background: var(--surface-hover); border: 1px solid var(--border);
+      border-radius: 10px; padding: 8px 12px; word-wrap: break-word;
+      font-size: 0.88rem; line-height: 1.4;
+    }
+
+    .chat-input {
+      padding: 10px 16px; border-top: 1px solid var(--border); background: var(--surface);
+      display: flex; gap: 8px; align-items: flex-end;
+    }
+    .chat-input textarea {
+      flex: 1; padding: 8px 12px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--bg); color: var(--text);
+      font-size: 0.88rem; font-family: inherit; resize: none; max-height: 80px;
+    }
+    .chat-input textarea:focus { outline: none; border-color: var(--accent); }
+    .chat-input button {
+      width: 36px; height: 36px; border: none; border-radius: 6px;
+      background: var(--accent); color: #fff; cursor: pointer; font-size: 1rem;
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    .party-sidebar {
+      background: var(--surface); padding: 14px; overflow-y: auto;
+    }
+    .sidebar-title {
+      font-size: 0.72rem; text-transform: uppercase; color: var(--text-dim);
+      font-weight: 700; margin-bottom: 8px; letter-spacing: 0.05em;
+    }
+    .member-item {
+      display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+      border-radius: 6px; margin-bottom: 4px; font-size: 0.85rem;
+    }
+    .member-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+
+    .quick-reactions {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 12px;
+    }
+    .quick-reactions button {
+      background: var(--surface-hover); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px; font-size: 1.1rem; cursor: pointer;
+      transition: background 0.15s;
+    }
+    .quick-reactions button:hover { background: var(--accent); }
+  </style>
+</head>
+<body>
+<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
+    <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
+    <a href="/universes" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🌌 Universes</a>
+    <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
+    <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
+    <a href="/settings" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
+    <a href="/watch-party" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">👥 Watch Party</a>
+</nav>
+
+<!-- ═══════════ LOBBY VIEW ═══════════ -->
+<div class="lobby-view" id="lobbyView">
+  <div class="container">
+    <div class="page-header">
+      <h1>👥 Watch Party</h1>
+      <p>Watch together with friends — synchronised playback, real-time chat, and Trakt check-ins.</p>
+    </div>
+
+    <div class="user-selector">
+      <label for="userSelect">👤 User:</label>
+      <select id="userSelect" onchange="switchUser()">
+        <option value="">Loading…</option>
+      </select>
+    </div>
+    <p style="color:var(--text-dim);font-size:0.75rem;margin:-14px 0 16px 0;padding-left:4px;">Select the same Emby user you're signed into on your playback device. Devices are matched by Emby username.</p>
+
+    <!-- Create / Join -->
+    <div class="grid-2">
+      <div class="card">
+        <h2>🎬 Create a Party</h2>
+        <div class="input-group">
+          <input id="createSearch" placeholder="Search your library…" onkeydown="if(event.key==='Enter')searchForParty()" />
+          <button class="btn btn-blue btn-sm" onclick="searchForParty()">Search</button>
+        </div>
+        <div id="createSearchResults" class="search-results" style="display:none;"></div>
+        <div id="createSelected" class="selected-item" style="display:none;"></div>
+        <input type="hidden" id="createItemId" />
+        <button class="btn btn-accent" onclick="createParty()" id="btnCreate">Create Party</button>
+      </div>
+
+      <div class="card">
+        <h2>🔗 Join a Party</h2>
+        <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:12px;">Enter the 6-character code shared by the host.</p>
+        <div class="input-group">
+          <input id="joinCode" placeholder="e.g. ABC123" maxlength="6" style="text-transform:uppercase;letter-spacing:2px;font-weight:600;font-size:1rem;" />
+          <button class="btn btn-green" onclick="joinParty()">Join</button>
+        </div>
+        <p style="color:var(--text-dim);font-size:0.75rem;margin-top:6px;">All participants need an Emby account on the same server. Trakt account is optional (for scrobbling).</p>
+      </div>
+    </div>
+
+    <!-- Active Parties -->
+    <div class="card">
+      <h2>🟢 Active Parties</h2>
+      <div id="activeParties">
+        <div class="empty-state">
+          <div class="icon">🍿</div>
+          <p>No active parties right now. Create one above!</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Parties -->
+    <div class="card">
+      <h2>📜 Recent Parties</h2>
+      <div id="recentParties">
+        <div class="empty-state">
+          <p style="opacity:0.5;">Loading…</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ IN-PARTY VIEW ═══════════ -->
+<div class="party-view" id="partyView">
+  <div class="party-header">
+    <div>
+      <h2>🎬 <span id="partyTitle">Loading…</span></h2>
+      <span style="font-size:0.78rem;color:var(--text-dim);">Code: <strong id="partyCodeDisplay">—</strong></span>
+    </div>
+    <div class="status">
+      <div class="status-dot"></div>
+      <span id="memberCount">0 watching</span>
+    </div>
+  </div>
+
+  <div class="party-body">
+    <div class="chat-area">
+      <!-- Playback controls -->
+      <div class="playback-bar" id="playbackBar">
+        <button class="btn btn-green btn-sm" id="btnStart" onclick="loadDevices()">▶ Start Playback</button>
+        <button class="btn btn-sm" style="background:var(--surface-hover);display:none;" id="btnPause" onclick="pauseAll()">⏸ Pause All</button>
+        <button class="btn btn-sm" style="background:var(--surface-hover);display:none;" id="btnSeek" onclick="promptSeek()">⏩ Seek All</button>
+        <button class="btn btn-red btn-sm" id="btnEnd" onclick="endParty()">⏹ End</button>
+        <span class="status-text" id="playbackStatus"></span>
+      </div>
+
+      <!-- Device picker (shown before start) -->
+      <div id="devicePicker" style="display:none; padding:12px 16px; border-bottom:1px solid var(--border); background:var(--surface);">
+        <div style="font-size:0.85rem; font-weight:600; margin-bottom:8px;">Select devices to play on:</div>
+        <div id="deviceList" style="display:flex; flex-direction:column; gap:6px; margin-bottom:10px;"></div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-green btn-sm" onclick="startOnSelected()">▶ Start on Selected</button>
+          <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="document.getElementById('devicePicker').style.display='none'">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Messages -->
+      <div class="messages" id="messageList"></div>
+
+      <!-- Chat input -->
+      <div class="chat-input">
+        <textarea id="messageInput" placeholder="Say something… (Enter to send)" rows="1"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
+        <button onclick="sendMessage()" title="Send">→</button>
+      </div>
+    </div>
+
+    <div class="party-sidebar">
+      <div style="margin-bottom:16px;">
+        <div class="sidebar-title">Watching Now</div>
+        <div id="membersList"></div>
+      </div>
+      <div>
+        <div class="sidebar-title">Quick Reactions</div>
+        <div class="quick-reactions">
+          <button onclick="sendReaction('👍')">👍</button>
+          <button onclick="sendReaction('❤️')">❤️</button>
+          <button onclick="sendReaction('😂')">😂</button>
+          <button onclick="sendReaction('🔥')">🔥</button>
+          <button onclick="sendReaction('😍')">😍</button>
+          <button onclick="sendReaction('😱')">😱</button>
+          <button onclick="sendReaction('👏')">👏</button>
+          <button onclick="sendReaction('😴')">😴</button>
+        </div>
+      </div>
+      <div style="margin-top:20px;">
+        <button class="btn btn-sm" style="background:var(--surface-hover);width:100%;" onclick="leaveParty()">← Back to Lobby</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let currentUserId = null;
+let allUsers = [];
+let socket = null;
+let partyCode = new URLSearchParams(window.location.search).get('code');
+
+// ═══════════ Init ═══════════
+
+async function init() {
+  await loadUsers();
+  if (partyCode) {
+    enterParty(partyCode);
+  } else {
+    loadActiveParties();
+    loadRecentParties();
+  }
+}
+
+async function loadUsers() {
+  try {
+    // Fetch all Emby server users (auto-creates DB records for any missing)
+    const r = await fetch(API + '/auth/emby-users');
+    allUsers = await r.json();
+    const sel = document.getElementById('userSelect');
+    sel.innerHTML = allUsers.map(u =>
+      `<option value="${u.id}">${u.emby_username || u.emby_user_id}${u.linked ? ' (Trakt ✓)' : ''}</option>`
+    ).join('');
+    const linked = allUsers.find(u => u.linked);
+    if (linked) sel.value = linked.id;
+    else if (allUsers.length) sel.value = allUsers[0].id;
+    switchUser();
+  } catch(e) { console.error('loadUsers', e); }
+}
+
+function switchUser() {
+  currentUserId = parseInt(document.getElementById('userSelect').value) || null;
+}
+
+// ═══════════ Lobby: Search & Create ═══════════
+
+async function searchForParty() {
+  const q = document.getElementById('createSearch').value.trim();
+  if (q.length < 2) return;
+  const box = document.getElementById('createSearchResults');
+  box.style.display = 'block';
+  box.innerHTML = '<div class="search-result" style="color:var(--text-dim);">Searching…</div>';
+  try {
+    const r = await fetch(API + '/api/library/search?q=' + encodeURIComponent(q));
+    const items = await r.json();
+    if (!items.length) {
+      box.innerHTML = '<div class="search-result" style="color:var(--red);">No matches</div>';
+      return;
+    }
+    box.innerHTML = items.map(i => {
+      const qual = i.quality ? ` <span style="color:var(--orange);font-size:0.75rem;font-weight:600;">${esc(i.quality)}</span>` : '';
+      return `<div class="search-result" onclick="selectCreateItem('${i.id}','${esc(i.title)}${i.quality ? ' ['+esc(i.quality)+']' : ''}')">${esc(i.title)}${i.year ? ' ('+i.year+')' : ''} — ${i.type}${qual}</div>`;
+    }).join('');
+  } catch(e) {
+    box.innerHTML = `<div class="search-result" style="color:var(--red);">${e.message}</div>`;
+  }
+}
+
+function selectCreateItem(id, title) {
+  document.getElementById('createItemId').value = id;
+  document.getElementById('createSelected').style.display = 'block';
+  document.getElementById('createSelected').textContent = '✓ ' + title;
+  document.getElementById('createSearchResults').style.display = 'none';
+}
+
+async function createParty() {
+  if (!currentUserId) return alert('Select a user first');
+  const itemId = document.getElementById('createItemId').value;
+  if (!itemId) return alert('Search and select a title first');
+  const btn = document.getElementById('btnCreate');
+  btn.disabled = true;
+  try {
+    const r = await fetch(API + '/party/create', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({host_user_id: currentUserId, emby_item_id: itemId})
+    });
+    if (!r.ok) { const d = await r.json(); throw new Error(d.detail || 'Failed'); }
+    const d = await r.json();
+    enterParty(d.code);
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+  btn.disabled = false;
+}
+
+async function joinParty() {
+  if (!currentUserId) return alert('Select a user first');
+  const code = document.getElementById('joinCode').value.trim().toUpperCase();
+  if (!code) return alert('Enter a join code');
+  try {
+    const r = await fetch(API + '/party/join', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({code, user_id: currentUserId})
+    });
+    if (!r.ok) { const d = await r.json(); throw new Error(d.detail || 'Party not found'); }
+    const d = await r.json();
+    if (d.active_sessions === 0) {
+      const name = d.emby_username || 'this user';
+      if (!confirm(`No active Emby sessions found for "${name}".\n\nMake sure the Emby app is open on your device AND you\'re signed in as "${name}" in that app.\n\nJoin anyway?`)) return;
+    }
+    enterParty(code);
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function joinFromLobby(code) {
+  if (!currentUserId) return alert('Select a user first');
+  try {
+    const r = await fetch(API + '/party/join', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({code, user_id: currentUserId})
+    });
+    if (!r.ok) { const d = await r.json(); throw new Error(d.detail || 'Failed'); }
+    const d = await r.json();
+    if (d.active_sessions === 0) {
+      const name = d.emby_username || 'this user';
+      if (!confirm(`No Emby sessions found for "${name}". Is the Emby app open and signed in as this user?\n\nJoin anyway?`)) return;
+    }
+    enterParty(code);
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+// ═══════════ Lobby: Party Lists ═══════════
+
+async function loadActiveParties() {
+  try {
+    const r = await fetch(API + '/parties');
+    const parties = await r.json();
+    const el = document.getElementById('activeParties');
+    if (!parties.length) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">🍿</div><p>No active parties right now. Create one above!</p></div>';
+      return;
+    }
+    el.innerHTML = '<div class="party-list">' + parties.map(p => {
+      const users = (p.participants && p.participants.length) ? p.participants.join(', ') : 'No participants yet';
+      return `<div class="party-item">
+        <div class="party-info">
+          <div class="party-title">${esc(p.title)}</div>
+          <div class="party-meta">${users} · Code: <strong>${p.code}</strong></div>
+        </div>
+        <span class="party-badge ${p.status}">${p.status}</span>
+        <button class="btn btn-green btn-sm" style="margin-left:12px;" onclick="joinFromLobby('${p.code}')">Join</button>
+      </div>`;
+    }).join('') + '</div>';
+  } catch(e) { console.error(e); }
+}
+
+async function loadRecentParties() {
+  try {
+    const r = await fetch(API + '/parties/recent?limit=8');
+    const parties = await r.json();
+    const el = document.getElementById('recentParties');
+    if (!parties.length) {
+      el.innerHTML = '<div class="empty-state"><p>No recent parties.</p></div>';
+      return;
+    }
+    el.innerHTML = '<div class="party-list">' + parties.map(p => {
+      const users = (p.participants && p.participants.length) ? p.participants.join(', ') : '—';
+      const when = p.ended_at ? new Date(p.ended_at).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+      return `<div class="party-item" style="opacity:0.7;">
+        <div class="party-info">
+          <div class="party-title">${esc(p.title)}</div>
+          <div class="party-meta">${users} · ${when}</div>
+        </div>
+        <span class="party-badge ended">ended</span>
+      </div>`;
+    }).join('') + '</div>';
+  } catch(e) { console.error(e); }
+}
+
+// ═══════════ Enter Party (switch views) ═══════════
+
+async function enterParty(code) {
+  partyCode = code;
+  history.replaceState(null, '', `/watch-party?code=${code}`);
+
+  // Fetch party details
+  let party;
+  try {
+    const r = await fetch(API + `/party/${code}`);
+    if (!r.ok) throw new Error('Party not found');
+    party = await r.json();
+    document.getElementById('partyTitle').textContent = party.title;
+    document.getElementById('partyCodeDisplay').textContent = code;
+  } catch(e) {
+    alert('Could not load party: ' + e.message);
+    return;
+  }
+
+  // Join if not already
+  if (currentUserId) {
+    try {
+      await fetch(API + '/party/join', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({code, user_id: currentUserId})
+      });
+    } catch(e) {}
+  }
+
+  // Switch to party view
+  document.getElementById('lobbyView').classList.add('hidden');
+  const pv = document.getElementById('partyView');
+  pv.classList.add('active');
+
+  // Restore member count
+  const members = party.participants || [];
+  document.getElementById('memberCount').textContent = members.length + ' watching';
+  const membersList = document.getElementById('membersList');
+  if (membersList) {
+    membersList.innerHTML = members.map(name =>
+      `<div class="member-item"><div class="member-dot"></div>${esc(name)}</div>`
+    ).join('');
+  }
+
+  // Restore playback controls based on party status
+  const status = party.status || 'waiting';
+  const btnStart = document.getElementById('btnStart');
+  const btnPause = document.getElementById('btnPause');
+  const btnSeek = document.getElementById('btnSeek');
+  const playbackStatus = document.getElementById('playbackStatus');
+
+  if (status === 'playing' || status === 'paused') {
+    btnStart.style.display = 'none';
+    btnPause.style.display = '';
+    btnSeek.style.display = '';
+    btnPause.textContent = status === 'paused' ? '▶ Resume' : '⏸ Pause All';
+    playbackStatus.textContent = status === 'paused' ? '⏸ Paused' : '▶ Playing';
+  } else {
+    btnStart.style.display = '';
+    btnStart.disabled = false;
+    btnStart.textContent = '▶ Start Playback';
+    btnPause.style.display = 'none';
+    btnSeek.style.display = 'none';
+    playbackStatus.textContent = '';
+  }
+
+  // Connect WebSocket
+  connectSocket(code);
+
+  addSystemMsg('Connected to watch party');
+}
+
+function leaveParty() {
+  if (socket) { socket.disconnect(); socket = null; }
+  document.getElementById('partyView').classList.remove('active');
+  document.getElementById('lobbyView').classList.remove('hidden');
+  document.getElementById('messageList').innerHTML = '';
+  history.replaceState(null, '', '/watch-party');
+  partyCode = null;
+  loadActiveParties();
+  loadRecentParties();
+}
+
+// ═══════════ Socket.IO ═══════════
+
+function connectSocket(code) {
+  if (socket) socket.disconnect();
+  socket = io({
+    path: '/ws/socket.io',
+    auth: { party_code: code, user_id: currentUserId }
+  });
+
+  socket.on('connect', () => {
+    socket.emit('join_room', { code, user_id: currentUserId });
+    addSystemMsg('🔌 WebSocket connected');
+  });
+
+  socket.on('user_joined', (d) => {
+    const name = d.username || ('User ' + d.user_id);
+    addSystemMsg(`${name} joined`);
+    // Refresh member count
+    fetch(API + `/party/${code}`).then(r => r.json()).then(p => {
+      const members = p.participants || [];
+      document.getElementById('memberCount').textContent = members.length + ' watching';
+      const membersList = document.getElementById('membersList');
+      if (membersList) {
+        membersList.innerHTML = members.map(n =>
+          `<div class="member-item"><div class="member-dot"></div>${esc(n)}</div>`
+        ).join('');
+      }
+    }).catch(() => {});
+  });
+
+  socket.on('sync_playback', (d) => {
+    const label = d.event === 'pause' ? '⏸ Paused' : d.event === 'seek' ? '⏩ Seeked' : '▶ Playing';
+    document.getElementById('playbackStatus').textContent = label;
+  });
+
+  socket.on('chat_message', (d) => addChatMsg(d));
+  socket.on('reaction', (d) => addSystemMsg(`${d.emoji}`));
+  socket.on('party_ended', () => {
+    addSystemMsg('⏹ Party ended by host');
+    document.getElementById('playbackBar').innerHTML = '<span style="padding:10px;color:var(--text-dim);">Party ended</span>';
+  });
+}
+
+// ═══════════ Playback Controls ═══════════
+
+let availableDevices = [];
+
+async function loadDevices() {
+  try {
+    const r = await fetch(API + `/party/${partyCode}/sessions`);
+    const d = await r.json();
+    if (d.status !== 'ok' || !d.devices?.length) {
+      document.getElementById('playbackStatus').textContent = 'No devices found — participants need Emby open';
+      return;
+    }
+    availableDevices = d.devices;
+    const picker = document.getElementById('devicePicker');
+    const list = document.getElementById('deviceList');
+    list.innerHTML = d.devices.map((dev, i) => `
+      <label style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:0.85rem;">
+        <input type="checkbox" checked data-sid="${dev.session_id}" style="accent-color:var(--accent);" />
+        <span style="font-weight:600;">${esc(dev.device_name)}</span>
+        <span style="color:var(--text-dim);font-size:0.78rem;">${esc(dev.client)} · ${esc(dev.user)}</span>
+        ${dev.now_playing ? `<span style="color:var(--orange);font-size:0.72rem;">▶ ${esc(dev.now_playing)}</span>` : ''}
+      </label>
+    `).join('');
+    picker.style.display = 'block';
+  } catch(e) {
+    document.getElementById('playbackStatus').textContent = e.message;
+  }
+}
+
+async function startOnSelected() {
+  const checkboxes = document.querySelectorAll('#deviceList input[type="checkbox"]:checked');
+  const sessionIds = Array.from(checkboxes).map(cb => cb.dataset.sid);
+  if (!sessionIds.length) return alert('Select at least one device');
+
+  document.getElementById('devicePicker').style.display = 'none';
+  const btn = document.getElementById('btnStart');
+  btn.disabled = true; btn.textContent = '▶ Starting…';
+
+  try {
+    const r = await fetch(API + `/party/${partyCode}/start-selected`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({session_ids: sessionIds})
+    });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      const n = d.started || 0;
+      document.getElementById('playbackStatus').textContent = `Playing on ${n} device${n!==1?'s':''}`;
+      btn.style.display = 'none';
+      document.getElementById('btnPause').style.display = '';
+      document.getElementById('btnSeek').style.display = '';
+      addSystemMsg(`▶ Playback started on ${n} device${n!==1?'s':''}`);
+      if (d.failed?.length) addSystemMsg(`⚠ ${d.failed.length} device(s) failed`);
+    } else {
+      document.getElementById('playbackStatus').textContent = d.reason || 'Failed';
+      btn.disabled = false; btn.textContent = '▶ Start Playback';
+    }
+  } catch(e) {
+    document.getElementById('playbackStatus').textContent = e.message;
+    btn.disabled = false; btn.textContent = '▶ Start Playback';
+  }
+}
+
+async function pauseAll() {
+  try {
+    const r = await fetch(API + `/party/${partyCode}/pause`, {method:'POST'});
+    const d = await r.json();
+    const btn = document.getElementById('btnPause');
+    if (d.new_status === 'paused') {
+      btn.textContent = '▶ Resume';
+      addSystemMsg('⏸ Paused for everyone');
+    } else {
+      btn.textContent = '⏸ Pause All';
+      addSystemMsg('▶ Resumed for everyone');
+    }
+    document.getElementById('playbackStatus').textContent = `${d.new_status} — ${d.toggled} device${d.toggled!==1?'s':''}`;
+  } catch(e) {}
+}
+
+function promptSeek() {
+  const input = prompt('Seek to position (e.g. 15:30 for 15 min 30 sec):');
+  if (!input) return;
+  const parts = input.split(':').map(Number);
+  let seconds = 0;
+  if (parts.length === 3) seconds = parts[0]*3600 + parts[1]*60 + parts[2];
+  else if (parts.length === 2) seconds = parts[0]*60 + parts[1];
+  else seconds = parts[0];
+  if (isNaN(seconds) || seconds < 0) return alert('Invalid time format');
+  seekAll(seconds * 10000000); // Emby uses ticks (100ns units)
+}
+
+async function seekAll(positionTicks) {
+  try {
+    const r = await fetch(API + `/party/${partyCode}/seek`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({position_ticks: positionTicks})
+    });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      const secs = Math.floor(positionTicks / 10000000);
+      const mm = Math.floor(secs/60).toString().padStart(2,'0');
+      const ss = (secs%60).toString().padStart(2,'0');
+      addSystemMsg(`⏩ Seeked all to ${mm}:${ss}`);
+      // Notify via WebSocket too
+      socket?.emit('playback_event', {code: partyCode, event: 'seek', position_ticks: positionTicks});
+    }
+  } catch(e) {}
+}
+
+async function endParty() {
+  if (!confirm('End the watch party for everyone?')) return;
+  try {
+    await fetch(API + `/party/${partyCode}/end`, {method:'POST'});
+    addSystemMsg('⏹ Party ended');
+    document.getElementById('playbackBar').innerHTML = '<span style="padding:10px;color:var(--text-dim);">Party ended</span>';
+  } catch(e) {}
+}
+
+// ═══════════ Chat ═══════════
+
+function sendMessage() {
+  const el = document.getElementById('messageInput');
+  const text = el.value.trim();
+  if (!text || !socket) return;
+  const user = allUsers.find(u => u.id === currentUserId);
+  const username = user?.emby_username || user?.trakt_username || 'You';
+  socket.emit('chat_message', {code: partyCode, user_id: currentUserId, text, username});
+  addChatMsg({user_id: currentUserId, username, text, own: true});
+  el.value = '';
+}
+
+function sendReaction(emoji) {
+  if (!socket) return;
+  socket.emit('reaction', {code: partyCode, user_id: currentUserId, emoji});
+  addSystemMsg(emoji);
+}
+
+function addChatMsg(m) {
+  const list = document.getElementById('messageList');
+  const isOwn = m.own || m.user_id === currentUserId;
+  const div = document.createElement('div');
+  div.className = 'message' + (isOwn ? ' own' : '');
+  div.innerHTML = `
+    ${!isOwn ? `<div class="avatar">${(m.username||'?').charAt(0).toUpperCase()}</div>` : ''}
+    <div class="msg-body">
+      ${!isOwn ? `<div class="msg-name">${esc(m.username||'?')}</div>` : ''}
+      <div class="bubble">${esc(m.text)}</div>
+    </div>`;
+  list.appendChild(div);
+  list.scrollTop = list.scrollHeight;
+}
+
+function addSystemMsg(text) {
+  const list = document.getElementById('messageList');
+  const div = document.createElement('div');
+  div.className = 'message system';
+  div.innerHTML = `<span>${text}</span>`;
+  list.appendChild(div);
+  list.scrollTop = list.scrollHeight;
+}
+
+// ═══════════ Util ═══════════
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s||''; return d.innerHTML; }
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rating Predictions - Emby-Trakt Suite</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface-hover: #22263a;
+      --border: #2a2e3e;
+      --text: #e0e0e6;
+      --text-dim: #8b8fa3;
+      --accent: #6c5ce7;
+      --accent-light: #a29bfe;
+      --green: #00b894;
+      --orange: #fdcb6e;
+      --red: #e17055;
+      --blue: #74b9ff;
+      --radius: 10px;
+      --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    .header {
+      padding: 28px 32px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      justify-content: space-between;
+    }
+
+    .header h1 { font-size: 1.5rem; font-weight: 700; }
+
+    .container { max-width: 1400px; margin: 0 auto; padding: 28px 32px; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      color: #fff;
+    }
+
+    .btn-blue { background: var(--blue); color: var(--bg); }
+    .btn:hover { opacity: 0.85; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+      gap: 20px;
+      margin-bottom: 32px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+    }
+
+    .card h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+
+    .chart-container {
+      height: 300px;
+      position: relative;
+      margin-bottom: 16px;
+    }
+
+    /* Prediction card in list */
+    .predictions-list {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-top: 24px;
+    }
+    @media (max-width: 1100px) {
+      .predictions-list { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 720px) {
+      .predictions-list { grid-template-columns: 1fr; }
+    }
+
+    .prediction-card {
+      background: var(--surface-hover);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      transition: all 0.2s;
+    }
+
+    .prediction-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .prediction-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      margin-bottom: 12px;
+    }
+
+    .prediction-title {
+      font-weight: 600;
+      flex: 1;
+    }
+
+    .prediction-score {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 4px;
+    }
+
+    .rating-big {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    .confidence {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+
+    .confidence.high { background: rgba(0, 184, 148, 0.2); color: var(--green); }
+    .confidence.medium { background: rgba(253, 203, 110, 0.2); color: var(--orange); }
+    .confidence.low { background: rgba(225, 112, 85, 0.2); color: var(--red); }
+
+    .reasons {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      line-height: 1.4;
+    }
+
+    .reason {
+      padding: 4px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .reason:last-child { border-bottom: none; }
+
+    .reason-icon { margin-right: 4px; }
+
+    /* Insights section */
+    .insights {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+
+    .insight-card {
+      background: var(--surface-hover);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .insight-label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .insight-value {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    .insight-desc {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      margin-top: 6px;
+    }
+
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+      color: var(--text-dim);
+      font-size: 0.9rem;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 8px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .tabs {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .tab {
+      padding: 8px 16px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-dim);
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
+    <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
+    <a href="/universes" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🌌 Universes</a>
+    <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">🤖 Predictions</a>
+    <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
+    <a href="/settings" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
+    <a href="/watch-party" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
+</nav>
+
+  <div class="header">
+    <h1>🤖 ML Rating Predictions</h1>
+    <button class="btn btn-blue" id="retrainBtn">🔄 Retrain Model</button>
+  </div>
+
+  <div class="container">
+    <div class="grid">
+      <div class="card">
+        <h2>Rating Distribution</h2>
+        <div class="chart-container">
+          <canvas id="histogramChart"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Model Insights</h2>
+        <div id="modelStats">
+          <div class="loading">
+            <div class="spinner"></div>
+            Loading...
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="top-predictions">Top Predictions</button>
+      <button class="tab" data-tab="insights">Genre Insights</button>
+    </div>
+
+    <div id="topPredictions" class="predictions-list">
+      <div class="loading">
+        <div class="spinner"></div>
+        Loading predictions...
+      </div>
+    </div>
+
+    <div id="insights" class="insights" style="display: none;">
+      <div class="loading">
+        <div class="spinner"></div>
+        Loading insights...
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let allPredictions = [];
+    let modelInfo = null;
+    let histogramChart = null;
+
+    async function init() {
+      await loadPredictions();
+      await loadModelInfo();
+      setupEventListeners();
+    }
+
+    async function loadPredictions() {
+      try {
+        const userId = getCurrentUserId(); // Defined in main dashboard
+        const response = await fetch(`/ml/predictions/${userId}?limit=100`);
+        if (!response.ok) throw new Error('Failed to load predictions');
+        allPredictions = await response.json();
+        renderHistogram();
+        renderTopPredictions();
+      } catch (error) {
+        console.error('Error loading predictions:', error);
+        document.getElementById('topPredictions').innerHTML = 
+          `<p style="color: var(--red);">Error loading predictions: ${error.message}</p>`;
+      }
+    }
+
+    async function loadModelInfo() {
+      try {
+        const userId = getCurrentUserId();
+        const response = await fetch(`/ml/model/${userId}`);
+        if (!response.ok) throw new Error('Failed to load model info');
+        modelInfo = await response.json();
+        if (modelInfo.status === 'no_model') {
+          document.getElementById('modelStats').innerHTML =
+            '<p style="color: var(--text-dim);">No model trained yet. Click Retrain Model to train on your Trakt ratings.</p>';
+          document.getElementById('insights').innerHTML =
+            '<p style="color: var(--text-dim);">Insights appear after the model is trained.</p>';
+          return;
+        }
+        renderModelStats();
+        renderInsights();
+      } catch (error) {
+        console.error('Error loading model info:', error);
+        document.getElementById('modelStats').innerHTML = 
+          `<p style="color: var(--red);">Error loading model info</p>`;
+      }
+    }
+
+    function setupEventListeners() {
+      document.getElementById('retrainBtn').addEventListener('click', async () => {
+        const btn = document.getElementById('retrainBtn');
+        btn.disabled = true;
+        btn.textContent = '🔄 Training...';
+        
+        try {
+          const userId = getCurrentUserId();
+          const response = await fetch(`/ml/train/${userId}`, { method: 'POST' });
+          if (response.ok) {
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for training
+            await Promise.all([loadPredictions(), loadModelInfo()]);
+            showNotification('Model trained successfully!', 'success');
+          }
+        } catch (error) {
+          console.error('Training error:', error);
+          showNotification('Error training model', 'error');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = '🔄 Retrain Model';
+        }
+      });
+
+      // Tab switching
+      document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', (e) => {
+          const tabName = e.target.dataset.tab;
+          document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+          e.target.classList.add('active');
+
+          document.getElementById('topPredictions').style.display = tabName === 'top-predictions' ? 'grid' : 'none';
+          document.getElementById('insights').style.display = tabName === 'insights' ? 'grid' : 'none';
+        });
+      });
+    }
+
+    function renderHistogram() {
+      if (!allPredictions.length) return;
+
+      const ctx = document.getElementById('histogramChart').getContext('2d');
+
+      // Bucket predictions into rating ranges
+      const buckets = {
+        '5-6': 0, '6-7': 0, '7-8': 0, '8-9': 0, '9-10': 0
+      };
+      const colors = {
+        '5-6': '#e17055', '6-7': '#fdcb6e', '7-8': '#74b9ff', 
+        '8-9': '#6c5ce7', '9-10': '#00b894'
+      };
+
+      allPredictions.forEach(p => {
+        const rating = p.predicted_rating || 0;
+        if (rating < 6) buckets['5-6']++;
+        else if (rating < 7) buckets['6-7']++;
+        else if (rating < 8) buckets['7-8']++;
+        else if (rating < 9) buckets['8-9']++;
+        else buckets['9-10']++;
+      });
+
+      if (histogramChart) histogramChart.destroy();
+
+      histogramChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: Object.keys(buckets),
+          datasets: [{
+            label: 'Items in Rating Range',
+            data: Object.values(buckets),
+            backgroundColor: Object.values(colors),
+            borderRadius: 6,
+            borderSkipped: false,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: '#1a1d27',
+              titleColor: '#e0e0e6',
+              bodyColor: '#8b8fa3',
+              borderColor: '#2a2e3e',
+              borderWidth: 1,
+              padding: 12,
+              cornerRadius: 6,
+              displayColors: false,
+            }
+          },
+          scales: {
+            y: {
+              ticks: { color: '#8b8fa3' },
+              grid: { color: '#2a2e3e', drawBorder: false },
+            },
+            x: {
+              ticks: { color: '#8b8fa3' },
+              grid: { display: false },
+            }
+          }
+        }
+      });
+    }
+
+    function renderModelStats() {
+      if (!modelInfo) return;
+
+      const html = `
+        <div class="insight-card">
+          <div class="insight-label">Typical Error</div>
+          <div class="insight-value">${modelInfo.mae != null ? '±' + modelInfo.mae.toFixed(1) : '—'}</div>
+          <div class="insight-desc">Average prediction error (out of 10) — shrinks as you rate more on Trakt</div>
+        </div>
+
+        <div class="insight-card">
+          <div class="insight-label">Training Data</div>
+          <div class="insight-value">${modelInfo.training_samples}</div>
+          <div class="insight-desc">Rated items used</div>
+        </div>
+
+        <div class="insight-card">
+          <div class="insight-label">Last Trained</div>
+          <div class="insight-value">${formatDate(modelInfo.trained_at)}</div>
+          <div class="insight-desc">${getRelativeTime(modelInfo.trained_at)}</div>
+        </div>
+
+        <div class="insight-card">
+          <div class="insight-label">Feature Count</div>
+          <div class="insight-value">${modelInfo.feature_count ?? '—'}</div>
+          <div class="insight-desc">Genres, actors, directors, studios</div>
+        </div>
+      `;
+
+      document.getElementById('modelStats').innerHTML = html;
+    }
+
+    function renderInsights() {
+      if (!modelInfo || !modelInfo.genre_insights) {
+        document.getElementById('insights').innerHTML = '<p>No genre insights available</p>';
+        return;
+      }
+
+      const insights = modelInfo.genre_insights;
+      const html = Object.entries(insights).map(([genre, data]) => `
+        <div class="insight-card">
+          <div class="insight-label">${genre}</div>
+          <div class="insight-value">+${data.delta.toFixed(2)}</div>
+          <div class="insight-desc">
+            Your avg: ${data.user_avg.toFixed(1)} vs Trakt: ${data.trakt_avg.toFixed(1)}
+          </div>
+        </div>
+      `).join('');
+
+      document.getElementById('insights').innerHTML = html;
+    }
+
+    function renderTopPredictions() {
+      if (!allPredictions.length) {
+        document.getElementById('topPredictions').innerHTML = 
+          '<p style="color: var(--text-dim);">No predictions available. Train model first.</p>';
+        return;
+      }
+
+      const sorted = allPredictions.sort((a, b) =>
+        (b.predicted_rating - a.predicted_rating) ||
+        ((b.confidence ?? 0) - (a.confidence ?? 0)) ||
+        String(a.title || '').localeCompare(String(b.title || ''))
+      ).slice(0, 12);
+
+      const html = sorted.map(p => {
+        const confidence = getConfidenceLevel(p.confidence);
+        const reasons = p.explanation
+          ? String(p.explanation).replace(/^Based on\s*/i, '').split(';').map(s => s.trim()).filter(Boolean).slice(0, 3)
+          : [];
+
+        return `
+          <div class="prediction-card">
+            <div class="prediction-header">
+              <div class="prediction-title">${escapeHtml(p.title || '')}</div>
+              <div class="prediction-score">
+                <div class="rating-big">${p.predicted_rating.toFixed(1)}</div>
+                <span class="confidence ${confidence}">${confidence}</span>
+              </div>
+            </div>
+
+            <div class="reasons">
+              ${reasons.map(r => `
+                <div class="reason">
+                  <span class="reason-icon">•</span>
+                  ${escapeHtml(r)}
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      document.getElementById('topPredictions').innerHTML = html;
+    }
+
+    function getConfidenceLevel(confidence) {
+      if (confidence >= 0.8) return 'high';
+      if (confidence >= 0.5) return 'medium';
+      return 'low';
+    }
+
+    function formatDate(dateStr) {
+      if (!dateStr) return 'Never';
+      const date = new Date(dateStr);
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+
+    function getRelativeTime(dateStr) {
+      if (!dateStr) return '';
+      const date = new Date(dateStr);
+      const now = new Date();
+      const seconds = (now - date) / 1000;
+
+      if (seconds < 60) return 'just now';
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `${hours}h ago`;
+      const days = Math.floor(hours / 24);
+      return `${days}d ago`;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function getCurrentUserId() {
+      // This should be defined from main dashboard context or in sessionStorage
+      return sessionStorage.getItem('currentUserId') || '1';
+    }
+
+    function showNotification(message, type) {
+      console.log(`[${type}] ${message}`); // Replace with toast notification
+    }
+
+    init();
+  </script>
+</body>
+</html>
