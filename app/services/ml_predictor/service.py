@@ -5,10 +5,10 @@
    - Genres (one-hot, 21 genres)
    - Year, decade, runtime
    - Item type (movie/show)
-   - Actors (top-N frequent from user's history, one-hot)    ← Phase 2
-   - Directors (top-N frequent, one-hot)                      ← Phase 2
-   - Studios/Networks (top-N frequent, one-hot)               ← Phase 2
-   - Trakt community rating                                   ← Phase 2
+   - Actors (top-N frequent from user's history, one-hot)
+   - Directors (top-N frequent, one-hot)
+   - Studios/Networks (top-N frequent, one-hot)
+   - Trakt community rating
 3. Trains a gradient-boosted regressor per user
 4. Predicts ratings for every unwatched item in Emby library
 5. Stores predictions + confidence + human-readable explanations
@@ -119,7 +119,7 @@ class MLPredictorService:
 
     async def train_for_user(self, user: User) -> dict:
         """Full pipeline: fetch → cache → featurize → train → predict → persist."""
-        # Phase 1: Token refresh callback
+        # Token refresh callback
         async def on_token_refresh(access, refresh, expires):
             async with async_session() as db:
                 u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
@@ -292,7 +292,7 @@ class MLPredictorService:
         return rows
 
     # -----------------------------------------------------------------------
-    # Phase 2: Enrich with Emby metadata (actors, directors, studios)
+    # Enrich with Emby metadata (actors, directors, studios)
     # -----------------------------------------------------------------------
 
     async def _enrich_with_emby(self, ratings: list[dict]) -> list[dict]:
@@ -377,7 +377,7 @@ class MLPredictorService:
         )
 
     # -----------------------------------------------------------------------
-    # Feature engineering (Phase 2: enriched)
+    # Feature engineering
     # -----------------------------------------------------------------------
 
     def _build_dataframe(self, ratings: list[dict]) -> pd.DataFrame:
@@ -399,10 +399,10 @@ class MLPredictorService:
         )
         genre_df = pd.DataFrame(genre_matrix, columns=[f"genre_{g}" for g in ALL_GENRES])
 
-        # Numeric features (Phase 2: added community_rating)
+        # Numeric features
         numeric = df[["year", "runtime", "decade", "is_movie", "community_rating"]].reset_index(drop=True)
 
-        # Phase 2: Actor one-hot
+        # Actor one-hot
         actor_cols = []
         for actor_name in self._top_actors:
             col_name = f"actor_{actor_name.replace(' ', '_').lower()}"
@@ -411,7 +411,7 @@ class MLPredictorService:
             ).reset_index(drop=True)
             actor_cols.append(col_values.rename(col_name))
 
-        # Phase 2: Director one-hot
+        # Director one-hot
         director_cols = []
         for dir_name in self._top_directors:
             col_name = f"director_{dir_name.replace(' ', '_').lower()}"
@@ -420,7 +420,7 @@ class MLPredictorService:
             ).reset_index(drop=True)
             director_cols.append(col_values.rename(col_name))
 
-        # Phase 2: Studio one-hot
+        # Studio one-hot
         studio_cols = []
         for studio_name in self._top_studios:
             col_name = f"studio_{studio_name.replace(' ', '_').lower()}"
@@ -470,6 +470,14 @@ class MLPredictorService:
         series = await self.emby.get_all_series(user_id=user.emby_user_id)
         all_items = movies + series
 
+        # Global feature importances from the trained model — used so each
+        # item's explanation reflects what this user's model actually learned
+        # matters, instead of always listing the same fixed metadata fields.
+        try:
+            importances = pipeline.named_steps["model"].feature_importances_
+        except Exception:
+            importances = np.zeros(len(feature_names))
+
         predictions = []
         for item in all_items:
             if item.get("UserData", {}).get("Played", False):
@@ -482,7 +490,7 @@ class MLPredictorService:
             pred = pipeline.predict([features])[0]
             pred = max(1.0, min(10.0, pred))
 
-            explanation = self._explain(item, pred)
+            explanation = self._explain(item, pred, features, importances, feature_names)
 
             predictions.append({
                 "emby_item_id": item["Id"],
@@ -524,7 +532,7 @@ class MLPredictorService:
 
             numeric = np.array([year, runtime, decade, is_movie, community_rating], dtype=float)
 
-            # Phase 2: People features
+            # People features
             people = item.get("People", [])
             actors = [p.get("Name", "") for p in people if p.get("Type") == "Actor"]
             directors = [p.get("Name", "") for p in people if p.get("Type") == "Director"]
@@ -564,32 +572,61 @@ class MLPredictorService:
             pass
         return 0.5
 
-    def _explain(self, item: dict, predicted: float) -> str:
-        """Human-readable explanation of the prediction."""
+    def _explain(
+        self,
+        item: dict,
+        predicted: float,
+        features: np.ndarray | None = None,
+        importances: np.ndarray | None = None,
+        feature_names: list[str] | None = None,
+    ) -> str:
+        """Human-readable explanation of the prediction.
+
+        Ranks this item's *active* categorical features (genre/actor/director/
+        studio one-hot columns that are actually set to 1 for this item) by
+        the trained model's global feature_importances_, so the explanation
+        names the factors this user's model has actually learned to weight
+        heavily — rather than always reciting the same fixed metadata fields
+        regardless of whether they influenced the score.
+        """
+        reasons: list[tuple[float, str]] = []
+
+        if features is not None and importances is not None and feature_names is not None \
+                and len(features) == len(importances) == len(feature_names):
+            for name, value, importance in zip(feature_names, features, importances):
+                if value <= 0 or importance <= 0:
+                    continue
+                if name.startswith("genre_"):
+                    label = f"the {name[len('genre_'):].replace('-', ' ')} genre"
+                elif name.startswith("actor_"):
+                    label = f"actor {name[len('actor_'):].replace('_', ' ').title()}"
+                elif name.startswith("director_"):
+                    label = f"director {name[len('director_'):].replace('_', ' ').title()}"
+                elif name.startswith("studio_"):
+                    label = f"studio {name[len('studio_'):].replace('_', ' ').title()}"
+                else:
+                    continue  # numeric features (year/runtime/decade/community) handled separately below
+                reasons.append((float(importance), label))
+
+        reasons.sort(key=lambda r: r[0], reverse=True)
+        top_reasons = [label for _, label in reasons[:3]]
+
         parts = []
-        genres = item.get("Genres", [])
-        year = item.get("ProductionYear")
-        people = item.get("People", [])
-
-        if genres:
-            parts.append(f"genres: {', '.join(genres[:3])}")
-        if year:
-            parts.append(f"year: {year}")
-
-        # Phase 2: mention actors/directors if they're in user's top list
-        actors = [p.get("Name") for p in people if p.get("Type") == "Actor"]
-        known_actors = [a for a in actors if a in self._top_actors][:2]
-        if known_actors:
-            parts.append(f"actors you know: {', '.join(known_actors)}")
-
-        directors = [p.get("Name") for p in people if p.get("Type") == "Director"]
-        known_directors = [d for d in directors if d in self._top_directors]
-        if known_directors:
-            parts.append(f"directed by {', '.join(known_directors)}")
+        if top_reasons:
+            parts.append(f"driven mostly by {', '.join(top_reasons)}")
+        else:
+            # Fallback when nothing scored (e.g. cold-start model, no matched people/genres)
+            genres = item.get("Genres", [])
+            if genres:
+                parts.append(f"genres: {', '.join(genres[:3])}")
 
         community = item.get("CommunityRating")
         if community:
-            parts.append(f"community: {community:.1f}/10")
+            parts.append(f"community rating {community:.1f}/10")
+
+        year = item.get("ProductionYear")
+        if year:
+            parts.append(f"released {year}")
 
         parts.append(f"predicted {predicted:.1f}/10")
         return f"Based on {'; '.join(parts)}"

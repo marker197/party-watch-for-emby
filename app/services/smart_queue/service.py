@@ -6,7 +6,7 @@ Daily task that:
 3. Scores & ranks items using learned weights from feedback
 4. Creates / updates Emby collections
 
-Phase 2: Feedback loop tracks which recommendations get played and
+Feedback loop tracks which recommendations get played and
 adjusts source weights per-user over time.
 """
 
@@ -34,9 +34,17 @@ log = structlog.get_logger()
 DEFAULT_WEIGHTS = {
     "watchlist": 10.0,
     "trending": 6.0,
+    "recommended": 8.0,
     "friend": 8.0,
     "calendar": 7.0,
     "affinity": 5.0,
+}
+
+# Source quotas for the 20-item queue
+SOURCE_QUOTAS = {
+    "watchlist": 10,
+    "trending": 5,
+    "recommended": 5,
 }
 
 
@@ -61,7 +69,7 @@ class SmartQueueService:
         log.info("smart_queue.run_complete", users_processed=len(users))
 
     async def _update_user_queue(self, user: User):
-        # Phase 1: Token refresh callback
+        # Token refresh callback
         async def on_token_refresh(access, refresh, expires):
             async with async_session() as db:
                 u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
@@ -83,16 +91,51 @@ class SmartQueueService:
                 log.warning("smart_queue.rate_limit_low", remaining=info["remaining"])
                 return
 
+            # Prune MOVIE items already in Trakt watched history
+            # Shows are NOT filtered here — they use Emby episode awareness instead
+            watched_movie_ids = await self._get_watched_trakt_ids(trakt)
+
             candidates = await self._gather_candidates(trakt, user)
 
-            # Phase 2: Load learned weights
+            # Filter out already-watched movies (shows skip this filter)
+            before = len(candidates)
+            filtered = []
+            for c in candidates:
+                tid = str(c.get("trakt_id", ""))
+                if tid and tid in watched_movie_ids and c.get("item_type") == "movie":
+                    log.debug("smart_queue.candidate_filtered",
+                              title=c.get("title"), trakt_id=tid, source=c.get("source"))
+                else:
+                    filtered.append(c)
+            candidates = filtered
+            if before != len(candidates):
+                log.info("smart_queue.filtered_watched",
+                         user_id=user.id, removed=before - len(candidates),
+                         watched_set_size=len(watched_movie_ids))
+
+            # Pre-resolve Emby IDs and check played status
+            candidates = await self._resolve_and_filter_played(candidates, user)
+
+            # Load learned weights
             weights = await self._load_weights(user.id)
             scored = self._score_candidates(candidates, weights)
-            top = sorted(scored, key=lambda c: c["score"], reverse=True)[:30]
 
-            await self._persist_queue(user, top)
-            await self._sync_emby_collection(user, top)
-            log.info("smart_queue.user_done", user=user.emby_username, items=len(top))
+            # Source-stratified selection: 10 watchlist, 5 trending, 5 recommended
+            top = self._stratified_select(scored)
+
+            # Remaining candidates (not selected) become overflow for backfill
+            top_ids = {c["trakt_id"] for c in top}
+            leftover = sorted(
+                [c for c in scored if c["trakt_id"] not in top_ids],
+                key=lambda c: c["score"], reverse=True,
+            )
+            overflow = leftover[:30]
+            await self._cache_overflow(user.id, overflow)
+
+            resolved_ids = await self._persist_queue(user, top)
+            await self._sync_emby_collection(user, top, resolved_ids)
+            log.info("smart_queue.user_done", user=user.emby_username,
+                     items=len(top), overflow=len(overflow))
         finally:
             await trakt.close()
 
@@ -121,7 +164,7 @@ class SmartQueueService:
 
         # 2. Trending shows + movies
         for kind in ("shows", "movies"):
-            trending = await trakt.get_trending(kind=kind, limit=30)
+            trending = await trakt.get_trending(kind=kind, limit=15)
             for rank, entry in enumerate(trending):
                 item = entry.get("movie") or entry.get("show") or {}
                 tid = str(item.get("ids", {}).get("trakt", ""))
@@ -133,11 +176,32 @@ class SmartQueueService:
                         "item_type": "movie" if kind == "movies" else "show",
                         "ids": item.get("ids", {}),
                         "source": "trending",
-                        "source_score": 1.0 - rank / 30,
+                        "source_score": 1.0 - rank / 15,
                         "trending_rank": rank + 1,
                     }
 
-        # 3. Calendar (upcoming episodes for shows user follows)
+        # 3. Recommended (personalised based on user's Trakt ratings)
+        for kind in ("shows", "movies"):
+            try:
+                recs = await trakt.get_recommended(kind=kind, limit=15)
+                for rank, entry in enumerate(recs):
+                    # Recommended endpoint returns items directly (not wrapped)
+                    item = entry.get("movie") or entry.get("show") or entry
+                    tid = str(item.get("ids", {}).get("trakt", ""))
+                    if tid and tid not in candidates:
+                        candidates[tid] = {
+                            "trakt_id": tid,
+                            "title": item.get("title", ""),
+                            "year": item.get("year"),
+                            "item_type": "movie" if kind == "movies" else "show",
+                            "ids": item.get("ids", {}),
+                            "source": "recommended",
+                            "source_score": 1.0 - rank / 15,
+                        }
+            except Exception:
+                log.warning("smart_queue.recommended_skip", kind=kind)
+
+        # 4. Calendar (upcoming episodes for shows user follows)
         try:
             today = datetime.utcnow().strftime("%Y-%m-%d")
             calendar = await trakt.get_my_shows(start_date=today, days=14)
@@ -158,7 +222,7 @@ class SmartQueueService:
         except Exception:
             log.warning("smart_queue.calendar_skip", reason="calendar fetch failed")
 
-        # 4. Friends' highly rated
+        # 5. Friends' highly rated
         try:
             friends = await trakt.get_friends()
             for friend in friends[:10]:
@@ -221,7 +285,63 @@ class SmartQueueService:
         return candidates
 
     # -----------------------------------------------------------------------
-    # Match candidates to Emby library using LibraryCache (Phase 1)
+    # Stratified source selection
+    # -----------------------------------------------------------------------
+
+    def _stratified_select(self, candidates: list[dict]) -> list[dict]:
+        """Select top items per source quota, then fill any shortfalls.
+
+        Quotas: 10 watchlist, 5 trending, 5 recommended = 20 items.
+        Calendar, friend, and affinity items count toward their closest
+        quota bucket (calendar/friend fill watchlist slots, etc.).
+        If a source doesn't have enough candidates, remaining slots
+        are filled from any source by score.
+        """
+        # Group by source, sorted by score within each group
+        by_source: dict[str, list[dict]] = {}
+        for c in candidates:
+            by_source.setdefault(c.get("source", "watchlist"), []).append(c)
+        for lst in by_source.values():
+            lst.sort(key=lambda c: c["score"], reverse=True)
+
+        selected: list[dict] = []
+        used_ids: set[str] = set()
+
+        # Fill each quota bucket
+        for source, quota in SOURCE_QUOTAS.items():
+            pool = by_source.get(source, [])
+            count = 0
+            for c in pool:
+                if count >= quota:
+                    break
+                if c["trakt_id"] not in used_ids:
+                    selected.append(c)
+                    used_ids.add(c["trakt_id"])
+                    count += 1
+
+        target = sum(SOURCE_QUOTAS.values())  # 20
+
+        # Fill remaining slots from any source by score (calendar, friend, etc.)
+        if len(selected) < target:
+            all_sorted = sorted(candidates, key=lambda c: c["score"], reverse=True)
+            for c in all_sorted:
+                if len(selected) >= target:
+                    break
+                if c["trakt_id"] not in used_ids:
+                    selected.append(c)
+                    used_ids.add(c["trakt_id"])
+
+        # Final sort by score for display order
+        selected.sort(key=lambda c: c["score"], reverse=True)
+
+        log.info("smart_queue.stratified_select",
+                 total=len(selected),
+                 sources={s: sum(1 for c in selected if c.get("source") == s)
+                          for s in set(c.get("source", "") for c in selected)})
+        return selected
+
+    # -----------------------------------------------------------------------
+    # Match candidates to Emby library using LibraryCache
     # -----------------------------------------------------------------------
 
     async def _find_in_emby(self, candidate: dict) -> str | None:
@@ -258,13 +378,27 @@ class SmartQueueService:
     # Persist queue to database
     # -----------------------------------------------------------------------
 
-    async def _persist_queue(self, user: User, items: list[dict]):
+    async def _persist_queue(self, user: User, items: list[dict]) -> dict[int, str]:
+        """Persist queue to DB. Returns {list_index: emby_id} for resolved items.
+
+        Uses pre-resolved Emby IDs from _resolve_and_filter_played when
+        available (stored as _resolved_emby_id on each candidate dict).
+        Falls back to _find_in_emby for items without a pre-resolved ID.
+
+        Items not found in Emby are still persisted with in_library=False
+        so they can be shown in the UI with a 'Send to Radarr/Sonarr' option.
+        """
+        resolved: dict[int, str] = {}
         async with async_session() as db:
             await db.execute(delete(QueueItem).where(QueueItem.user_id == user.id))
-            for item in items:
-                emby_id = await self._find_in_emby(item)
-                if not emby_id:
-                    continue
+            for idx, item in enumerate(items):
+                # Use pre-resolved ID if available, otherwise look up
+                emby_id = item.get("_resolved_emby_id") or await self._find_in_emby(item)
+                in_library = emby_id is not None
+
+                if in_library:
+                    resolved[idx] = emby_id
+
                 db.add(QueueItem(
                     user_id=user.id,
                     emby_item_id=emby_id,
@@ -275,29 +409,44 @@ class SmartQueueService:
                     trakt_trending_rank=item.get("trending_rank"),
                     trakt_rating=item.get("friend_rating"),
                     metadata_json=item,
+                    in_library=in_library,
                 ))
             await db.commit()
+
+        in_lib = len(resolved)
+        missing = len(items) - in_lib
+        log.info("smart_queue.persisted", user_id=user.id,
+                 total=len(items), in_library=in_lib, missing=missing)
+        return resolved
 
     # -----------------------------------------------------------------------
     # Sync to Emby collection
     # -----------------------------------------------------------------------
 
-    async def _sync_emby_collection(self, user: User, items: list[dict]):
-        emby_ids = []
-        for item in items:
-            eid = await self._find_in_emby(item)
-            if eid:
-                emby_ids.append(eid)
+    async def _sync_emby_collection(self, user: User, items: list[dict], resolved_ids: dict[int, str]):
+        """Sync the queue to an Emby playlist.
+
+        Uses Series-level Emby IDs for TV shows (not individual episodes).
+        The _find_in_emby lookup already resolves to Series type, but this
+        is the contract: the playlist contains show-level and movie-level items.
+        """
+        emby_ids = [resolved_ids[idx] for idx in sorted(resolved_ids)]
 
         if emby_ids:
             # Use playlists (preserves insertion order) instead of collections
             await self.emby.recreate_playlist(
                 "🎯 Smart Up Next", emby_ids, user_id=user.emby_user_id,
             )
-            log.info("smart_queue.playlist_synced", count=len(emby_ids))
+            # Log what was added
+            type_counts = {}
+            for idx in sorted(resolved_ids):
+                itype = items[idx].get("item_type", "unknown")
+                type_counts[itype] = type_counts.get(itype, 0) + 1
+            log.info("smart_queue.playlist_synced",
+                     count=len(emby_ids), types=type_counts)
 
     # ===================================================================
-    # PHASE 2: Feedback Loop — learned weights
+    # Feedback Loop — learned weights
     # ===================================================================
 
     async def _load_weights(self, user_id: int) -> dict:
@@ -399,4 +548,309 @@ class SmartQueueService:
             )
 
         # Persist updated weights
-        await cache_set(f"queue_weights:{user_id}", json.dumps(weights), ttl=86400 * 365)
+        await cache_set(f"queue_weights:{user_id}", weights, ttl=86400 * 365)
+
+    # ===================================================================
+    # Overflow cache — pre-scored backfill candidates
+    # ===================================================================
+
+    async def _cache_overflow(self, user_id: int, items: list[dict]):
+        """Cache overflow candidates (ranked 31-60) for real-time backfill."""
+        # Pre-resolve Emby IDs so backfill doesn't need to search later
+        resolved = []
+        for item in items:
+            emby_id = await self._find_in_emby(item)
+            if emby_id:
+                item["_emby_id"] = emby_id
+                resolved.append(item)
+        if resolved:
+            await cache_set(f"queue_overflow:{user_id}", json.dumps(resolved), ttl=86400)
+            log.info("smart_queue.overflow_cached", user_id=user_id, count=len(resolved))
+
+    async def _pop_best_overflow(self, user_id: int, min_score: float) -> dict | None:
+        """Pop the highest-scoring overflow item that beats min_score."""
+        raw = await cache_get(f"queue_overflow:{user_id}")
+        if not raw:
+            return None
+        items = json.loads(raw) if isinstance(raw, str) else raw
+        if not items:
+            return None
+
+        # Already sorted by score descending from the full run
+        best = items[0]
+        if best.get("score", 0) >= min_score:
+            # Remove it from overflow
+            items.pop(0)
+            await cache_set(f"queue_overflow:{user_id}", json.dumps(items), ttl=86400)
+            return best
+        return None
+
+    # ===================================================================
+    # Real-time backfill — called from webhook on watched event
+    # ===================================================================
+
+    async def remove_and_backfill(self, user_id: int, emby_item_id: str):
+        """Remove a watched item from the queue and backfill with the next best candidate.
+
+        Called from the webhook handler after record_play.
+        Steps:
+          1. Delete the watched QueueItem row
+          2. Try overflow pool first (pre-scored, no API calls)
+          3. If overflow is empty or too low-scoring, pull fresh trending
+          4. Re-sync the Emby playlist
+        """
+        async with async_session() as db:
+            # Delete the watched item
+            watched = (await db.execute(
+                select(QueueItem).where(
+                    QueueItem.user_id == user_id,
+                    QueueItem.emby_item_id == emby_item_id,
+                )
+            )).scalar_one_or_none()
+
+            if not watched:
+                return  # not in queue, nothing to do
+
+            watched_title = watched.title
+            await db.execute(
+                delete(QueueItem).where(QueueItem.id == watched.id)
+            )
+            await db.commit()
+
+            log.info("smart_queue.removed_watched",
+                     user_id=user_id, title=watched_title)
+
+            # Get remaining queue to find the lowest score
+            remaining = (await db.execute(
+                select(QueueItem)
+                .where(QueueItem.user_id == user_id)
+                .order_by(QueueItem.score.desc())
+            )).scalars().all()
+
+        min_score = remaining[-1].score if remaining else 0.0
+
+        # Try overflow first (cheap — no API calls)
+        replacement = await self._pop_best_overflow(user_id, min_score)
+
+        # If overflow is empty/exhausted, try fresh trending
+        if not replacement:
+            replacement = await self._fetch_trending_replacement(user_id, remaining)
+
+        if replacement:
+            emby_id = replacement.get("_emby_id") or await self._find_in_emby(replacement)
+            if emby_id:
+                async with async_session() as db:
+                    db.add(QueueItem(
+                        user_id=user_id,
+                        emby_item_id=emby_id,
+                        title=replacement["title"],
+                        item_type=replacement["item_type"],
+                        source=replacement["source"],
+                        score=replacement["score"],
+                        trakt_trending_rank=replacement.get("trending_rank"),
+                        trakt_rating=replacement.get("friend_rating"),
+                        metadata_json=replacement,
+                    ))
+                    await db.commit()
+                log.info("smart_queue.backfill_added",
+                         user_id=user_id, title=replacement["title"],
+                         score=replacement["score"], source=replacement["source"])
+
+        # Re-sync the Emby playlist with current queue
+        await self._resync_playlist_from_db(user_id)
+
+    async def _fetch_trending_replacement(self, user_id: int,
+                                          current_items: list) -> dict | None:
+        """Pull fresh trending from Trakt and return the best unwatched candidate
+        not already in the queue."""
+        # Get the user for auth
+        async with async_session() as db:
+            user = (await db.execute(
+                select(User).where(User.id == user_id)
+            )).scalar_one_or_none()
+        if not user or not user.trakt_access_token:
+            return None
+
+        # Set of Emby IDs already in queue
+        existing_emby_ids = {item.emby_item_id for item in current_items}
+
+        trakt = TraktClient(access_token=user.trakt_access_token)
+        try:
+            # Get watched history to exclude
+            watched_ids = await self._get_watched_trakt_ids(trakt)
+
+            weights = await self._load_weights(user_id)
+            for kind in ("shows", "movies"):
+                trending = await trakt.get_trending(kind=kind, limit=15)
+                for rank, entry in enumerate(trending):
+                    item = entry.get("movie") or entry.get("show") or {}
+                    tid = str(item.get("ids", {}).get("trakt", ""))
+                    if not tid or tid in watched_ids:
+                        continue
+                    candidate = {
+                        "trakt_id": tid,
+                        "title": item.get("title", ""),
+                        "year": item.get("year"),
+                        "item_type": "movie" if kind == "movies" else "show",
+                        "ids": item.get("ids", {}),
+                        "source": "trending",
+                        "source_score": 1.0 - rank / 15,
+                        "trending_rank": rank + 1,
+                    }
+                    # Score it
+                    self._score_candidates([candidate], weights)
+                    # Check it exists in Emby and isn't already queued
+                    emby_id = await self._find_in_emby(candidate)
+                    if emby_id and emby_id not in existing_emby_ids:
+                        candidate["_emby_id"] = emby_id
+                        return candidate
+        except Exception:
+            log.warning("smart_queue.trending_backfill_failed", user_id=user_id)
+        finally:
+            await trakt.close()
+        return None
+
+    async def _resync_playlist_from_db(self, user_id: int):
+        """Rebuild the Emby playlist from current DB queue state."""
+        async with async_session() as db:
+            user = (await db.execute(
+                select(User).where(User.id == user_id)
+            )).scalar_one_or_none()
+            if not user:
+                return
+
+            items = (await db.execute(
+                select(QueueItem)
+                .where(QueueItem.user_id == user_id)
+                .order_by(QueueItem.score.desc())
+            )).scalars().all()
+
+        emby_ids = [item.emby_item_id for item in items
+                    if item.emby_item_id and item.in_library is not False]
+        if emby_ids:
+            await self.emby.recreate_playlist(
+                "🎯 Smart Up Next", emby_ids, user_id=user.emby_user_id,
+            )
+            log.info("smart_queue.playlist_resynced", user_id=user_id, count=len(emby_ids))
+
+    # ===================================================================
+    # Watched history filter
+    # ===================================================================
+
+    async def _get_watched_trakt_ids(self, trakt: TraktClient) -> set[str]:
+        """Fetch Trakt watched history and return set of watched MOVIE Trakt IDs.
+
+        Only movies are filtered at the Trakt level. Shows use Emby's
+        episode-level played status instead (a partially-watched show
+        with unwatched episodes should stay in the queue).
+
+        Uses both /users/me/watched (all-time) and /users/me/history (recent)
+        to build the most complete set.
+        """
+        watched_ids: set[str] = set()
+
+        # 1. All-time watched movies
+        try:
+            watched = await trakt.get_watched(kind="movies")
+            for entry in watched:
+                item = entry.get("movie") or {}
+                tid = str(item.get("ids", {}).get("trakt", ""))
+                if tid:
+                    watched_ids.add(tid)
+            log.info("smart_queue.watched_movies_from_watched",
+                     count=len(watched_ids))
+        except Exception as e:
+            log.warning("smart_queue.watched_fetch_failed", error=str(e)[:120])
+
+        # 2. Recent movie history (catches items that may not appear in watched yet)
+        try:
+            history = await trakt.get_history(kind="movies", limit=200)
+            for entry in history:
+                item = entry.get("movie") or {}
+                tid = str(item.get("ids", {}).get("trakt", ""))
+                if tid:
+                    watched_ids.add(tid)
+            log.info("smart_queue.watched_movies_total",
+                     count=len(watched_ids))
+        except Exception as e:
+            log.warning("smart_queue.history_fetch_failed", error=str(e)[:120])
+
+        return watched_ids
+
+    async def _resolve_and_filter_played(
+        self, candidates: list[dict], user: User,
+    ) -> list[dict]:
+        """Resolve Emby IDs and filter out fully-played items.
+
+        For each candidate:
+        - Look up its Emby library item (Series for shows, Movie for movies)
+        - Store the resolved emby_id on the candidate dict (avoids double lookup)
+        - Query Emby for UserData played status
+        - Movies: filter if Played=true
+        - Shows: filter only if UnplayedItemCount=0 (all episodes watched)
+        - Items not in library pass through (shown with 'not in library' badge)
+        """
+        # Step 1: resolve Emby IDs
+        for c in candidates:
+            emby_id = await self._find_in_emby(c)
+            c["_resolved_emby_id"] = emby_id  # None if not in library
+
+        # Step 2: batch-check played status for items with Emby IDs
+        in_library_ids = [
+            c["_resolved_emby_id"] for c in candidates
+            if c["_resolved_emby_id"]
+        ]
+
+        played_set: set[str] = set()
+        fully_watched_shows: set[str] = set()
+
+        if in_library_ids and user.emby_user_id:
+            try:
+                # Batch fetch with UserData (includes Played, UnplayedItemCount)
+                items = await self.emby.get_user_items_by_ids(
+                    user.emby_user_id, in_library_ids,
+                )
+                for item in items:
+                    eid = str(item.get("Id", ""))
+                    user_data = item.get("UserData", {})
+                    item_type = item.get("Type", "")
+
+                    if item_type == "Series":
+                        # Show is fully watched if no unwatched items remain
+                        unplayed = user_data.get("UnplayedItemCount", 1)
+                        if unplayed == 0:
+                            fully_watched_shows.add(eid)
+                            log.debug("smart_queue.show_fully_watched",
+                                      title=item.get("Name"), emby_id=eid)
+                    else:
+                        # Movie (or other): check simple Played flag
+                        if user_data.get("Played", False):
+                            played_set.add(eid)
+                            log.debug("smart_queue.movie_played_in_emby",
+                                      title=item.get("Name"), emby_id=eid)
+            except Exception as e:
+                log.warning("smart_queue.emby_played_check_failed",
+                            error=str(e)[:120])
+
+        # Step 3: filter
+        before = len(candidates)
+        result = []
+        for c in candidates:
+            eid = c.get("_resolved_emby_id")
+            if eid and eid in played_set:
+                log.info("smart_queue.emby_played_filtered",
+                         title=c.get("title"), emby_id=eid)
+                continue
+            if eid and eid in fully_watched_shows:
+                log.info("smart_queue.show_fully_watched_filtered",
+                         title=c.get("title"), emby_id=eid)
+                continue
+            result.append(c)
+
+        removed = before - len(result)
+        if removed:
+            log.info("smart_queue.emby_played_filter",
+                     user_id=user.id, removed=removed,
+                     movies=len(played_set), shows=len(fully_watched_shows))
+
+        return result

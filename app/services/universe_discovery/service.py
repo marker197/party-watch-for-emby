@@ -117,7 +117,7 @@ KNOWN_UNIVERSES: list[dict] = [
             {"title": "Harry Potter and the Deathly Hallows: Part 2", "year": 2011, "type": "movie", "trakt_slug": "harry-potter-and-the-deathly-hallows-part-2-2011", "release_order": 8, "chronological_order": 8},
         ],
     },
-    # ── Phase 2 additions below ──────────────────────────────────────────
+    # ── Additional franchises ────────────────────────────────────────────
     {
         "name": "X-Men",
         "slug": "x-men",
@@ -352,6 +352,35 @@ class UniverseDiscoveryService:
                 in_library = sum(1 for i in items if i.in_library)
                 watched = sum(1 for i in items if i.watched)
 
+                # Next recommended = first unwatched item (in release order) that's
+                # actually in the library. If the next item in order isn't in the
+                # library yet, fall through to the first unwatched item that IS
+                # available, so the recommendation is always something playable.
+                next_recommended = None
+                first_unwatched_missing = None
+                for i in items:
+                    if i.watched:
+                        continue
+                    if i.in_library:
+                        next_recommended = {
+                            "id": i.id,
+                            "title": i.title,
+                            "year": i.year,
+                            "release_order": i.release_order,
+                            "emby_item_id": i.emby_item_id,
+                        }
+                        break
+                    if first_unwatched_missing is None:
+                        first_unwatched_missing = {
+                            "id": i.id,
+                            "title": i.title,
+                            "year": i.year,
+                            "release_order": i.release_order,
+                            "emby_item_id": None,
+                        }
+                if next_recommended is None:
+                    next_recommended = first_unwatched_missing  # may still be None if fully watched
+
                 result.append({
                     "id": u.id,
                     "name": u.name,
@@ -361,6 +390,7 @@ class UniverseDiscoveryService:
                     "in_library": in_library,
                     "watched": watched,
                     "completion_pct": round(watched / len(items) * 100, 1) if items else 0,
+                    "next_recommended": next_recommended,
                     "items": [
                         {
                             "id": i.id,

@@ -469,7 +469,7 @@ async function joinParty() {
       const name = d.emby_username || 'this user';
       if (!confirm(`No active Emby sessions found for "${name}".\n\nMake sure the Emby app is open on your device AND you\'re signed in as "${name}" in that app.\n\nJoin anyway?`)) return;
     }
-    enterParty(code);
+    enterParty(code, true);
   } catch(e) {
     alert('Error: ' + e.message);
   }
@@ -488,7 +488,7 @@ async function joinFromLobby(code) {
       const name = d.emby_username || 'this user';
       if (!confirm(`No Emby sessions found for "${name}". Is the Emby app open and signed in as this user?\n\nJoin anyway?`)) return;
     }
-    enterParty(code);
+    enterParty(code, true);
   } catch(e) {
     alert('Error: ' + e.message);
   }
@@ -544,7 +544,7 @@ async function loadRecentParties() {
 
 // ═══════════ Enter Party (switch views) ═══════════
 
-async function enterParty(code) {
+async function enterParty(code, alreadyJoined) {
   partyCode = code;
   history.replaceState(null, '', `/watch-party?code=${code}`);
 
@@ -561,8 +561,8 @@ async function enterParty(code) {
     return;
   }
 
-  // Join if not already
-  if (currentUserId) {
+  // Join if not already joined by the caller
+  if (!alreadyJoined && currentUserId) {
     try {
       await fetch(API + '/party/join', {
         method: 'POST', headers: {'Content-Type':'application/json'},
@@ -577,14 +577,7 @@ async function enterParty(code) {
   pv.classList.add('active');
 
   // Restore member count
-  const members = party.participants || [];
-  document.getElementById('memberCount').textContent = members.length + ' watching';
-  const membersList = document.getElementById('membersList');
-  if (membersList) {
-    membersList.innerHTML = members.map(name =>
-      `<div class="member-item"><div class="member-dot"></div>${esc(name)}</div>`
-    ).join('');
-  }
+  refreshMembers(code);
 
   // Restore playback controls based on party status
   const status = party.status || 'waiting';
@@ -637,22 +630,14 @@ function connectSocket(code) {
   socket.on('connect', () => {
     socket.emit('join_room', { code, user_id: currentUserId });
     addSystemMsg('🔌 WebSocket connected');
+    // Refresh member list on connect (catches any joins missed while disconnected)
+    refreshMembers(code);
   });
 
   socket.on('user_joined', (d) => {
     const name = d.username || ('User ' + d.user_id);
     addSystemMsg(`${name} joined`);
-    // Refresh member count
-    fetch(API + `/party/${code}`).then(r => r.json()).then(p => {
-      const members = p.participants || [];
-      document.getElementById('memberCount').textContent = members.length + ' watching';
-      const membersList = document.getElementById('membersList');
-      if (membersList) {
-        membersList.innerHTML = members.map(n =>
-          `<div class="member-item"><div class="member-dot"></div>${esc(n)}</div>`
-        ).join('');
-      }
-    }).catch(() => {});
+    refreshMembers(code);
   });
 
   socket.on('sync_playback', (d) => {
@@ -666,6 +651,19 @@ function connectSocket(code) {
     addSystemMsg('⏹ Party ended by host');
     document.getElementById('playbackBar').innerHTML = '<span style="padding:10px;color:var(--text-dim);">Party ended</span>';
   });
+}
+
+function refreshMembers(code) {
+  fetch(API + `/party/${code}`).then(r => r.json()).then(p => {
+    const members = p.participants || [];
+    document.getElementById('memberCount').textContent = members.length + ' watching';
+    const membersList = document.getElementById('membersList');
+    if (membersList) {
+      membersList.innerHTML = members.map(n =>
+        `<div class="member-item"><div class="member-dot"></div>${esc(n)}</div>`
+      ).join('');
+    }
+  }).catch(() => {});
 }
 
 // ═══════════ Playback Controls ═══════════

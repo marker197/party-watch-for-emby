@@ -214,6 +214,40 @@
 
     .danger-zone h2 { color: var(--red); }
 
+    /* Connection status badge (persistent) */
+    .conn-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 5px 10px;
+      border-radius: 20px;
+      float: right;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .conn-badge:hover { opacity: 0.8; }
+    .conn-badge .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      display: inline-block;
+    }
+    .conn-badge.ok       { background: rgba(0,184,148,0.15); color: var(--green); }
+    .conn-badge.ok .dot  { background: var(--green); }
+    .conn-badge.error       { background: rgba(225,112,85,0.15); color: var(--red); }
+    .conn-badge.error .dot  { background: var(--red); }
+    .conn-badge.unknown       { background: rgba(139,143,163,0.15); color: var(--text-dim); }
+    .conn-badge.unknown .dot  { background: var(--text-dim); }
+    .conn-badge.checking       { background: rgba(116,185,255,0.15); color: var(--blue); }
+    .conn-badge.checking .dot  { background: var(--blue); animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+    .conn-timestamp {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      margin-left: 4px;
+    }
+
     /* Cron syntax hint */
     .cron-hint {
       background: var(--surface-hover);
@@ -286,7 +320,7 @@
   <div class="container">
     <!-- Trakt Credentials -->
     <div class="section">
-      <h2>🎯 Trakt Configuration</h2>
+      <h2>🎯 Trakt Configuration <span id="badgeTrakt" class="conn-badge unknown" onclick="refreshStatus()" title="Click to refresh"><span class="dot"></span> Checking…</span></h2>
 
       <div class="form-group">
         <label class="label">
@@ -323,7 +357,7 @@
 
     <!-- Emby Credentials -->
     <div class="section">
-      <h2>📺 Emby Configuration</h2>
+      <h2>📺 Emby Configuration <span id="badgeEmby" class="conn-badge unknown" onclick="refreshStatus()" title="Click to refresh"><span class="dot"></span> Checking…</span></h2>
 
       <div class="form-group">
         <label class="label">
@@ -519,7 +553,7 @@
 
     <!-- Radarr Servers -->
     <div class="section">
-      <h2>📥 Radarr Integration</h2>
+      <h2>📥 Radarr Integration <span id="badgeRadarr" class="conn-badge unknown" onclick="refreshStatus()" title="Click to refresh"><span class="dot"></span> —</span></h2>
       <p style="color:var(--text-dim);margin-bottom:16px;">Connect up to 2 Radarr servers for sending missing universe items to download. Typically one for 1080p and one for 4K.</p>
 
       <div id="radarrServers">
@@ -538,6 +572,30 @@
       <div style="display:flex;gap:8px;margin-top:12px;">
         <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" id="addRadarrBtn" onclick="addRadarrServer()">+ Add Second Server</button>
         <button class="btn btn-blue" onclick="saveRadarrServers()">💾 Save Radarr Servers</button>
+      </div>
+    </div>
+
+    <!-- Sonarr Servers -->
+    <div class="section">
+      <h2>📺 Sonarr Integration <span id="badgeSonarr" class="conn-badge unknown" onclick="refreshStatus()" title="Click to refresh"><span class="dot"></span> —</span></h2>
+      <p style="color:var(--text-dim);margin-bottom:16px;">Connect up to 2 Sonarr servers for sending missing TV shows to download. Typically one for 1080p and one for 4K.</p>
+
+      <div id="sonarrServers">
+        <div class="form-group sonarr-server" data-idx="0">
+          <label>Server 1</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <input type="text" class="sonarr-name" placeholder="Name (e.g. Sonarr 1080p)" style="flex:1;min-width:140px;" />
+            <input type="text" class="sonarr-url" placeholder="http://192.168.1.x:8989" style="flex:2;min-width:200px;" />
+            <input type="text" class="sonarr-key" placeholder="API Key" style="flex:2;min-width:180px;" />
+            <button class="btn btn-blue" style="padding:8px 12px;font-size:0.78rem;" onclick="testSonarr(0)">Test</button>
+          </div>
+          <span class="sonarr-status" style="font-size:0.78rem;margin-top:4px;display:block;"></span>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" id="addSonarrBtn" onclick="addSonarrServer()">+ Add Second Server</button>
+        <button class="btn btn-blue" onclick="saveSonarrServers()">💾 Save Sonarr Servers</button>
       </div>
     </div>
 
@@ -597,7 +655,111 @@
     async function init() {
       loadSettings();
       loadRadarrServers();
+      loadSonarrServers();
+      loadConnectionStatus();
       setupEventListeners();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Connection Status Badges
+    // ═══════════════════════════════════════════════════════════════════
+
+    function setBadge(id, status, label) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.className = 'conn-badge ' + status;
+      el.innerHTML = '<span class="dot"></span> ' + label;
+    }
+
+    function timeAgo(isoStr) {
+      if (!isoStr) return '';
+      // isoStr is UTC "YYYY-MM-DD HH:MM:SS"
+      const then = new Date(isoStr + 'Z');
+      const diffS = Math.floor((Date.now() - then.getTime()) / 1000);
+      if (diffS < 60) return 'just now';
+      if (diffS < 3600) return Math.floor(diffS / 60) + 'm ago';
+      return Math.floor(diffS / 3600) + 'h ago';
+    }
+
+    async function loadConnectionStatus() {
+      try {
+        const r = await fetch('/api/connection-status');
+        const data = await r.json();
+
+        // Emby
+        if (data.emby) {
+          const e = data.emby;
+          if (e.status === 'ok') {
+            const extra = e.server_name ? ' · ' + e.server_name : '';
+            setBadge('badgeEmby', 'ok', 'Connected' + extra);
+          } else if (e.status === 'error') {
+            setBadge('badgeEmby', 'error', 'Offline');
+          } else {
+            setBadge('badgeEmby', 'unknown', 'Unknown');
+          }
+        }
+
+        // Trakt
+        if (data.trakt) {
+          const t = data.trakt;
+          if (t.status === 'ok') {
+            setBadge('badgeTrakt', 'ok', 'Connected');
+          } else if (t.status === 'error') {
+            setBadge('badgeTrakt', 'error', 'Offline');
+          } else {
+            setBadge('badgeTrakt', 'unknown', 'Unknown');
+          }
+        }
+
+        // Radarr — may have 0+ servers
+        const radarr = data.radarr || [];
+        if (radarr.length === 0) {
+          setBadge('badgeRadarr', 'unknown', 'Not configured');
+        } else {
+          const allOk = radarr.every(s => s.status === 'ok');
+          const anyErr = radarr.some(s => s.status === 'error');
+          if (allOk) {
+            setBadge('badgeRadarr', 'ok', radarr.length + ' server' + (radarr.length > 1 ? 's' : '') + ' connected');
+          } else if (anyErr) {
+            const okCount = radarr.filter(s => s.status === 'ok').length;
+            setBadge('badgeRadarr', 'error', okCount + '/' + radarr.length + ' online');
+          } else {
+            setBadge('badgeRadarr', 'unknown', 'Checking…');
+          }
+        }
+        // Sonarr — may have 0+ servers
+        const sonarr = data.sonarr || [];
+        if (sonarr.length === 0) {
+          setBadge('badgeSonarr', 'unknown', 'Not configured');
+        } else {
+          const allOk = sonarr.every(s => s.status === 'ok');
+          const anyErr = sonarr.some(s => s.status === 'error');
+          if (allOk) {
+            setBadge('badgeSonarr', 'ok', sonarr.length + ' server' + (sonarr.length > 1 ? 's' : '') + ' connected');
+          } else if (anyErr) {
+            const okCount = sonarr.filter(s => s.status === 'ok').length;
+            setBadge('badgeSonarr', 'error', okCount + '/' + sonarr.length + ' online');
+          } else {
+            setBadge('badgeSonarr', 'unknown', 'Checking…');
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to load connection status:', e);
+      }
+    }
+
+    async function refreshStatus() {
+      setBadge('badgeEmby', 'checking', 'Checking…');
+      setBadge('badgeTrakt', 'checking', 'Checking…');
+      setBadge('badgeRadarr', 'checking', 'Checking…');
+      setBadge('badgeSonarr', 'checking', 'Checking…');
+      try {
+        await fetch('/api/connection-status/refresh', { method: 'POST' });
+        await loadConnectionStatus();
+      } catch (e) {
+        console.warn('Refresh failed:', e);
+        await loadConnectionStatus();
+      }
     }
 
     async function loadSettings() {
@@ -711,13 +873,17 @@
           })
         });
 
-        if (response.ok) {
+        const data = await response.json();
+        if (data.status === 'ok') {
           showStatus('traktStatus', 'Connection successful!', 'success');
+          setBadge('badgeTrakt', 'ok', 'Connected');
         } else {
-          showStatus('traktStatus', 'Connection failed. Check credentials.', 'error');
+          showStatus('traktStatus', data.message || 'Connection failed. Check credentials.', 'error');
+          setBadge('badgeTrakt', 'error', 'Offline');
         }
       } catch (error) {
         showStatus('traktStatus', `Error: ${error.message}`, 'error');
+        setBadge('badgeTrakt', 'error', 'Offline');
       } finally {
         btn.disabled = false;
         btn.textContent = '🔗 Test Connection';
@@ -740,13 +906,17 @@
           })
         });
 
-        if (response.ok) {
+        const data = await response.json();
+        if (data.status === 'ok') {
           showStatus('embyStatus', 'Connection successful!', 'success');
+          setBadge('badgeEmby', 'ok', 'Connected');
         } else {
-          showStatus('embyStatus', 'Connection failed. Check URL and API key.', 'error');
+          showStatus('embyStatus', data.message || 'Connection failed. Check URL and API key.', 'error');
+          setBadge('badgeEmby', 'error', 'Offline');
         }
       } catch (error) {
         showStatus('embyStatus', `Error: ${error.message}`, 'error');
+        setBadge('badgeEmby', 'error', 'Offline');
       } finally {
         btn.disabled = false;
         btn.textContent = '📡 Test Connection';
@@ -879,6 +1049,10 @@
     }
 
     async function saveCrons() {
+      const btn = document.getElementById('saveCrons');
+      btn.disabled = true;
+      btn.textContent = '💾 Saving…';
+
       const data = {
         cron_smart_queue: uiToCron('SmartQueue'),
         cron_ml_retrain: uiToCron('MLRetrain'),
@@ -892,11 +1066,17 @@
           body: JSON.stringify(data)
         });
 
-        if (response.ok) {
-          showNotification('Schedules saved!');
+        const result = await response.json();
+        if (response.ok && result.status === 'ok') {
+          showNotification('Schedules saved and applied — ' + (result.saved || []).length + ' updated.');
+        } else {
+          showNotification('Error: ' + (result.message || 'Unknown'));
         }
       } catch (error) {
-        console.error('Error saving crons:', error);
+        showNotification('Error saving schedules: ' + error.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '💾 Save Schedules';
       }
     }
 
@@ -1134,6 +1314,7 @@
         const d = await r.json();
         if (d.status === 'ok') {
           status.textContent = `✓ Connected — Radarr ${d.version}`; status.style.color = 'var(--green)';
+          loadConnectionStatus();
         } else {
           status.textContent = `✗ ${d.message}`; status.style.color = 'var(--red)';
         }
@@ -1155,6 +1336,106 @@
         });
         const d = await r.json();
         showNotification(`Radarr servers saved (${d.servers} server${d.servers !== 1 ? 's' : ''})`);
+      } catch(e) { showNotification('Failed to save: ' + e.message); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Sonarr Servers
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function loadSonarrServers() {
+      try {
+        const r = await fetch('/api/sonarr/servers');
+        const d = await r.json();
+        const servers = d.servers || [];
+        if (servers.length === 0) return;
+
+        const s0 = document.querySelector('.sonarr-server[data-idx="0"]');
+        if (s0 && servers[0]) {
+          s0.querySelector('.sonarr-name').value = servers[0].name || '';
+          s0.querySelector('.sonarr-url').value = servers[0].url || '';
+          s0.querySelector('.sonarr-key').value = servers[0].api_key || '';
+        }
+
+        if (servers.length > 1) {
+          addSonarrServer();
+          const s1 = document.querySelector('.sonarr-server[data-idx="1"]');
+          if (s1) {
+            s1.querySelector('.sonarr-name').value = servers[1].name || '';
+            s1.querySelector('.sonarr-url').value = servers[1].url || '';
+            s1.querySelector('.sonarr-key').value = servers[1].api_key || '';
+          }
+        }
+      } catch(e) { console.warn('Failed to load Sonarr servers:', e); }
+    }
+
+    function addSonarrServer() {
+      const container = document.getElementById('sonarrServers');
+      if (container.querySelectorAll('.sonarr-server').length >= 2) return;
+      const btn = document.getElementById('addSonarrBtn');
+      btn.style.display = 'none';
+
+      const div = document.createElement('div');
+      div.className = 'form-group sonarr-server';
+      div.dataset.idx = '1';
+      div.innerHTML = `
+        <label>Server 2</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input type="text" class="sonarr-name" placeholder="Name (e.g. Sonarr 4K)" style="flex:1;min-width:140px;" />
+          <input type="text" class="sonarr-url" placeholder="http://192.168.1.x:8990" style="flex:2;min-width:200px;" />
+          <input type="text" class="sonarr-key" placeholder="API Key" style="flex:2;min-width:180px;" />
+          <button class="btn btn-blue" style="padding:8px 12px;font-size:0.78rem;" onclick="testSonarr(1)">Test</button>
+          <button class="btn" style="background:var(--red);padding:8px 12px;font-size:0.78rem;" onclick="removeSonarrServer()">✕</button>
+        </div>
+        <span class="sonarr-status" style="font-size:0.78rem;margin-top:4px;display:block;"></span>
+      `;
+      container.appendChild(div);
+    }
+
+    function removeSonarrServer() {
+      const s = document.querySelector('.sonarr-server[data-idx="1"]');
+      if (s) s.remove();
+      document.getElementById('addSonarrBtn').style.display = '';
+    }
+
+    async function testSonarr(idx) {
+      const row = document.querySelector(`.sonarr-server[data-idx="${idx}"]`);
+      if (!row) return;
+      const url = row.querySelector('.sonarr-url').value.trim();
+      const key = row.querySelector('.sonarr-key').value.trim();
+      const status = row.querySelector('.sonarr-status');
+      if (!url || !key) { status.textContent = '⚠ URL and API key required'; status.style.color = 'var(--orange)'; return; }
+      status.textContent = 'Testing…'; status.style.color = 'var(--text-dim)';
+      try {
+        const r = await fetch('/api/sonarr/test', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({url, api_key: key})
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          status.textContent = `✓ Connected — Sonarr ${d.version}`; status.style.color = 'var(--green)';
+          loadConnectionStatus();
+        } else {
+          status.textContent = `✗ ${d.message}`; status.style.color = 'var(--red)';
+        }
+      } catch(e) { status.textContent = `✗ ${e.message}`; status.style.color = 'var(--red)'; }
+    }
+
+    async function saveSonarrServers() {
+      const servers = [];
+      document.querySelectorAll('.sonarr-server').forEach(row => {
+        const name = row.querySelector('.sonarr-name').value.trim();
+        const url = row.querySelector('.sonarr-url').value.trim();
+        const key = row.querySelector('.sonarr-key').value.trim();
+        if (url && key) servers.push({name: name || `Sonarr ${servers.length+1}`, url, api_key: key});
+      });
+      try {
+        const r = await fetch('/api/sonarr/servers', {
+          method: 'PUT', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({servers})
+        });
+        const d = await r.json();
+        showNotification(`Sonarr servers saved (${d.servers} server${d.servers !== 1 ? 's' : ''})`);
       } catch(e) { showNotification('Failed to save: ' + e.message); }
     }
 

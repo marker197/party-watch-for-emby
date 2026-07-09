@@ -195,6 +195,20 @@ class EmbyClient:
         })
         return resp.get("Items", [])
 
+    async def get_user_items_by_ids(self, user_id: str, item_ids: list[str]) -> list[dict]:
+        """Batch fetch items with UserData (includes Played status).
+
+        Uses user-scoped endpoint so each item includes UserData with
+        Played, PlayCount, UnplayedItemCount (for Series), etc.
+        """
+        if not item_ids or not user_id:
+            return []
+        resp = await self._get(f"/Users/{user_id}/Items", {
+            "Ids": ",".join(str(i) for i in item_ids),
+            "Fields": "ProviderIds,ProductionYear",
+        })
+        return resp.get("Items", [])
+
     async def get_item_safe(self, item_id: str, user_id: str | None = None) -> dict | None:
         """Fetch a single item, tolerating Emby builds where /Items/{id} 404s.
         Tries the user-scoped endpoint first, then falls back to /Items?Ids=."""
@@ -354,18 +368,27 @@ class EmbyClient:
 
     async def play_item_on_session(
         self, session_id: str, item_id: str, start_position_ticks: int = 0,
+        controlling_user_id: str | None = None,
     ) -> None:
         """Start playing a specific item on a remote Emby session.
 
         POST /Sessions/{id}/Playing with PlayCommand=PlayNow
+
+        The ControllingUserId tells Emby who is issuing the remote command.
+        Without it, some Emby clients silently ignore the play command even
+        though the server returns 204.  Setting it to the session's own
+        UserId ensures the client trusts the command.
         """
+        params: dict[str, Any] = {
+            "ItemIds": item_id,
+            "PlayCommand": "PlayNow",
+            "StartPositionTicks": start_position_ticks,
+        }
+        if controlling_user_id:
+            params["ControllingUserId"] = controlling_user_id
         await self._post(
             f"/Sessions/{session_id}/Playing",
-            params={
-                "ItemIds": item_id,
-                "PlayCommand": "PlayNow",
-                "StartPositionTicks": start_position_ticks,
-            },
+            params=params,
         )
 
     async def send_play_state_command(

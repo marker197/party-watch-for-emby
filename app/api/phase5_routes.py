@@ -1,6 +1,5 @@
 """
-Phase 5 API Routes
-New endpoints for Social Watching Graph, Library Health Monitor, Metadata Enrichment, and Bulk Actions.
+API Routes — Social Watching Graph, Library Health Monitor, Metadata Enrichment, Bulk Actions.
 
 Total: 18 new endpoints
 - Social Watching: 5 endpoints
@@ -22,7 +21,7 @@ from app.models.schema import (
 from app.services.social_watching import SocialWatchingService
 from app.services.library_health import LibraryHealthMonitor
 from app.services.metadata_enrichment import MetadataEnrichmentService
-from app.utils.database import get_db
+from app.utils.database import get_db, async_session
 from app.utils.trakt_client import TraktClient
 from app.utils.library_cache import LibraryCache
 from app.utils.emby_client import EmbyClient
@@ -33,12 +32,33 @@ from app.security.auth import get_current_user, require_user_ownership
 logger = logging.getLogger(__name__)
 
 # Create router
-router = APIRouter(prefix="/api/v2", tags=["Phase 5 Features"])
+router = APIRouter(prefix="/api/v2", tags=["Extended Features"])
 
-# Initialize services (would be injected in production)
-trakt_client = TraktClient()
+# Stateless singletons (no per-user auth needed)
 emby_client = EmbyClient()
 cache = LibraryCache()
+
+
+async def _get_user_trakt(user_id: int, db: AsyncSession) -> TraktClient:
+    """Build an authenticated TraktClient for the given user."""
+    user = await db.get(User, user_id)
+    if not user or not user.trakt_access_token:
+        raise HTTPException(status_code=401, detail="User has no linked Trakt account")
+
+    async def _on_refresh(access: str, refresh: str, expires: datetime) -> None:
+        async with async_session() as _db:
+            u = await _db.get(User, user.id)
+            u.trakt_access_token = access
+            u.trakt_refresh_token = refresh
+            u.trakt_token_expires = expires
+            await _db.commit()
+
+    return TraktClient(
+        access_token=user.trakt_access_token,
+        refresh_token=user.trakt_refresh_token,
+        token_expires=user.trakt_token_expires,
+        token_refresh_callback=_on_refresh,
+    )
 
 
 # ============================================================================
@@ -67,6 +87,7 @@ async def get_friends_watching_now(
         }, ...]
     """
     try:
+        trakt_client = await _get_user_trakt(user_id, db)
         service = SocialWatchingService(db, trakt_client, emby_client)
         result = await service.get_friends_watching_now(user_id, limit)
         return {"success": True, "data": result}
@@ -96,6 +117,7 @@ async def get_influence_leaderboard(
         }, ...]
     """
     try:
+        trakt_client = await _get_user_trakt(user_id, db)
         service = SocialWatchingService(db, trakt_client, emby_client)
         leaderboard = await service.create_social_leaderboard(user_id, limit)
         return {"success": True, "leaderboard": leaderboard}
@@ -123,6 +145,7 @@ async def get_library_overlap(
         }
     """
     try:
+        trakt_client = await _get_user_trakt(user_id, db)
         service = SocialWatchingService(db, trakt_client, emby_client)
         overlap = await service.get_library_overlap(user_id, friend_username)
         return {"success": True, "overlap": overlap}
@@ -177,6 +200,7 @@ async def refresh_social_graph(
         }
     """
     try:
+        trakt_client = await _get_user_trakt(user_id, db)
         service = SocialWatchingService(db, trakt_client, emby_client)
         result = await service.sync_friend_activity(user_id)
         return {"success": True, "data": result}
@@ -312,6 +336,7 @@ async def get_incomplete_series(
         }, ...]
     """
     try:
+        trakt_client = await _get_user_trakt(user_id, db)
         monitor = LibraryHealthMonitor(db, trakt_client, emby_client, cache)
         series = await monitor.detect_incomplete_series(user_id)
 
@@ -349,6 +374,7 @@ async def get_orphaned_episodes(
         }, ...]
     """
     try:
+        trakt_client = await _get_user_trakt(user_id, db)
         monitor = LibraryHealthMonitor(db, trakt_client, emby_client, cache)
         orphaned = await monitor.find_orphaned_episodes(user_id)
 
@@ -383,6 +409,7 @@ async def get_acquisition_recommendations(
         }, ...]
     """
     try:
+        trakt_client = await _get_user_trakt(user_id, db)
         monitor = LibraryHealthMonitor(db, trakt_client, emby_client, cache)
         recommendations = await monitor.acquisition_recommendations(user_id, limit)
 
@@ -416,6 +443,7 @@ async def analyze_library_health(
         }
     """
     try:
+        trakt_client = await _get_user_trakt(user_id, db)
         monitor = LibraryHealthMonitor(db, trakt_client, emby_client, cache)
         report = await monitor.generate_health_report(user_id)
 
@@ -455,6 +483,7 @@ async def get_enriched_metadata(
         } or null if not enriched
     """
     try:
+        trakt_client = await _get_user_trakt(user_id, db)
         service = MetadataEnrichmentService(db, trakt_client, cache)
         metadata = await service.get_enriched_metadata(emby_item_id)
 
@@ -489,6 +518,7 @@ async def batch_enrich_library(
         }
     """
     try:
+        trakt_client = await _get_user_trakt(user_id, db)
         service = MetadataEnrichmentService(db, trakt_client, cache)
         result = await service.batch_enrich_library(user_id)
 
@@ -517,6 +547,7 @@ async def get_trending_by_social_score(
         }, ...]
     """
     try:
+        trakt_client = await _get_user_trakt(user_id, db)
         service = MetadataEnrichmentService(db, trakt_client, cache)
         trending = await service.get_social_scores(limit)
 
@@ -538,6 +569,7 @@ async def refresh_expired_metadata(
         {'refreshed': int, 'errors': int}
     """
     try:
+        trakt_client = await _get_user_trakt(user_id, db)
         service = MetadataEnrichmentService(db, trakt_client, cache)
         result = await service.refresh_expired_metadata(days_old)
 
@@ -712,5 +744,5 @@ async def get_bulk_action_history(
 # ============================================================================
 
 def get_phase5_router():
-    """Get Phase 5 router for mounting in main.py"""
+    """Get extended features router for mounting in main.py"""
     return router

@@ -324,10 +324,56 @@
     color: var(--blue);
   }
 
+  .queue-badge.missing {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--red);
+    font-size: 0.65rem;
+  }
+
+  .queue-title.missing {
+    color: var(--red);
+    font-style: italic;
+  }
+
+  .queue-radarr-btn {
+    background: var(--red);
+    color: #fff;
+    border: none;
+    padding: 2px 7px;
+    font-size: 0.68rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .queue-radarr-btn:hover { opacity: 0.8; }
+  .queue-radarr-btn:disabled { opacity: 0.4; cursor: default; }
+
+  .queue-sonarr-btn {
+    background: #6366f1;
+    color: #fff;
+    border: none;
+    padding: 2px 7px;
+    font-size: 0.68rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .queue-sonarr-btn:hover { opacity: 0.8; }
+  .queue-sonarr-btn:disabled { opacity: 0.4; cursor: default; }
+
   .queue-source {
-    color: var(--text-dim);
     font-size: 0.78rem;
   }
+  .source-tag {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.72rem;
+  }
+  .source-watchlist { color: var(--accent-light); }
+  .source-trending { color: var(--orange); }
+  .source-recommended { color: #a78bfa; }
+  .source-friend { color: #34d399; }
+  .source-calendar { color: var(--text-dim); }
 
   .queue-score {
     color: var(--accent-light);
@@ -523,6 +569,16 @@
       <div id="universeOutput" class="log-area" style="display:none; margin-top:12px;"></div>
     </div>
 
+    <!-- #5 Airing Soon -->
+    <div class="card">
+      <div class="card-header">
+        <h2>📅 Airing Soon</h2>
+      </div>
+      <p>Upcoming episodes and watchlisted movie releases for things already in your library — premieres and season finales flagged, next 14 days.</p>
+      <button class="btn btn-blue btn-sm" id="btnToggleAiring" onclick="toggleAiring()">View Airing Soon ▾</button>
+      <div id="airingOutput" class="log-area" style="display:none; margin-top:12px;"></div>
+    </div>
+
   </div>
 
   <!-- Smart Queue panel — full width below the cards grid -->
@@ -532,6 +588,15 @@
       <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleQueue()">✕ Close</button>
     </div>
     <div id="queueTable"></div>
+  </div>
+
+  <!-- Airing Soon panel — full width below the cards grid -->
+  <div id="airingPanel" class="card" style="display:none; margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h3 style="font-size:0.95rem;">📅 Airing Soon</h3>
+      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleAiring()">✕ Close</button>
+    </div>
+    <div id="airingTable"></div>
   </div>
 
   <!-- Scheduler status -->
@@ -664,6 +729,20 @@ function filterActivity(btn, cat) {
   loadActivity();
 }
 
+function cronToHuman(cron) {
+  const p = cron.split(/\s+/);
+  if (p.length < 5) return cron;
+  const min = parseInt(p[0]) || 0;
+  const hour = parseInt(p[1]) || 0;
+  const dow = p[4];
+  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const hh = String(hour).padStart(2,'0');
+  const mm = String(min).padStart(2,'0');
+  if (dow === '*') return `Daily ${hh}:${mm} UTC`;
+  const dayName = days[parseInt(dow)] || dow;
+  return `${dayName} ${hh}:${mm} UTC`;
+}
+
 async function loadSchedulerStatus() {
   try {
     const r = await fetch(API + '/api/scheduler/status');
@@ -693,11 +772,12 @@ async function loadSchedulerStatus() {
         ? new Date(j.last_run + 'Z').toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
         : 'Never';
       const dur = j.duration_s != null ? `${j.duration_s}s` : '';
+      const sched = j.cron ? cronToHuman(j.cron) : '';
       const errHtml = j.error ? `<span style="color:var(--red);font-size:0.68rem;display:block;margin-top:2px;word-break:break-all;">${j.error.substring(0,60)}</span>` : '';
       return `<div class="cache-stat" style="text-align:left;padding:10px 14px;">
         <span class="label" style="text-align:left;">${label}</span>
         <span class="value" style="font-size:0.88rem;display:flex;align-items:center;gap:6px;">${dot} ${lastRun}</span>
-        <span style="color:var(--text-dim);font-size:0.7rem;">${j.cron || ''} ${dur ? '· ' + dur : ''}</span>
+        <span style="color:var(--text-dim);font-size:0.7rem;">${sched} ${dur ? '· ' + dur : ''}</span>
         ${errHtml}
       </div>`;
     }).join('');
@@ -972,7 +1052,7 @@ function toggleQueue() {
 async function viewQueue() {
   if (!currentUserId) return alert('Select a user first');
   try {
-    const r = await fetch(API + `/queue/${currentUserId}?limit=20`);
+    const r = await fetch(API + `/queue/${currentUserId}?limit=30`);
     const items = await r.json();
     const el = document.getElementById('queueTable');
     if (!Array.isArray(items) || items.length === 0) {
@@ -980,29 +1060,166 @@ async function viewQueue() {
       return;
     }
     el.innerHTML = '<table class="queue-table"><thead><tr>' +
-      '<th style="width:30px;">#</th><th>Title</th><th style="width:80px;">Source</th><th style="width:55px;">Score</th><th style="width:80px;">Status</th><th style="width:60px;"></th>' +
+      '<th style="width:30px;">#</th><th>Title</th><th style="width:80px;">Source</th><th style="width:55px;">Score</th><th style="width:80px;">Status</th><th style="width:70px;"></th>' +
       '</tr></thead><tbody>' +
       items.map((i, n) => {
+        const inLib = i.in_library !== false;
         const rating = (i.community_rating != null) ? ` <span style="color:var(--orange);font-size:0.78rem;">★${Number(i.community_rating).toFixed(1)}</span>` : '';
-        const statusBadge = i.played
-          ? '<span class="queue-badge played">✓</span>'
-          : '<span class="queue-badge unwatched">new</span>';
+        const yearStr = i.year ? ` <span style="color:var(--text-dim);font-size:0.72rem;">(${i.year})</span>` : '';
+
+        let statusBadge;
+        if (!inLib) {
+          statusBadge = '<span class="queue-badge missing">not in library</span>';
+        } else if (i.played) {
+          statusBadge = '<span class="queue-badge played">✓</span>';
+        } else {
+          statusBadge = '<span class="queue-badge unwatched">new</span>';
+        }
+
+        const titleClass = inLib ? 'queue-title' : 'queue-title missing';
         const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-        const partyBtn = i.emby_item_id
-          ? `<button class="btn btn-sm" style="background:var(--accent);padding:2px 7px;font-size:0.7rem;" onclick="createPartyFromQueue('${i.emby_item_id}', '${safeTitle}')">🎉 Party</button>`
-          : '';
+
+        let actionBtn = '';
+        if (!inLib && i.tmdb_id && i.type === 'movie') {
+          actionBtn = `<button class="queue-radarr-btn" id="radarr-btn-${n}" onclick="sendToRadarr(${n}, ${i.tmdb_id}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0})">📥 Radarr</button>`;
+        } else if (!inLib && i.type === 'show') {
+          actionBtn = `<button class="queue-sonarr-btn" id="sonarr-btn-${n}" onclick="sendToSonarr(${n}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0})">📥 Sonarr</button>`;
+        } else if (inLib && i.emby_item_id) {
+          actionBtn = `<button class="btn btn-sm" style="background:var(--accent);padding:2px 7px;font-size:0.7rem;" onclick="createPartyFromQueue('${i.emby_item_id}', '${safeTitle}')">🎉 Party</button>`;
+        }
+
         return `<tr>
           <td style="color:var(--text-dim);font-size:0.78rem;">${n + 1}</td>
-          <td><span class="queue-title">${i.title}</span>${rating}</td>
-          <td class="queue-source">${i.source}</td>
+          <td><span class="${titleClass}">${i.title}</span>${yearStr}${rating}</td>
+          <td class="queue-source"><span class="source-tag source-${i.source}">${i.source}</span></td>
           <td class="queue-score">${i.score}</td>
           <td>${statusBadge}</td>
-          <td>${partyBtn}</td>
+          <td>${actionBtn}</td>
         </tr>`;
       }).join('') +
       '</tbody></table>';
   } catch(e) {
     document.getElementById('queueTable').innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+  }
+}
+
+function toggleAiring() {
+  const panel = document.getElementById('airingPanel');
+  const btn = document.getElementById('btnToggleAiring');
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    btn.textContent = 'Hide Airing Soon ▴';
+    viewAiring();
+  } else {
+    panel.style.display = 'none';
+    btn.textContent = 'View Airing Soon ▾';
+  }
+}
+
+async function viewAiring() {
+  if (!currentUserId) return alert('Select a user first');
+  const el = document.getElementById('airingTable');
+  el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Loading…</div>';
+  try {
+    const r = await fetch(API + `/api/airing-soon/${currentUserId}?days=14`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    const items = data.items || [];
+    if (items.length === 0) {
+      el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Nothing airing in the next 14 days for shows in your library.</div>';
+      return;
+    }
+    el.innerHTML = '<table class="queue-table"><thead><tr>' +
+      '<th>Title</th><th style="width:70px;">S/E</th><th style="width:90px;">Airs</th><th style="width:110px;">Flag</th>' +
+      '</tr></thead><tbody>' +
+      items.map(i => {
+        const se = i.media_type === 'movie'
+          ? '<span style="color:var(--text-dim);">movie</span>'
+          : ((i.season != null && i.episode != null) ? `S${String(i.season).padStart(2,'0')}E${String(i.episode).padStart(2,'0')}` : '—');
+        const days = i.days_until_air;
+        const inStr = days == null ? '—' : (days === 0 ? 'today' : days === 1 ? 'tomorrow' : `${days}d`);
+        let flag = '';
+        if (i.media_type === 'movie') {
+          flag = i.in_library
+            ? '<span class="queue-badge unwatched">🎬 release · in library</span>'
+            : '<span class="queue-badge missing">🎬 release · not in library</span>';
+        }
+        else if (i.is_premiere) flag = '<span class="queue-badge unwatched">🎬 premiere</span>';
+        else if (i.is_finale) flag = '<span class="queue-badge missing">🏁 finale</span>';
+        return `<tr>
+          <td>${(i.title || '').replace(/</g,'&lt;')}${i.episode_title ? ` <span style="color:var(--text-dim);font-size:0.78rem;">— ${i.episode_title.replace(/</g,'&lt;')}</span>` : ''}</td>
+          <td class="queue-source">${se}</td>
+          <td>${inStr}</td>
+          <td>${flag}</td>
+        </tr>`;
+      }).join('') +
+      '</tbody></table>';
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+  }
+}
+
+async function sendToRadarr(rowIdx, tmdbId, imdbId, title, year) {
+  const btn = document.getElementById('radarr-btn-' + rowIdx);
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = '⏳';
+  try {
+    const r = await fetch(API + '/api/radarr/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        server_index: 0,
+        movies: [{ tmdb_id: tmdbId, imdb_id: imdbId || undefined, title: title, year: year || undefined }]
+      })
+    });
+    const d = await r.json();
+    if (r.ok && d.added > 0) {
+      btn.textContent = '✓ Sent';
+      btn.style.background = 'var(--green)';
+      showNotification(`${title} sent to Radarr`);
+    } else {
+      const reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Failed';
+      btn.textContent = '✗';
+      btn.style.background = 'var(--red)';
+      showNotification(`Radarr: ${reason}`);
+    }
+  } catch(e) {
+    btn.textContent = '✗';
+    btn.style.background = 'var(--red)';
+    showNotification(`Radarr error: ${e.message}`);
+  }
+}
+
+async function sendToSonarr(rowIdx, tvdbId, imdbId, title, year) {
+  const btn = document.getElementById('sonarr-btn-' + rowIdx);
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = '⏳';
+  try {
+    const r = await fetch(API + '/api/sonarr/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        server_index: 0,
+        shows: [{ tvdb_id: tvdbId || undefined, imdb_id: imdbId || undefined, title: title, year: year || undefined }]
+      })
+    });
+    const d = await r.json();
+    if (r.ok && d.added > 0) {
+      btn.textContent = '✓ Sent';
+      btn.style.background = 'var(--green)';
+      showNotification(`${title} sent to Sonarr`);
+    } else {
+      const reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Failed';
+      btn.textContent = '✗';
+      btn.style.background = 'var(--red)';
+      showNotification(`Sonarr: ${reason}`);
+    }
+  } catch(e) {
+    btn.textContent = '✗';
+    btn.style.background = 'var(--red)';
+    showNotification(`Sonarr error: ${e.message}`);
   }
 }
 

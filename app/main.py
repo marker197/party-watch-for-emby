@@ -10,6 +10,7 @@ Starts:
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import time
 import os
 from contextlib import asynccontextmanager
@@ -20,10 +21,9 @@ import structlog
 import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from fastapi.templating import Jinja2Templates
@@ -47,39 +47,62 @@ scheduler = AsyncIOScheduler()
 
 
 # ---------------------------------------------------------------------------
-# Security middleware for audit logging
+# Security middleware for audit logging (pure ASGI — does not break sub-app mounts)
 # ---------------------------------------------------------------------------
 
-async def security_audit_middleware(request: Request, call_next) -> Response:
-    """Log all requests for security audit trail."""
-    start_time = time.time()
-    
-    security_log.info("http_request_received",
-        method=request.method,
-        path=request.url.path,
-        client_ip=request.client.host if request.client else "unknown",
-    )
-    
-    try:
-        response = await call_next(request)
-        duration = time.time() - start_time
-        
-        if response.status_code >= 400:
-            security_log.warning("http_response_error",
-                method=request.method,
-                path=request.url.path,
-                status_code=response.status_code,
-                duration_ms=duration * 1000,
-            )
-        
-        return response
-    except Exception as e:
-        security_log.error("http_request_exception",
-            method=request.method,
-            path=request.url.path,
-            error=str(e),
+class SecurityAuditMiddleware:
+    """Log all HTTP requests for security audit trail.
+
+    Implemented as a pure ASGI middleware instead of BaseHTTPMiddleware
+    because BaseHTTPMiddleware breaks Starlette sub-app mounts (the
+    Socket.IO ASGIApp mounted at /ws would 404 on every request).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        start_time = time.time()
+        path = scope.get("path", "")
+        method = scope.get("method", "WEBSOCKET" if scope["type"] == "websocket" else "")
+        client = scope.get("client") or ("unknown", 0)
+        client_ip = client[0] if client else "unknown"
+
+        security_log.info("http_request_received",
+            method=method,
+            path=path,
+            client_ip=client_ip,
         )
-        raise
+
+        status_code = 0
+
+        async def send_wrapper(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message.get("status", 0)
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+            duration = time.time() - start_time
+            if status_code >= 400:
+                security_log.warning("http_response_error",
+                    method=method,
+                    path=path,
+                    status_code=status_code,
+                    duration_ms=duration * 1000,
+                )
+        except Exception as e:
+            security_log.error("http_request_exception",
+                method=method,
+                path=path,
+                error=str(e),
+            )
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -105,10 +128,19 @@ async def lifespan(app: FastAPI):
         await RateLimitService.initialize_defaults(db)
     log.info("suite.rate_limits_initialized")
 
+    # Load schedule overrides from DB (overwrite config defaults)
+    await _load_schedule_overrides()
+
     # Scheduler
     _register_jobs()
     scheduler.start()
     log.info("suite.scheduler_started")
+
+    # Run initial heartbeat so connection status is available immediately
+    try:
+        await run_heartbeat()
+    except Exception:
+        log.warning("suite.initial_heartbeat_failed")
 
     yield  # app is running
 
@@ -163,8 +195,8 @@ app.add_middleware(
     max_age=600,
 )
 
-# 4. Custom security audit middleware
-app.add_middleware(BaseHTTPMiddleware, dispatch=security_audit_middleware)
+# 4. Custom security audit middleware (pure ASGI — preserves sub-app mounts)
+app.add_middleware(SecurityAuditMiddleware)
 
 # 5. Rate limiting middleware (slowapi)
 app.state.limiter = limiter
@@ -176,7 +208,7 @@ app.include_router(router)
 app.include_router(monitoring_router)
 # Rate limiting admin routes
 app.include_router(rate_limit_router)
-# Phase 5 routes (Social Watching, Library Health, Metadata Enrichment, Bulk Actions)
+# Social Watching, Library Health, Metadata Enrichment, Bulk Actions
 app.include_router(phase5_router)
 
 
@@ -207,18 +239,56 @@ async def rate_limiting_dashboard(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Mount Socket.IO for Watch Party
+# Combine Socket.IO + FastAPI into a single ASGI app
 # ---------------------------------------------------------------------------
 
-# Mount Socket.IO as a sub-app under FastAPI so the FastAPI lifespan
-# (DB init, scheduler) still runs. Client path stays /ws/socket.io
-sio_asgi = socketio.ASGIApp(watch_party_sio, socketio_path="/socket.io")
-app.mount("/ws", sio_asgi)
+# The python-socketio recommended pattern: Socket.IO is the outer ASGI app
+# and FastAPI is the fallback for non-socket requests.  This avoids the
+# app.mount() approach which breaks when any middleware wraps the app.
+#
+# Socket.IO handles requests to /ws/socket.io/* and passes everything
+# else through to FastAPI.  The Dockerfile CMD uses `app.main:app` so
+# we reassign `app` here — the FastAPI instance stays alive via
+# `other_asgi_app` and its lifespan (DB, scheduler) still runs.
+
+_fastapi_app = app
+app = socketio.ASGIApp(
+    watch_party_sio,
+    other_asgi_app=_fastapi_app,
+    socketio_path="/ws/socket.io",
+)
 
 
 # ---------------------------------------------------------------------------
 # Scheduler jobs
 # ---------------------------------------------------------------------------
+
+async def _load_schedule_overrides():
+    """Read schedule cron overrides from app_settings DB table.
+
+    If rows exist, override the in-memory settings values so that
+    _register_jobs() picks them up. Falls back silently to .env defaults.
+    """
+    from app.models.schema import AppSetting
+    try:
+        async with async_session() as db:
+            rows = (await db.execute(
+                select(AppSetting).where(AppSetting.key.in_([
+                    "cron_smart_queue", "cron_ml_retrain", "cron_universe_scan",
+                ]))
+            )).scalars().all()
+        overrides = {r.key: r.value for r in rows}
+        if "cron_smart_queue" in overrides:
+            settings.smart_queue_cron = overrides["cron_smart_queue"]
+        if "cron_ml_retrain" in overrides:
+            settings.ml_retrain_cron = overrides["cron_ml_retrain"]
+        if "cron_universe_scan" in overrides:
+            settings.universe_scan_cron = overrides["cron_universe_scan"]
+        if overrides:
+            log.info("suite.schedule_overrides_loaded", keys=list(overrides.keys()))
+    except Exception as e:
+        log.warning("suite.schedule_overrides_skipped", error=str(e)[:200])
+
 
 def _parse_cron(expr: str) -> dict:
     """Parse '0 2 * * *' into APScheduler CronTrigger kwargs."""
@@ -264,14 +334,121 @@ async def _tracked_job(job_id: str, func):
 _job_crons: dict[str, str] = {}
 
 
+def reschedule_job(job_id: str, cron_expr: str):
+    """Reschedule a running APScheduler job with a new cron expression.
+
+    Called from PUT /api/settings when the user saves new schedules.
+    """
+    parts = cron_expr.split()
+    if len(parts) != 5:
+        log.warning("reschedule.invalid_cron", job=job_id, cron=cron_expr)
+        return
+    trigger = CronTrigger(
+        minute=parts[0], hour=parts[1], day=parts[2],
+        month=parts[3], day_of_week=parts[4],
+    )
+    try:
+        scheduler.reschedule_job(job_id, trigger=trigger)
+        _job_crons[job_id] = cron_expr
+        log.info("scheduler.job_rescheduled", job=job_id, cron=cron_expr)
+    except Exception as e:
+        log.warning("reschedule.failed", job=job_id, error=str(e))
+
+
+async def run_heartbeat():
+    """Ping Emby, Trakt, and Radarr — store results in Redis."""
+    from app.utils.redis_cache import get_redis
+    r = await get_redis()
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    # --- Emby ---
+    try:
+        from app.utils.emby_client import EmbyClient
+        emby = EmbyClient()
+        info = await emby.get_system_info()
+        await r.set("heartbeat:emby", _json.dumps({
+            "status": "ok", "checked_at": now,
+            "server_name": info.get("ServerName", ""),
+            "version": info.get("Version", ""),
+        }), ex=600)
+    except Exception as e:
+        await r.set("heartbeat:emby", _json.dumps({
+            "status": "error", "checked_at": now,
+            "message": str(e)[:200],
+        }), ex=600)
+
+    # --- Trakt ---
+    try:
+        from app.utils.trakt_client import TraktClient
+        trakt = TraktClient()
+        await trakt.get_trending(kind="shows")
+        await trakt.close()
+        await r.set("heartbeat:trakt", _json.dumps({
+            "status": "ok", "checked_at": now,
+        }), ex=600)
+    except Exception as e:
+        await r.set("heartbeat:trakt", _json.dumps({
+            "status": "error", "checked_at": now,
+            "message": str(e)[:200],
+        }), ex=600)
+
+    # --- Radarr (0..N servers from Redis config) ---
+    raw_servers = await r.get("radarr_servers")
+    if raw_servers:
+        from app.utils.radarr_client import RadarrClient
+        servers = _json.loads(raw_servers)
+        for i, srv in enumerate(servers):
+            try:
+                client = RadarrClient(srv["url"], srv["api_key"], name=srv.get("name", f"Radarr {i+1}"))
+                result = await client.test_connection()
+                await client.close()
+                await r.set(f"heartbeat:radarr:{i}", _json.dumps({
+                    "status": result.get("status", "error"),
+                    "checked_at": now,
+                    "version": result.get("version", ""),
+                    "message": result.get("message", ""),
+                }), ex=600)
+            except Exception as e:
+                await r.set(f"heartbeat:radarr:{i}", _json.dumps({
+                    "status": "error", "checked_at": now,
+                    "message": str(e)[:200],
+                }), ex=600)
+
+    # --- Sonarr (0..N servers from Redis config) ---
+    raw_sonarr = await r.get("sonarr_servers")
+    if raw_sonarr:
+        from app.utils.sonarr_client import SonarrClient
+        sonarr_servers = _json.loads(raw_sonarr)
+        for i, srv in enumerate(sonarr_servers):
+            try:
+                client = SonarrClient(srv["url"], srv["api_key"], name=srv.get("name", f"Sonarr {i+1}"))
+                result = await client.test_connection()
+                await client.close()
+                await r.set(f"heartbeat:sonarr:{i}", _json.dumps({
+                    "status": result.get("status", "error"),
+                    "checked_at": now,
+                    "version": result.get("version", ""),
+                    "message": result.get("message", ""),
+                }), ex=600)
+            except Exception as e:
+                await r.set(f"heartbeat:sonarr:{i}", _json.dumps({
+                    "status": "error", "checked_at": now,
+                    "message": str(e)[:200],
+                }), ex=600)
+
+
 def _register_jobs():
     if settings.enable_smart_queue:
         from app.services.smart_queue.service import SmartQueueService
         _sq_svc = SmartQueueService()
         cron = settings.smart_queue_cron
         _job_crons["smart_queue"] = cron
+
+        async def _run_smart_queue(_fn=_sq_svc.run_for_all_users):
+            await _tracked_job("smart_queue", _fn)
+
         scheduler.add_job(
-            lambda _fn=_sq_svc.run_for_all_users: _tracked_job("smart_queue", _fn),
+            _run_smart_queue,
             CronTrigger(**_parse_cron(cron)),
             id="smart_queue",
             replace_existing=True,
@@ -283,8 +460,12 @@ def _register_jobs():
         _ml_svc = MLPredictorService()
         cron = settings.ml_retrain_cron
         _job_crons["ml_retrain"] = cron
+
+        async def _run_ml_retrain(_fn=_ml_svc.train_for_all_users):
+            await _tracked_job("ml_retrain", _fn)
+
         scheduler.add_job(
-            lambda _fn=_ml_svc.train_for_all_users: _tracked_job("ml_retrain", _fn),
+            _run_ml_retrain,
             CronTrigger(**_parse_cron(cron)),
             id="ml_retrain",
             replace_existing=True,
@@ -296,8 +477,12 @@ def _register_jobs():
         _ud_svc = UniverseDiscoveryService()
         cron = settings.universe_scan_cron
         _job_crons["universe_scan"] = cron
+
+        async def _run_universe_scan(_fn=_ud_svc.run_scan):
+            await _tracked_job("universe_scan", _fn)
+
         scheduler.add_job(
-            lambda _fn=_ud_svc.run_scan: _tracked_job("universe_scan", _fn),
+            _run_universe_scan,
             CronTrigger(**_parse_cron(cron)),
             id="universe_scan",
             replace_existing=True,
@@ -310,8 +495,12 @@ def _register_jobs():
         _bd_svc = RatingBiasDetectorService()
         cron = "0 5 * * 1"
         _job_crons["bias_analysis"] = cron
+
+        async def _run_bias_analysis(_fn=_bd_svc.analyze_for_all_users):
+            await _tracked_job("bias_analysis", _fn)
+
         scheduler.add_job(
-            lambda _fn=_bd_svc.analyze_for_all_users: _tracked_job("bias_analysis", _fn),
+            _run_bias_analysis,
             CronTrigger(hour=5, minute=0, day_of_week="1"),
             id="bias_analysis",
             replace_existing=True,
@@ -335,8 +524,12 @@ def _register_jobs():
 
     cron = "30 1 * * *"
     _job_crons["library_cache_rebuild"] = cron
+
+    async def _run_cache_rebuild(_fn=rebuild_library_cache):
+        await _tracked_job("library_cache_rebuild", _fn)
+
     scheduler.add_job(
-        lambda _fn=rebuild_library_cache: _tracked_job("library_cache_rebuild", _fn),
+        _run_cache_rebuild,
         CronTrigger(hour=1, minute=30),
         id="library_cache_rebuild",
         replace_existing=True,
@@ -346,7 +539,6 @@ def _register_jobs():
     # SSL certificate check — daily at 6 AM (only runs if SSL_DOMAIN is set)
     if settings.ssl_domain:
         async def check_ssl_certificate():
-            import json as _json
             from app.api.routes import _check_ssl_cert
             from app.utils.redis_cache import get_redis as _get_redis
             result = await _check_ssl_cert(settings.ssl_domain)
@@ -361,13 +553,27 @@ def _register_jobs():
 
         cron = "0 6 * * *"
         _job_crons["ssl_cert_check"] = cron
+
+        async def _run_ssl_check(_fn=check_ssl_certificate):
+            await _tracked_job("ssl_cert_check", _fn)
+
         scheduler.add_job(
-            lambda _fn=check_ssl_certificate: _tracked_job("ssl_cert_check", _fn),
+            _run_ssl_check,
             CronTrigger(hour=6, minute=0),
             id="ssl_cert_check",
             replace_existing=True,
         )
         log.info("scheduler.job_added", job="ssl_cert_check", cron=cron, domain=settings.ssl_domain)
+
+    # Connection heartbeat — every 5 minutes
+    scheduler.add_job(
+        run_heartbeat,
+        "interval",
+        minutes=5,
+        id="heartbeat",
+        replace_existing=True,
+    )
+    log.info("scheduler.job_added", job="heartbeat", interval="5m")
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +582,7 @@ def _register_jobs():
 
 if __name__ == "__main__":
     uvicorn.run(
-        app,  # FastAPI is the outer app; Socket.IO mounted at /ws
+        app,  # Socket.IO outer app; FastAPI as fallback via other_asgi_app
         host="0.0.0.0",
         port=8000,
         log_level=settings.log_level.lower(),

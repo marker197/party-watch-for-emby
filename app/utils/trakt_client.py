@@ -379,12 +379,20 @@ class TraktClient:
         return await self._get(f"/{kind}/popular", params={"limit": limit})
 
     async def get_recommended(self, kind: str = "shows", limit: int = 20) -> list[dict]:
-        return await self._get(f"/users/me/recommendations/{kind}", params={"limit": limit})
+        return await self._get(f"/recommendations/{kind}", params={"limit": limit})
 
     # -- Calendar ------------------------------------------------------------
 
     async def get_my_shows(self, start_date: str | None = None, days: int = 14) -> list[dict]:
         path = "/calendars/my/shows"
+        if start_date:
+            path += f"/{start_date}/{days}"
+        return await self._get(path)
+
+    async def get_my_movies(self, start_date: str | None = None, days: int = 14) -> list[dict]:
+        """Movies with a release date in range that are in the user's
+        watchlist/collection — the movie equivalent of get_my_shows."""
+        path = "/calendars/my/movies"
         if start_date:
             path += f"/{start_date}/{days}"
         return await self._get(path)
@@ -400,6 +408,11 @@ class TraktClient:
         if start_date:
             path += f"/{start_date}/{days}"
         return await self._get(path)
+
+    async def get_show_seasons(self, show_id: str) -> list[dict]:
+        """Season list with episode_count, used to detect season finales
+        (an episode is a finale if episode.number == season.episode_count)."""
+        return await self._get(f"/shows/{show_id}/seasons", params={"extended": "full"})
 
     # -- Friends -------------------------------------------------------------
 

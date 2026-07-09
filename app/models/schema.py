@@ -41,7 +41,7 @@ class QueueItem(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    emby_item_id = Column(String(64), nullable=False)
+    emby_item_id = Column(String(64), nullable=True)   # NULL for items not in Emby library
     title = Column(String(512))
     item_type = Column(String(32))   # movie | episode
     source = Column(String(32))      # watchlist | trending | friend | calendar
@@ -49,6 +49,7 @@ class QueueItem(Base):
     trakt_trending_rank = Column(Integer)
     trakt_rating = Column(Float)
     metadata_json = Column(JSON)
+    in_library = Column(Boolean, default=True)          # False = not in Emby, eligible for Radarr
     played = Column(Boolean, default=False)
     played_at = Column(DateTime)
     played_duration_ticks = Column(Integer)  # how long they watched
@@ -184,6 +185,22 @@ class WatchPartyParticipant(Base):
     party = relationship("WatchParty", back_populates="participants")
 
 
+class WatchPartyReaction(Base):
+    """Timestamped emoji reaction logged during a watch party.
+
+    Persisted so an end-of-party summary can be posted to Trakt as a
+    comment (see WatchPartyService._post_party_summary_to_trakt).
+    """
+    __tablename__ = "watch_party_reactions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    party_id = Column(Integer, ForeignKey("watch_parties.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    emoji = Column(String(16), nullable=False)
+    position_ticks = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ---------------------------------------------------------------------------
 # Rating Bias Detector  (#10)
 # ---------------------------------------------------------------------------
@@ -300,6 +317,18 @@ class EnrichedMetadata(Base):
 # ---------------------------------------------------------------------------
 # Bulk Actions  (UI Feature)
 # ---------------------------------------------------------------------------
+
+class AppSetting(Base):
+    """Key/value store for runtime-configurable settings (schedules, toggles).
+
+    Falls back to .env defaults when no DB row exists for a key.
+    """
+    __tablename__ = "app_settings"
+
+    key = Column(String(128), primary_key=True)
+    value = Column(Text, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 class BulkAction(Base):
     """Track bulk operations on library items."""

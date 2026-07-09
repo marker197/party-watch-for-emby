@@ -14,7 +14,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.schema import User, QueueItem, Prediction, MLModel, Universe, UniverseItem
+from app.models.schema import User, QueueItem, Prediction, MLModel, Universe, UniverseItem, AppSetting
 from app.utils.database import get_db
 from app.utils.trakt_client import TraktClient
 from app.utils.library_cache import LibraryCache
@@ -39,12 +39,14 @@ async def _first_emby_user_id() -> str | None:
         )).scalars().first()
     return user.emby_user_id if user else None
 from app.services.rating_bias_detector.service import RatingBiasDetectorService
+from app.services.airing_alerts.service import AiringAlertsService
 
 smart_queue_svc = SmartQueueService()
 ml_predictor_svc = MLPredictorService()
 universe_svc = UniverseDiscoveryService()
 watch_party_svc = WatchPartyService()
 bias_detector_svc = RatingBiasDetectorService()
+airing_alerts_svc = AiringAlertsService()
 
 log = structlog.get_logger()
 
@@ -273,7 +275,7 @@ async def refresh_queue():
 @router.get("/queue/{user_id}")
 async def get_queue(
     user_id: int,
-    limit: int = Query(30, ge=1, le=1000),  # ✅ SECURITY: Input validation
+    limit: int = Query(20, ge=1, le=1000),  # ✅ SECURITY: Input validation
     current_user: User = Depends(get_current_user),  # ✅ SECURITY: Authentication
     db: AsyncSession = Depends(get_db),
 ):
@@ -290,11 +292,13 @@ async def get_queue(
     ratings: dict[str, dict] = {}
     try:
         emby = EmbyClient()
-        for it in await emby.get_items_by_ids([i.emby_item_id for i in items if i.emby_item_id]):
-            ratings[str(it.get("Id"))] = {
-                "community_rating": it.get("CommunityRating"),
-                "official_rating": it.get("OfficialRating"),
-            }
+        lib_ids = [i.emby_item_id for i in items if i.emby_item_id]
+        if lib_ids:
+            for it in await emby.get_items_by_ids(lib_ids):
+                ratings[str(it.get("Id"))] = {
+                    "community_rating": it.get("CommunityRating"),
+                    "official_rating": it.get("OfficialRating"),
+                }
     except Exception:
         pass
 
@@ -308,11 +312,40 @@ async def get_queue(
             "trending_rank": i.trakt_trending_rank,
             "played": i.played,
             "played_at": i.played_at.isoformat() if i.played_at else None,
+            "in_library": i.in_library if i.in_library is not None else True,
             "community_rating": ratings.get(str(i.emby_item_id), {}).get("community_rating"),
             "official_rating": ratings.get(str(i.emby_item_id), {}).get("official_rating"),
+            "tmdb_id": (i.metadata_json or {}).get("ids", {}).get("tmdb"),
+            "imdb_id": (i.metadata_json or {}).get("ids", {}).get("imdb"),
+            "tvdb_id": (i.metadata_json or {}).get("ids", {}).get("tvdb"),
+            "year": (i.metadata_json or {}).get("year"),
         }
         for i in items
     ]
+
+
+@router.get("/api/airing-soon/{user_id}")
+async def get_airing_soon(
+    user_id: int,
+    days: int = Query(14, ge=1, le=60),
+    current_user: User = Depends(get_current_user),  # ✅ SECURITY
+    db: AsyncSession = Depends(get_db),
+):
+    """Upcoming episodes (for shows already in the library) with premiere/
+    finale badges and a days-until-air countdown."""
+    require_user_ownership(current_user.id, user_id, "airing_soon")
+
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "user not found")
+
+    try:
+        alerts = await airing_alerts_svc.get_airing_soon(user, days=days)
+    except Exception:
+        log.exception("airing_soon.fetch_failed", user_id=user_id)
+        raise HTTPException(502, "failed to fetch airing calendar from Trakt")
+
+    return {"count": len(alerts), "items": alerts}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -796,7 +829,7 @@ async def list_recent_parties(limit: int = Query(10, ge=1, le=50)):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Emby Webhook receiver (Phase 2: feedback loop)
+# Emby Webhook receiver
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post("/webhook/emby")
@@ -861,15 +894,25 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     emby_username = user_data.get("Name", "")
 
     # Test webhooks and events without an item are acknowledged but not processed
-    if not emby_item_id or not emby_user_id:
-        return {"status": "ok", "event": event_type, "note": "no item/user data"}
+    if not emby_item_id:
+        return {"status": "ok", "event": event_type, "note": "no item data"}
 
-    # Find our user
-    user = (await db.execute(
-        select(User).where(User.emby_user_id == emby_user_id)
-    )).scalar_one_or_none()
+    # Library-level events (library.new, item.added) don't require a user
+    event_lower = event_type.lower()
+    is_library_event = event_lower in ("library.new", "librarynew",
+                                        "item.added", "itemadded")
 
-    if not user:
+    if not emby_user_id and not is_library_event:
+        return {"status": "ok", "event": event_type, "note": "no user data"}
+
+    # Find our user (may be None for library events)
+    user = None
+    if emby_user_id:
+        user = (await db.execute(
+            select(User).where(User.emby_user_id == emby_user_id)
+        )).scalar_one_or_none()
+
+    if not user and not is_library_event:
         await _activity_log(
             f"Webhook ignored: unknown Emby user {emby_username} ({emby_user_id})",
             category="webhook",
@@ -954,8 +997,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
     # ── Match Emby event names ───────────────────────────────────────────────
     # Emby uses lowercase dot-notation (playback.start) but some builds use
-    # PascalCase. Normalise to lowercase for matching.
-    event_lower = event_type.lower()
+    # PascalCase. Normalise to lowercase for matching (already set above).
 
     is_play_start = event_lower in ("playback.start", "playbackstart")
     is_play_stop = event_lower in ("playback.stop", "playbackstop")
@@ -1051,6 +1093,15 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             emby_item_id=emby_item_id,
             duration_ticks=duration_ticks,
         )
+
+        # Remove watched item from queue and backfill with next best
+        try:
+            await smart_queue_svc.remove_and_backfill(
+                user_id=user.id,
+                emby_item_id=emby_item_id,
+            )
+        except Exception as e:
+            log.warning("webhook.backfill_failed", error=str(e)[:120])
 
         await _activity_log(
             f"⏹ Stopped: {item_name} ({item_type_raw}) — {emby_username}",
@@ -1148,6 +1199,67 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 f"Skipped Trakt sync: {item_name} — user has no Trakt token",
                 category="trakt",
             )
+
+    # ── library.new / item.added → check smart queue for missing items ─────
+    if is_library_event and item_type_raw in ("Movie",):
+        try:
+            # Extract provider IDs from the new item
+            provider_ids = item_data.get("ProviderIds", {})
+            tmdb_id = provider_ids.get("Tmdb")
+            imdb_id = provider_ids.get("Imdb")
+
+            if tmdb_id or imdb_id:
+                # Find any missing queue items that match this movie
+                missing_items = (await db.execute(
+                    select(QueueItem).where(
+                        QueueItem.in_library == False,
+                        QueueItem.item_type == "movie",
+                    )
+                )).scalars().all()
+
+                promoted = 0
+                for qi in missing_items:
+                    meta = qi.metadata_json or {}
+                    ids = meta.get("ids", {})
+                    match = False
+                    if tmdb_id and str(ids.get("tmdb", "")) == str(tmdb_id):
+                        match = True
+                    elif imdb_id and str(ids.get("imdb", "")) == str(imdb_id):
+                        match = True
+
+                    if match:
+                        qi.emby_item_id = emby_item_id
+                        qi.in_library = True
+                        promoted += 1
+                        log.info("webhook.queue_item_promoted",
+                                 title=qi.title, emby_id=emby_item_id)
+
+                if promoted:
+                    await db.commit()
+                    # Re-sync playlist for each affected user
+                    affected_users = {qi.user_id for qi in missing_items if qi.in_library}
+                    for uid in affected_users:
+                        try:
+                            await smart_queue_svc._resync_playlist_from_db(uid)
+                        except Exception:
+                            log.warning("webhook.playlist_resync_failed", user_id=uid)
+
+                    await _activity_log(
+                        f"📥 Library added: {item_name} — promoted {promoted} queue item(s) to in-library",
+                        category="queue",
+                    )
+                else:
+                    await _activity_log(
+                        f"📥 Library added: {item_name} — not in smart queue",
+                        category="library",
+                    )
+
+                # Also note: library cache will pick this up on next scheduled rebuild
+
+        except Exception as e:
+            log.warning("webhook.item_added_handler_failed", error=str(e)[:120])
+
+        return {"status": "received", "event": event_type}
 
     if not is_watched:
         # Unmatched event — log for debugging
@@ -1257,12 +1369,16 @@ async def _check_ssl_cert(domain: str) -> dict:
     """Connect to domain over TLS and read certificate expiry."""
     import ssl
     import socket
+    import asyncio
+
+    def _fetch_cert(d: str) -> dict:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((d, 443), timeout=10) as sock:
+            with ctx.wrap_socket(sock, server_hostname=d) as ssock:
+                return ssock.getpeercert()
 
     try:
-        ctx = ssl.create_default_context()
-        with socket.create_connection((domain, 443), timeout=10) as sock:
-            with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
-                cert = ssock.getpeercert()
+        cert = await asyncio.to_thread(_fetch_cert, domain)
 
         not_after_str = cert.get("notAfter", "")
         not_before_str = cert.get("notBefore", "")
@@ -1306,7 +1422,7 @@ async def _check_ssl_cert(domain: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Library Cache management (Phase 1)
+# Library Cache management
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post("/cache/rebuild")
@@ -1431,7 +1547,7 @@ async def library_search(q: str = Query(..., min_length=2, max_length=100)):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Phase 3: Dashboard Polish — HTML Pages
+# HTML Pages
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.get("/universes", response_class=HTMLResponse)
@@ -1489,7 +1605,7 @@ async def get_bias_page():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Rating Bias Detector API (Phase 4)
+# Rating Bias Detector API
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post("/bias/analyze/{user_id}")
@@ -1756,7 +1872,111 @@ async def add_to_radarr(payload: dict):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Settings API (Phase 3)
+# Sonarr Integration
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/sonarr/servers")
+async def get_sonarr_servers():
+    """Return configured Sonarr servers from Redis."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get("sonarr_servers")
+    if not raw:
+        return {"servers": []}
+    try:
+        return {"servers": _json.loads(raw)}
+    except Exception:
+        return {"servers": []}
+
+
+@router.put("/api/sonarr/servers")
+async def save_sonarr_servers(payload: dict):
+    """Save Sonarr server configs to Redis.
+
+    Payload: {"servers": [{"name": "...", "url": "...", "api_key": "..."}, ...]}
+    Max 2 servers.
+    """
+    import json as _json
+    servers = payload.get("servers", [])[:2]
+    clean = []
+    for s in servers:
+        if s.get("url") and s.get("api_key"):
+            clean.append({
+                "name": s.get("name", "Sonarr"),
+                "url": s["url"].rstrip("/"),
+                "api_key": s["api_key"],
+            })
+    r = await get_redis()
+    await r.set("sonarr_servers", _json.dumps(clean))
+    return {"status": "ok", "servers": len(clean)}
+
+
+@router.post("/api/sonarr/test")
+async def test_sonarr_connection(payload: dict):
+    """Test a Sonarr server connection."""
+    from app.utils.sonarr_client import SonarrClient
+    url = payload.get("url", "")
+    api_key = payload.get("api_key", "")
+    if not url or not api_key:
+        return {"status": "error", "message": "URL and API key required"}
+    client = SonarrClient(url, api_key)
+    result = await client.test_connection()
+    await client.close()
+    return result
+
+
+@router.post("/api/sonarr/add")
+async def add_to_sonarr(payload: dict):
+    """Add TV series to a Sonarr server.
+
+    Payload: {
+      "server_index": 0,
+      "shows": [{"tvdb_id": 123, "imdb_id": "tt...", "title": "...", "year": 2024}, ...]
+    }
+    """
+    import json as _json
+    from app.utils.sonarr_client import SonarrClient
+
+    server_idx = payload.get("server_index", 0)
+    shows = payload.get("shows", [])
+    if not shows:
+        raise HTTPException(400, "No shows provided")
+
+    r = await get_redis()
+    raw = await r.get("sonarr_servers")
+    if not raw:
+        raise HTTPException(400, "No Sonarr servers configured — add one in Settings")
+    servers = _json.loads(raw)
+    if server_idx >= len(servers):
+        raise HTTPException(400, f"Server index {server_idx} out of range")
+
+    srv = servers[server_idx]
+    client = SonarrClient(srv["url"], srv["api_key"], name=srv["name"])
+
+    results = []
+    for show in shows:
+        result = await client.add_series(
+            tvdb_id=show.get("tvdb_id"),
+            imdb_id=show.get("imdb_id"),
+            title=show.get("title", ""),
+            year=show.get("year"),
+        )
+        results.append(result)
+
+    await client.close()
+
+    added = sum(1 for r in results if r.get("status") == "ok")
+    return {
+        "status": "ok",
+        "server": srv["name"],
+        "added": added,
+        "total": len(shows),
+        "results": results,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Settings API
 # ═══════════════════════════════════════════════════════════════════════════
 
 class SettingsRequest(BaseModel):
@@ -1770,17 +1990,33 @@ class SettingsRequest(BaseModel):
     features: dict = None
 
 
+async def _get_setting(db: AsyncSession, key: str, env_fallback: str) -> str:
+    """Read a setting from DB; fall back to .env value if no DB row."""
+    row = (await db.execute(select(AppSetting).where(AppSetting.key == key))).scalar_one_or_none()
+    return row.value if row else env_fallback
+
+
+async def _put_setting(db: AsyncSession, key: str, value: str):
+    """Upsert a setting into the app_settings table."""
+    row = (await db.execute(select(AppSetting).where(AppSetting.key == key))).scalar_one_or_none()
+    if row:
+        row.value = value
+        row.updated_at = datetime.utcnow()
+    else:
+        db.add(AppSetting(key=key, value=value, updated_at=datetime.utcnow()))
+
+
 @router.get("/api/settings")
-async def read_settings():
-    """Read current settings from environment."""
+async def read_settings(db: AsyncSession = Depends(get_db)):
+    """Read current settings — DB overrides, .env fallbacks."""
     return {
         "trakt_client_id": os.getenv("TRAKT_CLIENT_ID", "")[:8] + "****" if os.getenv("TRAKT_CLIENT_ID") else "",
         "trakt_client_secret": os.getenv("TRAKT_CLIENT_SECRET", "")[:8] + "****" if os.getenv("TRAKT_CLIENT_SECRET") else "",
         "emby_url": os.getenv("EMBY_URL", ""),
         "emby_api_key": os.getenv("EMBY_API_KEY", "")[:8] + "****" if os.getenv("EMBY_API_KEY") else "",
-        "cron_smart_queue": os.getenv("SMART_QUEUE_CRON", "0 2 * * *"),
-        "cron_ml_retrain": os.getenv("ML_RETRAIN_CRON", "0 4 * * 1"),
-        "cron_universe_scan": os.getenv("UNIVERSE_SCAN_CRON", "0 3 * * 0"),
+        "cron_smart_queue": await _get_setting(db, "cron_smart_queue", os.getenv("SMART_QUEUE_CRON", "0 2 * * *")),
+        "cron_ml_retrain": await _get_setting(db, "cron_ml_retrain", os.getenv("ML_RETRAIN_CRON", "0 4 * * 1")),
+        "cron_universe_scan": await _get_setting(db, "cron_universe_scan", os.getenv("UNIVERSE_SCAN_CRON", "0 3 * * 0")),
         "features": {
             "smart_queue": os.getenv("ENABLE_SMART_QUEUE", "true").lower() == "true",
             "ml_predictor": os.getenv("ENABLE_ML_PREDICTOR", "true").lower() == "true",
@@ -1791,13 +2027,31 @@ async def read_settings():
 
 
 @router.put("/api/settings")
-async def update_settings(request: SettingsRequest):
-    """Update settings (MVP: not persisted — values come from .env)."""
-    # TODO: persist settings to database or env file
+async def update_settings(request: SettingsRequest, db: AsyncSession = Depends(get_db)):
+    """Persist schedule settings to DB and reschedule live APScheduler jobs."""
+    import json as _json
+    from app.main import reschedule_job
+
+    saved = []
+
+    # Scheduler cron settings — persist and reschedule
+    cron_map = {
+        "cron_smart_queue": ("smart_queue", request.cron_smart_queue),
+        "cron_ml_retrain": ("ml_retrain", request.cron_ml_retrain),
+        "cron_universe_scan": ("universe_scan", request.cron_universe_scan),
+    }
+    for db_key, (job_id, cron_val) in cron_map.items():
+        if cron_val:
+            await _put_setting(db, db_key, cron_val)
+            reschedule_job(job_id, cron_val)
+            saved.append(db_key)
+
+    await db.commit()
+
     return {
         "status": "ok",
-        "message": "Noted — but settings are read from your .env file. "
-                   "Edit .env and restart the container to change values permanently.",
+        "saved": saved,
+        "message": f"Saved {len(saved)} setting(s). Schedules updated immediately.",
     }
 
 
@@ -1818,7 +2072,7 @@ async def test_connection(body: TestConnectionRequest):
         try:
             trakt = TraktClient()
             # Simple test: try to get trending shows
-            result = await trakt.trending_shows()
+            result = await trakt.get_trending(kind="shows")
             await trakt.close()
             return {"status": "ok"}
         except Exception as e:
@@ -1862,3 +2116,58 @@ async def factory_reset(db: AsyncSession = Depends(get_db)):
     except Exception:
         pass
     return {"status": "ok", "message": f"Factory reset complete. Removed {count} user(s) and cleared cache."}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Connection Status (heartbeat-based)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/connection-status")
+async def connection_status():
+    """Return cached heartbeat results for Emby, Trakt, and Radarr."""
+    import json as _json
+    r = await get_redis()
+    result = {}
+    for svc in ("emby", "trakt"):
+        raw = await r.get(f"heartbeat:{svc}")
+        if raw:
+            result[svc] = _json.loads(raw)
+        else:
+            result[svc] = {"status": "unknown", "checked_at": None}
+    # Radarr — may have 0, 1, or 2 servers
+    radarr_list = []
+    raw_servers = await r.get("radarr_servers")
+    if raw_servers:
+        servers = _json.loads(raw_servers)
+        for i, _srv in enumerate(servers):
+            raw_hb = await r.get(f"heartbeat:radarr:{i}")
+            if raw_hb:
+                hb = _json.loads(raw_hb)
+                hb["name"] = _srv.get("name", f"Radarr {i+1}")
+            else:
+                hb = {"status": "unknown", "checked_at": None, "name": _srv.get("name", f"Radarr {i+1}")}
+            radarr_list.append(hb)
+    result["radarr"] = radarr_list
+    # Sonarr — may have 0, 1, or 2 servers
+    sonarr_list = []
+    raw_sonarr = await r.get("sonarr_servers")
+    if raw_sonarr:
+        sonarr_servers = _json.loads(raw_sonarr)
+        for i, _srv in enumerate(sonarr_servers):
+            raw_hb = await r.get(f"heartbeat:sonarr:{i}")
+            if raw_hb:
+                hb = _json.loads(raw_hb)
+                hb["name"] = _srv.get("name", f"Sonarr {i+1}")
+            else:
+                hb = {"status": "unknown", "checked_at": None, "name": _srv.get("name", f"Sonarr {i+1}")}
+            sonarr_list.append(hb)
+    result["sonarr"] = sonarr_list
+    return result
+
+
+@router.post("/api/connection-status/refresh")
+async def refresh_connection_status():
+    """Force an immediate heartbeat check for all services."""
+    from app.main import run_heartbeat
+    await run_heartbeat()
+    return {"status": "ok"}

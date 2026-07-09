@@ -1,7 +1,7 @@
-"""Async Radarr v3 API client.
+"""Async Sonarr v3 API client.
 
-Used by Universe Discovery to send missing movies to Radarr for
-automatic download.  Supports up to 2 Radarr instances (e.g. 1080p
+Used by Smart Queue to send missing TV shows to Sonarr for
+automatic download.  Supports up to 2 Sonarr instances (e.g. 1080p
 and 4K servers).
 """
 
@@ -15,10 +15,10 @@ import structlog
 log = structlog.get_logger()
 
 
-class RadarrClient:
-    """Lightweight Radarr v3 client — add movies, list root folders / profiles."""
+class SonarrClient:
+    """Lightweight Sonarr v3 client — add series, list root folders / profiles."""
 
-    def __init__(self, url: str, api_key: str, name: str = "Radarr"):
+    def __init__(self, url: str, api_key: str, name: str = "Sonarr"):
         self._base = url.rstrip("/")
         self._key = api_key
         self._name = name
@@ -49,7 +49,7 @@ class RadarrClient:
     # -- Health / test --------------------------------------------------------
 
     async def test_connection(self) -> dict:
-        """Test the connection to Radarr.  Returns system status."""
+        """Test the connection to Sonarr.  Returns system status."""
         try:
             resp = await self._client.get(
                 f"{self._base}/api/v3/system/status",
@@ -69,18 +69,9 @@ class RadarrClient:
     async def get_quality_profiles(self) -> list[dict]:
         return await self._get("/qualityprofile")
 
-    async def lookup_by_tmdb(self, tmdb_id: int) -> dict | None:
-        """Look up a movie in Radarr by TMDB ID."""
-        results = await self._get(f"/movie/lookup/tmdb?tmdbId={tmdb_id}")
-        if isinstance(results, dict):
-            return results
-        if isinstance(results, list) and results:
-            return results[0]
-        return None
-
-    async def lookup_by_imdb(self, imdb_id: str) -> dict | None:
-        """Look up a movie in Radarr by IMDB ID."""
-        results = await self._get(f"/movie/lookup/imdb?imdbId={imdb_id}")
+    async def lookup_by_tvdb(self, tvdb_id: int) -> dict | None:
+        """Look up a series in Sonarr by TVDB ID."""
+        results = await self._get(f"/series/lookup?term=tvdb:{tvdb_id}")
         if isinstance(results, dict):
             return results
         if isinstance(results, list) and results:
@@ -88,12 +79,11 @@ class RadarrClient:
         return None
 
     async def lookup_by_term(self, title: str, year: int | None = None) -> dict | None:
-        """Look up a movie in Radarr by title search."""
+        """Look up a series in Sonarr by title search."""
         import urllib.parse
         query = f"{title} {year}" if year else title
-        results = await self._get(f"/movie/lookup?term={urllib.parse.quote(query)}")
+        results = await self._get(f"/series/lookup?term={urllib.parse.quote(query)}")
         if isinstance(results, list) and results:
-            # Try to match exact title+year first
             if year:
                 for r in results:
                     if r.get("year") == year and r.get("title", "").lower() == title.lower():
@@ -101,11 +91,11 @@ class RadarrClient:
             return results[0]
         return None
 
-    # -- Add movie ------------------------------------------------------------
+    # -- Add series -----------------------------------------------------------
 
-    async def add_movie(
+    async def add_series(
         self,
-        tmdb_id: int | None = None,
+        tvdb_id: int | None = None,
         imdb_id: str | None = None,
         title: str = "",
         year: int | None = None,
@@ -113,32 +103,31 @@ class RadarrClient:
         quality_profile_id: int | None = None,
         monitored: bool = True,
         search_now: bool = True,
+        season_folder: bool = True,
     ) -> dict:
-        """Add a movie to Radarr for download.
+        """Add a TV series to Sonarr for download.
 
-        Looks up the movie first by TMDB or IMDB ID to get metadata,
-        then posts to Radarr's /movie endpoint.
+        Looks up the series first by TVDB ID or title to get metadata,
+        then posts to Sonarr's /series endpoint.
         """
-        # Look up movie metadata
-        movie_data = None
-        if tmdb_id:
-            movie_data = await self.lookup_by_tmdb(tmdb_id)
-        if not movie_data and imdb_id:
-            movie_data = await self.lookup_by_imdb(imdb_id)
-        if not movie_data and title:
-            movie_data = await self.lookup_by_term(title, year)
+        # Look up series metadata
+        series_data = None
+        if tvdb_id:
+            series_data = await self.lookup_by_tvdb(tvdb_id)
+        if not series_data and title:
+            series_data = await self.lookup_by_term(title, year)
 
-        if not movie_data:
+        if not series_data:
             return {
                 "status": "error",
-                "reason": f"Movie not found in Radarr lookup (tmdb={tmdb_id}, imdb={imdb_id})",
+                "reason": f"Series not found in Sonarr lookup (tvdb={tvdb_id}, title={title})",
             }
 
         # Get defaults if not specified
         if not root_folder_path:
             folders = await self.get_root_folders()
             if folders:
-                root_folder_path = folders[0].get("path", "/movies")
+                root_folder_path = folders[0].get("path", "/tv")
 
         if not quality_profile_id:
             profiles = await self.get_quality_profiles()
@@ -147,49 +136,49 @@ class RadarrClient:
 
         # Build payload
         payload = {
-            "title": movie_data.get("title", title),
-            "tmdbId": movie_data.get("tmdbId", tmdb_id),
-            "year": movie_data.get("year", year),
+            "title": series_data.get("title", title),
+            "tvdbId": series_data.get("tvdbId", tvdb_id),
+            "year": series_data.get("year", year),
             "qualityProfileId": quality_profile_id or 1,
-            "rootFolderPath": root_folder_path or "/movies",
+            "rootFolderPath": root_folder_path or "/tv",
             "monitored": monitored,
+            "seasonFolder": season_folder,
             "addOptions": {
-                "searchForMovie": search_now,
+                "searchForMissingEpisodes": search_now,
             },
         }
 
         # Preserve images/overview from lookup
-        for field in ("images", "overview", "imdbId", "titleSlug", "folder"):
-            if field in movie_data:
-                payload[field] = movie_data[field]
+        for field in ("images", "overview", "imdbId", "titleSlug", "folder", "seasons"):
+            if field in series_data:
+                payload[field] = series_data[field]
         if "titleSlug" not in payload:
-            slug = (movie_data.get("title") or title or "unknown").lower()
+            slug = (series_data.get("title") or title or "unknown").lower()
             slug = slug.replace(" ", "-").replace(":", "").replace("'", "")
-            payload["titleSlug"] = f"{slug}-{movie_data.get('tmdbId', tmdb_id or 0)}"
+            payload["titleSlug"] = slug
 
         try:
-            result = await self._post("/movie", payload)
+            result = await self._post("/series", payload)
             log.info(
-                "radarr.movie_added",
+                "sonarr.series_added",
                 server=self._name,
                 title=payload["title"],
-                tmdb_id=payload.get("tmdbId"),
+                tvdb_id=payload.get("tvdbId"),
             )
             return {
                 "status": "ok",
                 "title": result.get("title", payload["title"]),
-                "radarr_id": result.get("id"),
+                "sonarr_id": result.get("id"),
                 "server": self._name,
             }
         except httpx.HTTPStatusError as e:
-            # 400 often means already exists
             detail = ""
             try:
                 detail = e.response.json()
             except Exception:
                 detail = e.response.text[:200]
             log.warning(
-                "radarr.add_failed",
+                "sonarr.add_failed",
                 server=self._name,
                 title=payload["title"],
                 status=e.response.status_code,

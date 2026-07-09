@@ -165,6 +165,16 @@
       transition: width 0.3s;
     }
 
+    .next-recommended {
+      font-size: 0.82rem;
+      color: var(--text);
+      margin-bottom: 12px;
+      padding: 6px 10px;
+      background: var(--surface-hover);
+      border-radius: 6px;
+      border-left: 3px solid var(--accent);
+    }
+
     .items-list {
       display: none;
       max-height: 400px;
@@ -594,6 +604,10 @@
       container.innerHTML = universes.map(universe => {
         const percentage = Math.round(universe.completion_pct ?? 0);
         const hasItems = (universe.items || []).length > 0;
+        const next = universe.next_recommended;
+        const nextHtml = next
+          ? `<div class="next-recommended">▶ Next: <strong>${escapeHtml(next.title)}</strong>${next.year ? ` (${next.year})` : ''}${!next.emby_item_id ? ' <span style="color:var(--text-dim);">(not in library)</span>' : ''}</div>`
+          : (percentage >= 100 && (universe.items || []).length ? `<div class="next-recommended" style="color:var(--text-dim);">✓ Universe complete</div>` : '');
         return `
           <div class="universe-card" data-universe-id="${universe.id}">
             <div class="universe-header">
@@ -607,6 +621,7 @@
             <div class="completion-bar">
               <div class="completion-bar-fill" style="width: ${percentage}%"></div>
             </div>
+            ${nextHtml}
 
             <div class="card-actions">
               ${hasItems ? `<button class="expand-btn" data-universe-id="${universe.id}" onclick="toggleExpand(this, ${universe.id})">▶ Show Details</button>` : `<span style="flex:1;color:var(--text-dim);font-size:0.82rem;">No items yet — add some below</span>`}

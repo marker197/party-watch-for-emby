@@ -1,5 +1,5 @@
 /**
- * Enhanced UI/UX Module - Phase 4D Polish & Optimization
+ * Enhanced UI/UX Module
  * 
  * Features:
  * - Dark/Light mode toggle (persistent)
