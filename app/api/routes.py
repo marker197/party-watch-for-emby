@@ -1201,19 +1201,59 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             )
 
     # ── library.new / item.added → check smart queue for missing items ─────
-    if is_library_event and item_type_raw in ("Movie",):
+    if is_library_event and item_type_raw in ("Movie", "Episode", "Series"):
         try:
             # Extract provider IDs from the new item
             provider_ids = item_data.get("ProviderIds", {})
             tmdb_id = provider_ids.get("Tmdb")
             imdb_id = provider_ids.get("Imdb")
+            tvdb_id = provider_ids.get("Tvdb")
 
-            if tmdb_id or imdb_id:
-                # Find any missing queue items that match this movie
+            # For episodes, also extract the series-level IDs from SeriesId
+            # so we can match the queue item (which tracks the series, not
+            # individual episodes)
+            series_provider_ids = {}
+            series_emby_id = item_data.get("SeriesId")
+            if item_type_raw == "Episode" and series_emby_id:
+                try:
+                    emby = EmbyClient()
+                    series_item = await emby.get_items_by_ids([series_emby_id])
+                    if series_item:
+                        series_provider_ids = series_item[0].get("ProviderIds", {})
+                except Exception:
+                    log.debug("webhook.series_lookup_failed", series_id=series_emby_id)
+
+            # Determine which IDs and queue item_type to match
+            if item_type_raw == "Movie":
+                match_type = "movie"
+                match_ids = {"tmdb": tmdb_id, "imdb": imdb_id}
+                resolved_emby_id = emby_item_id
+            else:
+                # Episode or Series → match against show queue items
+                match_type = "show"
+                if item_type_raw == "Episode" and series_provider_ids:
+                    match_ids = {
+                        "tmdb": series_provider_ids.get("Tmdb"),
+                        "imdb": series_provider_ids.get("Imdb"),
+                        "tvdb": series_provider_ids.get("Tvdb"),
+                    }
+                    resolved_emby_id = series_emby_id or emby_item_id
+                elif item_type_raw == "Series":
+                    match_ids = {"tmdb": tmdb_id, "imdb": imdb_id, "tvdb": tvdb_id}
+                    resolved_emby_id = emby_item_id
+                else:
+                    # Episode without series lookup fallback
+                    match_ids = {"tmdb": tmdb_id, "imdb": imdb_id, "tvdb": tvdb_id}
+                    resolved_emby_id = emby_item_id
+
+            has_ids = any(v for v in match_ids.values())
+
+            if has_ids:
+                # Find any missing queue items that match
                 missing_items = (await db.execute(
                     select(QueueItem).where(
                         QueueItem.in_library == False,
-                        QueueItem.item_type == "movie",
+                        QueueItem.item_type == match_type,
                     )
                 )).scalars().all()
 
@@ -1222,17 +1262,18 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     meta = qi.metadata_json or {}
                     ids = meta.get("ids", {})
                     match = False
-                    if tmdb_id and str(ids.get("tmdb", "")) == str(tmdb_id):
-                        match = True
-                    elif imdb_id and str(ids.get("imdb", "")) == str(imdb_id):
-                        match = True
+                    for id_key, id_val in match_ids.items():
+                        if id_val and str(ids.get(id_key, "")) == str(id_val):
+                            match = True
+                            break
 
                     if match:
-                        qi.emby_item_id = emby_item_id
+                        qi.emby_item_id = resolved_emby_id
                         qi.in_library = True
                         promoted += 1
                         log.info("webhook.queue_item_promoted",
-                                 title=qi.title, emby_id=emby_item_id)
+                                 title=qi.title, emby_id=resolved_emby_id,
+                                 item_type=match_type)
 
                 if promoted:
                     await db.commit()
@@ -1250,9 +1291,14 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     )
                 else:
                     await _activity_log(
-                        f"📥 Library added: {item_name} — not in smart queue",
+                        f"📥 Library added: {item_name} ({item_type_raw}) — not in smart queue",
                         category="library",
                     )
+            else:
+                await _activity_log(
+                    f"📥 Library added: {item_name} ({item_type_raw}) — no provider IDs to match",
+                    category="library",
+                )
 
                 # Also note: library cache will pick this up on next scheduled rebuild
 
