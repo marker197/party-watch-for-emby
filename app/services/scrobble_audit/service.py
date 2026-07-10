@@ -28,7 +28,7 @@ AUDIT_CACHE_TTL = 3600  # 1h — avoids hammering both APIs on repeated opens
 
 class ScrobbleAuditService:
 
-    async def run_audit(self, user: User) -> dict:
+    async def run_audit(self, user: User, force: bool = False) -> dict:
         """Compare Emby played items against Trakt watched history.
 
         Returns {movies: [...], shows: [...], summary: {...}}.
@@ -37,15 +37,16 @@ class ScrobbleAuditService:
         if not user.trakt_access_token or not user.emby_user_id:
             return {"movies": [], "shows": [], "summary": {"movies": 0, "shows": 0}}
 
-        # Check cache first
+        # Check cache first (skip if force)
         cache_key = f"scrobble_audit:{user.id}"
-        try:
-            r = await get_redis()
-            cached = await r.get(cache_key)
-            if cached:
-                return json.loads(cached)
-        except Exception:
-            pass
+        if not force:
+            try:
+                r = await get_redis()
+                cached = await r.get(cache_key)
+                if cached:
+                    return json.loads(cached)
+            except Exception:
+                pass
 
         trakt = await self._make_trakt(user)
         emby = EmbyClient()
@@ -90,9 +91,13 @@ class ScrobbleAuditService:
                 if not ids:
                     continue
 
+                # Use actual Emby played date if available, otherwise now
+                watched_at = item.get("last_played")
+                if not watched_at:
+                    watched_at = datetime.now(timezone.utc).isoformat()
                 entry = {
                     "ids": ids,
-                    "watched_at": datetime.now(timezone.utc).isoformat(),
+                    "watched_at": watched_at,
                 }
                 if item.get("type") == "show":
                     entry["_type"] = "show"
@@ -117,6 +122,35 @@ class ScrobbleAuditService:
             await trakt.close()
 
     # ------------------------------------------------------------------
+
+    async def _get_played_items(
+        self, emby: EmbyClient, user_id: str, item_type: str,
+    ) -> list[dict]:
+        """Fetch played items from Emby with LastPlayedDate.
+
+        The field name ``UserDataLastPlayedDate`` tells Emby to include
+        ``LastPlayedDate`` inside the ``UserData`` block — the generic
+        ``UserData`` field name does NOT do this.
+        """
+        items: list[dict] = []
+        start = 0
+        batch = 500
+        while True:
+            resp = await emby.get_items(
+                user_id=user_id,
+                item_type=item_type,
+                fields="ProviderIds,ProductionYear,DateCreated,UserDataLastPlayedDate,UserDataPlayCount",
+                filters="IsPlayed",
+                sort_by="DatePlayed",
+                sort_order="Descending",
+                limit=batch,
+                start_index=start,
+            )
+            items.extend(resp.get("Items", []))
+            if start + batch >= resp.get("TotalRecordCount", 0):
+                break
+            start += batch
+        return items
 
     async def _compare(self, trakt: TraktClient, emby: EmbyClient, user: User) -> dict:
         # ── Trakt side: build sets of watched IDs ──
@@ -145,14 +179,12 @@ class ScrobbleAuditService:
         except Exception:
             log.warning("scrobble_audit.trakt_shows_failed")
 
-        # ── Emby side: all played movies and series ──
+        # ── Emby side: played movies (using Filters=IsPlayed) ──
         missing_movies = []
         missing_shows = []
 
-        emby_movies = await emby.get_all_movies(user_id=user.emby_user_id)
+        emby_movies = await self._get_played_items(emby, user.emby_user_id, "Movie")
         for item in emby_movies:
-            if not item.get("UserData", {}).get("Played", False):
-                continue
 
             provider_ids = item.get("ProviderIds", {})
             item_keys = set()
@@ -165,6 +197,9 @@ class ScrobbleAuditService:
                 continue  # can't match without IDs
 
             if not item_keys & trakt_movie_ids:
+                ud = item.get("UserData", {})
+                lp = ud.get("LastPlayedDate")
+                dc = item.get("DateCreated")
                 missing_movies.append({
                     "emby_id": item.get("Id", ""),
                     "title": item.get("Name", ""),
@@ -173,10 +208,11 @@ class ScrobbleAuditService:
                     "imdb_id": provider_ids.get("Imdb"),
                     "tmdb_id": provider_ids.get("Tmdb"),
                     "tvdb_id": provider_ids.get("Tvdb"),
-                    "last_played": item.get("UserData", {}).get("LastPlayedDate"),
+                    "last_played": lp or dc,
+                    "date_source": "played" if lp else ("added" if dc else None),
                 })
 
-        emby_series = await emby.get_all_series(user_id=user.emby_user_id)
+        emby_series = await self._get_played_items(emby, user.emby_user_id, "Series")
         for item in emby_series:
             ud = item.get("UserData", {})
             # A series is "played" if PlayedPercentage == 100 or Played is True
@@ -200,6 +236,8 @@ class ScrobbleAuditService:
                 continue
 
             if not item_keys & trakt_show_ids:
+                lp = ud.get("LastPlayedDate")
+                dc = item.get("DateCreated")
                 missing_shows.append({
                     "emby_id": item.get("Id", ""),
                     "title": item.get("Name", ""),
@@ -208,7 +246,8 @@ class ScrobbleAuditService:
                     "imdb_id": provider_ids.get("Imdb"),
                     "tmdb_id": provider_ids.get("Tmdb"),
                     "tvdb_id": provider_ids.get("Tvdb"),
-                    "last_played": ud.get("LastPlayedDate"),
+                    "last_played": lp or dc,
+                    "date_source": "played" if lp else ("added" if dc else None),
                 })
 
         # Sort by title

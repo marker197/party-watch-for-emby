@@ -1371,7 +1371,7 @@ async function runAudit() {
   summary.innerHTML = '';
   document.getElementById('btnBackfillAll').style.display = 'none';
   try {
-    const r = await fetch(API + `/api/scrobble-audit/${currentUserId}`);
+    const r = await fetch(API + `/api/scrobble-audit/${currentUserId}?force=true`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
     _auditData = data;
@@ -1394,16 +1394,24 @@ async function runAudit() {
 
     const allItems = [...movies, ...shows];
     el.innerHTML = '<table class="queue-table"><thead><tr>' +
-      '<th>Title</th><th style="width:60px;">Type</th><th style="width:70px;">Year</th><th style="width:100px;">Action</th>' +
+      '<th>Title</th><th style="width:60px;">Type</th><th style="width:70px;">Year</th><th style="width:110px;">Date Played</th><th style="width:100px;">Action</th>' +
       '</tr></thead><tbody>' +
       allItems.map((item, idx) => {
         const typeLabel = item.type === 'movie'
           ? '<span style="color:var(--accent);">movie</span>'
           : '<span style="color:var(--blue);">show</span>';
+        let datePlayed = '—';
+        if (item.last_played) {
+          try {
+            const d = new Date(item.last_played).toLocaleDateString();
+            datePlayed = item.date_source === 'added' ? d + ' *' : d;
+          } catch(e) {}
+        }
         return `<tr id="audit-row-${idx}">
           <td>${(item.title || '').replace(/</g,'&lt;')}</td>
           <td class="queue-source">${typeLabel}</td>
           <td class="queue-source">${item.year || '—'}</td>
+          <td class="queue-source">${datePlayed}</td>
           <td><button class="btn btn-sm btn-green" id="audit-btn-${idx}" onclick="backfillItem(${idx})">Backfill</button></td>
         </tr>`;
       }).join('') +

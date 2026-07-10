@@ -452,6 +452,7 @@ async def get_rating_drift(
 @router.get("/api/scrobble-audit/{user_id}")
 async def scrobble_audit(
     user_id: int,
+    force: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -460,7 +461,7 @@ async def scrobble_audit(
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(404, "User not found")
-    return await scrobble_audit_svc.run_audit(user)
+    return await scrobble_audit_svc.run_audit(user, force=force)
 
 
 @router.post("/api/scrobble-audit/{user_id}/backfill")

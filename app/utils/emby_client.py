@@ -99,10 +99,13 @@ class EmbyClient:
         item_type: str | None = None,
         parent_id: str | None = None,
         search_term: str | None = None,
-        fields: str = "ProviderIds,Genres,Overview,People,Studios,DateCreated,RunTimeTicks,CommunityRating,OfficialRating",
+        fields: str = "ProviderIds,Genres,Overview,People,Studios,DateCreated,RunTimeTicks,CommunityRating,OfficialRating,ProductionYear,UserData",
         recursive: bool = True,
         limit: int = 500,
         start_index: int = 0,
+        filters: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> dict:
         """Flexible item query.  Returns {Items: [...], TotalRecordCount: int}."""
         params: dict[str, Any] = {
@@ -117,6 +120,12 @@ class EmbyClient:
             params["ParentId"] = parent_id
         if search_term:
             params["SearchTerm"] = search_term
+        if filters:
+            params["Filters"] = filters
+        if sort_by:
+            params["SortBy"] = sort_by
+        if sort_order:
+            params["SortOrder"] = sort_order
 
         path = f"/Users/{user_id}/Items" if user_id else "/Items"
         return await self._get(path, params)
@@ -196,16 +205,16 @@ class EmbyClient:
         return resp.get("Items", [])
 
     async def get_user_items_by_ids(self, user_id: str, item_ids: list[str]) -> list[dict]:
-        """Batch fetch items with UserData (includes Played status).
+        """Batch fetch items with UserData (includes Played status, LastPlayedDate).
 
         Uses user-scoped endpoint so each item includes UserData with
-        Played, PlayCount, UnplayedItemCount (for Series), etc.
+        Played, PlayCount, UnplayedItemCount (for Series), LastPlayedDate, etc.
         """
         if not item_ids or not user_id:
             return []
         resp = await self._get(f"/Users/{user_id}/Items", {
             "Ids": ",".join(str(i) for i in item_ids),
-            "Fields": "ProviderIds,ProductionYear",
+            "Fields": "ProviderIds,ProductionYear,UserData",
         })
         return resp.get("Items", [])
 
