@@ -57,6 +57,14 @@ def setup_logging():
     file_handler.setFormatter(formatter)
     root.addHandler(file_handler)
 
+    # -- Silence noisy third-party loggers --
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+    # -- Filter repetitive poll endpoints from uvicorn access log --
+    _access_logger = logging.getLogger("uvicorn.access")
+    _access_logger.addFilter(_PollEndpointFilter())
+
     # -- Configure structlog to use stdlib as its sink --
     structlog.configure(
         processors=[
@@ -68,6 +76,21 @@ def setup_logging():
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
+
+
+class _PollEndpointFilter(logging.Filter):
+    """Suppress uvicorn access log lines for high-frequency poll endpoints.
+
+    The dashboard polls /health, /api/activity, /api/scheduler/status, and
+    /parties every ~10 seconds.  Docker health checks hit /health every 30s.
+    Logging every one of these creates ~500 lines/hour of zero-value noise.
+    """
+
+    _NOISY = frozenset({"/health", "/api/activity", "/api/scheduler/status", "/parties"})
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(ep in msg for ep in self._NOISY)
 
 
 def _scrub_sensitive(logger, name, event_dict):

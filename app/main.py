@@ -72,12 +72,6 @@ class SecurityAuditMiddleware:
         client = scope.get("client") or ("unknown", 0)
         client_ip = client[0] if client else "unknown"
 
-        security_log.info("http_request_received",
-            method=method,
-            path=path,
-            client_ip=client_ip,
-        )
-
         status_code = 0
 
         async def send_wrapper(message):
