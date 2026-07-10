@@ -1976,6 +1976,39 @@ async def add_to_sonarr(payload: dict):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Auto-Send Toggles
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/auto-send")
+async def get_auto_send_settings():
+    """Read auto-send toggle state from Redis."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get("auto_send_settings")
+    if raw:
+        return _json.loads(raw)
+    # Defaults: both off (Radarr explicitly off per requirement)
+    return {"radarr_enabled": False, "sonarr_enabled": False}
+
+
+@router.put("/api/auto-send")
+async def update_auto_send_settings(payload: dict):
+    """Save auto-send toggle state to Redis.
+
+    Payload: {"radarr_enabled": true/false, "sonarr_enabled": true/false}
+    """
+    import json as _json
+    r = await get_redis()
+    settings = {
+        "radarr_enabled": bool(payload.get("radarr_enabled", False)),
+        "sonarr_enabled": bool(payload.get("sonarr_enabled", False)),
+    }
+    await r.set("auto_send_settings", _json.dumps(settings))
+    log.info("auto_send.settings_saved", **settings)
+    return {"status": "ok", **settings}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Settings API
 # ═══════════════════════════════════════════════════════════════════════════
 

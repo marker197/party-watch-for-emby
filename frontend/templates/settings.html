@@ -573,6 +573,14 @@
         <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" id="addRadarrBtn" onclick="addRadarrServer()">+ Add Second Server</button>
         <button class="btn btn-blue" onclick="saveRadarrServers()">💾 Save Radarr Servers</button>
       </div>
+
+      <div class="toggle-group" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
+        <div class="toggle-label">
+          <span class="title">Auto-send missing movies</span>
+          <span class="desc">Automatically send all missing queue movies to Radarr when the queue refreshes (off by default)</span>
+        </div>
+        <div class="toggle-switch" id="autoSendRadarr" onclick="toggleAutoSend('radarr')"></div>
+      </div>
     </div>
 
     <!-- Sonarr Servers -->
@@ -596,6 +604,14 @@
       <div style="display:flex;gap:8px;margin-top:12px;">
         <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" id="addSonarrBtn" onclick="addSonarrServer()">+ Add Second Server</button>
         <button class="btn btn-blue" onclick="saveSonarrServers()">💾 Save Sonarr Servers</button>
+      </div>
+
+      <div class="toggle-group" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
+        <div class="toggle-label">
+          <span class="title">Auto-send missing shows</span>
+          <span class="desc">Automatically send all missing queue shows to Sonarr when the queue refreshes (off by default)</span>
+        </div>
+        <div class="toggle-switch" id="autoSendSonarr" onclick="toggleAutoSend('sonarr')"></div>
       </div>
     </div>
 
@@ -656,6 +672,7 @@
       loadSettings();
       loadRadarrServers();
       loadSonarrServers();
+      loadAutoSendSettings();
       loadConnectionStatus();
       setupEventListeners();
     }
@@ -1437,6 +1454,51 @@
         const d = await r.json();
         showNotification(`Sonarr servers saved (${d.servers} server${d.servers !== 1 ? 's' : ''})`);
       } catch(e) { showNotification('Failed to save: ' + e.message); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Auto-Send Toggles
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function loadAutoSendSettings() {
+      try {
+        const r = await fetch('/api/auto-send');
+        if (!r.ok) return;
+        const data = await r.json();
+        if (data.radarr_enabled) document.getElementById('autoSendRadarr').classList.add('active');
+        if (data.sonarr_enabled) document.getElementById('autoSendSonarr').classList.add('active');
+      } catch(e) {
+        console.warn('Failed to load auto-send settings:', e);
+      }
+    }
+
+    async function toggleAutoSend(service) {
+      const radarrEl = document.getElementById('autoSendRadarr');
+      const sonarrEl = document.getElementById('autoSendSonarr');
+      // Toggle the clicked one
+      if (service === 'radarr') radarrEl.classList.toggle('active');
+      else sonarrEl.classList.toggle('active');
+      // Save both
+      const payload = {
+        radarr_enabled: radarrEl.classList.contains('active'),
+        sonarr_enabled: sonarrEl.classList.contains('active'),
+      };
+      try {
+        const r = await fetch('/api/auto-send', {
+          method: 'PUT',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(payload),
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          showNotification(`Auto-send ${service}: ${payload[service + '_enabled'] ? 'ON' : 'OFF'}`);
+        }
+      } catch(e) {
+        showNotification('Failed to save auto-send: ' + e.message);
+        // Revert
+        if (service === 'radarr') radarrEl.classList.toggle('active');
+        else sonarrEl.classList.toggle('active');
+      }
     }
 
     init();

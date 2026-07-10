@@ -21,6 +21,7 @@ import structlog
 
 from app.models.schema import User
 from app.utils.trakt_client import TraktClient
+from app.utils.emby_client import EmbyClient
 from app.utils.library_cache import LibraryCache
 from app.utils.redis_cache import get_redis
 from app.utils.database import async_session
@@ -61,7 +62,7 @@ class AiringAlertsService:
         try:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             results = []
-            results.extend(await self._get_show_alerts(trakt, today, days))
+            results.extend(await self._get_show_alerts(trakt, today, days, user=user))
             results.extend(await self._get_movie_alerts(trakt, today, days))
             results.sort(key=lambda r: (r["days_until_air"] if r["days_until_air"] is not None else 9999))
             return results
@@ -72,7 +73,8 @@ class AiringAlertsService:
     # Shows
     # ------------------------------------------------------------------
 
-    async def _get_show_alerts(self, trakt: TraktClient, today: str, days: int) -> list[dict]:
+    async def _get_show_alerts(self, trakt: TraktClient, today: str, days: int,
+                              user: User | None = None) -> list[dict]:
         try:
             upcoming = await trakt.get_my_shows(start_date=today, days=days)
         except Exception:
@@ -94,6 +96,9 @@ class AiringAlertsService:
             self._merge_entry(merged, entry, is_premiere_source=True)
 
         results = []
+        # Track shows with finales for binge planner
+        finale_shows: dict[str, dict] = {}  # trakt_id → {days_until, season, emby_item_id}
+
         for key, entry in merged.items():
             show = entry["show"]
             episode = entry["episode"]
@@ -114,7 +119,7 @@ class AiringAlertsService:
             if not in_library:
                 continue
 
-            results.append({
+            result = {
                 "media_type": "show",
                 "title": show.get("title", ""),
                 "trakt_id": show_trakt_id,
@@ -127,7 +132,28 @@ class AiringAlertsService:
                 "is_finale": is_finale,
                 "in_library": in_library,
                 "emby_item_id": emby_item_id,
-            })
+                "binge_plan": None,
+            }
+            results.append(result)
+
+            if is_finale and days_until is not None and emby_item_id:
+                finale_shows[show_trakt_id] = {
+                    "days_until": days_until,
+                    "season": episode.get("season"),
+                    "emby_item_id": emby_item_id,
+                    "title": show.get("title", ""),
+                }
+
+        # ── Binge planner: compute catch-up info for shows with finales ──
+        if finale_shows and user and user.emby_user_id:
+            binge_plans = await self._compute_binge_plans(
+                finale_shows, merged, user.emby_user_id,
+            )
+            for r in results:
+                tid = r.get("trakt_id", "")
+                if tid in binge_plans:
+                    r["binge_plan"] = binge_plans[tid]
+
         return results
 
     @staticmethod
@@ -170,6 +196,104 @@ class AiringAlertsService:
                 return bool(episode_count) and ep_num == episode_count
 
         return False
+
+    # ------------------------------------------------------------------
+    # Binge planner
+    # ------------------------------------------------------------------
+
+    async def _compute_binge_plans(
+        self,
+        finale_shows: dict[str, dict],
+        merged_entries: dict[tuple, dict],
+        emby_user_id: str,
+    ) -> dict[str, dict]:
+        """For each show with a finale in the window, compute how many
+        unwatched episodes the user needs to get through and the daily
+        pace required.
+
+        Returns {trakt_id: binge_plan_dict}.
+        """
+        plans: dict[str, dict] = {}
+
+        # Batch-fetch Emby UserData for all finale shows
+        emby_ids = [info["emby_item_id"] for info in finale_shows.values()
+                    if info.get("emby_item_id")]
+        emby_data: dict[str, dict] = {}
+        if emby_ids:
+            try:
+                emby = EmbyClient()
+                items = await emby.get_user_items_by_ids(emby_user_id, emby_ids)
+                for item in items:
+                    emby_data[str(item.get("Id", ""))] = item
+            except Exception:
+                log.warning("binge_planner.emby_fetch_failed")
+                return plans
+
+        for trakt_id, info in finale_shows.items():
+            eid = info["emby_item_id"]
+            item = emby_data.get(eid)
+            if not item:
+                continue
+
+            user_data = item.get("UserData", {})
+            unwatched_in_library = user_data.get("UnplayedItemCount")
+            if unwatched_in_library is None:
+                continue
+
+            # Count episodes airing before the finale (not including the finale)
+            finale_season = info["season"]
+            episodes_airing_before = 0
+            for key, entry in merged_entries.items():
+                entry_trakt_id = str(entry["show"].get("ids", {}).get("trakt", ""))
+                if entry_trakt_id != trakt_id:
+                    continue
+                ep = entry["episode"]
+                ep_season = ep.get("season")
+                ep_num = ep.get("number")
+                # Only count episodes from same season that aren't the finale
+                if ep_season == finale_season:
+                    ep_days = self._days_until(entry.get("first_aired"))
+                    if ep_days is not None and ep_days >= 0 and ep_days < info["days_until"]:
+                        episodes_airing_before += 1
+
+            total_to_watch = unwatched_in_library + episodes_airing_before
+            days_left = max(info["days_until"], 1)  # avoid /0
+
+            if total_to_watch <= 0:
+                plans[trakt_id] = {
+                    "status": "caught_up",
+                    "total_to_watch": 0,
+                    "days_until_finale": info["days_until"],
+                    "episodes_per_day": 0,
+                    "message": "You're all caught up for the finale!",
+                }
+            else:
+                pace = round(total_to_watch / days_left, 1)
+                if pace <= 1:
+                    difficulty = "easy"
+                elif pace <= 2:
+                    difficulty = "moderate"
+                elif pace <= 4:
+                    difficulty = "ambitious"
+                else:
+                    difficulty = "marathon"
+
+                plans[trakt_id] = {
+                    "status": "behind",
+                    "total_to_watch": total_to_watch,
+                    "unwatched_available": unwatched_in_library,
+                    "episodes_airing_before_finale": episodes_airing_before,
+                    "days_until_finale": info["days_until"],
+                    "episodes_per_day": pace,
+                    "difficulty": difficulty,
+                    "message": (
+                        f"{total_to_watch} episode{'s' if total_to_watch != 1 else ''} "
+                        f"in {days_left} day{'s' if days_left != 1 else ''} "
+                        f"— {pace}/day ({difficulty})"
+                    ),
+                }
+
+        return plans
 
     # ------------------------------------------------------------------
     # Movies (watchlist releases)

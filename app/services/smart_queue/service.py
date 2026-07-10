@@ -134,6 +134,10 @@ class SmartQueueService:
 
             resolved_ids = await self._persist_queue(user, top)
             await self._sync_emby_collection(user, top, resolved_ids)
+
+            # Auto-send missing items to Radarr/Sonarr if enabled
+            await self._auto_send_missing(top, resolved_ids)
+
             log.info("smart_queue.user_done", user=user.emby_username,
                      items=len(top), overflow=len(overflow))
         finally:
@@ -444,6 +448,116 @@ class SmartQueueService:
                 type_counts[itype] = type_counts.get(itype, 0) + 1
             log.info("smart_queue.playlist_synced",
                      count=len(emby_ids), types=type_counts)
+
+    # ===================================================================
+    # Auto-send missing items to Radarr / Sonarr
+    # ===================================================================
+
+    async def _auto_send_missing(self, items: list[dict], resolved_ids: dict[int, str]):
+        """If auto-send is enabled, send missing movies to Radarr and/or
+        missing shows to Sonarr automatically after queue refresh.
+
+        Reads toggle state from Redis. Defaults to both off.
+        Failures are logged but never block the queue refresh.
+        """
+        try:
+            raw = await cache_get("auto_send_settings")
+            if not raw:
+                return
+            send_settings = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            return
+
+        radarr_on = send_settings.get("radarr_enabled", False)
+        sonarr_on = send_settings.get("sonarr_enabled", False)
+        if not radarr_on and not sonarr_on:
+            return
+
+        # Collect missing items (not in library = no resolved Emby ID)
+        missing_movies = []
+        missing_shows = []
+        for idx, item in enumerate(items):
+            if idx in resolved_ids:
+                continue  # already in library
+            ids = item.get("ids", {})
+            if item.get("item_type") == "movie" and radarr_on:
+                missing_movies.append({
+                    "tmdb_id": ids.get("tmdb"),
+                    "imdb_id": ids.get("imdb"),
+                    "title": item.get("title", ""),
+                    "year": item.get("year"),
+                })
+            elif item.get("item_type") == "show" and sonarr_on:
+                missing_shows.append({
+                    "tvdb_id": ids.get("tvdb"),
+                    "imdb_id": ids.get("imdb"),
+                    "title": item.get("title", ""),
+                    "year": item.get("year"),
+                })
+
+        # Send to Radarr
+        if missing_movies:
+            try:
+                from app.utils.radarr_client import RadarrClient
+                from app.utils.redis_cache import get_redis
+                r = await get_redis()
+                raw_servers = await r.get("radarr_servers")
+                if raw_servers:
+                    servers = json.loads(raw_servers)
+                    if servers:
+                        srv = servers[0]
+                        client = RadarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Radarr"))
+                        sent = 0
+                        for movie in missing_movies:
+                            try:
+                                result = await client.add_movie(
+                                    tmdb_id=movie.get("tmdb_id"),
+                                    imdb_id=movie.get("imdb_id"),
+                                    title=movie.get("title", ""),
+                                    year=movie.get("year"),
+                                )
+                                if result.get("status") == "ok":
+                                    sent += 1
+                            except Exception:
+                                log.debug("auto_send.radarr_item_failed",
+                                          title=movie.get("title"))
+                        await client.close()
+                        log.info("auto_send.radarr_done",
+                                 sent=sent, total=len(missing_movies))
+            except Exception:
+                log.warning("auto_send.radarr_failed")
+
+        # Send to Sonarr
+        if missing_shows:
+            try:
+                from app.utils.sonarr_client import SonarrClient
+                from app.utils.redis_cache import get_redis
+                r = await get_redis()
+                raw_servers = await r.get("sonarr_servers")
+                if raw_servers:
+                    servers = json.loads(raw_servers)
+                    if servers:
+                        srv = servers[0]
+                        client = SonarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Sonarr"))
+                        sent = 0
+                        for show in missing_shows:
+                            try:
+                                result = await client.add_series(
+                                    tvdb_id=show.get("tvdb_id"),
+                                    imdb_id=show.get("imdb_id"),
+                                    title=show.get("title", ""),
+                                    year=show.get("year"),
+                                )
+                                if result.get("status") == "ok":
+                                    sent += 1
+                            except Exception:
+                                log.debug("auto_send.sonarr_item_failed",
+                                          title=show.get("title"))
+                        await client.close()
+                        log.info("auto_send.sonarr_done",
+                                 sent=sent, total=len(missing_shows))
+            except Exception:
+                log.warning("auto_send.sonarr_failed")
 
     # ===================================================================
     # Feedback Loop — learned weights

@@ -1146,8 +1146,18 @@ async function viewAiring() {
         }
         else if (i.is_premiere) flag = '<span class="queue-badge unwatched">🎬 premiere</span>';
         else if (i.is_finale) flag = '<span class="queue-badge missing">🏁 finale</span>';
+        let binge = '';
+        if (i.binge_plan && i.is_finale) {
+          const bp = i.binge_plan;
+          if (bp.status === 'caught_up') {
+            binge = '<div style="font-size:0.72rem;color:var(--green);margin-top:2px;">✓ All caught up</div>';
+          } else {
+            const diffColor = bp.difficulty === 'easy' ? 'var(--green)' : bp.difficulty === 'moderate' ? 'var(--orange)' : 'var(--red)';
+            binge = `<div style="font-size:0.72rem;color:${diffColor};margin-top:2px;">📺 ${bp.message}</div>`;
+          }
+        }
         return `<tr>
-          <td>${(i.title || '').replace(/</g,'&lt;')}${i.episode_title ? ` <span style="color:var(--text-dim);font-size:0.78rem;">— ${i.episode_title.replace(/</g,'&lt;')}</span>` : ''}</td>
+          <td>${(i.title || '').replace(/</g,'&lt;')}${i.episode_title ? ` <span style="color:var(--text-dim);font-size:0.78rem;">— ${i.episode_title.replace(/</g,'&lt;')}</span>` : ''}${binge}</td>
           <td class="queue-source">${se}</td>
           <td>${inStr}</td>
           <td>${flag}</td>
