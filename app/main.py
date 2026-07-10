@@ -314,12 +314,18 @@ async def _tracked_job(job_id: str, func):
     elapsed = round(time.time() - start, 1)
     try:
         r = await get_redis()
-        await r.set(f"scheduler:status:{job_id}", _json.dumps({
+        run_data = {
             "last_run": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
             "status": status,
             "duration_s": elapsed,
             "error": error_msg,
+        }
+        await r.set(f"scheduler:status:{job_id}", _json.dumps(run_data))
+        # Push completion event for dashboard toast notifications
+        await r.lpush("job_completions", _json.dumps({
+            "job": job_id, **run_data,
         }))
+        await r.ltrim("job_completions", 0, 19)  # keep max 20
     except Exception:
         pass
 

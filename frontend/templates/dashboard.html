@@ -255,6 +255,64 @@
     color: var(--accent-light);
   }
 
+  /* Toast notifications */
+  .toast-container {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 380px;
+  }
+
+  .toast {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 36px 12px 14px;
+    font-size: 0.82rem;
+    color: var(--text);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    animation: toast-in 0.3s ease-out;
+    position: relative;
+    line-height: 1.4;
+  }
+
+  .toast.toast-out { animation: toast-out 0.25s ease-in forwards; }
+
+  .toast-ok { border-left: 3px solid var(--green); }
+  .toast-error { border-left: 3px solid var(--red); }
+
+  .toast-job { color: var(--accent-light); font-weight: 600; }
+  .toast-detail { color: var(--text-dim); font-size: 0.75rem; margin-top: 2px; }
+
+  .toast-close {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 2px;
+  }
+
+  .toast-close:hover { color: var(--text); }
+
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateX(40px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  @keyframes toast-out {
+    from { opacity: 1; transform: translateX(0); }
+    to { opacity: 0; transform: translateX(40px); }
+  }
+
   /* Queue table with played status */
   .queue-table {
     width: 100%;
@@ -361,6 +419,19 @@
   .queue-sonarr-btn:hover { opacity: 0.8; }
   .queue-sonarr-btn:disabled { opacity: 0.4; cursor: default; }
 
+  .queue-imdb-link {
+    color: #f5c518;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-decoration: none;
+    margin-left: 6px;
+    padding: 1px 5px;
+    border: 1px solid rgba(245,197,24,0.3);
+    border-radius: 3px;
+    vertical-align: middle;
+  }
+  .queue-imdb-link:hover { background: rgba(245,197,24,0.15); }
+
   .queue-source {
     font-size: 0.78rem;
   }
@@ -449,6 +520,7 @@
     <a href="/watch-party" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
 </nav>
 
+<div id="toastContainer" class="toast-container"></div>
 
 <div class="header">
   <h1>Emby-Trakt Suite</h1>
@@ -753,9 +825,11 @@ async function rebuildCache() {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     glog(`Cache rebuilt: ${d.movies ?? 0} movies, ${d.series ?? 0} series, ${d.cached_entries ?? 0} keys`, 'ok');
+    showToast('library_cache_rebuild', 'ok', null);
     await checkHealth();
   } catch(e) {
     glog('Cache rebuild failed: ' + e.message, 'err');
+    showToast('library_cache_rebuild', 'error', null, e.message);
   }
 }
 
@@ -1075,8 +1149,15 @@ async function startLink() {
 async function triggerQueue() {
   if (!currentUserId) return alert('Select a user first');
   glog('Smart Queue refresh triggered…');
-  await fetch(API + '/queue/refresh', {method:'POST'});
-  logTo('queueOutput', 'Refresh started — check back in a minute', 'ok');
+  try {
+    const r = await fetch(API + '/queue/refresh', {method:'POST'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    logTo('queueOutput', 'Refresh started — check back in a minute', 'ok');
+    showToast('smart_queue', 'ok', null);
+  } catch(e) {
+    logTo('queueOutput', 'Refresh failed: ' + e.message, 'err');
+    showToast('smart_queue', 'error', null, e.message);
+  }
 }
 
 function toggleQueue() {
@@ -1121,6 +1202,9 @@ async function viewQueue() {
 
         const titleClass = inLib ? 'queue-title' : 'queue-title missing';
         const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        const imdbLink = (!inLib && i.imdb_id)
+          ? ` <a href="https://www.imdb.com/title/${i.imdb_id}/" target="_blank" rel="noopener" class="queue-imdb-link">IMDb</a>`
+          : '';
 
         let actionBtn = '';
         if (!inLib && i.tmdb_id && i.type === 'movie') {
@@ -1133,7 +1217,7 @@ async function viewQueue() {
 
         return `<tr>
           <td style="color:var(--text-dim);font-size:0.78rem;">${n + 1}</td>
-          <td><span class="${titleClass}">${i.title}</span>${yearStr}${rating}</td>
+          <td><span class="${titleClass}">${i.title}</span>${yearStr}${rating}${imdbLink}</td>
           <td class="queue-source"><span class="source-tag source-${i.source}">${i.source}</span></td>
           <td class="queue-score">${i.score}</td>
           <td>${statusBadge}</td>
@@ -1322,8 +1406,10 @@ async function trainModel() {
     const d = await r.json();
     logTo('mlOutput', `Result: ${JSON.stringify(d)}`, d.status === 'trained' ? 'ok' : 'err');
     glog(`ML training: ${d.status}`, d.status === 'trained' ? 'ok' : 'err');
+    showToast('ml_retrain', d.status === 'trained' ? 'ok' : 'error', null, d.status !== 'trained' ? d.status : null);
   } catch(e) {
     logTo('mlOutput', 'Training failed: ' + e.message, 'err');
+    showToast('ml_retrain', 'error', null, e.message);
   }
 }
 
@@ -1337,8 +1423,15 @@ function viewPredictions() {
 
 async function scanUniverses() {
   glog('Universe scan triggered…');
-  await fetch(API + '/universes/scan', {method:'POST'});
-  logTo('universeOutput', 'Scan started…', 'ok');
+  try {
+    const r = await fetch(API + '/universes/scan', {method:'POST'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    logTo('universeOutput', 'Scan started…', 'ok');
+    showToast('universe_scan', 'ok', null);
+  } catch(e) {
+    logTo('universeOutput', 'Scan failed: ' + e.message, 'err');
+    showToast('universe_scan', 'error', null, e.message);
+  }
 }
 
 async function viewUniverses() {
@@ -1526,6 +1619,68 @@ async function viewDrift() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Toast Notifications
+// ═══════════════════════════════════════════════════════════════════════════
+
+const _JOB_LABELS = {
+  smart_queue: 'Smart Queue',
+  ml_retrain: 'ML Retrain',
+  universe_scan: 'Universe Scan',
+  library_cache_rebuild: 'Library Cache',
+  bias_analysis: 'Bias Analysis',
+  ssl_cert_check: 'SSL Check',
+  heartbeat: 'Heartbeat',
+};
+
+const _MAX_TOASTS = 3;
+
+function showToast(job, status, durationS, error) {
+  const container = document.getElementById('toastContainer');
+  const label = _JOB_LABELS[job] || job;
+  const isOk = status === 'ok';
+
+  // Enforce max visible toasts — dismiss oldest
+  while (container.children.length >= _MAX_TOASTS) {
+    dismissToast(container.firstElementChild);
+  }
+
+  const el = document.createElement('div');
+  el.className = `toast ${isOk ? 'toast-ok' : 'toast-error'}`;
+
+  let detail = isOk
+    ? `Completed in ${durationS}s`
+    : `Failed${error ? ': ' + error.slice(0, 80) : ''}`;
+
+  el.innerHTML = `<div class="toast-job">${label}</div>` +
+    `<div class="toast-detail">${detail}</div>` +
+    `<button class="toast-close" onclick="dismissToast(this.parentElement)">&times;</button>`;
+
+  container.appendChild(el);
+
+  // Auto-dismiss after 10 seconds
+  setTimeout(() => dismissToast(el), 10000);
+}
+
+function dismissToast(el) {
+  if (!el || !el.parentElement) return;
+  el.classList.add('toast-out');
+  setTimeout(() => el.remove(), 250);
+}
+
+async function pollJobCompletions() {
+  try {
+    const r = await fetch(API + '/api/job-completions');
+    if (!r.ok) return;
+    const events = await r.json();
+    for (const ev of events) {
+      // Skip heartbeat — too frequent and not interesting
+      if (ev.job === 'heartbeat') continue;
+      showToast(ev.job, ev.status, ev.duration_s, ev.error);
+    }
+  } catch(e) { /* silent */ }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Initialization
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1536,8 +1691,10 @@ function init() {
   loadActivity();
   loadSchedulerStatus();
   loadSSLStatus();
+  pollJobCompletions();
   setInterval(loadActivity, 15000); // refresh every 15s
   setInterval(checkHealth, 30000);
+  setInterval(pollJobCompletions, 15000); // check for job completions every 15s
   setInterval(loadParties, 60000);
   setInterval(loadSchedulerStatus, 60000); // refresh scheduler every 60s
   setInterval(loadSSLStatus, 300000); // refresh SSL every 5 min

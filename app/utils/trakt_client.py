@@ -489,7 +489,7 @@ class TraktClient:
         return await self._get(f"/{kind}/{trakt_id}?extended=full")
 
     async def search(self, query: str, kind: str = "movie,show") -> list[dict]:
-        return await self._get("/search/text", params={"query": query, "type": kind})
+        return await self._get(f"/search/{kind}", params={"query": query})
 
     # -- Lists (for curated universe data) -----------------------------------
 

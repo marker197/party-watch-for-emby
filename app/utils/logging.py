@@ -86,7 +86,7 @@ class _PollEndpointFilter(logging.Filter):
     Logging every one of these creates ~500 lines/hour of zero-value noise.
     """
 
-    _NOISY = frozenset({"/health", "/api/activity", "/api/scheduler/status", "/parties"})
+    _NOISY = frozenset({"/health", "/api/activity", "/api/scheduler/status", "/parties", "/api/job-completions"})
 
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()

@@ -1468,6 +1468,27 @@ async def scheduler_status():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Job completion events (toast notifications)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/job-completions")
+async def job_completions():
+    """Pop all pending job completion events for dashboard toasts."""
+    import json as _json
+    r = await get_redis()
+    events = []
+    while True:
+        raw = await r.rpop("job_completions")
+        if raw is None:
+            break
+        try:
+            events.append(_json.loads(raw))
+        except Exception:
+            pass
+    return events
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SSL Certificate Status
 # ═══════════════════════════════════════════════════════════════════════════
 

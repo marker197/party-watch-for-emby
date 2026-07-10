@@ -539,7 +539,7 @@ class UniverseDiscoveryService:
                     except Exception as e:
                         errors += 1
                         log.warning("universe_discovery.resolve_ids_error",
-                                    title=ui.title, error=str(e)[:80])
+                                    title=ui.title, error=str(e)[:200])
 
                     # Respect Trakt rate limits — small delay between lookups
                     import asyncio
