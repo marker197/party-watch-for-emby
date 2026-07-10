@@ -414,6 +414,11 @@ class TraktClient:
         (an episode is a finale if episode.number == season.episode_count)."""
         return await self._get(f"/shows/{show_id}/seasons", params={"extended": "full"})
 
+    async def get_movie_releases(self, movie_id: str, country: str = "us") -> list[dict]:
+        """Typed release dates for a movie (theatrical, digital, physical, tv).
+        Returns list of {country, certification, release_date, release_type, note}."""
+        return await self._get(f"/movies/{movie_id}/releases/{country}")
+
     # -- Friends -------------------------------------------------------------
 
     async def get_friends(self) -> list[dict]:

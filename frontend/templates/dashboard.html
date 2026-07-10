@@ -1156,8 +1156,17 @@ async function viewAiring() {
             binge = `<div style="font-size:0.72rem;color:${diffColor};margin-top:2px;">📺 ${bp.message}</div>`;
           }
         }
+        // Movie release dates (cinema + digital)
+        let releaseDates = '';
+        if (i.media_type === 'movie' && (i.theatrical_release || i.digital_release)) {
+          const fmtDate = (d) => { if (!d) return '—'; try { const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString('en-GB', {day:'numeric',month:'short',year:'numeric'}); } catch(e) { return d; } };
+          const lines = [];
+          if (i.theatrical_release) lines.push(`🎬 Cinema: ${fmtDate(i.theatrical_release)}`);
+          if (i.digital_release) lines.push(`💿 Digital: ${fmtDate(i.digital_release)}`);
+          releaseDates = `<div style="font-size:0.72rem;color:var(--text-dim);margin-top:2px;">${lines.join('<br>')}</div>`;
+        }
         return `<tr>
-          <td>${(i.title || '').replace(/</g,'&lt;')}${i.episode_title ? ` <span style="color:var(--text-dim);font-size:0.78rem;">— ${i.episode_title.replace(/</g,'&lt;')}</span>` : ''}${binge}</td>
+          <td>${(i.title || '').replace(/</g,'&lt;')}${i.episode_title ? ` <span style="color:var(--text-dim);font-size:0.78rem;">— ${i.episode_title.replace(/</g,'&lt;')}</span>` : ''}${binge}${releaseDates}</td>
           <td class="queue-source">${se}</td>
           <td>${inStr}</td>
           <td>${flag}</td>

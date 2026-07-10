@@ -329,6 +329,11 @@ class AiringAlertsService:
             # anything you already happen to have (e.g. an early digital
             # release you grabbed ahead of the calendar date).
 
+            # Fetch typed release dates (theatrical / digital)
+            theatrical_release, digital_release = await self._get_typed_releases(
+                trakt, movie_trakt_id,
+            )
+
             results.append({
                 "media_type": "movie",
                 "title": movie.get("title", ""),
@@ -342,8 +347,67 @@ class AiringAlertsService:
                 "is_finale": False,
                 "in_library": in_library,
                 "emby_item_id": emby_item_id,
+                "theatrical_release": theatrical_release,
+                "digital_release": digital_release,
             })
         return results
+
+    async def _get_typed_releases(
+        self, trakt: TraktClient, movie_trakt_id: str,
+    ) -> tuple[str | None, str | None]:
+        """Return (theatrical_date, digital_date) for a movie.
+
+        Checks US releases first, falls back to GB. Cached 24h per movie
+        since release dates don't change often.
+        """
+        if not movie_trakt_id:
+            return None, None
+
+        cache_key = f"airing_alerts:releases:{movie_trakt_id}"
+        try:
+            r = await get_redis()
+            cached = await r.get(cache_key)
+            if cached:
+                data = json.loads(cached)
+                return data.get("theatrical"), data.get("digital")
+        except Exception:
+            pass
+
+        theatrical = None
+        digital = None
+
+        for country in ("us", "gb"):
+            try:
+                releases = await trakt.get_movie_releases(movie_trakt_id, country=country)
+            except Exception:
+                log.debug("airing_alerts.releases_fetch_failed",
+                          movie_trakt_id=movie_trakt_id, country=country)
+                continue
+
+            for rel in releases or []:
+                rtype = rel.get("release_type", "")
+                rdate = rel.get("release_date")
+                if not rdate:
+                    continue
+                # Theatrical: premiere, limited, or theatrical
+                if rtype in ("premiere", "limited", "theatrical") and not theatrical:
+                    theatrical = rdate
+                elif rtype == "digital" and not digital:
+                    digital = rdate
+
+            # If we got at least one date from this country, stop
+            if theatrical or digital:
+                break
+
+        # Cache result (even if both None — avoids re-fetching for movies
+        # that genuinely have no typed releases)
+        try:
+            await r.setex(cache_key, SEASON_INFO_CACHE_TTL,
+                          json.dumps({"theatrical": theatrical, "digital": digital}))
+        except Exception:
+            pass
+
+        return theatrical, digital
 
     # ------------------------------------------------------------------
     # Shared helpers
