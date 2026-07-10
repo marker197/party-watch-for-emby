@@ -372,8 +372,8 @@ class TraktClient:
 
     # -- Trending / Popular --------------------------------------------------
 
-    async def get_trending(self, kind: str = "shows", limit: int = 20) -> list[dict]:
-        return await self._get(f"/{kind}/trending", params={"limit": limit})
+    async def get_trending(self, kind: str = "shows", limit: int = 20, page: int = 1) -> list[dict]:
+        return await self._get(f"/{kind}/trending", params={"limit": limit, "page": page})
 
     async def get_popular(self, kind: str = "shows", limit: int = 20) -> list[dict]:
         return await self._get(f"/{kind}/popular", params={"limit": limit})

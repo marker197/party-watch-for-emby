@@ -13,6 +13,7 @@ adjusts source weights per-user over time.
 from __future__ import annotations
 
 import json
+import random
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -42,9 +43,9 @@ DEFAULT_WEIGHTS = {
 
 # Source quotas for the 20-item queue
 SOURCE_QUOTAS = {
-    "watchlist": 10,
-    "trending": 5,
-    "recommended": 5,
+    "watchlist": 7,
+    "trending": 7,
+    "recommended": 6,
 }
 
 
@@ -116,12 +117,16 @@ class SmartQueueService:
             # Pre-resolve Emby IDs and check played status
             candidates = await self._resolve_and_filter_played(candidates, user)
 
-            # Load learned weights
+            # Load learned weights and staleness counters
             weights = await self._load_weights(user.id)
-            scored = self._score_candidates(candidates, weights)
+            staleness = await self._load_staleness(user.id)
+            scored = self._score_candidates(candidates, weights, staleness=staleness)
 
-            # Source-stratified selection: 10 watchlist, 5 trending, 5 recommended
+            # Source-stratified selection: 7 watchlist, 7 trending, 6 recommended
             top = self._stratified_select(scored)
+
+            # Overflow rotation — swap bottom 3 unplayed items for top overflow
+            top = await self._rotate_overflow(user.id, top)
 
             # Remaining candidates (not selected) become overflow for backfill
             top_ids = {c["trakt_id"] for c in top}
@@ -131,6 +136,18 @@ class SmartQueueService:
             )
             overflow = leftover[:30]
             await self._cache_overflow(user.id, overflow)
+
+            # Update staleness counters: increment for items still in queue,
+            # remove items no longer present
+            new_staleness = {}
+            for c in top:
+                tid = str(c.get("trakt_id", ""))
+                if tid:
+                    new_staleness[tid] = staleness.get(tid, 0) + 1
+            await self._save_staleness(user.id, new_staleness)
+
+            resolved_ids = await self._persist_queue(user, top)
+            await self._sync_emby_collection(user, top, resolved_ids)
 
             resolved_ids = await self._persist_queue(user, top)
             await self._sync_emby_collection(user, top, resolved_ids)
@@ -166,9 +183,10 @@ class SmartQueueService:
                     "source_score": 1.0,  # raw; multiplied by weight later
                 }
 
-        # 2. Trending shows + movies
+        # 2. Trending shows + movies (randomise page for variety)
+        trending_page = random.randint(1, 3)
         for kind in ("shows", "movies"):
-            trending = await trakt.get_trending(kind=kind, limit=15)
+            trending = await trakt.get_trending(kind=kind, limit=15, page=trending_page)
             for rank, entry in enumerate(trending):
                 item = entry.get("movie") or entry.get("show") or {}
                 tid = str(item.get("ids", {}).get("trakt", ""))
@@ -181,7 +199,7 @@ class SmartQueueService:
                         "ids": item.get("ids", {}),
                         "source": "trending",
                         "source_score": 1.0 - rank / 15,
-                        "trending_rank": rank + 1,
+                        "trending_rank": rank + 1 + ((trending_page - 1) * 15),
                     }
 
         # 3. Recommended (personalised based on user's Trakt ratings)
@@ -263,7 +281,22 @@ class SmartQueueService:
     # Score candidates using learned weights
     # -----------------------------------------------------------------------
 
-    def _score_candidates(self, candidates: list[dict], weights: dict) -> list[dict]:
+    async def _load_staleness(self, user_id: int) -> dict[str, int]:
+        """Load per-item staleness counters (trakt_id → consecutive refresh count)."""
+        try:
+            raw = await cache_get(f"queue_staleness:{user_id}")
+            if raw:
+                return json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            pass
+        return {}
+
+    async def _save_staleness(self, user_id: int, staleness: dict[str, int]):
+        """Persist staleness counters to Redis."""
+        await cache_set(f"queue_staleness:{user_id}", json.dumps(staleness), ttl=86400 * 30)
+
+    def _score_candidates(self, candidates: list[dict], weights: dict,
+                          staleness: dict[str, int] | None = None) -> list[dict]:
         for c in candidates:
             source = c.get("source", "watchlist")
             weight = weights.get(source, 5.0)
@@ -284,6 +317,14 @@ class SmartQueueService:
             # boost friend-endorsed items
             if c.get("friend_rating"):
                 score += (c["friend_rating"] - 7) * 1.5
+
+            # staleness decay — reduce score for items that have sat unplayed
+            if staleness:
+                days_stale = staleness.get(str(c.get("trakt_id", "")), 0)
+                if days_stale > 0:
+                    # -1.5 points per day stale, capped at -8
+                    penalty = min(days_stale * 1.5, 8.0)
+                    score -= penalty
 
             c["score"] = round(score, 2)
         return candidates
@@ -343,6 +384,73 @@ class SmartQueueService:
                  sources={s: sum(1 for c in selected if c.get("source") == s)
                           for s in set(c.get("source", "") for c in selected)})
         return selected
+
+    # -----------------------------------------------------------------------
+    # Overflow rotation — swap stale bottom items for fresh overflow
+    # -----------------------------------------------------------------------
+
+    async def _rotate_overflow(self, user_id: int, top: list[dict]) -> list[dict]:
+        """Replace the bottom 3 unplayed items with top overflow candidates.
+
+        This guarantees that every refresh introduces some fresh content,
+        even when the same sources return the same items.
+        """
+        ROTATE_COUNT = 3
+
+        try:
+            raw = await cache_get(f"queue_overflow:{user_id}")
+            if not raw:
+                return top
+            overflow = json.loads(raw) if isinstance(raw, str) else raw
+            if not overflow:
+                return top
+        except Exception:
+            return top
+
+        # Sort by score ascending — bottom items are rotation candidates
+        # Only rotate items that haven't been played
+        top_sorted = sorted(top, key=lambda c: c.get("score", 0))
+        top_ids = {c["trakt_id"] for c in top}
+
+        rotated_out = []
+        swapped_in = []
+
+        for candidate in top_sorted:
+            if len(rotated_out) >= ROTATE_COUNT:
+                break
+            # Don't rotate out items with air dates (time-sensitive)
+            if candidate.get("air_date"):
+                continue
+            # Don't rotate out friend-endorsed items
+            if candidate.get("friend_rating"):
+                continue
+            # Find an overflow item not already in the queue
+            for ov in overflow:
+                if ov.get("trakt_id") and ov["trakt_id"] not in top_ids:
+                    rotated_out.append(candidate["trakt_id"])
+                    swapped_in.append(ov)
+                    top_ids.discard(candidate["trakt_id"])
+                    top_ids.add(ov["trakt_id"])
+                    overflow.remove(ov)
+                    break
+
+        if not rotated_out:
+            return top
+
+        # Build new top list
+        new_top = [c for c in top if c["trakt_id"] not in set(rotated_out)]
+        new_top.extend(swapped_in)
+        new_top.sort(key=lambda c: c.get("score", 0), reverse=True)
+
+        # Update overflow cache (items removed)
+        await cache_set(f"queue_overflow:{user_id}", json.dumps(overflow), ttl=86400)
+
+        log.info("smart_queue.overflow_rotation",
+                 user_id=user_id,
+                 rotated_out=len(rotated_out),
+                 swapped_in=[c.get("title", "") for c in swapped_in])
+
+        return new_top
 
     # -----------------------------------------------------------------------
     # Match candidates to Emby library using LibraryCache
