@@ -971,7 +971,7 @@ async def playback_event(sid, data):
         skip_sid=sid,
     )
 
-    log.debug("ws.playback_event", code=code, event=event, position=position)
+    log.debug("ws.playback_event", code=code, action=event, position=position)
 
 
 @sio.event
