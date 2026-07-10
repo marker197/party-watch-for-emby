@@ -39,6 +39,7 @@ from app.models.schema import MLModel, Prediction, User, UserRating
 from app.utils.trakt_client import TraktClient
 from app.utils.emby_client import EmbyClient
 from app.utils.library_cache import LibraryCache
+from app.utils.redis_cache import get_redis
 from app.utils.database import async_session
 
 log = structlog.get_logger()
@@ -202,7 +203,10 @@ class MLPredictorService:
                 ))
                 await db.commit()
 
-            # 9. Predict for unwatched library
+            # 9. Snapshot feature importances for drift tracking
+            await self._snapshot_drift(user.id, pipeline, feature_names)
+
+            # 10. Predict for unwatched library
             await self._predict_library(user, pipeline, feature_names)
 
             result = {
@@ -630,3 +634,150 @@ class MLPredictorService:
 
         parts.append(f"predicted {predicted:.1f}/10")
         return f"Based on {'; '.join(parts)}"
+
+    # -----------------------------------------------------------------------
+    # Rating Drift Tracker
+    # -----------------------------------------------------------------------
+
+    DRIFT_MAX_SNAPSHOTS = 12  # ~3 months of weekly retrains
+
+    async def _snapshot_drift(self, user_id: int, pipeline: Pipeline, feature_names: list[str]) -> None:
+        """Persist a timestamped snapshot of feature importances to Redis.
+
+        Keeps the last DRIFT_MAX_SNAPSHOTS entries per user so the dashboard
+        can show how taste has shifted over time.
+        """
+        try:
+            importances = pipeline.named_steps["model"].feature_importances_
+        except Exception:
+            return
+
+        if len(importances) != len(feature_names):
+            return
+
+        # Build a readable dict of importances grouped by category
+        snapshot: dict[str, Any] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "genres": {},
+            "actors": {},
+            "directors": {},
+            "studios": {},
+            "numeric": {},
+        }
+
+        for name, imp in zip(feature_names, importances):
+            imp_val = round(float(imp), 5)
+            if imp_val <= 0:
+                continue
+            if name.startswith("genre_"):
+                snapshot["genres"][name[len("genre_"):]] = imp_val
+            elif name.startswith("actor_"):
+                snapshot["actors"][name[len("actor_"):]] = imp_val
+            elif name.startswith("director_"):
+                snapshot["directors"][name[len("director_"):]] = imp_val
+            elif name.startswith("studio_"):
+                snapshot["studios"][name[len("studio_"):]] = imp_val
+            else:
+                snapshot["numeric"][name] = imp_val
+
+        try:
+            r = await get_redis()
+            key = f"ml_drift:{user_id}"
+            raw = await r.get(key)
+            history = json.loads(raw) if raw else []
+            history.append(snapshot)
+            # Keep only the most recent snapshots
+            history = history[-self.DRIFT_MAX_SNAPSHOTS:]
+            await r.set(key, json.dumps(history))
+            log.info("ml_predictor.drift_snapshot", user_id=user_id, snapshots=len(history))
+        except Exception:
+            log.warning("ml_predictor.drift_snapshot_failed", user_id=user_id)
+
+    async def get_drift(self, user_id: int) -> dict:
+        """Return drift data: historical snapshots + computed changes.
+
+        Response: {snapshots: [...], changes: [...], summary: str}
+        """
+        try:
+            r = await get_redis()
+            raw = await r.get(f"ml_drift:{user_id}")
+            snapshots = json.loads(raw) if raw else []
+        except Exception:
+            snapshots = []
+
+        if len(snapshots) < 2:
+            return {
+                "snapshots": snapshots,
+                "changes": [],
+                "summary": "Need at least 2 training runs to detect drift. Retrain again next week.",
+            }
+
+        # Compare latest vs earliest
+        oldest = snapshots[0]
+        latest = snapshots[-1]
+
+        changes = []
+
+        # Genre drift
+        all_genres = set(list(oldest.get("genres", {}).keys()) + list(latest.get("genres", {}).keys()))
+        for genre in sorted(all_genres):
+            old_val = oldest.get("genres", {}).get(genre, 0)
+            new_val = latest.get("genres", {}).get(genre, 0)
+            if old_val == 0 and new_val == 0:
+                continue
+            delta = new_val - old_val
+            if abs(delta) < 0.001:
+                continue
+            pct = (delta / old_val * 100) if old_val > 0 else 100
+            direction = "up" if delta > 0 else "down"
+            changes.append({
+                "category": "genre",
+                "name": genre.replace("-", " ").title(),
+                "old_importance": round(old_val, 4),
+                "new_importance": round(new_val, 4),
+                "delta": round(delta, 4),
+                "pct_change": round(pct, 1),
+                "direction": direction,
+            })
+
+        # Top movers from other categories
+        for cat in ("actors", "directors", "studios"):
+            all_keys = set(list(oldest.get(cat, {}).keys()) + list(latest.get(cat, {}).keys()))
+            for key in sorted(all_keys):
+                old_val = oldest.get(cat, {}).get(key, 0)
+                new_val = latest.get(cat, {}).get(key, 0)
+                delta = new_val - old_val
+                if abs(delta) < 0.002:
+                    continue
+                pct = (delta / old_val * 100) if old_val > 0 else 100
+                changes.append({
+                    "category": cat.rstrip("s"),
+                    "name": key.replace("_", " ").title(),
+                    "old_importance": round(old_val, 4),
+                    "new_importance": round(new_val, 4),
+                    "delta": round(delta, 4),
+                    "pct_change": round(pct, 1),
+                    "direction": "up" if delta > 0 else "down",
+                })
+
+        # Sort by absolute delta descending
+        changes.sort(key=lambda c: abs(c["delta"]), reverse=True)
+
+        # Build summary string
+        top_up = [c for c in changes if c["direction"] == "up"][:3]
+        top_down = [c for c in changes if c["direction"] == "down"][:3]
+        parts = []
+        if top_up:
+            names = ", ".join(f"{c['name']} ({c['category']})" for c in top_up)
+            parts.append(f"Rising: {names}")
+        if top_down:
+            names = ", ".join(f"{c['name']} ({c['category']})" for c in top_down)
+            parts.append(f"Declining: {names}")
+        weeks = len(snapshots) - 1
+        summary = f"Over {weeks} training run{'s' if weeks != 1 else ''}. " + ". ".join(parts) if parts else "No significant drift detected."
+
+        return {
+            "snapshots": snapshots,
+            "changes": changes[:20],  # top 20 movers
+            "summary": summary,
+        }

@@ -579,6 +579,26 @@
       <div id="airingOutput" class="log-area" style="display:none; margin-top:12px;"></div>
     </div>
 
+    <!-- #6 Scrobble Audit -->
+    <div class="card">
+      <div class="card-header">
+        <h2>🔍 Scrobble Audit</h2>
+      </div>
+      <p>Items marked played in Emby but missing from Trakt — missed webhooks, downtime, etc. One-click or bulk backfill.</p>
+      <button class="btn btn-blue btn-sm" id="btnToggleAudit" onclick="toggleAudit()">Run Audit ▾</button>
+      <div id="auditOutput" class="log-area" style="display:none; margin-top:12px;"></div>
+    </div>
+
+    <!-- #7 Rating Drift -->
+    <div class="card">
+      <div class="card-header">
+        <h2>📊 Taste Drift</h2>
+      </div>
+      <p>How your viewing preferences shift over time — tracked from ML model retraining snapshots.</p>
+      <button class="btn btn-blue btn-sm" id="btnToggleDrift" onclick="toggleDrift()">View Drift ▾</button>
+      <div id="driftOutput" class="log-area" style="display:none; margin-top:12px;"></div>
+    </div>
+
   </div>
 
   <!-- Smart Queue panel — full width below the cards grid -->
@@ -597,6 +617,29 @@
       <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleAiring()">✕ Close</button>
     </div>
     <div id="airingTable"></div>
+  </div>
+
+  <!-- Scrobble Audit panel -->
+  <div id="auditPanel" class="card" style="display:none; margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h3 style="font-size:0.95rem;">🔍 Missed Scrobbles</h3>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-sm btn-green" id="btnBackfillAll" onclick="backfillAll()" style="display:none;">Backfill All</button>
+        <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleAudit()">✕ Close</button>
+      </div>
+    </div>
+    <div id="auditSummary" style="margin-bottom:10px;"></div>
+    <div id="auditTable"></div>
+  </div>
+
+  <!-- Taste Drift panel -->
+  <div id="driftPanel" class="card" style="display:none; margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h3 style="font-size:0.95rem;">📊 Taste Drift</h3>
+      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleDrift()">✕ Close</button>
+    </div>
+    <div id="driftSummary" style="margin-bottom:10px;"></div>
+    <div id="driftTable"></div>
   </div>
 
   <!-- Scheduler status -->
@@ -1300,6 +1343,178 @@ async function scanUniverses() {
 
 async function viewUniverses() {
   window.location.href = '/universes';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Scrobble Audit
+// ═══════════════════════════════════════════════════════════════════════════
+
+function toggleAudit() {
+  const panel = document.getElementById('auditPanel');
+  const btn = document.getElementById('btnToggleAudit');
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    btn.textContent = 'Hide Audit ▴';
+    runAudit();
+  } else {
+    panel.style.display = 'none';
+    btn.textContent = 'Run Audit ▾';
+  }
+}
+
+let _auditData = null;
+
+async function runAudit() {
+  const el = document.getElementById('auditTable');
+  const summary = document.getElementById('auditSummary');
+  el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Comparing Emby played items against Trakt history… this may take a moment.</div>';
+  summary.innerHTML = '';
+  document.getElementById('btnBackfillAll').style.display = 'none';
+  try {
+    const r = await fetch(API + `/api/scrobble-audit/${currentUserId}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    _auditData = data;
+    const movies = data.movies || [];
+    const shows = data.shows || [];
+    const s = data.summary || {};
+
+    summary.innerHTML = `<div style="font-size:0.82rem; color:var(--text-dim);">` +
+      `Emby played: ${s.emby_movies_played || 0} movies, ${s.emby_shows_played || 0} shows · ` +
+      `Trakt watched: ${s.trakt_movies_watched || 0} movies, ${s.trakt_shows_watched || 0} shows · ` +
+      `<span style="color:${(movies.length + shows.length) > 0 ? 'var(--orange)' : 'var(--green)'}; font-weight:600;">` +
+      `${movies.length + shows.length} missed</span></div>`;
+
+    if (movies.length === 0 && shows.length === 0) {
+      el.innerHTML = '<div style="color:var(--green);padding:8px;">✓ Everything in sync — no missed scrobbles found.</div>';
+      return;
+    }
+
+    document.getElementById('btnBackfillAll').style.display = 'inline-block';
+
+    const allItems = [...movies, ...shows];
+    el.innerHTML = '<table class="queue-table"><thead><tr>' +
+      '<th>Title</th><th style="width:60px;">Type</th><th style="width:70px;">Year</th><th style="width:100px;">Action</th>' +
+      '</tr></thead><tbody>' +
+      allItems.map((item, idx) => {
+        const typeLabel = item.type === 'movie'
+          ? '<span style="color:var(--accent);">movie</span>'
+          : '<span style="color:var(--blue);">show</span>';
+        return `<tr id="audit-row-${idx}">
+          <td>${(item.title || '').replace(/</g,'&lt;')}</td>
+          <td class="queue-source">${typeLabel}</td>
+          <td class="queue-source">${item.year || '—'}</td>
+          <td><button class="btn btn-sm btn-green" id="audit-btn-${idx}" onclick="backfillItem(${idx})">Backfill</button></td>
+        </tr>`;
+      }).join('') +
+      '</tbody></table>';
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+  }
+}
+
+async function backfillItem(idx) {
+  if (!_auditData) return;
+  const allItems = [...(_auditData.movies || []), ...(_auditData.shows || [])];
+  const item = allItems[idx];
+  if (!item) return;
+  const btn = document.getElementById('audit-btn-' + idx);
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = '⏳';
+  try {
+    const r = await fetch(API + `/api/scrobble-audit/${currentUserId}/backfill`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({items: [item]}),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    btn.textContent = '✓';
+    btn.style.background = 'var(--green)';
+    document.getElementById('audit-row-' + idx).style.opacity = '0.5';
+  } catch(e) {
+    btn.textContent = '✗';
+    btn.style.background = 'var(--red)';
+    btn.disabled = false;
+  }
+}
+
+async function backfillAll() {
+  const btn = document.getElementById('btnBackfillAll');
+  btn.disabled = true;
+  btn.textContent = '⏳ Backfilling…';
+  try {
+    const r = await fetch(API + `/api/scrobble-audit/${currentUserId}/backfill-all`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    btn.textContent = `✓ ${data.added || 0} added`;
+    btn.style.background = 'var(--green)';
+    // Refresh the audit after a moment
+    setTimeout(() => runAudit(), 2000);
+  } catch(e) {
+    btn.textContent = '✗ Failed';
+    btn.style.background = 'var(--red)';
+    btn.disabled = false;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Taste Drift
+// ═══════════════════════════════════════════════════════════════════════════
+
+function toggleDrift() {
+  const panel = document.getElementById('driftPanel');
+  const btn = document.getElementById('btnToggleDrift');
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    btn.textContent = 'Hide Drift ▴';
+    viewDrift();
+  } else {
+    panel.style.display = 'none';
+    btn.textContent = 'View Drift ▾';
+  }
+}
+
+async function viewDrift() {
+  const el = document.getElementById('driftTable');
+  const summary = document.getElementById('driftSummary');
+  el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Loading drift data…</div>';
+  summary.innerHTML = '';
+  try {
+    const r = await fetch(API + `/ml/drift/${currentUserId}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+
+    summary.innerHTML = `<div style="font-size:0.82rem; color:var(--text-dim);">${data.summary || 'No data yet.'}<br>` +
+      `<span style="font-size:0.75rem;">${data.snapshots?.length || 0} snapshot${(data.snapshots?.length || 0) !== 1 ? 's' : ''} recorded</span></div>`;
+
+    const changes = data.changes || [];
+    if (changes.length === 0) {
+      el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">No significant drift detected yet. Train the model at least twice to start tracking.</div>';
+      return;
+    }
+
+    el.innerHTML = '<table class="queue-table"><thead><tr>' +
+      '<th>Factor</th><th style="width:70px;">Category</th><th style="width:80px;">Change</th><th style="width:60px;">Direction</th>' +
+      '</tr></thead><tbody>' +
+      changes.map(c => {
+        const arrow = c.direction === 'up' ? '↑' : '↓';
+        const color = c.direction === 'up' ? 'var(--green)' : 'var(--red)';
+        const pct = c.pct_change !== null ? ` (${c.pct_change > 0 ? '+' : ''}${c.pct_change}%)` : '';
+        return `<tr>
+          <td>${c.name}</td>
+          <td class="queue-source">${c.category}</td>
+          <td style="font-size:0.82rem;">${c.old_importance.toFixed(3)} → ${c.new_importance.toFixed(3)}${pct}</td>
+          <td style="color:${color}; font-weight:600; text-align:center;">${arrow}</td>
+        </tr>`;
+      }).join('') +
+      '</tbody></table>';
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

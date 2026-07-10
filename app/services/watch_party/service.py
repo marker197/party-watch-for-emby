@@ -790,6 +790,11 @@ class WatchPartyService:
 
         Called when the host seeks — sends the same position to every
         participant's active session so everyone stays in sync.
+
+        Sets a short-lived Redis flag per session so the webhook handler
+        skips the playback.pause events that Emby fires during a seek
+        (Emby pauses → seeks → resumes, which would otherwise spam Trakt
+        with scrobble/pause calls).
         """
         r = await get_redis()
         state = await r.hgetall(f"party:{code}")
@@ -815,6 +820,9 @@ class WatchPartyService:
             if not sid:
                 continue
             try:
+                # Suppress webhook pause processing for 10s — Emby fires
+                # playback.pause during seeks which would trigger Trakt scrobble
+                await r.setex(f"party_seek_suppress:{sid}", 10, "1")
                 await self.emby.send_play_state_command(
                     sid, "Seek", seek_ticks=position_ticks,
                 )
@@ -879,7 +887,7 @@ class WatchPartyService:
                         "watch_party.emby_sync",
                         session_id=session_id,
                         emby_user_id=emby_uid,
-                        event=event,
+                        action=event,
                     )
                 except Exception as e:
                     log.warning(
@@ -950,8 +958,10 @@ async def playback_event(sid, data):
         "position": str(position),
     })
 
-    # Sync to Emby sessions (reuse module-level service to avoid connection leaks)
-    asyncio.create_task(_sio_watch_party_svc.sync_playback_to_emby(code, event, position))
+    # Sync to Emby sessions — skip for seek events because the HTTP
+    # POST /party/{code}/seek route already sends seeks via seek_all()
+    if event != "seek":
+        asyncio.create_task(_sio_watch_party_svc.sync_playback_to_emby(code, event, position))
 
     # broadcast to everyone else in the room (WebSocket)
     await sio.emit(

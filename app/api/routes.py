@@ -40,6 +40,7 @@ async def _first_emby_user_id() -> str | None:
     return user.emby_user_id if user else None
 from app.services.rating_bias_detector.service import RatingBiasDetectorService
 from app.services.airing_alerts.service import AiringAlertsService
+from app.services.scrobble_audit.service import ScrobbleAuditService
 
 smart_queue_svc = SmartQueueService()
 ml_predictor_svc = MLPredictorService()
@@ -47,6 +48,7 @@ universe_svc = UniverseDiscoveryService()
 watch_party_svc = WatchPartyService()
 bias_detector_svc = RatingBiasDetectorService()
 airing_alerts_svc = AiringAlertsService()
+scrobble_audit_svc = ScrobbleAuditService()
 
 log = structlog.get_logger()
 
@@ -431,6 +433,74 @@ async def get_model_info(
         "genre_insights": genre_insights,
         "trained_at": model.trained_at.isoformat() if model.trained_at else None,
     }
+
+
+@router.get("/ml/drift/{user_id}")
+async def get_rating_drift(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+):
+    """Return taste drift data — how feature importances shifted over training runs."""
+    require_user_ownership(current_user.id, user_id, "drift")
+    return await ml_predictor_svc.get_drift(user_id)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Missed Scrobble Audit
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/scrobble-audit/{user_id}")
+async def scrobble_audit(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compare Emby played items vs Trakt history — surface missed scrobbles."""
+    require_user_ownership(current_user.id, user_id, "scrobble_audit")
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    return await scrobble_audit_svc.run_audit(user)
+
+
+@router.post("/api/scrobble-audit/{user_id}/backfill")
+async def scrobble_backfill(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Backfill selected items to Trakt history.
+
+    Body: {items: [{type, imdb_id, tmdb_id, title}, ...]}
+    """
+    require_user_ownership(current_user.id, user_id, "scrobble_backfill")
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    body = await request.json()
+    items = body.get("items", [])
+    if not items:
+        raise HTTPException(400, "No items provided")
+    return await scrobble_audit_svc.backfill(user, items)
+
+
+@router.post("/api/scrobble-audit/{user_id}/backfill-all")
+async def scrobble_backfill_all(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Backfill ALL missed scrobbles to Trakt history."""
+    require_user_ownership(current_user.id, user_id, "scrobble_backfill_all")
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    audit = await scrobble_audit_svc.run_audit(user)
+    all_items = audit.get("movies", []) + audit.get("shows", [])
+    if not all_items:
+        return {"added": 0, "message": "Nothing to backfill"}
+    return await scrobble_audit_svc.backfill(user, all_items)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1007,6 +1077,20 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     is_mark_played = event_lower in ("item.markplayed", "item.markedplayed",
                                       "itemmarkplayed", "itemmarkedplayed")
     is_watched = is_play_stop or is_mark_played
+
+    # ── Watch party seek suppression ────────────────────────────────────────
+    # When seek_all() fires, Emby pauses → seeks → resumes each session,
+    # generating spurious playback.pause and playback.unpause webhooks.
+    # A short-lived Redis flag per session suppresses these.
+    if is_play_pause or is_play_unpause:
+        session_id = session_data.get("Id", "")
+        if session_id:
+            try:
+                r = await get_redis()
+                if await r.get(f"party_seek_suppress:{session_id}"):
+                    return {"status": "suppressed", "reason": "party_seek_in_progress"}
+            except Exception:
+                pass
 
     # ── playback.start → Trakt scrobble/start ("Watching…") ─────────────────
     if is_play_start:

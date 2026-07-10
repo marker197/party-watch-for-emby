@@ -480,9 +480,25 @@ class SmartQueueService:
         if title:
             search_type = "Movie" if candidate.get("item_type") == "movie" else "Series"
             search_results = await self.emby.search_items(title, item_type=search_type)
-            for emby_item in search_results:
-                if emby_item.get("Name", "").lower() == title.lower():
-                    return emby_item["Id"]
+            title_matches = [
+                item for item in search_results
+                if item.get("Name", "").lower() == title.lower()
+            ]
+            if title_matches:
+                if year:
+                    # Candidate has a year — only accept an exact year match
+                    # to avoid linking e.g. "Resident Evil (2026)" to the
+                    # 2002 movie that happens to share the same title
+                    year_matches = [
+                        item for item in title_matches
+                        if item.get("ProductionYear") == year
+                    ]
+                    if year_matches:
+                        return year_matches[0]["Id"]
+                    # Wrong year(s) — treat as not in library
+                    return None
+                else:
+                    return title_matches[0]["Id"]
 
         return None
 
