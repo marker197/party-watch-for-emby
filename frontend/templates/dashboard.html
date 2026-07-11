@@ -1490,7 +1490,7 @@ async function runAudit() {
     if (movies.length > 0) {
       html += '<div style="font-weight:600;margin-bottom:6px;">Movies</div>';
       html += '<table class="queue-table"><thead><tr>' +
-        '<th>Title</th><th style="width:70px;">Year</th><th style="width:110px;">Date Played</th><th style="width:100px;">Action</th>' +
+        '<th>Title</th><th style="width:70px;">Year</th><th style="width:110px;">Date Played</th><th style="width:140px;">Action</th>' +
         '</tr></thead><tbody>';
       movies.forEach((item, idx) => {
         let datePlayed = '—';
@@ -1504,7 +1504,7 @@ async function runAudit() {
           <td>${(item.title || '').replace(/</g,'&lt;')}</td>
           <td class="queue-source">${item.year || '—'}</td>
           <td class="queue-source">${datePlayed}</td>
-          <td><button class="btn btn-sm btn-green" id="audit-btn-m${idx}" onclick="backfillMovie(${idx})">Backfill</button></td>
+          <td style="display:flex;gap:4px;"><button class="btn btn-sm btn-green" id="audit-btn-m${idx}" onclick="backfillMovie(${idx})">Backfill</button><button class="btn btn-sm" style="background:var(--surface-hover);font-size:0.72rem;" onclick="dismissAuditItem('${item.emby_id}','m',${idx})" title="Hide from audit">✕</button></td>
         </tr>`;
       });
       html += '</tbody></table>';
@@ -1515,7 +1515,7 @@ async function runAudit() {
       const totalEps = shows.reduce((sum, s) => sum + (s.episode_count || 0), 0);
       html += `<div style="font-weight:600;margin:16px 0 6px;">TV Shows <span style="font-weight:400;color:var(--text-dim);font-size:0.82rem;">(${totalEps} episodes across ${shows.length} shows)</span></div>`;
       html += '<table class="queue-table"><thead><tr>' +
-        '<th>Series</th><th style="width:80px;">Episodes</th><th style="width:110px;">Last Played</th><th style="width:100px;">Action</th>' +
+        '<th>Series</th><th style="width:80px;">Episodes</th><th style="width:110px;">Last Played</th><th style="width:140px;">Action</th>' +
         '</tr></thead><tbody>';
       shows.forEach((show, idx) => {
         let datePlayed = '—';
@@ -1527,7 +1527,7 @@ async function runAudit() {
           <td><span style="color:var(--text-dim);margin-right:4px;">▸</span> ${(show.title || '').replace(/</g,'&lt;')} <span style="color:var(--text-dim);font-size:0.78rem;">(${show.year || ''})</span></td>
           <td class="queue-source" style="color:var(--orange);font-weight:600;">${epCount}</td>
           <td class="queue-source">${datePlayed}</td>
-          <td><button class="btn btn-sm btn-green" id="audit-btn-s${idx}" onclick="event.stopPropagation(); backfillShow(${idx})">Backfill</button></td>
+          <td style="display:flex;gap:4px;"><button class="btn btn-sm btn-green" id="audit-btn-s${idx}" onclick="event.stopPropagation(); backfillShow(${idx})">Backfill</button><button class="btn btn-sm" style="background:var(--surface-hover);font-size:0.72rem;" onclick="event.stopPropagation(); dismissAuditItem('${show.emby_id}','s',${idx})" title="Hide from audit">✕</button></td>
         </tr>`;
         // Hidden episode detail rows
         if (show.episodes && show.episodes.length > 0) {
@@ -1571,6 +1571,28 @@ function toggleAuditEpisodes(idx) {
   }
 }
 
+function _updateAuditSummary() {
+  if (!_auditData) return;
+  const movies = _auditData.movies || [];
+  const shows = _auditData.shows || [];
+  const totalEps = shows.reduce((sum, s) => sum + (s.episode_count || (s.episodes || []).length || 0), 0);
+  const s = _auditData.summary || {};
+  const summary = document.getElementById('auditSummary');
+  if (!summary) return;
+  summary.innerHTML = `<div style="font-size:0.82rem; color:var(--text-dim);">` +
+    `Emby played: ${s.emby_movies_played || 0} movies, ${s.emby_shows_played || 0} shows · ` +
+    `Trakt watched: ${s.trakt_movies_watched || 0} movies, ${s.trakt_shows_watched || 0} episodes · ` +
+    `<span style="color:${(movies.length + totalEps) > 0 ? 'var(--orange)' : 'var(--green)'}; font-weight:600;">` +
+    `${movies.length} movies, ${totalEps} episodes missed</span></div>`;
+  const btnAll = document.getElementById('btnBackfillAll');
+  if (btnAll) btnAll.style.display = (movies.length + shows.length) > 0 ? '' : 'none';
+}
+
+function _removeAuditRow(id) {
+  const el = document.getElementById(id);
+  if (el) el.remove();
+}
+
 async function backfillMovie(idx) {
   if (!_auditData) return;
   const item = (_auditData.movies || [])[idx];
@@ -1586,9 +1608,9 @@ async function backfillMovie(idx) {
       body: JSON.stringify({items: [item]}),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    btn.textContent = '✓';
-    btn.style.background = 'var(--green)';
-    document.getElementById('audit-row-m' + idx).style.opacity = '0.5';
+    _auditData.movies.splice(idx, 1);
+    _removeAuditRow('audit-row-m' + idx);
+    _updateAuditSummary();
   } catch(e) {
     btn.textContent = '✗';
     btn.style.background = 'var(--red)';
@@ -1612,12 +1634,10 @@ async function backfillShow(idx) {
       body: JSON.stringify({items: [show]}),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
-    btn.textContent = `✓ ${data.added || 0}`;
-    btn.style.background = 'var(--green)';
-    document.getElementById('audit-row-s' + idx).style.opacity = '0.5';
-    const epsRow = document.getElementById('audit-eps-' + idx);
-    if (epsRow) epsRow.style.opacity = '0.5';
+    _auditData.shows.splice(idx, 1);
+    _removeAuditRow('audit-row-s' + idx);
+    _removeAuditRow('audit-eps-' + idx);
+    _updateAuditSummary();
   } catch(e) {
     btn.textContent = '✗';
     btn.style.background = 'var(--red)';
@@ -1644,6 +1664,28 @@ async function backfillAll() {
     btn.textContent = '✗ Failed';
     btn.style.background = 'var(--red)';
     btn.disabled = false;
+  }
+}
+
+async function dismissAuditItem(embyId, kind, idx) {
+  try {
+    const r = await fetch(API + `/api/scrobble-audit/${currentUserId}/dismiss`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({emby_id: embyId}),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (kind === 'm') {
+      _auditData.movies.splice(idx, 1);
+      _removeAuditRow('audit-row-m' + idx);
+    } else {
+      _auditData.shows.splice(idx, 1);
+      _removeAuditRow('audit-row-s' + idx);
+      _removeAuditRow('audit-eps-' + idx);
+    }
+    _updateAuditSummary();
+  } catch(e) {
+    // silent fail
   }
 }
 

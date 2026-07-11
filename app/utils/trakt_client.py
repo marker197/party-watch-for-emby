@@ -365,6 +365,49 @@ class TraktClient:
             params={"limit": limit},
         )
 
+    async def get_watched_episode_ids(self, max_pages: int = 20) -> set[str]:
+        """Paginate through /users/me/history/episodes and return a set of
+        episode-level provider IDs like ``imdb:tt1234567``, ``tvdb:12345``.
+
+        Used by the scrobble audit to match episodes that have different
+        season/episode numbering between Emby and Trakt.
+        """
+        ids: set[str] = set()
+        page = 1
+        per_page = 500
+        while page <= max_pages:
+            await self._ensure_token_valid()
+            resp = await self._client.get(
+                "/users/me/history/episodes",
+                headers=self._auth_headers(),
+                params={"page": page, "limit": per_page},
+            )
+            self._update_rate_limit(resp)
+            if resp.status_code == 429:
+                await self._wait_for_rate_limit_reset()
+                continue  # retry same page
+            if resp.status_code == 401:
+                refreshed = await self._try_refresh_on_401("/users/me/history/episodes")
+                if refreshed:
+                    continue
+                break
+            if resp.status_code != 200:
+                break
+            entries = resp.json()
+            if not entries:
+                break
+            for entry in entries:
+                ep_ids = entry.get("episode", {}).get("ids", {})
+                for key in ("imdb", "tvdb", "tmdb"):
+                    val = ep_ids.get(key)
+                    if val:
+                        ids.add(f"{key}:{val}")
+            total_pages = int(resp.headers.get("X-Pagination-Page-Count", page))
+            if page >= total_pages:
+                break
+            page += 1
+        return ids
+
     # -- Watched progress ----------------------------------------------------
 
     async def get_watched(self, kind: str = "shows") -> list[dict]:

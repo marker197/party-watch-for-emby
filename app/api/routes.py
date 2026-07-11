@@ -504,6 +504,42 @@ async def scrobble_backfill_all(
     return await scrobble_audit_svc.backfill(user, all_items)
 
 
+@router.post("/api/scrobble-audit/{user_id}/dismiss")
+async def scrobble_dismiss(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Dismiss an item from the scrobble audit list.
+
+    Body: {emby_id: "..."}
+    """
+    require_user_ownership(current_user.id, user_id, "scrobble_dismiss")
+    body = await request.json()
+    emby_id = body.get("emby_id")
+    if not emby_id:
+        raise HTTPException(400, "emby_id required")
+    return await scrobble_audit_svc.dismiss_item(user_id, emby_id)
+
+
+@router.post("/api/scrobble-audit/{user_id}/undismiss")
+async def scrobble_undismiss(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Re-enable a previously dismissed audit item.
+
+    Body: {emby_id: "..."}
+    """
+    require_user_ownership(current_user.id, user_id, "scrobble_undismiss")
+    body = await request.json()
+    emby_id = body.get("emby_id")
+    if not emby_id:
+        raise HTTPException(400, "emby_id required")
+    return await scrobble_audit_svc.undismiss_item(user_id, emby_id)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Feature #3 — Shared Universe Discovery
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1982,7 +2018,7 @@ async def restore_db_backup(request: Request):
 
 @router.get("/api/radarr/servers")
 async def get_radarr_servers(db: AsyncSession = Depends(get_db)):
-    """Return configured Radarr servers (Redis → DB fallback)."""
+    """Return configured Radarr servers (Redis → DB fallback). API keys masked."""
     import json as _json
     r = await get_redis()
     raw = await r.get("radarr_servers")
@@ -1991,7 +2027,10 @@ async def get_radarr_servers(db: AsyncSession = Depends(get_db)):
     if not raw:
         return {"servers": []}
     try:
-        return {"servers": _json.loads(raw)}
+        servers = _json.loads(raw)
+        for s in servers:
+            s["api_key"] = _mask_api_key(s.get("api_key", ""))
+        return {"servers": servers}
     except Exception:
         return {"servers": []}
 
@@ -2001,10 +2040,11 @@ async def save_radarr_servers(payload: dict, db: AsyncSession = Depends(get_db))
     """Save Radarr server configs to DB + Redis.
 
     Payload: {"servers": [{"name": "...", "url": "...", "api_key": "..."}, ...]}
-    Max 2 servers.
+    Max 2 servers. If api_key is masked (unchanged from GET), the stored key is preserved.
     """
     import json as _json
     servers = payload.get("servers", [])[:2]
+    servers = await _resolve_servers(servers, "radarr_servers")
     # Validate each server has required fields
     clean = []
     for s in servers:
@@ -2028,8 +2068,14 @@ async def test_radarr_connection(payload: dict):
     from app.utils.radarr_client import RadarrClient
     url = payload.get("url", "")
     api_key = payload.get("api_key", "")
-    if not url or not api_key:
-        return {"status": "error", "message": "URL and API key required"}
+    if not url:
+        return {"status": "error", "message": "URL required"}
+    # If key is masked, resolve from stored config
+    if not api_key or _is_masked(api_key):
+        resolved = await _resolve_servers([{"url": url, "api_key": api_key or "x****"}], "radarr_servers")
+        api_key = resolved[0]["api_key"] if resolved else ""
+    if not api_key:
+        return {"status": "error", "message": "API key required"}
     client = RadarrClient(url, api_key)
     result = await client.test_connection()
     await client.close()
@@ -2092,7 +2138,7 @@ async def add_to_radarr(payload: dict):
 
 @router.get("/api/sonarr/servers")
 async def get_sonarr_servers(db: AsyncSession = Depends(get_db)):
-    """Return configured Sonarr servers (Redis → DB fallback)."""
+    """Return configured Sonarr servers (Redis → DB fallback). API keys masked."""
     import json as _json
     r = await get_redis()
     raw = await r.get("sonarr_servers")
@@ -2101,7 +2147,10 @@ async def get_sonarr_servers(db: AsyncSession = Depends(get_db)):
     if not raw:
         return {"servers": []}
     try:
-        return {"servers": _json.loads(raw)}
+        servers = _json.loads(raw)
+        for s in servers:
+            s["api_key"] = _mask_api_key(s.get("api_key", ""))
+        return {"servers": servers}
     except Exception:
         return {"servers": []}
 
@@ -2111,10 +2160,11 @@ async def save_sonarr_servers(payload: dict, db: AsyncSession = Depends(get_db))
     """Save Sonarr server configs to DB + Redis.
 
     Payload: {"servers": [{"name": "...", "url": "...", "api_key": "..."}, ...]}
-    Max 2 servers.
+    Max 2 servers. If api_key is masked (unchanged from GET), the stored key is preserved.
     """
     import json as _json
     servers = payload.get("servers", [])[:2]
+    servers = await _resolve_servers(servers, "sonarr_servers")
     clean = []
     for s in servers:
         if s.get("url") and s.get("api_key"):
@@ -2137,8 +2187,14 @@ async def test_sonarr_connection(payload: dict):
     from app.utils.sonarr_client import SonarrClient
     url = payload.get("url", "")
     api_key = payload.get("api_key", "")
-    if not url or not api_key:
-        return {"status": "error", "message": "URL and API key required"}
+    if not url:
+        return {"status": "error", "message": "URL required"}
+    # If key is masked, resolve from stored config
+    if not api_key or _is_masked(api_key):
+        resolved = await _resolve_servers([{"url": url, "api_key": api_key or "x****"}], "sonarr_servers")
+        api_key = resolved[0]["api_key"] if resolved else ""
+    if not api_key:
+        return {"status": "error", "message": "API key required"}
     client = SonarrClient(url, api_key)
     result = await client.test_connection()
     await client.close()
@@ -2249,6 +2305,52 @@ class SettingsRequest(BaseModel):
     cron_ml_retrain: str = None
     cron_universe_scan: str = None
     features: dict = None
+
+
+MASKED_SUFFIX = "****"
+
+
+def _mask_api_key(key: str) -> str:
+    """Return first 4 chars + **** for display. Never return the full key."""
+    if not key:
+        return ""
+    return key[:4] + MASKED_SUFFIX
+
+
+def _is_masked(key: str) -> bool:
+    """True if the key looks like a masked value (ends with ****)."""
+    return key.endswith(MASKED_SUFFIX) and len(key) <= 8
+
+
+async def _resolve_servers(new_servers: list[dict], storage_key: str) -> list[dict]:
+    """For each server in the incoming list, if the api_key is masked,
+    look up the real key from the currently stored config."""
+    import json as _json
+    needs_resolve = any(_is_masked(s.get("api_key", "")) for s in new_servers)
+    if not needs_resolve:
+        return new_servers
+    # Load existing servers to get real keys
+    existing = {}
+    try:
+        r = await get_redis()
+        raw = await r.get(storage_key)
+        if raw:
+            for srv in _json.loads(raw):
+                existing[srv.get("url", "")] = srv.get("api_key", "")
+    except Exception:
+        pass
+    resolved = []
+    for s in new_servers:
+        key = s.get("api_key", "")
+        if _is_masked(key):
+            # Preserve existing key matched by URL
+            real_key = existing.get(s.get("url", "").rstrip("/"), "")
+            if real_key:
+                s = {**s, "api_key": real_key}
+            else:
+                continue  # can't resolve — skip this server
+        resolved.append(s)
+    return resolved
 
 
 async def _get_setting(db: AsyncSession, key: str, env_fallback: str) -> str:

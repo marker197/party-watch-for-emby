@@ -71,6 +71,42 @@ class ScrobbleAuditService:
         except Exception:
             pass
 
+    async def get_dismissed(self, user_id: int) -> list[str]:
+        """Return list of dismissed Emby IDs for a user."""
+        try:
+            r = await get_redis()
+            raw = await r.get(f"scrobble_audit_dismissed:{user_id}")
+            if raw:
+                return json.loads(raw)
+        except Exception:
+            pass
+        return []
+
+    async def dismiss_item(self, user_id: int, emby_id: str) -> dict:
+        """Dismiss an item from the audit list (persisted in Redis)."""
+        dismissed = await self.get_dismissed(user_id)
+        if emby_id not in dismissed:
+            dismissed.append(emby_id)
+        try:
+            r = await get_redis()
+            await r.set(f"scrobble_audit_dismissed:{user_id}", json.dumps(dismissed))
+        except Exception:
+            pass
+        await self.invalidate_cache(user_id)
+        return {"dismissed": emby_id}
+
+    async def undismiss_item(self, user_id: int, emby_id: str) -> dict:
+        """Re-enable a previously dismissed item."""
+        dismissed = await self.get_dismissed(user_id)
+        dismissed = [d for d in dismissed if d != emby_id]
+        try:
+            r = await get_redis()
+            await r.set(f"scrobble_audit_dismissed:{user_id}", json.dumps(dismissed))
+        except Exception:
+            pass
+        await self.invalidate_cache(user_id)
+        return {"undismissed": emby_id}
+
     async def backfill(self, user: User, items: list[dict]) -> dict:
         """Send items to Trakt watch history.
 
@@ -175,6 +211,9 @@ class ScrobbleAuditService:
         return items
 
     async def _compare(self, trakt: TraktClient, emby: EmbyClient, user: User) -> dict:
+        # ── Dismissed items ──
+        dismissed = set(await self.get_dismissed(user.id))
+
         # ── Trakt side: build sets of watched IDs ──
         trakt_movie_ids: set[str] = set()
 
@@ -191,7 +230,6 @@ class ScrobbleAuditService:
 
         # Trakt shows: build a set of "showkey:SxxExx" for episode-level matching
         trakt_watched_eps: set[str] = set()  # "{imdb_or_tvdb}:S{s}E{e}"
-        trakt_show_keys: dict[str, set[str]] = {}  # show key → set of provider keys
         try:
             trakt_shows = await trakt.get_watched(kind="shows")
             for entry in trakt_shows:
@@ -213,11 +251,23 @@ class ScrobbleAuditService:
         except Exception:
             log.warning("scrobble_audit.trakt_shows_failed")
 
-        # ── Emby side: played movies (unchanged) ──
+        # Episode-level provider IDs from Trakt history — catches numbering
+        # mismatches between Emby and Trakt (e.g. The Pitt S2E24 vs S2E14)
+        trakt_ep_ids: set[str] = set()
+        try:
+            trakt_ep_ids = await trakt.get_watched_episode_ids()
+            log.info("scrobble_audit.trakt_episode_ids", count=len(trakt_ep_ids))
+        except Exception:
+            log.warning("scrobble_audit.trakt_ep_ids_failed")
+
+        # ── Emby side: played movies ──
         missing_movies = []
 
         emby_movies = await self._get_played_items(emby, user.emby_user_id, "Movie")
         for item in emby_movies:
+            emby_id = item.get("Id", "")
+            if emby_id in dismissed:
+                continue
 
             provider_ids = item.get("ProviderIds", {})
             item_keys = set()
@@ -234,7 +284,7 @@ class ScrobbleAuditService:
                 lp = ud.get("LastPlayedDate")
                 dc = item.get("DateCreated")
                 missing_movies.append({
-                    "emby_id": item.get("Id", ""),
+                    "emby_id": emby_id,
                     "title": item.get("Name", ""),
                     "year": item.get("ProductionYear"),
                     "type": "movie",
@@ -254,8 +304,6 @@ class ScrobbleAuditService:
 
         # Also include series that are only partially watched (have some
         # played episodes but aren't fully "Played" at series level).
-        # _get_played_items uses Filters=IsPlayed which only returns series
-        # where Emby considers them played.  We also need partially watched.
         partially_watched = await self._get_partial_series(emby, user.emby_user_id)
         # Merge, dedup by Id
         seen_series_ids = {s.get("Id") for s in emby_all_series}
@@ -267,6 +315,8 @@ class ScrobbleAuditService:
         total_missing_eps = 0
         for series in emby_all_series:
             series_id = series.get("Id", "")
+            if series_id in dismissed:
+                continue
             series_name = series.get("Name", "")
             series_year = series.get("ProductionYear")
             series_providers = series.get("ProviderIds", {})
@@ -296,12 +346,23 @@ class ScrobbleAuditService:
                     continue  # specials without numbering — skip
                 ep_tag = f"S{s_num}E{e_num}"
 
-                # Check if this specific episode is in Trakt
+                # Check 1: SxxExx match against Trakt watched shows
                 found = False
                 for sk in show_keys:
                     if f"{sk}:{ep_tag}" in trakt_watched_eps:
                         found = True
                         break
+
+                # Check 2: episode-level provider ID match (handles numbering
+                # mismatches like The Pitt S2E24 in Emby = S2E14 on Trakt)
+                if not found and trakt_ep_ids:
+                    ep_providers = ep.get("ProviderIds", {})
+                    for prov, trakt_key in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
+                        val = ep_providers.get(prov)
+                        if val and f"{trakt_key}:{val}" in trakt_ep_ids:
+                            found = True
+                            break
+
                 if found:
                     continue
 
@@ -345,6 +406,8 @@ class ScrobbleAuditService:
                  emby_movies=len(emby_movies), emby_series=len(emby_all_series),
                  trakt_movie_ids=len(trakt_movie_ids),
                  trakt_watched_eps=len(trakt_watched_eps),
+                 trakt_ep_ids=len(trakt_ep_ids),
+                 dismissed=len(dismissed),
                  missing_movies=len(missing_movies),
                  missing_shows=len(missing_shows),
                  missing_episodes=total_missing_eps)
