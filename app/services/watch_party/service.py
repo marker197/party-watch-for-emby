@@ -489,6 +489,20 @@ class WatchPartyService:
                     select(WatchPartyReaction).where(WatchPartyReaction.party_id == party.id)
                 )).scalars().all()
 
+                # Collect participant usernames for the comment
+                participants = (await db.execute(
+                    select(WatchPartyParticipant).where(WatchPartyParticipant.party_id == party.id)
+                )).scalars().all()
+                participant_names: list[str] = []
+                for p in participants:
+                    u = (await db.execute(
+                        select(User).where(User.id == p.user_id)
+                    )).scalar_one_or_none()
+                    if u:
+                        # Prefer Emby username, fall back to Trakt username or user ID
+                        name = u.emby_username or u.trakt_username or f"User {u.id}"
+                        participant_names.append(name)
+
             if not reactions and participant_count < 2:
                 return
 
@@ -518,7 +532,11 @@ class WatchPartyService:
                 f"{emoji} x{n}" for emoji, n in sorted(counts.items(), key=lambda kv: -kv[1])
             )
 
-            comment_parts = [f"Watched with {participant_count} people in a watch party."]
+            if participant_names:
+                names_str = ", ".join(participant_names)
+                comment_parts = [f"Watched with {names_str} in a watch party."]
+            else:
+                comment_parts = [f"Watched with {participant_count} people in a watch party."]
             if reaction_summary:
                 comment_parts.append(f"Reactions: {reaction_summary}.")
             comment = " ".join(comment_parts)

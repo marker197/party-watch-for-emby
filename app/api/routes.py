@@ -1315,6 +1315,11 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     f"✗ Trakt sync failed: {item_name} — {str(e)[:80]}",
                     category="trakt",
                 )
+
+            # Invalidate scrobble audit cache so newly synced items
+            # don't appear as missed on the next audit view
+            if trakt_synced:
+                await scrobble_audit_svc.invalidate_cache(user.id)
         else:
             await _activity_log(
                 f"Skipped Trakt sync: {item_name} — user has no Trakt token",

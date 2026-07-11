@@ -419,6 +419,24 @@
   .queue-sonarr-btn:hover { opacity: 0.8; }
   .queue-sonarr-btn:disabled { opacity: 0.4; cursor: default; }
 
+  .arr-dropdown-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .arr-dropdown {
+    background: var(--surface-hover, #333);
+    color: var(--text, #fff);
+    border: 1px solid var(--border, #555);
+    border-radius: 5px;
+    padding: 1px 2px;
+    font-size: 0.65rem;
+    cursor: pointer;
+    max-width: 80px;
+  }
+  .arr-dropdown.radarr { border-color: var(--red); }
+  .arr-dropdown.sonarr { border-color: #6366f1; }
+
   .queue-imdb-link {
     color: #f5c518;
     font-size: 0.7rem;
@@ -1222,19 +1240,21 @@ async function viewQueue() {
         let actionBtn = '';
         if (!inLib && i.tmdb_id && i.type === 'movie') {
           if (_radarrServers.length > 1) {
-            actionBtn = `<span style="display:inline-flex;gap:2px;">` +
-              _radarrServers.map((s, si) =>
-                `<button class="queue-radarr-btn" id="radarr-btn-${n}-${si}" style="font-size:0.65rem;padding:2px 5px;" onclick="sendToRadarr(${n}, ${i.tmdb_id}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, ${si})">${s.quality_profile_name || s.name}</button>`
-              ).join('') + `</span>`;
+            const opts = _radarrServers.map((s, si) =>
+              `<option value="${si}">${s.quality_profile_name || s.name}</option>`
+            ).join('');
+            actionBtn = `<span class="arr-dropdown-wrap"><select class="arr-dropdown radarr" id="radarr-sel-${n}" title="Choose Radarr server">${opts}</select>` +
+              `<button class="queue-radarr-btn" id="radarr-btn-${n}-0" onclick="sendToRadarr(${n}, ${i.tmdb_id}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, parseInt(document.getElementById('radarr-sel-${n}').value))">📥</button></span>`;
           } else {
             actionBtn = `<button class="queue-radarr-btn" id="radarr-btn-${n}-0" onclick="sendToRadarr(${n}, ${i.tmdb_id}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Radarr</button>`;
           }
         } else if (!inLib && i.type === 'show') {
           if (_sonarrServers.length > 1) {
-            actionBtn = `<span style="display:inline-flex;gap:2px;">` +
-              _sonarrServers.map((s, si) =>
-                `<button class="queue-sonarr-btn" id="sonarr-btn-${n}-${si}" style="font-size:0.65rem;padding:2px 5px;" onclick="sendToSonarr(${n}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, ${si})">${s.quality_profile_name || s.name}</button>`
-              ).join('') + `</span>`;
+            const opts = _sonarrServers.map((s, si) =>
+              `<option value="${si}">${s.quality_profile_name || s.name}</option>`
+            ).join('');
+            actionBtn = `<span class="arr-dropdown-wrap"><select class="arr-dropdown sonarr" id="sonarr-sel-${n}" title="Choose Sonarr server">${opts}</select>` +
+              `<button class="queue-sonarr-btn" id="sonarr-btn-${n}-0" onclick="sendToSonarr(${n}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, parseInt(document.getElementById('sonarr-sel-${n}').value))">📥</button></span>`;
           } else {
             actionBtn = `<button class="queue-sonarr-btn" id="sonarr-btn-${n}-0" onclick="sendToSonarr(${n}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Sonarr</button>`;
           }
@@ -1527,11 +1547,12 @@ async function runAudit() {
             datePlayed = item.date_source === 'added' ? d + ' *' : d;
           } catch(e) {}
         }
-        html += `<tr id="audit-row-m${idx}">
+        const eid = item.emby_id || '';
+        html += `<tr id="audit-row-m-${eid}" data-emby-id="${eid}">
           <td>${(item.title || '').replace(/</g,'&lt;')}</td>
           <td class="queue-source">${item.year || '—'}</td>
           <td class="queue-source">${datePlayed}</td>
-          <td style="display:flex;gap:4px;"><button class="btn btn-sm btn-green" id="audit-btn-m${idx}" onclick="backfillMovie(${idx})">Backfill</button><button class="btn btn-sm" style="background:var(--surface-hover);font-size:0.72rem;" onclick="dismissAuditItem('${item.emby_id}','m',${idx})" title="Hide from audit">✕</button></td>
+          <td style="display:flex;gap:4px;"><button class="btn btn-sm btn-green" data-audit-btn="m-${eid}" onclick="backfillMovie('${eid}')">Backfill</button><button class="btn btn-sm" style="background:var(--surface-hover);font-size:0.72rem;" onclick="dismissAuditItem('${eid}','m')" title="Hide from audit">✕</button></td>
         </tr>`;
       });
       html += '</tbody></table>';
@@ -1550,15 +1571,16 @@ async function runAudit() {
           try { datePlayed = new Date(show.last_played).toLocaleDateString(); } catch(e) {}
         }
         const epCount = show.episode_count || (show.episodes || []).length || 1;
-        html += `<tr id="audit-row-s${idx}" style="cursor:pointer;" onclick="toggleAuditEpisodes(${idx})">
+        const sid = show.emby_id || '';
+        html += `<tr id="audit-row-s-${sid}" data-emby-id="${sid}" style="cursor:pointer;" onclick="toggleAuditEpisodes('${sid}')">
           <td><span style="color:var(--text-dim);margin-right:4px;">▸</span> ${(show.title || '').replace(/</g,'&lt;')} <span style="color:var(--text-dim);font-size:0.78rem;">(${show.year || ''})</span></td>
           <td class="queue-source" style="color:var(--orange);font-weight:600;">${epCount}</td>
           <td class="queue-source">${datePlayed}</td>
-          <td style="display:flex;gap:4px;"><button class="btn btn-sm btn-green" id="audit-btn-s${idx}" onclick="event.stopPropagation(); backfillShow(${idx})">Backfill</button><button class="btn btn-sm" style="background:var(--surface-hover);font-size:0.72rem;" onclick="event.stopPropagation(); dismissAuditItem('${show.emby_id}','s',${idx})" title="Hide from audit">✕</button></td>
+          <td style="display:flex;gap:4px;"><button class="btn btn-sm btn-green" data-audit-btn="s-${sid}" onclick="event.stopPropagation(); backfillShow('${sid}')">Backfill</button><button class="btn btn-sm" style="background:var(--surface-hover);font-size:0.72rem;" onclick="event.stopPropagation(); dismissAuditItem('${sid}','s')" title="Hide from audit">✕</button></td>
         </tr>`;
         // Hidden episode detail rows
         if (show.episodes && show.episodes.length > 0) {
-          html += `<tr id="audit-eps-${idx}" style="display:none;"><td colspan="4" style="padding:0;">` +
+          html += `<tr id="audit-eps-${sid}" style="display:none;"><td colspan="4" style="padding:0;">` +
             '<div style="padding:6px 12px 8px 28px; background:var(--surface-alt, rgba(0,0,0,0.15));">' +
             show.episodes.map(ep => {
               let epDate = '—';
@@ -1585,10 +1607,10 @@ async function runAudit() {
   }
 }
 
-function toggleAuditEpisodes(idx) {
-  const row = document.getElementById('audit-eps-' + idx);
+function toggleAuditEpisodes(eid) {
+  const row = document.getElementById('audit-eps-' + eid);
   if (!row) return;
-  const parentRow = document.getElementById('audit-row-s' + idx);
+  const parentRow = document.getElementById('audit-row-s-' + eid);
   if (row.style.display === 'none') {
     row.style.display = '';
     if (parentRow) parentRow.querySelector('span').textContent = '▾';
@@ -1620,14 +1642,14 @@ function _removeAuditRow(id) {
   if (el) el.remove();
 }
 
-async function backfillMovie(idx) {
+async function backfillMovie(embyId) {
   if (!_auditData) return;
-  const item = (_auditData.movies || [])[idx];
-  if (!item) return;
-  const btn = document.getElementById('audit-btn-m' + idx);
-  if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = '⏳';
+  const movies = _auditData.movies || [];
+  const idx = movies.findIndex(m => m.emby_id === embyId);
+  if (idx < 0) return;
+  const item = movies[idx];
+  const btn = document.querySelector(`[data-audit-btn="m-${embyId}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
   try {
     const r = await fetch(API + `/api/scrobble-audit/${currentUserId}/backfill`, {
       method: 'POST',
@@ -1635,25 +1657,22 @@ async function backfillMovie(idx) {
       body: JSON.stringify({items: [item]}),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    _auditData.movies.splice(idx, 1);
-    _removeAuditRow('audit-row-m' + idx);
+    movies.splice(idx, 1);
+    _removeAuditRow('audit-row-m-' + embyId);
     _updateAuditSummary();
   } catch(e) {
-    btn.textContent = '✗';
-    btn.style.background = 'var(--red)';
-    btn.disabled = false;
+    if (btn) { btn.textContent = '✗'; btn.style.background = 'var(--red)'; btn.disabled = false; }
   }
 }
 
-async function backfillShow(idx) {
+async function backfillShow(embyId) {
   if (!_auditData) return;
-  const show = (_auditData.shows || [])[idx];
-  if (!show) return;
-  const btn = document.getElementById('audit-btn-s' + idx);
-  if (!btn) return;
-  btn.disabled = true;
-  const epCount = show.episode_count || (show.episodes || []).length || 0;
-  btn.textContent = `⏳ ${epCount} eps`;
+  const shows = _auditData.shows || [];
+  const idx = shows.findIndex(s => s.emby_id === embyId);
+  if (idx < 0) return;
+  const show = shows[idx];
+  const btn = document.querySelector(`[data-audit-btn="s-${embyId}"]`);
+  if (btn) { btn.disabled = true; const ec = show.episode_count || (show.episodes || []).length || 0; btn.textContent = `⏳ ${ec} eps`; }
   try {
     const r = await fetch(API + `/api/scrobble-audit/${currentUserId}/backfill`, {
       method: 'POST',
@@ -1661,14 +1680,12 @@ async function backfillShow(idx) {
       body: JSON.stringify({items: [show]}),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    _auditData.shows.splice(idx, 1);
-    _removeAuditRow('audit-row-s' + idx);
-    _removeAuditRow('audit-eps-' + idx);
+    shows.splice(idx, 1);
+    _removeAuditRow('audit-row-s-' + embyId);
+    _removeAuditRow('audit-eps-' + embyId);
     _updateAuditSummary();
   } catch(e) {
-    btn.textContent = '✗';
-    btn.style.background = 'var(--red)';
-    btn.disabled = false;
+    if (btn) { btn.textContent = '✗'; btn.style.background = 'var(--red)'; btn.disabled = false; }
   }
 }
 
@@ -1694,7 +1711,7 @@ async function backfillAll() {
   }
 }
 
-async function dismissAuditItem(embyId, kind, idx) {
+async function dismissAuditItem(embyId, kind) {
   try {
     const r = await fetch(API + `/api/scrobble-audit/${currentUserId}/dismiss`, {
       method: 'POST',
@@ -1703,12 +1720,14 @@ async function dismissAuditItem(embyId, kind, idx) {
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     if (kind === 'm') {
-      _auditData.movies.splice(idx, 1);
-      _removeAuditRow('audit-row-m' + idx);
+      const mi = (_auditData.movies || []).findIndex(m => m.emby_id === embyId);
+      if (mi >= 0) _auditData.movies.splice(mi, 1);
+      _removeAuditRow('audit-row-m-' + embyId);
     } else {
-      _auditData.shows.splice(idx, 1);
-      _removeAuditRow('audit-row-s' + idx);
-      _removeAuditRow('audit-eps-' + idx);
+      const si = (_auditData.shows || []).findIndex(s => s.emby_id === embyId);
+      if (si >= 0) _auditData.shows.splice(si, 1);
+      _removeAuditRow('audit-row-s-' + embyId);
+      _removeAuditRow('audit-eps-' + embyId);
     }
     _updateAuditSummary();
   } catch(e) {
