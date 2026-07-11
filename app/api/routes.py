@@ -2045,15 +2045,18 @@ async def save_radarr_servers(payload: dict, db: AsyncSession = Depends(get_db))
     import json as _json
     servers = payload.get("servers", [])[:2]
     servers = await _resolve_servers(servers, "radarr_servers")
-    # Validate each server has required fields
     clean = []
     for s in servers:
         if s.get("url") and s.get("api_key"):
-            clean.append({
+            srv = {
                 "name": s.get("name", "Radarr"),
                 "url": s["url"].rstrip("/"),
                 "api_key": s["api_key"],
-            })
+            }
+            if s.get("quality_profile_id"):
+                srv["quality_profile_id"] = int(s["quality_profile_id"])
+                srv["quality_profile_name"] = s.get("quality_profile_name", "")
+            clean.append(srv)
     encoded = _json.dumps(clean)
     r = await get_redis()
     await r.set("radarr_servers", encoded)
@@ -2064,7 +2067,7 @@ async def save_radarr_servers(payload: dict, db: AsyncSession = Depends(get_db))
 
 @router.post("/api/radarr/test")
 async def test_radarr_connection(payload: dict):
-    """Test a Radarr server connection."""
+    """Test a Radarr server connection. Returns quality profiles on success."""
     from app.utils.radarr_client import RadarrClient
     url = payload.get("url", "")
     api_key = payload.get("api_key", "")
@@ -2078,6 +2081,15 @@ async def test_radarr_connection(payload: dict):
         return {"status": "error", "message": "API key required"}
     client = RadarrClient(url, api_key)
     result = await client.test_connection()
+    if result.get("status") == "ok":
+        try:
+            profiles = await client.get_quality_profiles()
+            result["quality_profiles"] = [
+                {"id": p.get("id"), "name": p.get("name")}
+                for p in profiles
+            ]
+        except Exception:
+            result["quality_profiles"] = []
     await client.close()
     return result
 
@@ -2109,6 +2121,7 @@ async def add_to_radarr(payload: dict):
 
     srv = servers[server_idx]
     client = RadarrClient(srv["url"], srv["api_key"], name=srv["name"])
+    profile_id = srv.get("quality_profile_id")
 
     results = []
     for movie in movies:
@@ -2117,6 +2130,7 @@ async def add_to_radarr(payload: dict):
             imdb_id=movie.get("imdb_id"),
             title=movie.get("title", ""),
             year=movie.get("year"),
+            quality_profile_id=profile_id,
         )
         results.append(result)
 
@@ -2168,11 +2182,15 @@ async def save_sonarr_servers(payload: dict, db: AsyncSession = Depends(get_db))
     clean = []
     for s in servers:
         if s.get("url") and s.get("api_key"):
-            clean.append({
+            srv = {
                 "name": s.get("name", "Sonarr"),
                 "url": s["url"].rstrip("/"),
                 "api_key": s["api_key"],
-            })
+            }
+            if s.get("quality_profile_id"):
+                srv["quality_profile_id"] = int(s["quality_profile_id"])
+                srv["quality_profile_name"] = s.get("quality_profile_name", "")
+            clean.append(srv)
     encoded = _json.dumps(clean)
     r = await get_redis()
     await r.set("sonarr_servers", encoded)
@@ -2183,7 +2201,7 @@ async def save_sonarr_servers(payload: dict, db: AsyncSession = Depends(get_db))
 
 @router.post("/api/sonarr/test")
 async def test_sonarr_connection(payload: dict):
-    """Test a Sonarr server connection."""
+    """Test a Sonarr server connection. Returns quality profiles on success."""
     from app.utils.sonarr_client import SonarrClient
     url = payload.get("url", "")
     api_key = payload.get("api_key", "")
@@ -2197,6 +2215,15 @@ async def test_sonarr_connection(payload: dict):
         return {"status": "error", "message": "API key required"}
     client = SonarrClient(url, api_key)
     result = await client.test_connection()
+    if result.get("status") == "ok":
+        try:
+            profiles = await client.get_quality_profiles()
+            result["quality_profiles"] = [
+                {"id": p.get("id"), "name": p.get("name")}
+                for p in profiles
+            ]
+        except Exception:
+            result["quality_profiles"] = []
     await client.close()
     return result
 
@@ -2228,6 +2255,7 @@ async def add_to_sonarr(payload: dict):
 
     srv = servers[server_idx]
     client = SonarrClient(srv["url"], srv["api_key"], name=srv["name"])
+    profile_id = srv.get("quality_profile_id")
 
     results = []
     for show in shows:
@@ -2236,6 +2264,7 @@ async def add_to_sonarr(payload: dict):
             imdb_id=show.get("imdb_id"),
             title=show.get("title", ""),
             year=show.get("year"),
+            quality_profile_id=profile_id,
         )
         results.append(result)
 

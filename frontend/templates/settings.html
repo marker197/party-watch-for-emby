@@ -565,6 +565,12 @@
             <input type="password" class="radarr-key" placeholder="API Key" style="flex:2;min-width:180px;" />
             <button class="btn btn-blue" style="padding:8px 12px;font-size:0.78rem;" onclick="testRadarr(0)">Test</button>
           </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+            <label style="font-size:0.78rem;color:var(--text-dim);margin:0;white-space:nowrap;">Quality Profile:</label>
+            <select class="radarr-profile" style="flex:1;max-width:260px;padding:4px 8px;font-size:0.82rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;">
+              <option value="">— Test connection to load —</option>
+            </select>
+          </div>
           <span class="radarr-status" style="font-size:0.78rem;margin-top:4px;display:block;"></span>
         </div>
       </div>
@@ -596,6 +602,12 @@
             <input type="text" class="sonarr-url" placeholder="http://192.168.1.x:8989" style="flex:2;min-width:200px;" />
             <input type="password" class="sonarr-key" placeholder="API Key" style="flex:2;min-width:180px;" />
             <button class="btn btn-blue" style="padding:8px 12px;font-size:0.78rem;" onclick="testSonarr(0)">Test</button>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+            <label style="font-size:0.78rem;color:var(--text-dim);margin:0;white-space:nowrap;">Quality Profile:</label>
+            <select class="sonarr-profile" style="flex:1;max-width:260px;padding:4px 8px;font-size:0.82rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;">
+              <option value="">— Test connection to load —</option>
+            </select>
           </div>
           <span class="sonarr-status" style="font-size:0.78rem;margin-top:4px;display:block;"></span>
         </div>
@@ -1271,6 +1283,10 @@
           s0.querySelector('.radarr-name').value = servers[0].name || '';
           s0.querySelector('.radarr-url').value = servers[0].url || '';
           s0.querySelector('.radarr-key').value = servers[0].api_key || '';
+          if (servers[0].quality_profile_name) {
+            const sel = s0.querySelector('.radarr-profile');
+            sel.innerHTML = `<option value="">— Use server default —</option><option value="${servers[0].quality_profile_id}" selected>${servers[0].quality_profile_name}</option>`;
+          }
         }
 
         // Add and populate second server if exists
@@ -1281,6 +1297,10 @@
             s1.querySelector('.radarr-name').value = servers[1].name || '';
             s1.querySelector('.radarr-url').value = servers[1].url || '';
             s1.querySelector('.radarr-key').value = servers[1].api_key || '';
+            if (servers[1].quality_profile_name) {
+              const sel = s1.querySelector('.radarr-profile');
+              sel.innerHTML = `<option value="">— Use server default —</option><option value="${servers[1].quality_profile_id}" selected>${servers[1].quality_profile_name}</option>`;
+            }
           }
         }
       } catch(e) { console.warn('Failed to load Radarr servers:', e); }
@@ -1303,6 +1323,12 @@
           <input type="password" class="radarr-key" placeholder="API Key" style="flex:2;min-width:180px;" />
           <button class="btn btn-blue" style="padding:8px 12px;font-size:0.78rem;" onclick="testRadarr(1)">Test</button>
           <button class="btn" style="background:var(--red);padding:8px 12px;font-size:0.78rem;" onclick="removeRadarrServer()">✕</button>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+          <label style="font-size:0.78rem;color:var(--text-dim);margin:0;white-space:nowrap;">Quality Profile:</label>
+          <select class="radarr-profile" style="flex:1;max-width:260px;padding:4px 8px;font-size:0.82rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;">
+            <option value="">— Test connection to load —</option>
+          </select>
         </div>
         <span class="radarr-status" style="font-size:0.78rem;margin-top:4px;display:block;"></span>
       `;
@@ -1331,6 +1357,14 @@
         const d = await r.json();
         if (d.status === 'ok') {
           status.textContent = `✓ Connected — Radarr ${d.version}`; status.style.color = 'var(--green)';
+          // Populate quality profiles
+          const sel = row.querySelector('.radarr-profile');
+          if (sel && d.quality_profiles && d.quality_profiles.length > 0) {
+            const prev = sel.value;
+            sel.innerHTML = '<option value="">— Use server default —</option>' +
+              d.quality_profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+            if (prev) sel.value = prev;
+          }
           loadConnectionStatus();
         } else {
           status.textContent = `✗ ${d.message}`; status.style.color = 'var(--red)';
@@ -1344,7 +1378,14 @@
         const name = row.querySelector('.radarr-name').value.trim();
         const url = row.querySelector('.radarr-url').value.trim();
         const key = row.querySelector('.radarr-key').value.trim();
-        if (url && key) servers.push({name: name || `Radarr ${servers.length+1}`, url, api_key: key});
+        const profileSel = row.querySelector('.radarr-profile');
+        const profileId = profileSel ? profileSel.value : '';
+        const profileName = (profileSel && profileSel.selectedIndex > 0) ? profileSel.options[profileSel.selectedIndex].text : '';
+        if (url && key) {
+          const srv = {name: name || `Radarr ${servers.length+1}`, url, api_key: key};
+          if (profileId) { srv.quality_profile_id = parseInt(profileId); srv.quality_profile_name = profileName; }
+          servers.push(srv);
+        }
       });
       try {
         const r = await fetch('/api/radarr/servers', {
@@ -1372,6 +1413,10 @@
           s0.querySelector('.sonarr-name').value = servers[0].name || '';
           s0.querySelector('.sonarr-url').value = servers[0].url || '';
           s0.querySelector('.sonarr-key').value = servers[0].api_key || '';
+          if (servers[0].quality_profile_name) {
+            const sel = s0.querySelector('.sonarr-profile');
+            sel.innerHTML = `<option value="">— Use server default —</option><option value="${servers[0].quality_profile_id}" selected>${servers[0].quality_profile_name}</option>`;
+          }
         }
 
         if (servers.length > 1) {
@@ -1381,6 +1426,10 @@
             s1.querySelector('.sonarr-name').value = servers[1].name || '';
             s1.querySelector('.sonarr-url').value = servers[1].url || '';
             s1.querySelector('.sonarr-key').value = servers[1].api_key || '';
+            if (servers[1].quality_profile_name) {
+              const sel = s1.querySelector('.sonarr-profile');
+              sel.innerHTML = `<option value="">— Use server default —</option><option value="${servers[1].quality_profile_id}" selected>${servers[1].quality_profile_name}</option>`;
+            }
           }
         }
       } catch(e) { console.warn('Failed to load Sonarr servers:', e); }
@@ -1403,6 +1452,12 @@
           <input type="password" class="sonarr-key" placeholder="API Key" style="flex:2;min-width:180px;" />
           <button class="btn btn-blue" style="padding:8px 12px;font-size:0.78rem;" onclick="testSonarr(1)">Test</button>
           <button class="btn" style="background:var(--red);padding:8px 12px;font-size:0.78rem;" onclick="removeSonarrServer()">✕</button>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+          <label style="font-size:0.78rem;color:var(--text-dim);margin:0;white-space:nowrap;">Quality Profile:</label>
+          <select class="sonarr-profile" style="flex:1;max-width:260px;padding:4px 8px;font-size:0.82rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;">
+            <option value="">— Test connection to load —</option>
+          </select>
         </div>
         <span class="sonarr-status" style="font-size:0.78rem;margin-top:4px;display:block;"></span>
       `;
@@ -1431,6 +1486,13 @@
         const d = await r.json();
         if (d.status === 'ok') {
           status.textContent = `✓ Connected — Sonarr ${d.version}`; status.style.color = 'var(--green)';
+          const sel = row.querySelector('.sonarr-profile');
+          if (sel && d.quality_profiles && d.quality_profiles.length > 0) {
+            const prev = sel.value;
+            sel.innerHTML = '<option value="">— Use server default —</option>' +
+              d.quality_profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+            if (prev) sel.value = prev;
+          }
           loadConnectionStatus();
         } else {
           status.textContent = `✗ ${d.message}`; status.style.color = 'var(--red)';
@@ -1444,7 +1506,14 @@
         const name = row.querySelector('.sonarr-name').value.trim();
         const url = row.querySelector('.sonarr-url').value.trim();
         const key = row.querySelector('.sonarr-key').value.trim();
-        if (url && key) servers.push({name: name || `Sonarr ${servers.length+1}`, url, api_key: key});
+        const profileSel = row.querySelector('.sonarr-profile');
+        const profileId = profileSel ? profileSel.value : '';
+        const profileName = (profileSel && profileSel.selectedIndex > 0) ? profileSel.options[profileSel.selectedIndex].text : '';
+        if (url && key) {
+          const srv = {name: name || `Sonarr ${servers.length+1}`, url, api_key: key};
+          if (profileId) { srv.quality_profile_id = parseInt(profileId); srv.quality_profile_name = profileName; }
+          servers.push(srv);
+        }
       });
       try {
         const r = await fetch('/api/sonarr/servers', {

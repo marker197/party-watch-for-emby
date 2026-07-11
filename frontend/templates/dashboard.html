@@ -749,6 +749,19 @@
 const API = '';  // same origin
 let currentUserId = null;
 let allUsers = [];
+let _radarrServers = [];
+let _sonarrServers = [];
+
+async function _loadArrServers() {
+  try {
+    const [rr, sr] = await Promise.all([
+      fetch(API + '/api/radarr/servers').then(r => r.json()),
+      fetch(API + '/api/sonarr/servers').then(r => r.json()),
+    ]);
+    _radarrServers = rr.servers || [];
+    _sonarrServers = sr.servers || [];
+  } catch(e) { /* silent */ }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // User Management
@@ -1208,9 +1221,23 @@ async function viewQueue() {
 
         let actionBtn = '';
         if (!inLib && i.tmdb_id && i.type === 'movie') {
-          actionBtn = `<button class="queue-radarr-btn" id="radarr-btn-${n}" onclick="sendToRadarr(${n}, ${i.tmdb_id}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0})">📥 Radarr</button>`;
+          if (_radarrServers.length > 1) {
+            actionBtn = `<span style="display:inline-flex;gap:2px;">` +
+              _radarrServers.map((s, si) =>
+                `<button class="queue-radarr-btn" id="radarr-btn-${n}-${si}" style="font-size:0.65rem;padding:2px 5px;" onclick="sendToRadarr(${n}, ${i.tmdb_id}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, ${si})">${s.quality_profile_name || s.name}</button>`
+              ).join('') + `</span>`;
+          } else {
+            actionBtn = `<button class="queue-radarr-btn" id="radarr-btn-${n}-0" onclick="sendToRadarr(${n}, ${i.tmdb_id}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Radarr</button>`;
+          }
         } else if (!inLib && i.type === 'show') {
-          actionBtn = `<button class="queue-sonarr-btn" id="sonarr-btn-${n}" onclick="sendToSonarr(${n}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0})">📥 Sonarr</button>`;
+          if (_sonarrServers.length > 1) {
+            actionBtn = `<span style="display:inline-flex;gap:2px;">` +
+              _sonarrServers.map((s, si) =>
+                `<button class="queue-sonarr-btn" id="sonarr-btn-${n}-${si}" style="font-size:0.65rem;padding:2px 5px;" onclick="sendToSonarr(${n}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, ${si})">${s.quality_profile_name || s.name}</button>`
+              ).join('') + `</span>`;
+          } else {
+            actionBtn = `<button class="queue-sonarr-btn" id="sonarr-btn-${n}-0" onclick="sendToSonarr(${n}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Sonarr</button>`;
+          }
         } else if (inLib && i.emby_item_id) {
           actionBtn = `<button class="btn btn-sm" style="background:var(--accent);padding:2px 7px;font-size:0.7rem;" onclick="createPartyFromQueue('${i.emby_item_id}', '${safeTitle}')">🎉 Party</button>`;
         }
@@ -1305,8 +1332,8 @@ async function viewAiring() {
   }
 }
 
-async function sendToRadarr(rowIdx, tmdbId, imdbId, title, year) {
-  const btn = document.getElementById('radarr-btn-' + rowIdx);
+async function sendToRadarr(rowIdx, tmdbId, imdbId, title, year, serverIdx) {
+  const btn = document.getElementById('radarr-btn-' + rowIdx + '-' + serverIdx);
   if (!btn) return;
   btn.disabled = true;
   btn.textContent = '⏳';
@@ -1315,7 +1342,7 @@ async function sendToRadarr(rowIdx, tmdbId, imdbId, title, year) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        server_index: 0,
+        server_index: serverIdx || 0,
         movies: [{ tmdb_id: tmdbId, imdb_id: imdbId || undefined, title: title, year: year || undefined }]
       })
     });
@@ -1323,7 +1350,7 @@ async function sendToRadarr(rowIdx, tmdbId, imdbId, title, year) {
     if (r.ok && d.added > 0) {
       btn.textContent = '✓ Sent';
       btn.style.background = 'var(--green)';
-      showNotification(`${title} sent to Radarr`);
+      showNotification(`${title} sent to ${d.server || 'Radarr'}`);
     } else {
       const reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Failed';
       btn.textContent = '✗';
@@ -1337,8 +1364,8 @@ async function sendToRadarr(rowIdx, tmdbId, imdbId, title, year) {
   }
 }
 
-async function sendToSonarr(rowIdx, tvdbId, imdbId, title, year) {
-  const btn = document.getElementById('sonarr-btn-' + rowIdx);
+async function sendToSonarr(rowIdx, tvdbId, imdbId, title, year, serverIdx) {
+  const btn = document.getElementById('sonarr-btn-' + rowIdx + '-' + serverIdx);
   if (!btn) return;
   btn.disabled = true;
   btn.textContent = '⏳';
@@ -1347,7 +1374,7 @@ async function sendToSonarr(rowIdx, tvdbId, imdbId, title, year) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        server_index: 0,
+        server_index: serverIdx || 0,
         shows: [{ tvdb_id: tvdbId || undefined, imdb_id: imdbId || undefined, title: title, year: year || undefined }]
       })
     });
@@ -1355,7 +1382,7 @@ async function sendToSonarr(rowIdx, tvdbId, imdbId, title, year) {
     if (r.ok && d.added > 0) {
       btn.textContent = '✓ Sent';
       btn.style.background = 'var(--green)';
-      showNotification(`${title} sent to Sonarr`);
+      showNotification(`${title} sent to ${d.server || 'Sonarr'}`);
     } else {
       const reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Failed';
       btn.textContent = '✗';
@@ -1889,6 +1916,7 @@ function init() {
   loadParties();
   loadSchedulerStatus();
   loadSSLStatus();
+  _loadArrServers();
   setInterval(dashboardPoll, 30000); // consolidated: health + activity + job completions
   setInterval(loadParties, 60000);
   setInterval(loadSchedulerStatus, 60000);
