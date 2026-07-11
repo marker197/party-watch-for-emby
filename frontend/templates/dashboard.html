@@ -1681,23 +1681,93 @@ async function pollJobCompletions() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Consolidated dashboard poll (replaces separate activity + health + job-completions)
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function dashboardPoll() {
+  try {
+    const url = activeCategory
+      ? API + `/api/dashboard-poll?category=${activeCategory}`
+      : API + '/api/dashboard-poll';
+    const r = await fetch(url);
+    if (!r.ok) return;
+    const d = await r.json();
+
+    // --- Health ---
+    const h = d.health;
+    document.getElementById('apiStatus').textContent = h.status === 'ok' ? '✓ Connected' : '✗ Error';
+    if (h.library_cache) {
+      const lc = h.library_cache;
+      document.getElementById('cacheItems').textContent = (lc.items || 0) + ' items';
+      const ck = document.getElementById('statCachedKeys');
+      const hr = document.getElementById('statHitRate');
+      const lr = document.getElementById('statLastRebuild');
+      if (ck) ck.textContent = lc.cached_keys || 0;
+      if (hr) hr.textContent = (lc.hit_rate || 0).toFixed(0) + '%';
+      if (lr) lr.textContent = lc.last_rebuild
+        ? new Date(lc.last_rebuild).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
+        : 'Never';
+    }
+    loadLibraries();
+
+    // --- Activity ---
+    const entries = (d.activity || []).filter(e => !e.msg.startsWith('Webhook received'));
+    const el = document.getElementById('globalLog');
+    if (el) {
+      const clientEntries = el.querySelectorAll('.entry.client-event');
+      const clientHtml = Array.from(clientEntries).map(e => e.outerHTML).join('');
+      if (!entries.length && !clientHtml) {
+        el.innerHTML = '<div class="entry" style="color:var(--text-dim);">No activity yet</div>';
+      } else {
+        const apiHtml = entries.map(e => {
+          let icon = '•';
+          const m = e.msg;
+          if (m.startsWith('▶ Trakt watching') || m.startsWith('▶ Trakt resumed')) icon = '▶️';
+          else if (m.startsWith('⏸')) icon = '⏸️';
+          else if (m.startsWith('⏹') || m.includes('stopped')) icon = '⏹️';
+          else if (m.startsWith('✓ Synced')) icon = '✅';
+          else if (m.startsWith('✓')) icon = '✅';
+          else if (m.startsWith('✗') || m.startsWith('⚠')) icon = '❌';
+          else if (m.includes('Watched:')) icon = '⏹️';
+          else if (m.includes('webhook')) icon = '📡';
+          else if (m.includes('party')) icon = '🎉';
+          else if (m.includes('Queue') || m.includes('queue')) icon = '🎯';
+          else if (m.includes('universe') || m.includes('Universe')) icon = '🌌';
+          else if (m.includes('ML') || m.includes('Train') || m.includes('predict')) icon = '🤖';
+          else if (m.includes('cache') || m.includes('Cache')) icon = '💾';
+          else if (e.cat === 'trakt') icon = '🔄';
+          else if (e.cat === 'webhook') icon = '📡';
+          const cls = m.startsWith('✓') ? 'ok' : (m.startsWith('✗') || m.startsWith('⚠')) ? 'err' : '';
+          return `<div class="entry ${cls}"><span style="opacity:0.45;font-size:0.78rem;">${e.ts.split(' ')[1]}</span>  ${icon} ${m}</div>`;
+        }).join('');
+        el.innerHTML = clientHtml + apiHtml;
+      }
+    }
+
+    // --- Job completions (toasts) ---
+    for (const ev of (d.job_completions || [])) {
+      if (ev.job === 'heartbeat') continue;
+      showToast(ev.job, ev.status, ev.duration_s, ev.error);
+    }
+  } catch(e) {
+    document.getElementById('apiStatus').textContent = '✗ Offline';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Initialization
 // ═══════════════════════════════════════════════════════════════════════════
 
 function init() {
-  checkHealth();
+  dashboardPoll();
   loadUsers();
   loadParties();
-  loadActivity();
   loadSchedulerStatus();
   loadSSLStatus();
-  pollJobCompletions();
-  setInterval(loadActivity, 15000); // refresh every 15s
-  setInterval(checkHealth, 30000);
-  setInterval(pollJobCompletions, 15000); // check for job completions every 15s
+  setInterval(dashboardPoll, 30000); // consolidated: health + activity + job completions
   setInterval(loadParties, 60000);
-  setInterval(loadSchedulerStatus, 60000); // refresh scheduler every 60s
-  setInterval(loadSSLStatus, 300000); // refresh SSL every 5 min
+  setInterval(loadSchedulerStatus, 60000);
+  setInterval(loadSSLStatus, 300000);
 }
 
 // Start when page loads

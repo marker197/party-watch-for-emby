@@ -1488,6 +1488,64 @@ async def job_completions():
     return events
 
 
+@router.get("/api/dashboard-poll")
+async def dashboard_poll(
+    category: str = Query(default=None),
+):
+    """Consolidated polling endpoint for dashboard.
+
+    Returns health, activity, and job-completion events in a single response,
+    replacing three separate polled endpoints.
+    """
+    import json as _json
+    r = await get_redis()
+
+    # --- Health ---
+    cache_stats = await LibraryCache.get_stats()
+
+    # --- Activity ---
+    fetch_count = 99 if category else 29
+    raw_activity = await r.lrange("activity_log", 0, fetch_count)
+    entries = []
+    limit = 30
+    for item in raw_activity:
+        try:
+            entry = _json.loads(item)
+            if category and entry.get("cat") != category:
+                continue
+            entries.append(entry)
+            if len(entries) >= limit:
+                break
+        except Exception:
+            pass
+
+    # --- Job completions (consuming) ---
+    job_events = []
+    while True:
+        raw = await r.rpop("job_completions")
+        if raw is None:
+            break
+        try:
+            job_events.append(_json.loads(raw))
+        except Exception:
+            pass
+
+    return {
+        "health": {
+            "status": "ok",
+            "features": {
+                "smart_queue": settings.enable_smart_queue,
+                "ml_predictor": settings.enable_ml_predictor,
+                "universe_discovery": settings.enable_universe_discovery,
+                "watch_party": settings.enable_watch_party,
+            },
+            "library_cache": cache_stats,
+        },
+        "activity": entries,
+        "job_completions": job_events,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SSL Certificate Status
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1923,11 +1981,13 @@ async def restore_db_backup(request: Request):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.get("/api/radarr/servers")
-async def get_radarr_servers():
-    """Return configured Radarr servers from Redis."""
+async def get_radarr_servers(db: AsyncSession = Depends(get_db)):
+    """Return configured Radarr servers (Redis → DB fallback)."""
     import json as _json
     r = await get_redis()
     raw = await r.get("radarr_servers")
+    if not raw:
+        raw = (await _get_setting(db, "radarr_servers", ""))
     if not raw:
         return {"servers": []}
     try:
@@ -1937,8 +1997,8 @@ async def get_radarr_servers():
 
 
 @router.put("/api/radarr/servers")
-async def save_radarr_servers(payload: dict):
-    """Save Radarr server configs to Redis.
+async def save_radarr_servers(payload: dict, db: AsyncSession = Depends(get_db)):
+    """Save Radarr server configs to DB + Redis.
 
     Payload: {"servers": [{"name": "...", "url": "...", "api_key": "..."}, ...]}
     Max 2 servers.
@@ -1954,8 +2014,11 @@ async def save_radarr_servers(payload: dict):
                 "url": s["url"].rstrip("/"),
                 "api_key": s["api_key"],
             })
+    encoded = _json.dumps(clean)
     r = await get_redis()
-    await r.set("radarr_servers", _json.dumps(clean))
+    await r.set("radarr_servers", encoded)
+    await _put_setting(db, "radarr_servers", encoded)
+    await db.commit()
     return {"status": "ok", "servers": len(clean)}
 
 
@@ -2028,11 +2091,13 @@ async def add_to_radarr(payload: dict):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.get("/api/sonarr/servers")
-async def get_sonarr_servers():
-    """Return configured Sonarr servers from Redis."""
+async def get_sonarr_servers(db: AsyncSession = Depends(get_db)):
+    """Return configured Sonarr servers (Redis → DB fallback)."""
     import json as _json
     r = await get_redis()
     raw = await r.get("sonarr_servers")
+    if not raw:
+        raw = (await _get_setting(db, "sonarr_servers", ""))
     if not raw:
         return {"servers": []}
     try:
@@ -2042,8 +2107,8 @@ async def get_sonarr_servers():
 
 
 @router.put("/api/sonarr/servers")
-async def save_sonarr_servers(payload: dict):
-    """Save Sonarr server configs to Redis.
+async def save_sonarr_servers(payload: dict, db: AsyncSession = Depends(get_db)):
+    """Save Sonarr server configs to DB + Redis.
 
     Payload: {"servers": [{"name": "...", "url": "...", "api_key": "..."}, ...]}
     Max 2 servers.
@@ -2058,8 +2123,11 @@ async def save_sonarr_servers(payload: dict):
                 "url": s["url"].rstrip("/"),
                 "api_key": s["api_key"],
             })
+    encoded = _json.dumps(clean)
     r = await get_redis()
-    await r.set("sonarr_servers", _json.dumps(clean))
+    await r.set("sonarr_servers", encoded)
+    await _put_setting(db, "sonarr_servers", encoded)
+    await db.commit()
     return {"status": "ok", "servers": len(clean)}
 
 
@@ -2132,32 +2200,40 @@ async def add_to_sonarr(payload: dict):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.get("/api/auto-send")
-async def get_auto_send_settings():
-    """Read auto-send toggle state from Redis."""
+async def get_auto_send_settings(db: AsyncSession = Depends(get_db)):
+    """Read auto-send toggle state (Redis → DB fallback)."""
     import json as _json
     r = await get_redis()
     raw = await r.get("auto_send_settings")
+    if not raw:
+        raw = await _get_setting(db, "auto_send_settings", "")
     if raw:
-        return _json.loads(raw)
-    # Defaults: both off (Radarr explicitly off per requirement)
+        try:
+            return _json.loads(raw)
+        except Exception:
+            pass
+    # Defaults: both off
     return {"radarr_enabled": False, "sonarr_enabled": False}
 
 
 @router.put("/api/auto-send")
-async def update_auto_send_settings(payload: dict):
-    """Save auto-send toggle state to Redis.
+async def update_auto_send_settings(payload: dict, db: AsyncSession = Depends(get_db)):
+    """Save auto-send toggle state to DB + Redis.
 
     Payload: {"radarr_enabled": true/false, "sonarr_enabled": true/false}
     """
     import json as _json
     r = await get_redis()
-    settings = {
+    auto_settings = {
         "radarr_enabled": bool(payload.get("radarr_enabled", False)),
         "sonarr_enabled": bool(payload.get("sonarr_enabled", False)),
     }
-    await r.set("auto_send_settings", _json.dumps(settings))
-    log.info("auto_send.settings_saved", **settings)
-    return {"status": "ok", **settings}
+    encoded = _json.dumps(auto_settings)
+    await r.set("auto_send_settings", encoded)
+    await _put_setting(db, "auto_send_settings", encoded)
+    await db.commit()
+    log.info("auto_send.settings_saved", **auto_settings)
+    return {"status": "ok", **auto_settings}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

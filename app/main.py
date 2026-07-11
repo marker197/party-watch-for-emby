@@ -125,6 +125,9 @@ async def lifespan(app: FastAPI):
     # Load schedule overrides from DB (overwrite config defaults)
     await _load_schedule_overrides()
 
+    # Seed Redis with durable settings from DB (survives Redis restarts)
+    await _seed_redis_from_db()
+
     # Scheduler
     _register_jobs()
     scheduler.start()
@@ -282,6 +285,34 @@ async def _load_schedule_overrides():
             log.info("suite.schedule_overrides_loaded", keys=list(overrides.keys()))
     except Exception as e:
         log.warning("suite.schedule_overrides_skipped", error=str(e)[:200])
+
+
+async def _seed_redis_from_db():
+    """Seed Redis with durable settings from DB if Redis keys are missing.
+
+    Covers radarr_servers, sonarr_servers, and auto_send_settings — these are
+    persisted to app_settings on save but the heartbeat and connection-status
+    endpoints read from Redis for speed.  After a Redis restart the keys vanish;
+    this restores them from the authoritative DB copy.
+    """
+    from app.models.schema import AppSetting
+    from app.utils.redis_cache import get_redis
+    _KEYS = ("radarr_servers", "sonarr_servers", "auto_send_settings")
+    try:
+        r = await get_redis()
+        async with async_session() as db:
+            for key in _KEYS:
+                existing = await r.get(key)
+                if existing:
+                    continue  # Redis already has it
+                row = (await db.execute(
+                    select(AppSetting).where(AppSetting.key == key)
+                )).scalar_one_or_none()
+                if row and row.value:
+                    await r.set(key, row.value)
+                    log.info("suite.redis_seeded_from_db", key=key)
+    except Exception as e:
+        log.warning("suite.redis_seed_skipped", error=str(e)[:200])
 
 
 def _parse_cron(expr: str) -> dict:
