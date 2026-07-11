@@ -2287,6 +2287,42 @@ async def update_auto_send_settings(payload: dict, db: AsyncSession = Depends(ge
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Smart Queue Settings
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/queue-settings")
+async def get_queue_settings(db: AsyncSession = Depends(get_db)):
+    """Read smart queue settings (Redis → DB fallback)."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get("queue_settings")
+    if not raw:
+        raw = await _get_setting(db, "queue_settings", "")
+    if raw:
+        try:
+            return _json.loads(raw)
+        except Exception:
+            pass
+    return {"s01e01_only": False}
+
+
+@router.put("/api/queue-settings")
+async def update_queue_settings(payload: dict, db: AsyncSession = Depends(get_db)):
+    """Save smart queue settings to DB + Redis."""
+    import json as _json
+    r = await get_redis()
+    queue_settings = {
+        "s01e01_only": bool(payload.get("s01e01_only", False)),
+    }
+    encoded = _json.dumps(queue_settings)
+    await r.set("queue_settings", encoded)
+    await _put_setting(db, "queue_settings", encoded)
+    await db.commit()
+    log.info("queue_settings.saved", **queue_settings)
+    return {"status": "ok", **queue_settings}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Settings API
 # ═══════════════════════════════════════════════════════════════════════════
 

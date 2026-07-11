@@ -554,11 +554,21 @@ class SmartQueueService:
     async def _sync_emby_collection(self, user: User, items: list[dict], resolved_ids: dict[int, str]):
         """Sync the queue to an Emby playlist.
 
-        Uses Series-level Emby IDs for TV shows (not individual episodes).
-        The _find_in_emby lookup already resolves to Series type, but this
-        is the contract: the playlist contains show-level and movie-level items.
+        Uses Series-level Emby IDs for TV shows by default.
+        When s01e01_only is enabled, resolves shows to their S01E01 episode ID
+        so the playlist links directly to the starting episode.
         """
-        emby_ids = [resolved_ids[idx] for idx in sorted(resolved_ids)]
+        s01e01_mode = await self._get_s01e01_setting()
+
+        emby_ids: list[str] = []
+        for idx in sorted(resolved_ids):
+            emby_id = resolved_ids[idx]
+            item = items[idx]
+            if s01e01_mode and item.get("item_type") == "show":
+                ep_id = await self._resolve_s01e01(emby_id, user.emby_user_id)
+                emby_ids.append(ep_id or emby_id)
+            else:
+                emby_ids.append(emby_id)
 
         if emby_ids:
             # Use playlists (preserves insertion order) instead of collections
@@ -571,7 +581,48 @@ class SmartQueueService:
                 itype = items[idx].get("item_type", "unknown")
                 type_counts[itype] = type_counts.get(itype, 0) + 1
             log.info("smart_queue.playlist_synced",
-                     count=len(emby_ids), types=type_counts)
+                     count=len(emby_ids), types=type_counts,
+                     s01e01_mode=s01e01_mode)
+
+    async def _get_s01e01_setting(self) -> bool:
+        """Read the S01E01 toggle from Redis (queue_settings key)."""
+        try:
+            raw = await cache_get("queue_settings")
+            if raw:
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                return bool(data.get("s01e01_only", False))
+        except Exception:
+            pass
+        return False
+
+    async def _resolve_s01e01(self, series_emby_id: str, user_id: str) -> str | None:
+        """Given a Series Emby ID, find the S01E01 episode ID.
+
+        Queries Emby for episodes under this series, sorted by season number
+        then episode number (ParentIndexNumber, IndexNumber), and returns
+        the first episode's ID. Returns None if no episodes found.
+        """
+        try:
+            resp = await self.emby.get_items(
+                user_id=user_id,
+                item_type="Episode",
+                parent_id=series_emby_id,
+                sort_by="ParentIndexNumber,IndexNumber",
+                sort_order="Ascending",
+                limit=1,
+            )
+            episodes = resp.get("Items", [])
+            if episodes:
+                ep = episodes[0]
+                log.debug("smart_queue.s01e01_resolved",
+                          series_id=series_emby_id,
+                          episode_id=ep["Id"],
+                          episode=f"S{ep.get('ParentIndexNumber', '?')}E{ep.get('IndexNumber', '?')}")
+                return ep["Id"]
+        except Exception as e:
+            log.warning("smart_queue.s01e01_resolve_failed",
+                        series_id=series_emby_id, error=str(e))
+        return None
 
     # ===================================================================
     # Auto-send missing items to Radarr / Sonarr

@@ -119,6 +119,9 @@
       display: flex;
       flex-direction: column;
       gap: 4px;
+      flex: 1;
+      min-width: 0;
+      margin-right: 12px;
     }
 
     .toggle-label .title {
@@ -133,7 +136,9 @@
     .toggle-switch {
       position: relative;
       width: 48px;
+      min-width: 48px;
       height: 24px;
+      flex-shrink: 0;
       background: var(--border);
       border-radius: 12px;
       cursor: pointer;
@@ -431,6 +436,19 @@
       <button class="btn btn-blue" id="saveFeatures" style="width: 100%; margin-top: 12px;">💾 Save Features</button>
     </div>
 
+    <!-- Smart Queue Options -->
+    <div class="section">
+      <h2>🎯 Smart Queue Options</h2>
+
+      <div class="toggle-group">
+        <div class="toggle-label">
+          <span class="title">Add S01E01 only for TV shows</span>
+          <span class="desc">When enabled, the Smart Queue playlist adds only Season 1 Episode 1 of each show instead of the full series. Great for discovery — just the starting point.</span>
+        </div>
+        <div class="toggle-switch" id="queueS01E01" onclick="toggleQueueSetting('s01e01_only')"></div>
+      </div>
+    </div>
+
     <!-- Scheduler Configuration -->
     <div class="section">
       <h2>🕐 Scheduler Configuration</h2>
@@ -685,6 +703,7 @@
       loadRadarrServers();
       loadSonarrServers();
       loadAutoSendSettings();
+      loadQueueSettings();
       loadConnectionStatus();
       setupEventListeners();
     }
@@ -836,8 +855,8 @@
       document.getElementById('embyUrl').addEventListener('input', enableButton('saveEmby'));
       document.getElementById('embyApiKey').addEventListener('input', enableButton('saveEmby'));
 
-      // Features
-      document.querySelectorAll('.toggle-switch').forEach(toggle => {
+      // Features — only toggle data-feature switches (not auto-send or queue settings)
+      document.querySelectorAll('.toggle-switch[data-feature]').forEach(toggle => {
         toggle.addEventListener('click', () => toggle.classList.toggle('active'));
       });
       document.getElementById('saveFeatures').addEventListener('click', () => saveFeatures());
@@ -1567,6 +1586,36 @@
         // Revert
         if (service === 'radarr') radarrEl.classList.toggle('active');
         else sonarrEl.classList.toggle('active');
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Smart Queue Settings
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function loadQueueSettings() {
+      try {
+        const r = await fetch('/api/queue-settings');
+        if (!r.ok) return;
+        const data = await r.json();
+        if (data.s01e01_only) document.getElementById('queueS01E01').classList.add('active');
+      } catch(e) {
+        console.warn('Failed to load queue settings:', e);
+      }
+    }
+
+    async function toggleQueueSetting(key) {
+      const el = document.getElementById('queueS01E01');
+      el.classList.toggle('active');
+      const payload = { s01e01_only: el.classList.contains('active') };
+      try {
+        await fetch('/api/queue-settings', {
+          method: 'PUT',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(payload),
+        });
+      } catch(e) {
+        el.classList.toggle('active');
       }
     }
 
