@@ -763,21 +763,130 @@ class MLPredictorService:
         # Sort by absolute delta descending
         changes.sort(key=lambda c: abs(c["delta"]), reverse=True)
 
-        # Build summary string
+        # Add plain-English description per change
+        for c in changes:
+            c["description"] = self._describe_change(c)
+
+        # Build summary string in plain English
         top_up = [c for c in changes if c["direction"] == "up"][:3]
         top_down = [c for c in changes if c["direction"] == "down"][:3]
-        parts = []
-        if top_up:
-            names = ", ".join(f"{c['name']} ({c['category']})" for c in top_up)
-            parts.append(f"Rising: {names}")
-        if top_down:
-            names = ", ".join(f"{c['name']} ({c['category']})" for c in top_down)
-            parts.append(f"Declining: {names}")
         weeks = len(snapshots) - 1
-        summary = f"Over {weeks} training run{'s' if weeks != 1 else ''}. " + ". ".join(parts) if parts else "No significant drift detected."
+        run_label = f"{weeks} training run{'s' if weeks != 1 else ''}"
+
+        sentences = []
+        if top_up:
+            if len(top_up) == 1:
+                sentences.append(f"You've been leaning more towards {top_up[0]['name'].lower()} content.")
+            else:
+                rising = ", ".join(c["name"] for c in top_up[:-1]) + f" and {top_up[-1]['name']}"
+                sentences.append(f"Your taste is shifting towards {rising.lower()}.")
+        if top_down:
+            if len(top_down) == 1:
+                sentences.append(f"{top_down[0]['name']} is less influential in your ratings than before.")
+            else:
+                falling = ", ".join(c["name"] for c in top_down[:-1]) + f" and {top_down[-1]['name']}"
+                sentences.append(f"{falling} matter less to your ratings now.")
+        if not sentences:
+            summary = "Your watching taste has been steady — no significant shifts detected."
+        else:
+            summary = " ".join(sentences) + f" (based on {run_label})"
 
         return {
             "snapshots": snapshots,
             "changes": changes[:20],  # top 20 movers
             "summary": summary,
         }
+
+    @staticmethod
+    def _describe_change(c: dict) -> str:
+        """Generate a varied plain-English one-liner for a single drift change."""
+        name = c["name"]
+        cat = c["category"]
+        direction = c["direction"]
+        pct = abs(c.get("pct_change", 0))
+
+        # ── Genre ────────────────────────────────────────────────────────
+        if cat == "genre":
+            if direction == "up":
+                if pct >= 100:
+                    return f"Big shift — {name} has jumped to one of the strongest drivers of your ratings."
+                if pct >= 40:
+                    return f"You're clearly gravitating towards {name} content lately."
+                if pct >= 15:
+                    return f"{name} is starting to carry a bit more weight in what you enjoy."
+                return f"A small nudge towards {name} — not a major change yet."
+            else:
+                if pct >= 100:
+                    return f"{name} used to matter a lot more — it's dropped off significantly."
+                if pct >= 40:
+                    return f"You seem to be moving away from {name} content."
+                if pct >= 15:
+                    return f"{name} is playing a smaller role in your taste than it used to."
+                return f"{name} dipped slightly, but it's still in the mix."
+
+        # ── Actor ────────────────────────────────────────────────────────
+        if cat == "actor":
+            if direction == "up":
+                if pct >= 100:
+                    return f"{name} has become a strong signal — you consistently rate their work higher."
+                if pct >= 40:
+                    return f"You're clearly enjoying {name}'s films more these days."
+                if pct >= 15:
+                    return f"{name} is starting to positively influence your ratings."
+                return f"A slight lean towards {name} — early days."
+            else:
+                if pct >= 100:
+                    return f"{name} used to boost your ratings but that effect has faded."
+                if pct >= 40:
+                    return f"{name}'s presence matters less to your scores than before."
+                if pct >= 15:
+                    return f"{name} is a bit less of a draw for you now."
+                return f"Tiny dip for {name} — nothing dramatic."
+
+        # ── Director ─────────────────────────────────────────────────────
+        if cat == "director":
+            if direction == "up":
+                if pct >= 100:
+                    return f"You've developed a real appreciation for {name}'s work."
+                if pct >= 40:
+                    return f"{name}'s films are landing better with you than they used to."
+                if pct >= 15:
+                    return f"You're warming up to {name} as a director."
+                return f"A minor uptick for {name} — keep watching to see if it holds."
+            else:
+                if pct >= 100:
+                    return f"{name}'s influence on your ratings has dropped sharply."
+                if pct >= 40:
+                    return f"You're less swayed by {name}'s name on a project now."
+                if pct >= 15:
+                    return f"{name} is a slightly weaker predictor of what you'll enjoy."
+                return f"Small decline for {name} — still a factor though."
+
+        # ── Studio ───────────────────────────────────────────────────────
+        if cat == "studio":
+            if direction == "up":
+                if pct >= 100:
+                    return f"{name} has become one of the strongest studio signals in your ratings."
+                if pct >= 40:
+                    return f"You're consistently rating {name} releases higher."
+                if pct >= 15:
+                    return f"{name} is gaining some ground as a taste indicator for you."
+                return f"A small tick up for {name} productions."
+            else:
+                if pct >= 100:
+                    return f"{name} used to be a reliable indicator but it's lost that edge."
+                if pct >= 40:
+                    return f"{name} releases don't predict your ratings as well anymore."
+                if pct >= 15:
+                    return f"{name} is a bit less relevant to your taste now."
+                return f"Minor dip for {name} — still on the radar."
+
+        # ── Numeric / other ──────────────────────────────────────────────
+        if direction == "up":
+            if pct >= 40:
+                return f"{name} has become a stronger factor in predicting your ratings."
+            return f"{name} is slightly more influential in predictions."
+        else:
+            if pct >= 40:
+                return f"{name} matters less to predictions than it used to."
+            return f"{name} is slightly less influential in predictions."

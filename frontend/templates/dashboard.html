@@ -1598,21 +1598,19 @@ async function viewDrift() {
       return;
     }
 
-    el.innerHTML = '<table class="queue-table"><thead><tr>' +
-      '<th>Factor</th><th style="width:70px;">Category</th><th style="width:80px;">Change</th><th style="width:60px;">Direction</th>' +
-      '</tr></thead><tbody>' +
-      changes.map(c => {
-        const arrow = c.direction === 'up' ? '↑' : '↓';
+    el.innerHTML = changes.map(c => {
+        const arrow = c.direction === 'up' ? '▲' : '▼';
         const color = c.direction === 'up' ? 'var(--green)' : 'var(--red)';
-        const pct = c.pct_change !== null ? ` (${c.pct_change > 0 ? '+' : ''}${c.pct_change}%)` : '';
-        return `<tr>
-          <td>${c.name}</td>
-          <td class="queue-source">${c.category}</td>
-          <td style="font-size:0.82rem;">${c.old_importance.toFixed(3)} → ${c.new_importance.toFixed(3)}${pct}</td>
-          <td style="color:${color}; font-weight:600; text-align:center;">${arrow}</td>
-        </tr>`;
-      }).join('') +
-      '</tbody></table>';
+        const desc = c.description || c.name;
+        const badge = c.category;
+        return `<div style="display:flex; align-items:flex-start; gap:10px; padding:8px 4px; border-bottom:1px solid var(--border);">
+          <span style="color:${color}; font-weight:700; font-size:1rem; flex-shrink:0; margin-top:1px;">${arrow}</span>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:0.85rem; line-height:1.4;">${desc}</div>
+            <span class="queue-source" style="font-size:0.7rem; margin-top:3px; display:inline-block;">${badge}</span>
+          </div>
+        </div>`;
+      }).join('');
   } catch(e) {
     el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
   }
