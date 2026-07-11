@@ -1648,7 +1648,7 @@ function showToast(job, status, durationS, error) {
   el.className = `toast ${isOk ? 'toast-ok' : 'toast-error'}`;
 
   let detail = isOk
-    ? `Completed in ${durationS}s`
+    ? (durationS != null ? `Completed in ${durationS}s` : 'Completed')
     : `Failed${error ? ': ' + error.slice(0, 80) : ''}`;
 
   el.innerHTML = `<div class="toast-job">${label}</div>` +
