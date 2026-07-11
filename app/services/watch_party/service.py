@@ -441,7 +441,14 @@ class WatchPartyService:
             log.info("watch_party.trakt_scrobble", user_id=user.id, progress=f"{progress:.1f}%")
         
         except Exception as e:
-            log.error("watch_party.trakt_scrobble_error", user_id=user.id, error=str(e))
+            err_str = str(e)
+            # 409 Conflict means Trakt has no active scrobble session to stop
+            # — harmless when party ends without a prior scrobble/start
+            if "409" in err_str:
+                log.warning("watch_party.trakt_scrobble_409", user_id=user.id,
+                            detail="no active scrobble session on Trakt")
+            else:
+                log.error("watch_party.trakt_scrobble_error", user_id=user.id, error=err_str)
 
     async def record_reaction(self, code: str, user_id: int | None, emoji: str, position_ticks: int) -> None:
         """Persist an in-party emoji reaction so it can be rolled into the

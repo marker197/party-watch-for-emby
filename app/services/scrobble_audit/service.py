@@ -262,6 +262,7 @@ class ScrobbleAuditService:
 
         # ── Emby side: played movies ──
         missing_movies = []
+        seen_movie_keys: dict[str, int] = {}  # provider key → index in missing_movies
 
         emby_movies = await self._get_played_items(emby, user.emby_user_id, "Movie")
         for item in emby_movies:
@@ -280,10 +281,13 @@ class ScrobbleAuditService:
                 continue  # can't match without IDs
 
             if not item_keys & trakt_movie_ids:
+                # Dedup: multiple resolutions of the same movie share provider IDs.
+                # Use IMDB or TMDB as the dedup key; keep the copy with the latest play date.
+                dedup_key = provider_ids.get("Imdb") or provider_ids.get("Tmdb") or ""
                 ud = item.get("UserData", {})
                 lp = ud.get("LastPlayedDate")
                 dc = item.get("DateCreated")
-                missing_movies.append({
+                entry = {
                     "emby_id": emby_id,
                     "title": item.get("Name", ""),
                     "year": item.get("ProductionYear"),
@@ -293,7 +297,18 @@ class ScrobbleAuditService:
                     "tvdb_id": provider_ids.get("Tvdb"),
                     "last_played": lp or dc,
                     "date_source": "played" if lp else ("added" if dc else None),
-                })
+                }
+
+                if dedup_key and dedup_key in seen_movie_keys:
+                    # Already have this movie — keep the one with the later date
+                    existing_idx = seen_movie_keys[dedup_key]
+                    existing = missing_movies[existing_idx]
+                    if (entry.get("last_played") or "") > (existing.get("last_played") or ""):
+                        missing_movies[existing_idx] = entry
+                else:
+                    if dedup_key:
+                        seen_movie_keys[dedup_key] = len(missing_movies)
+                    missing_movies.append(entry)
 
         # ── Emby side: TV shows — episode-level comparison ──
         missing_shows = []
@@ -409,6 +424,7 @@ class ScrobbleAuditService:
                  trakt_ep_ids=len(trakt_ep_ids),
                  dismissed=len(dismissed),
                  missing_movies=len(missing_movies),
+                 deduped_movies=len(emby_movies) - len(missing_movies) - len(trakt_movie_ids) if len(seen_movie_keys) else 0,
                  missing_shows=len(missing_shows),
                  missing_episodes=total_missing_eps)
 

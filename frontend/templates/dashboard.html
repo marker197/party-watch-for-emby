@@ -857,7 +857,7 @@ async function rebuildCache() {
     const d = await r.json();
     glog(`Cache rebuilt: ${d.movies ?? 0} movies, ${d.series ?? 0} series, ${d.cached_entries ?? 0} keys`, 'ok');
     showToast('library_cache_rebuild', 'ok', null);
-    await checkHealth();
+    await dashboardPoll();
   } catch(e) {
     glog('Cache rebuild failed: ' + e.message, 'err');
     showToast('library_cache_rebuild', 'error', null, e.message);
@@ -874,7 +874,7 @@ function filterActivity(btn, cat) {
   });
   btn.classList.add('active');
   btn.style.background = 'var(--accent)';
-  loadActivity();
+  dashboardPoll();
 }
 
 function cronToHuman(cron) {
@@ -972,78 +972,7 @@ async function loadSSLStatus() {
   }
 }
 
-async function loadActivity() {
-  try {
-    const url = activeCategory
-      ? API + `/api/activity?limit=30&category=${activeCategory}`
-      : API + '/api/activity?limit=30';
-    const r = await fetch(url);
-    const raw = await r.json();
-    // Filter out old generic "Webhook received" entries
-    const entries = raw.filter(e => !e.msg.startsWith('Webhook received'));
-    const el = document.getElementById('globalLog');
-    if (!el) return;
 
-    // Preserve any client-side entries added via glog() this session
-    const clientEntries = el.querySelectorAll('.entry.client-event');
-    const clientHtml = Array.from(clientEntries).map(e => e.outerHTML).join('');
-
-    if (!entries.length && !clientHtml) {
-      el.innerHTML = '<div class="entry" style="color:var(--text-dim);">No activity yet</div>';
-      return;
-    }
-    const apiHtml = entries.map(e => {
-      // Pick icon based on message content first, then category
-      let icon = '•';
-      const m = e.msg;
-      if (m.startsWith('▶ Trakt watching') || m.startsWith('▶ Trakt resumed')) icon = '▶️';
-      else if (m.startsWith('⏸')) icon = '⏸️';
-      else if (m.startsWith('⏹') || m.includes('stopped')) icon = '⏹️';
-      else if (m.startsWith('✓ Synced')) icon = '✅';
-      else if (m.startsWith('✓')) icon = '✅';
-      else if (m.startsWith('✗') || m.startsWith('⚠')) icon = '❌';
-      else if (m.includes('Watched:')) icon = '⏹️';
-      else if (m.includes('webhook')) icon = '📡';
-      else if (m.includes('party')) icon = '🎉';
-      else if (m.includes('Queue') || m.includes('queue')) icon = '🎯';
-      else if (m.includes('universe') || m.includes('Universe')) icon = '🌌';
-      else if (m.includes('ML') || m.includes('Train') || m.includes('predict')) icon = '🤖';
-      else if (m.includes('cache') || m.includes('Cache')) icon = '💾';
-      else if (e.cat === 'trakt') icon = '🔄';
-      else if (e.cat === 'webhook') icon = '📡';
-      const cls = m.startsWith('✓') ? 'ok' : (m.startsWith('✗') || m.startsWith('⚠')) ? 'err' : '';
-      return `<div class="entry ${cls}"><span style="opacity:0.45;font-size:0.78rem;">${e.ts.split(' ')[1]}</span>  ${icon} ${m}</div>`;
-    }).join('');
-    el.innerHTML = clientHtml + apiHtml;
-  } catch(e) {}
-}
-
-async function checkHealth() {
-  try {
-    const r = await fetch(API + '/health');
-    const d = await r.json();
-    document.getElementById('apiStatus').textContent = d.status === 'ok' ? '✓ Connected' : '✗ Error';
-
-    if (d.library_cache) {
-      const lc = d.library_cache;
-      document.getElementById('cacheItems').textContent = (lc.items || 0) + ' items';
-
-      // Update fixed cache stat values (don't rebuild HTML — library cards are appended separately)
-      const ck = document.getElementById('statCachedKeys');
-      const hr = document.getElementById('statHitRate');
-      const lr = document.getElementById('statLastRebuild');
-      if (ck) ck.textContent = lc.cached_keys || 0;
-      if (hr) hr.textContent = (lc.hit_rate || 0).toFixed(0) + '%';
-      if (lr) lr.textContent = lc.last_rebuild
-        ? new Date(lc.last_rebuild).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
-        : 'Never';
-    }
-
-    loadLibraries();
-  } catch(e) {
-    document.getElementById('apiStatus').textContent = '✗ Offline';
-  }
-}
 
 let librariesLoaded = false;
 async function loadLibraries() {
@@ -1838,18 +1767,6 @@ function dismissToast(el) {
   setTimeout(() => el.remove(), 250);
 }
 
-async function pollJobCompletions() {
-  try {
-    const r = await fetch(API + '/api/job-completions');
-    if (!r.ok) return;
-    const events = await r.json();
-    for (const ev of events) {
-      // Skip heartbeat — too frequent and not interesting
-      if (ev.job === 'heartbeat') continue;
-      showToast(ev.job, ev.status, ev.duration_s, ev.error);
-    }
-  } catch(e) { /* silent */ }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Consolidated dashboard poll (replaces separate activity + health + job-completions)

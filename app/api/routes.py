@@ -1461,30 +1461,6 @@ async def _activity_log(message: str, category: str = "general"):
         pass  # logging should never crash the request
 
 
-@router.get("/api/activity")
-async def get_activity(
-    limit: int = Query(default=30, le=100),
-    category: str = Query(default=None),
-):
-    """Return recent activity log entries, optionally filtered by category."""
-    import json as _json
-    r = await get_redis()
-    # When filtering, scan the full list; otherwise respect limit
-    fetch_count = 99 if category else limit - 1
-    raw = await r.lrange("activity_log", 0, fetch_count)
-    entries = []
-    for item in raw:
-        try:
-            entry = _json.loads(item)
-            if category and entry.get("cat") != category:
-                continue
-            entries.append(entry)
-            if len(entries) >= limit:
-                break
-        except Exception:
-            pass
-    return entries
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Scheduler status
@@ -1511,22 +1487,6 @@ async def scheduler_status():
 # ═══════════════════════════════════════════════════════════════════════════
 # Job completion events (toast notifications)
 # ═══════════════════════════════════════════════════════════════════════════
-
-@router.get("/api/job-completions")
-async def job_completions():
-    """Pop all pending job completion events for dashboard toasts."""
-    import json as _json
-    r = await get_redis()
-    events = []
-    while True:
-        raw = await r.rpop("job_completions")
-        if raw is None:
-            break
-        try:
-            events.append(_json.loads(raw))
-        except Exception:
-            pass
-    return events
 
 
 @router.get("/api/dashboard-poll")
