@@ -1474,9 +1474,9 @@ async function runAudit() {
 
     summary.innerHTML = `<div style="font-size:0.82rem; color:var(--text-dim);">` +
       `Emby played: ${s.emby_movies_played || 0} movies, ${s.emby_shows_played || 0} shows · ` +
-      `Trakt watched: ${s.trakt_movies_watched || 0} movies, ${s.trakt_shows_watched || 0} shows · ` +
+      `Trakt watched: ${s.trakt_movies_watched || 0} movies, ${s.trakt_shows_watched || 0} episodes · ` +
       `<span style="color:${(movies.length + shows.length) > 0 ? 'var(--orange)' : 'var(--green)'}; font-weight:600;">` +
-      `${movies.length + shows.length} missed</span></div>`;
+      `${movies.length} movies, ${s.episodes || shows.length} episodes missed</span></div>`;
 
     if (movies.length === 0 && shows.length === 0) {
       el.innerHTML = '<div style="color:var(--green);padding:8px;">✓ Everything in sync — no missed scrobbles found.</div>';
@@ -1485,14 +1485,14 @@ async function runAudit() {
 
     document.getElementById('btnBackfillAll').style.display = 'inline-block';
 
-    const allItems = [...movies, ...shows];
-    el.innerHTML = '<table class="queue-table"><thead><tr>' +
-      '<th>Title</th><th style="width:60px;">Type</th><th style="width:70px;">Year</th><th style="width:110px;">Date Played</th><th style="width:100px;">Action</th>' +
-      '</tr></thead><tbody>' +
-      allItems.map((item, idx) => {
-        const typeLabel = item.type === 'movie'
-          ? '<span style="color:var(--accent);">movie</span>'
-          : '<span style="color:var(--blue);">show</span>';
+    // Movies table (unchanged layout)
+    let html = '';
+    if (movies.length > 0) {
+      html += '<div style="font-weight:600;margin-bottom:6px;">Movies</div>';
+      html += '<table class="queue-table"><thead><tr>' +
+        '<th>Title</th><th style="width:70px;">Year</th><th style="width:110px;">Date Played</th><th style="width:100px;">Action</th>' +
+        '</tr></thead><tbody>';
+      movies.forEach((item, idx) => {
         let datePlayed = '—';
         if (item.last_played) {
           try {
@@ -1500,26 +1500,82 @@ async function runAudit() {
             datePlayed = item.date_source === 'added' ? d + ' *' : d;
           } catch(e) {}
         }
-        return `<tr id="audit-row-${idx}">
+        html += `<tr id="audit-row-m${idx}">
           <td>${(item.title || '').replace(/</g,'&lt;')}</td>
-          <td class="queue-source">${typeLabel}</td>
           <td class="queue-source">${item.year || '—'}</td>
           <td class="queue-source">${datePlayed}</td>
-          <td><button class="btn btn-sm btn-green" id="audit-btn-${idx}" onclick="backfillItem(${idx})">Backfill</button></td>
+          <td><button class="btn btn-sm btn-green" id="audit-btn-m${idx}" onclick="backfillMovie(${idx})">Backfill</button></td>
         </tr>`;
-      }).join('') +
-      '</tbody></table>';
+      });
+      html += '</tbody></table>';
+    }
+
+    // Shows table — one row per series with episode count, expandable
+    if (shows.length > 0) {
+      const totalEps = shows.reduce((sum, s) => sum + (s.episode_count || 0), 0);
+      html += `<div style="font-weight:600;margin:16px 0 6px;">TV Shows <span style="font-weight:400;color:var(--text-dim);font-size:0.82rem;">(${totalEps} episodes across ${shows.length} shows)</span></div>`;
+      html += '<table class="queue-table"><thead><tr>' +
+        '<th>Series</th><th style="width:80px;">Episodes</th><th style="width:110px;">Last Played</th><th style="width:100px;">Action</th>' +
+        '</tr></thead><tbody>';
+      shows.forEach((show, idx) => {
+        let datePlayed = '—';
+        if (show.last_played) {
+          try { datePlayed = new Date(show.last_played).toLocaleDateString(); } catch(e) {}
+        }
+        const epCount = show.episode_count || (show.episodes || []).length || 1;
+        html += `<tr id="audit-row-s${idx}" style="cursor:pointer;" onclick="toggleAuditEpisodes(${idx})">
+          <td><span style="color:var(--text-dim);margin-right:4px;">▸</span> ${(show.title || '').replace(/</g,'&lt;')} <span style="color:var(--text-dim);font-size:0.78rem;">(${show.year || ''})</span></td>
+          <td class="queue-source" style="color:var(--orange);font-weight:600;">${epCount}</td>
+          <td class="queue-source">${datePlayed}</td>
+          <td><button class="btn btn-sm btn-green" id="audit-btn-s${idx}" onclick="event.stopPropagation(); backfillShow(${idx})">Backfill</button></td>
+        </tr>`;
+        // Hidden episode detail rows
+        if (show.episodes && show.episodes.length > 0) {
+          html += `<tr id="audit-eps-${idx}" style="display:none;"><td colspan="4" style="padding:0;">` +
+            '<div style="padding:6px 12px 8px 28px; background:var(--surface-alt, rgba(0,0,0,0.15));">' +
+            show.episodes.map(ep => {
+              let epDate = '—';
+              if (ep.last_played) {
+                try {
+                  const d = new Date(ep.last_played).toLocaleDateString();
+                  epDate = ep.date_source === 'added' ? d + ' *' : d;
+                } catch(e) {}
+              }
+              return `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:0.82rem;">` +
+                `<span style="color:var(--text-dim);">S${String(ep.season).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')}</span>` +
+                `<span style="flex:1;margin:0 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(ep.title || '').replace(/</g,'&lt;')}</span>` +
+                `<span style="color:var(--text-dim);font-size:0.78rem;">${epDate}</span></div>`;
+            }).join('') +
+            '</div></td></tr>';
+        }
+      });
+      html += '</tbody></table>';
+    }
+
+    el.innerHTML = html;
   } catch(e) {
     el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
   }
 }
 
-async function backfillItem(idx) {
+function toggleAuditEpisodes(idx) {
+  const row = document.getElementById('audit-eps-' + idx);
+  if (!row) return;
+  const parentRow = document.getElementById('audit-row-s' + idx);
+  if (row.style.display === 'none') {
+    row.style.display = '';
+    if (parentRow) parentRow.querySelector('span').textContent = '▾';
+  } else {
+    row.style.display = 'none';
+    if (parentRow) parentRow.querySelector('span').textContent = '▸';
+  }
+}
+
+async function backfillMovie(idx) {
   if (!_auditData) return;
-  const allItems = [...(_auditData.movies || []), ...(_auditData.shows || [])];
-  const item = allItems[idx];
+  const item = (_auditData.movies || [])[idx];
   if (!item) return;
-  const btn = document.getElementById('audit-btn-' + idx);
+  const btn = document.getElementById('audit-btn-m' + idx);
   if (!btn) return;
   btn.disabled = true;
   btn.textContent = '⏳';
@@ -1532,7 +1588,36 @@ async function backfillItem(idx) {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     btn.textContent = '✓';
     btn.style.background = 'var(--green)';
-    document.getElementById('audit-row-' + idx).style.opacity = '0.5';
+    document.getElementById('audit-row-m' + idx).style.opacity = '0.5';
+  } catch(e) {
+    btn.textContent = '✗';
+    btn.style.background = 'var(--red)';
+    btn.disabled = false;
+  }
+}
+
+async function backfillShow(idx) {
+  if (!_auditData) return;
+  const show = (_auditData.shows || [])[idx];
+  if (!show) return;
+  const btn = document.getElementById('audit-btn-s' + idx);
+  if (!btn) return;
+  btn.disabled = true;
+  const epCount = show.episode_count || (show.episodes || []).length || 0;
+  btn.textContent = `⏳ ${epCount} eps`;
+  try {
+    const r = await fetch(API + `/api/scrobble-audit/${currentUserId}/backfill`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({items: [show]}),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    btn.textContent = `✓ ${data.added || 0}`;
+    btn.style.background = 'var(--green)';
+    document.getElementById('audit-row-s' + idx).style.opacity = '0.5';
+    const epsRow = document.getElementById('audit-eps-' + idx);
+    if (epsRow) epsRow.style.opacity = '0.5';
   } catch(e) {
     btn.textContent = '✗';
     btn.style.background = 'var(--red)';

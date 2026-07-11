@@ -74,7 +74,8 @@ class ScrobbleAuditService:
     async def backfill(self, user: User, items: list[dict]) -> dict:
         """Send items to Trakt watch history.
 
-        Each item in `items`: {type: "movie"|"show", imdb_id, tmdb_id, title}
+        Movies: {type: "movie", imdb_id, tmdb_id, title, last_played}
+        Shows:  {type: "show", imdb_id, tmdb_id, tvdb_id, title, episodes: [{season, episode, last_played}, ...]}
         """
         if not items:
             return {"added": 0}
@@ -88,31 +89,52 @@ class ScrobbleAuditService:
                     ids["imdb"] = item["imdb_id"]
                 if item.get("tmdb_id"):
                     ids["tmdb"] = int(item["tmdb_id"]) if str(item["tmdb_id"]).isdigit() else item["tmdb_id"]
+                if item.get("tvdb_id"):
+                    ids["tvdb"] = int(item["tvdb_id"]) if str(item["tvdb_id"]).isdigit() else item["tvdb_id"]
                 if not ids:
                     continue
 
-                # Use actual Emby played date if available, otherwise now
-                watched_at = item.get("last_played")
-                if not watched_at:
-                    watched_at = datetime.now(timezone.utc).isoformat()
-                entry = {
-                    "ids": ids,
-                    "watched_at": watched_at,
-                }
-                if item.get("type") == "show":
-                    entry["_type"] = "show"
-                payload.append(entry)
+                if item.get("type") == "show" and item.get("episodes"):
+                    # Episode-level backfill: one Trakt entry per episode
+                    for ep in item["episodes"]:
+                        watched_at = ep.get("last_played")
+                        if not watched_at:
+                            watched_at = datetime.now(timezone.utc).isoformat()
+                        payload.append({
+                            "ids": ids,
+                            "seasons": [{
+                                "number": ep.get("season", 0),
+                                "episodes": [{
+                                    "number": ep.get("episode", 0),
+                                    "watched_at": watched_at,
+                                }],
+                            }],
+                            "_type": "show",
+                        })
+                else:
+                    # Movie (or legacy show entry without episodes)
+                    watched_at = item.get("last_played")
+                    if not watched_at:
+                        watched_at = datetime.now(timezone.utc).isoformat()
+                    entry = {
+                        "ids": ids,
+                        "watched_at": watched_at,
+                    }
+                    if item.get("type") == "show":
+                        entry["_type"] = "show"
+                    payload.append(entry)
 
             if not payload:
                 return {"added": 0}
 
             result = await trakt.add_to_history(payload)
             added_movies = result.get("added", {}).get("movies", 0)
-            added_shows = result.get("added", {}).get("episodes", 0) + result.get("added", {}).get("shows", 0)
-            total = added_movies + added_shows
+            added_episodes = result.get("added", {}).get("episodes", 0)
+            added_shows = result.get("added", {}).get("shows", 0)
+            total = added_movies + added_episodes + added_shows
 
             log.info("scrobble_audit.backfill_done", user=user.emby_username,
-                     requested=len(items), added=total)
+                     requested=len(items), payload_entries=len(payload), added=total)
 
             # Invalidate audit cache so next view reflects the backfill
             await self.invalidate_cache(user.id)
@@ -155,7 +177,6 @@ class ScrobbleAuditService:
     async def _compare(self, trakt: TraktClient, emby: EmbyClient, user: User) -> dict:
         # ── Trakt side: build sets of watched IDs ──
         trakt_movie_ids: set[str] = set()
-        trakt_show_ids: set[str] = set()
 
         try:
             trakt_movies = await trakt.get_watched(kind="movies")
@@ -168,20 +189,32 @@ class ScrobbleAuditService:
         except Exception:
             log.warning("scrobble_audit.trakt_movies_failed")
 
+        # Trakt shows: build a set of "showkey:SxxExx" for episode-level matching
+        trakt_watched_eps: set[str] = set()  # "{imdb_or_tvdb}:S{s}E{e}"
+        trakt_show_keys: dict[str, set[str]] = {}  # show key → set of provider keys
         try:
             trakt_shows = await trakt.get_watched(kind="shows")
             for entry in trakt_shows:
-                ids = entry.get("show", {}).get("ids", {})
-                for key in ("imdb", "tmdb", "tvdb"):
-                    val = ids.get(key)
+                show_ids = entry.get("show", {}).get("ids", {})
+                # Build all provider keys for this show
+                show_keys: list[str] = []
+                for key in ("imdb", "tvdb", "tmdb"):
+                    val = show_ids.get(key)
                     if val:
-                        trakt_show_ids.add(f"{key}:{val}")
+                        show_keys.append(f"{key}:{val}")
+                # Walk seasons → episodes
+                for season in entry.get("seasons", []):
+                    s_num = season.get("number", 0)
+                    for ep in season.get("episodes", []):
+                        e_num = ep.get("number", 0)
+                        ep_tag = f"S{s_num}E{e_num}"
+                        for sk in show_keys:
+                            trakt_watched_eps.add(f"{sk}:{ep_tag}")
         except Exception:
             log.warning("scrobble_audit.trakt_shows_failed")
 
-        # ── Emby side: played movies (using Filters=IsPlayed) ──
+        # ── Emby side: played movies (unchanged) ──
         missing_movies = []
-        missing_shows = []
 
         emby_movies = await self._get_played_items(emby, user.emby_user_id, "Movie")
         for item in emby_movies:
@@ -212,42 +245,96 @@ class ScrobbleAuditService:
                     "date_source": "played" if lp else ("added" if dc else None),
                 })
 
-        emby_series = await self._get_played_items(emby, user.emby_user_id, "Series")
-        for item in emby_series:
-            ud = item.get("UserData", {})
-            # A series is "played" if PlayedPercentage == 100 or Played is True
-            # or UnplayedItemCount == 0
-            is_played = (
-                ud.get("Played", False)
-                or ud.get("UnplayedItemCount", 1) == 0
-                or (ud.get("PlayedPercentage") or 0) >= 100
-            )
-            if not is_played:
-                continue
+        # ── Emby side: TV shows — episode-level comparison ──
+        missing_shows = []
 
-            provider_ids = item.get("ProviderIds", {})
-            item_keys = set()
+        # Get all series in the library (don't filter by IsPlayed — we want
+        # series with *any* played episodes, not just fully-completed ones)
+        emby_all_series = await self._get_played_items(emby, user.emby_user_id, "Series")
+
+        # Also include series that are only partially watched (have some
+        # played episodes but aren't fully "Played" at series level).
+        # _get_played_items uses Filters=IsPlayed which only returns series
+        # where Emby considers them played.  We also need partially watched.
+        partially_watched = await self._get_partial_series(emby, user.emby_user_id)
+        # Merge, dedup by Id
+        seen_series_ids = {s.get("Id") for s in emby_all_series}
+        for s in partially_watched:
+            if s.get("Id") not in seen_series_ids:
+                emby_all_series.append(s)
+                seen_series_ids.add(s.get("Id"))
+
+        total_missing_eps = 0
+        for series in emby_all_series:
+            series_id = series.get("Id", "")
+            series_name = series.get("Name", "")
+            series_year = series.get("ProductionYear")
+            series_providers = series.get("ProviderIds", {})
+
+            # Build show-level keys for Trakt matching
+            show_keys: list[str] = []
             for prov, trakt_key in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
-                val = provider_ids.get(prov)
+                val = series_providers.get(prov)
                 if val:
-                    item_keys.add(f"{trakt_key}:{val}")
-
-            if not item_keys:
+                    show_keys.append(f"{trakt_key}:{val}")
+            if not show_keys:
                 continue
 
-            if not item_keys & trakt_show_ids:
-                lp = ud.get("LastPlayedDate")
-                dc = item.get("DateCreated")
-                missing_shows.append({
-                    "emby_id": item.get("Id", ""),
-                    "title": item.get("Name", ""),
-                    "year": item.get("ProductionYear"),
-                    "type": "show",
-                    "imdb_id": provider_ids.get("Imdb"),
-                    "tmdb_id": provider_ids.get("Tmdb"),
-                    "tvdb_id": provider_ids.get("Tvdb"),
+            # Fetch played episodes for this series from Emby
+            played_episodes = await self._get_played_episodes(
+                emby, user.emby_user_id, series_id
+            )
+            if not played_episodes:
+                continue
+
+            # Compare each played episode against Trakt
+            missing_eps = []
+            for ep in played_episodes:
+                s_num = ep.get("ParentIndexNumber", 0)
+                e_num = ep.get("IndexNumber", 0)
+                if s_num == 0 and e_num == 0:
+                    continue  # specials without numbering — skip
+                ep_tag = f"S{s_num}E{e_num}"
+
+                # Check if this specific episode is in Trakt
+                found = False
+                for sk in show_keys:
+                    if f"{sk}:{ep_tag}" in trakt_watched_eps:
+                        found = True
+                        break
+                if found:
+                    continue
+
+                ep_ud = ep.get("UserData", {})
+                lp = ep_ud.get("LastPlayedDate")
+                dc = ep.get("DateCreated")
+                missing_eps.append({
+                    "season": s_num,
+                    "episode": e_num,
+                    "title": ep.get("Name", ""),
                     "last_played": lp or dc,
                     "date_source": "played" if lp else ("added" if dc else None),
+                })
+
+            if missing_eps:
+                missing_eps.sort(key=lambda e: (e["season"], e["episode"]))
+                total_missing_eps += len(missing_eps)
+                missing_shows.append({
+                    "emby_id": series_id,
+                    "title": series_name,
+                    "year": series_year,
+                    "type": "show",
+                    "imdb_id": series_providers.get("Imdb"),
+                    "tmdb_id": series_providers.get("Tmdb"),
+                    "tvdb_id": series_providers.get("Tvdb"),
+                    "episode_count": len(missing_eps),
+                    "episodes": missing_eps,
+                    # Use latest episode's played date as the show-level date
+                    "last_played": max(
+                        (e["last_played"] for e in missing_eps if e.get("last_played")),
+                        default=None,
+                    ),
+                    "date_source": "played",
                 })
 
         # Sort by title
@@ -255,9 +342,12 @@ class ScrobbleAuditService:
         missing_shows.sort(key=lambda x: (x.get("title") or "").lower())
 
         log.info("scrobble_audit.complete", user=user.emby_username,
-                 emby_movies=len(emby_movies), emby_series=len(emby_series),
-                 trakt_movie_ids=len(trakt_movie_ids), trakt_show_ids=len(trakt_show_ids),
-                 missing_movies=len(missing_movies), missing_shows=len(missing_shows))
+                 emby_movies=len(emby_movies), emby_series=len(emby_all_series),
+                 trakt_movie_ids=len(trakt_movie_ids),
+                 trakt_watched_eps=len(trakt_watched_eps),
+                 missing_movies=len(missing_movies),
+                 missing_shows=len(missing_shows),
+                 missing_episodes=total_missing_eps)
 
         return {
             "movies": missing_movies,
@@ -265,15 +355,66 @@ class ScrobbleAuditService:
             "summary": {
                 "movies": len(missing_movies),
                 "shows": len(missing_shows),
+                "episodes": total_missing_eps,
                 "emby_movies_played": sum(1 for m in emby_movies if m.get("UserData", {}).get("Played")),
-                "emby_shows_played": sum(1 for s in emby_series if (
-                    s.get("UserData", {}).get("Played")
-                    or s.get("UserData", {}).get("UnplayedItemCount", 1) == 0
-                )),
+                "emby_shows_played": len(emby_all_series),
                 "trakt_movies_watched": len(set(k.split(":")[1] for k in trakt_movie_ids if k.startswith("imdb:")) or trakt_movie_ids),
-                "trakt_shows_watched": len(set(k.split(":")[1] for k in trakt_show_ids if k.startswith("imdb:")) or trakt_show_ids),
+                "trakt_shows_watched": len(trakt_watched_eps),
             },
         }
+
+    async def _get_played_episodes(
+        self, emby: EmbyClient, user_id: str, series_id: str,
+    ) -> list[dict]:
+        """Fetch played episodes for a specific series, sorted by DatePlayed descending."""
+        items: list[dict] = []
+        start = 0
+        batch = 100
+        while True:
+            resp = await emby.get_items(
+                user_id=user_id,
+                item_type="Episode",
+                parent_id=series_id,
+                fields="ProviderIds,UserDataLastPlayedDate,UserDataPlayCount",
+                filters="IsPlayed",
+                sort_by="DatePlayed",
+                sort_order="Descending",
+                limit=batch,
+                start_index=start,
+            )
+            items.extend(resp.get("Items", []))
+            if start + batch >= resp.get("TotalRecordCount", 0):
+                break
+            start += batch
+        return items
+
+    async def _get_partial_series(
+        self, emby: EmbyClient, user_id: str,
+    ) -> list[dict]:
+        """Fetch series that have been started (InProgress) but not fully played.
+
+        This catches shows where the user has watched some episodes but Emby
+        doesn't mark the series-level item as Played.
+        """
+        items: list[dict] = []
+        start = 0
+        batch = 500
+        while True:
+            resp = await emby.get_items(
+                user_id=user_id,
+                item_type="Series",
+                fields="ProviderIds,ProductionYear,DateCreated,UserDataLastPlayedDate",
+                filters="IsResumable",
+                sort_by="DatePlayed",
+                sort_order="Descending",
+                limit=batch,
+                start_index=start,
+            )
+            items.extend(resp.get("Items", []))
+            if start + batch >= resp.get("TotalRecordCount", 0):
+                break
+            start += batch
+        return items
 
     @staticmethod
     async def _make_trakt(user: User) -> TraktClient:
