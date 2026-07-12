@@ -197,3 +197,43 @@ class SonarrClient:
                 "reason": str(detail),
                 "http_status": e.response.status_code,
             }
+
+    # -- Download queue -------------------------------------------------------
+
+    async def get_download_queue(self) -> list[dict]:
+        """Fetch active download queue from Sonarr.
+
+        Returns a normalised list of queue records with progress, ETA,
+        size info and the TVDB ID / series title so the frontend can
+        match to smart queue items.
+        """
+        try:
+            data = await self._get("/queue?page=1&pageSize=50&includeSeries=true&includeEpisode=true")
+            records = data.get("records", []) if isinstance(data, dict) else data
+            result = []
+            for rec in records:
+                series = rec.get("series") or {}
+                episode = rec.get("episode") or {}
+                ep_label = ""
+                if episode.get("seasonNumber") is not None and episode.get("episodeNumber") is not None:
+                    ep_label = f"S{episode['seasonNumber']:02d}E{episode['episodeNumber']:02d}"
+                result.append({
+                    "title": series.get("title", rec.get("title", "")),
+                    "episode_title": episode.get("title", ""),
+                    "episode_label": ep_label,
+                    "tvdb_id": series.get("tvdbId"),
+                    "imdb_id": series.get("imdbId"),
+                    "status": rec.get("status", ""),
+                    "tracked_status": rec.get("trackedDownloadStatus", ""),
+                    "progress": round(100 - (rec.get("sizeleft", 0) / max(rec.get("size", 1), 1)) * 100, 1),
+                    "size_mb": round(rec.get("size", 0) / 1_048_576, 1),
+                    "sizeleft_mb": round(rec.get("sizeleft", 0) / 1_048_576, 1),
+                    "eta": rec.get("estimatedCompletionTime"),
+                    "download_client": rec.get("downloadClient", ""),
+                    "server": self._name,
+                    "type": "show",
+                })
+            return result
+        except Exception as e:
+            log.warning("sonarr.queue_fetch_failed", server=self._name, error=str(e)[:120])
+            return []

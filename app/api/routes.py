@@ -2796,20 +2796,25 @@ async def get_availability():
                 client = RadarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Radarr"))
                 all_movies = await client.get_all_movies()
                 await client.close()
+                # Fetch download queue for accurate status
+                dl_queue = await client.get_download_queue()
+                dl_movie_ids = {d.get("tmdb_id") for d in dl_queue if d.get("tmdb_id")}
+
                 for movie in all_movies:
                     if not movie.get("monitored", False):
                         continue
                     has_file = movie.get("hasFile", False)
+                    tmdb_id = movie.get("tmdbId")
                     status = "available" if has_file else "monitored"
 
-                    # Check queue for active download
-                    if not has_file and movie.get("queueStatus"):
+                    # Check real download queue for active download
+                    if not has_file and tmdb_id in dl_movie_ids:
                         status = "downloading"
 
                     movies_status.append({
                         "title": movie.get("title", ""),
                         "year": movie.get("year"),
-                        "tmdb_id": movie.get("tmdbId"),
+                        "tmdb_id": tmdb_id,
                         "imdb_id": movie.get("imdbId"),
                         "status": status,
                         "has_file": has_file,
@@ -2829,18 +2834,25 @@ async def get_availability():
             try:
                 client = SonarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Sonarr"))
                 all_series = await client.get_all_series()
+                # Fetch download queue for accurate status
+                dl_queue = await client.get_download_queue()
                 await client.close()
+                dl_tvdb_ids = {d.get("tvdb_id") for d in dl_queue if d.get("tvdb_id")}
+
                 for series in all_series:
                     if not series.get("monitored", False):
                         continue
                     ep_file_count = series.get("episodeFileCount", 0)
                     ep_count = series.get("episodeCount", 0)
+                    tvdb_id = series.get("tvdbId")
 
                     if ep_count == 0:
                         continue
 
                     if ep_file_count >= ep_count:
                         status = "available"
+                    elif tvdb_id in dl_tvdb_ids:
+                        status = "downloading"
                     elif ep_file_count > 0:
                         status = "partial"
                     else:
@@ -2849,7 +2861,7 @@ async def get_availability():
                     shows_status.append({
                         "title": series.get("title", ""),
                         "year": series.get("year"),
-                        "tvdb_id": series.get("tvdbId"),
+                        "tvdb_id": tvdb_id,
                         "imdb_id": series.get("imdbId"),
                         "status": status,
                         "episodes_on_disk": ep_file_count,
@@ -2889,6 +2901,71 @@ async def get_availability():
             await r.setex(cache_key, 300, _json.dumps(result))
         except Exception:
             pass
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Download Queue Progress (Radarr/Sonarr active downloads)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/download-queue")
+async def get_download_queue():
+    """Fetch active download queue from all Radarr/Sonarr servers.
+
+    Returns items currently being downloaded with progress, ETA, and
+    size info.  Keyed by tmdb_id (movies) and tvdb_id (shows) so the
+    frontend can match them to smart queue cards.  Short TTL cache (30s)
+    to avoid hammering the *arr APIs on repeated dashboard loads.
+    """
+    import json as _json
+    from app.utils.radarr_client import RadarrClient
+    from app.utils.sonarr_client import SonarrClient
+
+    cache_key = "download_queue_v1"
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return _json.loads(cached)
+    except Exception:
+        pass
+
+    r = await get_redis()
+    downloads: list[dict] = []
+
+    # --- Radarr queues ---
+    raw_radarr = await r.get("radarr_servers")
+    if raw_radarr:
+        for srv in _json.loads(raw_radarr):
+            try:
+                client = RadarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Radarr"))
+                items = await client.get_download_queue()
+                await client.close()
+                downloads.extend(items)
+            except Exception as e:
+                log.warning("download_queue.radarr_failed", server=srv.get("name"), error=str(e)[:120])
+
+    # --- Sonarr queues ---
+    raw_sonarr = await r.get("sonarr_servers")
+    if raw_sonarr:
+        for srv in _json.loads(raw_sonarr):
+            try:
+                client = SonarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Sonarr"))
+                items = await client.get_download_queue()
+                await client.close()
+                downloads.extend(items)
+            except Exception as e:
+                log.warning("download_queue.sonarr_failed", server=srv.get("name"), error=str(e)[:120])
+
+    result = {"downloads": downloads, "count": len(downloads)}
+
+    # Short TTL — downloads change rapidly
+    try:
+        r = await get_redis()
+        await r.setex(cache_key, 30, _json.dumps(result))
+    except Exception:
+        pass
 
     return result
 

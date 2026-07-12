@@ -478,6 +478,46 @@
   }
   .queue-imdb-link:hover { background: rgba(245,197,24,0.15); }
 
+  .dl-progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 3px;
+  }
+  .dl-progress-bar {
+    flex: 1;
+    height: 5px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 3px;
+    overflow: hidden;
+    min-width: 60px;
+    max-width: 120px;
+  }
+  .dl-progress-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s ease;
+  }
+  .dl-progress-text {
+    font-size: 0.65rem;
+    color: var(--blue);
+    white-space: nowrap;
+  }
+  .dl-badge {
+    background: rgba(116, 185, 255, 0.15);
+    color: var(--blue);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    border: 1px solid rgba(116, 185, 255, 0.25);
+  }
+  .dl-badge.warning {
+    background: rgba(253, 203, 110, 0.15);
+    color: var(--orange);
+    border-color: rgba(253, 203, 110, 0.25);
+  }
+
   .queue-source {
     font-size: 0.78rem;
   }
@@ -1249,13 +1289,31 @@ function toggleQueue() {
 async function viewQueue() {
   if (!currentUserId) return alert('Select a user first');
   try {
-    const r = await fetch(API + `/queue/${currentUserId}?limit=30`);
-    const items = await r.json();
+    const [qr, dlr] = await Promise.all([
+      fetch(API + `/queue/${currentUserId}?limit=30`),
+      fetch(API + '/api/download-queue').catch(() => null),
+    ]);
+    const items = await qr.json();
     const el = document.getElementById('queueTable');
     if (!Array.isArray(items) || items.length === 0) {
       el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Queue is empty — click Refresh Queue, then check back in a minute.</div>';
       return;
     }
+
+    // Build download lookup: tmdb_id → download, tvdb_id → [downloads]
+    const dlByTmdb = {};
+    const dlByTvdb = {};
+    if (dlr && dlr.ok) {
+      const dlData = await dlr.json();
+      for (const dl of (dlData.downloads || [])) {
+        if (dl.tmdb_id) dlByTmdb[dl.tmdb_id] = dl;
+        if (dl.tvdb_id) {
+          if (!dlByTvdb[dl.tvdb_id]) dlByTvdb[dl.tvdb_id] = [];
+          dlByTvdb[dl.tvdb_id].push(dl);
+        }
+      }
+    }
+
     el.innerHTML = '<table class="queue-table"><thead><tr>' +
       '<th style="width:30px;">#</th><th>Title</th><th style="width:80px;">Source</th><th style="width:55px;">Score</th><th style="width:80px;">Status</th><th style="width:70px;"></th>' +
       '</tr></thead><tbody>' +
@@ -1264,8 +1322,39 @@ async function viewQueue() {
         const rating = (i.community_rating != null) ? ` <span style="color:var(--orange);font-size:0.78rem;">★${Number(i.community_rating).toFixed(1)}</span>` : '';
         const yearStr = i.year ? ` <span style="color:var(--text-dim);font-size:0.72rem;">(${i.year})</span>` : '';
 
+        // Check if this item is actively downloading
+        let dl = null;
+        let dlEps = null;
+        if (i.type === 'movie' && i.tmdb_id && dlByTmdb[i.tmdb_id]) {
+          dl = dlByTmdb[i.tmdb_id];
+        } else if (i.type === 'show' && i.tvdb_id && dlByTvdb[i.tvdb_id]) {
+          dlEps = dlByTvdb[i.tvdb_id];
+        }
+
         let statusBadge;
-        if (!inLib) {
+        if (dl) {
+          // Movie downloading — show progress bar
+          const pct = dl.progress || 0;
+          const barColor = dl.tracked_status === 'warning' ? 'var(--orange)' : 'var(--blue)';
+          const etaStr = _formatEta(dl.eta);
+          const sizeStr = dl.size_mb ? `${dl.size_mb.toFixed(0)} MB` : '';
+          statusBadge = `<div class="dl-progress-wrap">
+            <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${pct}%;background:${barColor};"></div></div>
+            <span class="dl-progress-text">${pct.toFixed(0)}%</span>
+          </div>
+          <div style="font-size:0.6rem;color:var(--text-dim);margin-top:1px;">${etaStr}${sizeStr ? ' · ' + sizeStr : ''}</div>`;
+        } else if (dlEps && dlEps.length > 0) {
+          // Show downloading — aggregate or show per-episode
+          const totalPct = dlEps.reduce((s, d) => s + (d.progress || 0), 0) / dlEps.length;
+          const anyWarning = dlEps.some(d => d.tracked_status === 'warning');
+          const barColor = anyWarning ? 'var(--orange)' : 'var(--blue)';
+          const epLabels = dlEps.map(d => d.episode_label).filter(Boolean).join(', ');
+          statusBadge = `<div class="dl-progress-wrap">
+            <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${totalPct}%;background:${barColor};"></div></div>
+            <span class="dl-progress-text">${totalPct.toFixed(0)}%</span>
+          </div>
+          <div style="font-size:0.6rem;color:var(--text-dim);margin-top:1px;">${dlEps.length} ep${dlEps.length > 1 ? 's' : ''}${epLabels ? ': ' + epLabels : ''}</div>`;
+        } else if (!inLib) {
           statusBadge = '<span class="queue-badge missing">not in library</span>';
         } else if (i.played) {
           statusBadge = '<span class="queue-badge played">✓</span>';
@@ -1273,14 +1362,18 @@ async function viewQueue() {
           statusBadge = '<span class="queue-badge unwatched">new</span>';
         }
 
-        const titleClass = inLib ? 'queue-title' : 'queue-title missing';
+        const titleClass = inLib ? 'queue-title' : (dl || dlEps ? 'queue-title' : 'queue-title missing');
         const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-        const imdbLink = (!inLib && i.imdb_id)
+        const imdbLink = (!inLib && !dl && !dlEps && i.imdb_id)
           ? ` <a href="https://www.imdb.com/title/${i.imdb_id}/" target="_blank" rel="noopener" class="queue-imdb-link">IMDb</a>`
           : '';
 
         let actionBtn = '';
-        if (!inLib && i.tmdb_id && i.type === 'movie') {
+        if (dl || dlEps) {
+          // Item is downloading — show the server badge instead of action button
+          const srvName = dl ? dl.server : dlEps[0].server;
+          actionBtn = `<span class="dl-badge">${srvName}</span>`;
+        } else if (!inLib && i.tmdb_id && i.type === 'movie') {
           if (_radarrServers.length > 1) {
             const opts = _radarrServers.map((s, si) =>
               `<option value="${si}">${s.quality_profile_name || s.name}</option>`
@@ -1317,6 +1410,23 @@ async function viewQueue() {
   } catch(e) {
     document.getElementById('queueTable').innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
   }
+}
+
+function _formatEta(isoStr) {
+  if (!isoStr) return '';
+  try {
+    const eta = new Date(isoStr);
+    const now = new Date();
+    const diffMs = eta - now;
+    if (diffMs <= 0) return 'any moment';
+    const mins = Math.round(diffMs / 60000);
+    if (mins < 60) return `~${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    const rm = mins % 60;
+    if (hrs < 24) return `~${hrs}h${rm > 0 ? rm + 'm' : ''}`;
+    const days = Math.floor(hrs / 24);
+    return `~${days}d`;
+  } catch(e) { return ''; }
 }
 
 function toggleAiring() {
