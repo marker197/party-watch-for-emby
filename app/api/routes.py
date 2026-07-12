@@ -2745,13 +2745,15 @@ async def get_availability():
 
     Cross-references queue items marked as not-in-library with their
     status in Radarr/Sonarr: monitored, downloading, available.
+    Does NOT cache results when any server is unreachable so a
+    subsequent request can pick up the missing server.
     """
     import json as _json
     from app.utils.radarr_client import RadarrClient
     from app.utils.sonarr_client import SonarrClient
 
     # Check cache
-    cache_key = "availability_monitor"
+    cache_key = "availability_monitor_v2"
     try:
         r = await get_redis()
         cached = await r.get(cache_key)
@@ -2763,6 +2765,8 @@ async def get_availability():
     r = await get_redis()
     movies_status: list[dict] = []
     shows_status: list[dict] = []
+    any_server_failed = False
+    failed_servers: list[str] = []
 
     # --- Radarr movies ---
     raw_radarr = await r.get("radarr_servers")
@@ -2794,6 +2798,8 @@ async def get_availability():
                         "size_on_disk": movie.get("sizeOnDisk", 0),
                     })
             except Exception as e:
+                any_server_failed = True
+                failed_servers.append(srv.get("name", "Radarr"))
                 log.warning("availability.radarr_failed", server=srv.get("name"), error=str(e)[:120])
 
     # --- Sonarr series ---
@@ -2833,6 +2839,8 @@ async def get_availability():
                         "size_on_disk": series.get("sizeOnDisk", 0),
                     })
             except Exception as e:
+                any_server_failed = True
+                failed_servers.append(srv.get("name", "Sonarr"))
                 log.warning("availability.sonarr_failed", server=srv.get("name"), error=str(e)[:120])
 
     # Filter to show only items that aren't fully available yet
@@ -2850,13 +2858,18 @@ async def get_availability():
             "available_count": len(shows_status) - len(pending_shows),
             "total_monitored": len(shows_status),
         },
+        "partial": any_server_failed,
+        "failed_servers": failed_servers,
     }
 
-    try:
-        r = await get_redis()
-        await r.setex(cache_key, 300, _json.dumps(result))  # 5min cache
-    except Exception:
-        pass
+    # Only cache if ALL servers responded — partial results should be
+    # retried on the next request so the waking server gets picked up.
+    if not any_server_failed:
+        try:
+            r = await get_redis()
+            await r.setex(cache_key, 300, _json.dumps(result))
+        except Exception:
+            pass
 
     return result
 

@@ -616,7 +616,11 @@
   </div>
 
   <!-- Feature cards -->
-  <div class="grid">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
+    <span style="color:var(--text-dim);font-size:0.82rem;font-weight:600;letter-spacing:0.3px;">FEATURES</span>
+    <button onclick="this.textContent=this.textContent==='Show'?'Hide':'Show';var g=document.getElementById('featureCardsGrid');if(g.style.maxHeight==='0px'){g.style.maxHeight=g.scrollHeight+'px';g.style.opacity='1';g.style.marginBottom='20px'}else{g.style.maxHeight='0px';g.style.opacity='0';g.style.marginBottom='0'}" style="background:var(--accent);color:#fff;border:none;padding:5px 18px;border-radius:5px;font-size:0.8rem;font-weight:600;cursor:pointer;letter-spacing:0.3px;">Show</button>
+  </div>
+  <div class="grid" id="featureCardsGrid" style="max-height:0px;opacity:0;overflow:hidden;transition:max-height 0.4s ease,opacity 0.3s ease,margin-bottom 0.3s ease;margin-bottom:0;">
 
     <!-- #1 Smart Queue -->
     <div class="card">
@@ -1149,12 +1153,41 @@ async function triggerQueue() {
   try {
     const r = await fetch(API + '/queue/refresh', {method:'POST'});
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    logTo('queueOutput', 'Refresh started — check back in a minute', 'ok');
-    showToast('smart_queue', 'ok', null);
+    logTo('queueOutput', '⏳ Refreshing queue — this usually takes under a minute…', 'ok');
+    // Poll every 5s until queue data changes or 90s timeout
+    _pollForQueueDone();
   } catch(e) {
     logTo('queueOutput', 'Refresh failed: ' + e.message, 'err');
     showToast('smart_queue', 'error', null, e.message);
   }
+}
+
+async function _pollForQueueDone() {
+  const maxAttempts = 18; // 18 × 5s = 90s
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(ok => setTimeout(ok, 5000));
+    try {
+      const r = await fetch(API + `/queue/${currentUserId}?limit=1`);
+      if (!r.ok) continue;
+      const items = await r.json();
+      if (Array.isArray(items) && items.length > 0) {
+        logTo('queueOutput', '✓ Queue refreshed — ' + items.length + '+ items ready!', 'ok');
+        showToast('smart_queue', 'ok', null);
+        // Auto-refresh if panel is open
+        if (document.getElementById('queuePanel').style.display !== 'none') {
+          viewQueue();
+        }
+        // Clear the log area after a moment so the card returns to normal height
+        setTimeout(() => {
+          const out = document.getElementById('queueOutput');
+          out.innerHTML = '';
+          out.style.display = 'none';
+        }, 10000);
+        return;
+      }
+    } catch(e) { /* keep trying */ }
+  }
+  logTo('queueOutput', '⚠ Refresh is taking longer than expected — try opening the queue in a moment.', 'err');
 }
 
 function toggleQueue() {
@@ -1413,13 +1446,21 @@ async function createPartyFromQueue(embyItemId, title) {
 async function trainModel() {
   if (!currentUserId) return alert('Select a user first');
   glog('ML training triggered…');
-  logTo('mlOutput', 'Training started — this may take a few minutes…');
+  logTo('mlOutput', '⏳ Training started — this may take a few minutes…');
   try {
     const r = await fetch(API + `/ml/train/${currentUserId}`, {method:'POST'});
     const d = await r.json();
-    logTo('mlOutput', `Result: ${JSON.stringify(d)}`, d.status === 'trained' ? 'ok' : 'err');
-    glog(`ML training: ${d.status}`, d.status === 'trained' ? 'ok' : 'err');
-    showToast('ml_retrain', d.status === 'trained' ? 'ok' : 'error', null, d.status !== 'trained' ? d.status : null);
+    const isOk = d.status === 'trained';
+    logTo('mlOutput', isOk ? '✓ Model trained successfully!' : `✗ ${d.status}`, isOk ? 'ok' : 'err');
+    glog(`ML training: ${d.status}`, isOk ? 'ok' : 'err');
+    showToast('ml_retrain', isOk ? 'ok' : 'error', null, !isOk ? d.status : null);
+    if (isOk) {
+      setTimeout(() => {
+        const out = document.getElementById('mlOutput');
+        out.innerHTML = '';
+        out.style.display = 'none';
+      }, 10000);
+    }
   } catch(e) {
     logTo('mlOutput', 'Training failed: ' + e.message, 'err');
     showToast('ml_retrain', 'error', null, e.message);
@@ -1993,11 +2034,22 @@ async function loadAvailability() {
 
     const pendingMovies = (d.movies || {}).pending || [];
     const pendingShows = (d.shows || {}).pending || [];
+    const isPartial = d.partial || false;
+    const failedServers = d.failed_servers || [];
+
+    // Warning banner if servers were unreachable
+    let warningHtml = '';
+    if (isPartial) {
+      warningHtml = `<div style="background:rgba(253,203,110,0.12);border:1px solid rgba(253,203,110,0.3);border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:0.8rem;color:var(--orange);">
+        ⚠️ ${failedServers.join(', ')} unreachable — results are partial.
+        <button onclick="_availLoaded=false;loadAvailability()" style="background:none;border:1px solid var(--orange);color:var(--orange);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:0.75rem;margin-left:8px;">Retry</button>
+      </div>`;
+    }
 
     if (!pendingMovies.length && !pendingShows.length) {
       const mTotal = (d.movies || {}).total_monitored || 0;
       const sTotal = (d.shows || {}).total_monitored || 0;
-      container.innerHTML = `<div style="color:var(--green);padding:8px;">All clear! ${mTotal} movies and ${sTotal} shows fully available.</div>`;
+      container.innerHTML = warningHtml + `<div style="color:var(--green);padding:8px;">All clear! ${mTotal} movies and ${sTotal} shows fully available.</div>`;
       return;
     }
 
@@ -2011,7 +2063,7 @@ async function loadAvailability() {
       return `<span style="background:rgba(0,0,0,0.2);color:${c};padding:2px 8px;border-radius:4px;font-size:0.72rem;font-weight:600;border:1px solid ${c}33;">${status}</span>`;
     };
 
-    let html = '';
+    let html = warningHtml;
 
     if (pendingMovies.length) {
       html += `<div style="font-size:0.82rem;font-weight:600;margin:8px 0 6px;color:var(--text-dim);">🎬 Movies (${pendingMovies.length} pending)</div>`;

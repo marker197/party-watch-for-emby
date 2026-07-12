@@ -639,7 +639,7 @@ class MLPredictorService:
     # Rating Drift Tracker
     # -----------------------------------------------------------------------
 
-    DRIFT_MAX_SNAPSHOTS = 12  # ~3 months of weekly retrains
+    DRIFT_MAX_SNAPSHOTS = 52  # ~1 year of weekly retrains
 
     async def _snapshot_drift(self, user_id: int, pipeline: Pipeline, feature_names: list[str]) -> None:
         """Persist a timestamped snapshot of feature importances to Redis.
@@ -770,8 +770,25 @@ class MLPredictorService:
         # Build summary string in plain English
         top_up = [c for c in changes if c["direction"] == "up"][:3]
         top_down = [c for c in changes if c["direction"] == "down"][:3]
-        weeks = len(snapshots) - 1
-        run_label = f"{weeks} training run{'s' if weeks != 1 else ''}"
+
+        # Use actual training count from DB (model version), not snapshot window
+        total_runs = len(snapshots)
+        try:
+            from app.utils.database import async_session
+            from app.models.schema import MLModel
+            async with async_session() as db:
+                latest_model = (await db.execute(
+                    select(MLModel)
+                    .where(MLModel.user_id == user_id, MLModel.is_active == True)
+                    .order_by(MLModel.version.desc())
+                    .limit(1)
+                )).scalar_one_or_none()
+                if latest_model and latest_model.version:
+                    total_runs = latest_model.version
+        except Exception:
+            pass
+
+        run_label = f"{total_runs} training run{'s' if total_runs != 1 else ''}"
 
         sentences = []
         if top_up:
