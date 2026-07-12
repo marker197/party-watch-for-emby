@@ -119,9 +119,6 @@
       display: flex;
       flex-direction: column;
       gap: 4px;
-      flex: 1;
-      min-width: 0;
-      margin-right: 12px;
     }
 
     .toggle-label .title {
@@ -855,8 +852,8 @@
       document.getElementById('embyUrl').addEventListener('input', enableButton('saveEmby'));
       document.getElementById('embyApiKey').addEventListener('input', enableButton('saveEmby'));
 
-      // Features — only toggle data-feature switches (not auto-send or queue settings)
-      document.querySelectorAll('.toggle-switch[data-feature]').forEach(toggle => {
+      // Features
+      document.querySelectorAll('.toggle-switch').forEach(toggle => {
         toggle.addEventListener('click', () => toggle.classList.toggle('active'));
       });
       document.getElementById('saveFeatures').addEventListener('click', () => saveFeatures());
@@ -1609,12 +1606,17 @@
       el.classList.toggle('active');
       const payload = { s01e01_only: el.classList.contains('active') };
       try {
-        await fetch('/api/queue-settings', {
+        const r = await fetch('/api/queue-settings', {
           method: 'PUT',
           headers: {'Content-Type':'application/json'},
           body: JSON.stringify(payload),
         });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          showNotification(`S01E01 only: ${payload.s01e01_only ? 'ON' : 'OFF'}`);
+        }
       } catch(e) {
+        showNotification('Failed to save queue setting: ' + e.message);
         el.classList.toggle('active');
       }
     }

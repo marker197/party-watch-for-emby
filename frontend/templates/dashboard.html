@@ -534,6 +534,7 @@
     <a href="/universes" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🌌 Universes</a>
     <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
     <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
+    <a href="/stats" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📊 Stats</a>
     <a href="/settings" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
     <a href="/watch-party" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
 </nav>
@@ -689,6 +690,24 @@
       <div id="driftOutput" class="log-area" style="display:none; margin-top:12px;"></div>
     </div>
 
+    <!-- #8 Continue Watching -->
+    <div class="card">
+      <div class="card-header">
+        <h2>⏸️ Continue Watching</h2>
+      </div>
+      <p>Shows you started but stopped mid-season — pick up where you left off or let them go.</p>
+      <button class="btn btn-blue btn-sm" id="btnToggleContinue" onclick="toggleContinue()">View Paused ▾</button>
+    </div>
+
+    <!-- #9 Availability Monitor -->
+    <div class="card">
+      <div class="card-header">
+        <h2>📥 Coming Soon</h2>
+      </div>
+      <p>Items monitored in Radarr/Sonarr but not yet downloaded — track what's on the way to your library.</p>
+      <button class="btn btn-blue btn-sm" id="btnToggleAvail" onclick="toggleAvailability()">View Status ▾</button>
+    </div>
+
   </div>
 
   <!-- Smart Queue panel — full width below the cards grid -->
@@ -730,6 +749,24 @@
     </div>
     <div id="driftSummary" style="margin-bottom:10px;"></div>
     <div id="driftTable"></div>
+  </div>
+
+  <!-- Continue Watching panel -->
+  <div id="continuePanel" class="card" style="display:none; margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h3 style="font-size:0.95rem;">⏸️ Paused Shows</h3>
+      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleContinue()">✕ Close</button>
+    </div>
+    <div id="continueTable"></div>
+  </div>
+
+  <!-- Availability Monitor panel -->
+  <div id="availPanel" class="card" style="display:none; margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h3 style="font-size:0.95rem;">📥 Coming Soon to Your Library</h3>
+      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleAvailability()">✕ Close</button>
+    </div>
+    <div id="availTable"></div>
   </div>
 
   <!-- Scheduler status -->
@@ -1841,6 +1878,165 @@ async function dashboardPoll() {
     document.getElementById('apiStatus').textContent = '✗ Offline';
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Continue Watching
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _continueLoaded = false;
+
+async function toggleContinue() {
+  const panel = document.getElementById('continuePanel');
+  const btn = document.getElementById('btnToggleContinue');
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    btn.textContent = 'Hide Paused ▴';
+    if (!_continueLoaded) await loadContinueWatching();
+  } else {
+    panel.style.display = 'none';
+    btn.textContent = 'View Paused ▾';
+  }
+}
+
+async function loadContinueWatching() {
+  if (!currentUserId) return;
+  const container = document.getElementById('continueTable');
+  container.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Loading…</div>';
+
+  try {
+    const r = await fetch(API + `/api/continue-watching/${currentUserId}`);
+    const d = await r.json();
+    const items = d.items || [];
+    _continueLoaded = true;
+
+    if (!items.length) {
+      container.innerHTML = '<div style="color:var(--text-dim);padding:8px;">No paused shows found — you finish what you start!</div>';
+      return;
+    }
+
+    container.innerHTML = `
+      <div style="color:var(--text-dim);font-size:0.78rem;margin-bottom:8px;">${items.length} paused show${items.length !== 1 ? 's' : ''}</div>
+      ${items.map(item => {
+        const pct = item.played_pct || 0;
+        const daysText = item.days_ago != null
+          ? (item.days_ago === 0 ? 'Today' : item.days_ago === 1 ? 'Yesterday' : `${item.days_ago} days ago`)
+          : 'Unknown';
+        const barColor = item.days_ago > 180 ? 'var(--red)' : item.days_ago > 30 ? 'var(--orange)' : 'var(--green)';
+        const imdbLink = item.imdb_id
+          ? ` <a href="https://www.imdb.com/title/${item.imdb_id}/" target="_blank" style="color:#f5c518;font-size:0.7rem;font-weight:700;text-decoration:none;border:1px solid rgba(245,197,24,0.3);padding:1px 5px;border-radius:3px;">IMDb</a>`
+          : '';
+        return `<div style="display:flex;align-items:center;gap:12px;padding:8px 10px;border-bottom:1px solid var(--border);">
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:600;font-size:0.88rem;">${item.title}${item.year ? ` <span style="color:var(--text-dim);font-weight:400;">(${item.year})</span>` : ''}${imdbLink}</div>
+            <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px;">
+              ${item.episodes_watched}/${item.episodes_total} episodes · Last watched: ${daysText}
+            </div>
+          </div>
+          <div style="width:100px;text-align:right;">
+            <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden;">
+              <div style="background:${barColor};height:100%;width:${Math.min(pct, 100)}%;border-radius:4px;"></div>
+            </div>
+            <div style="font-size:0.7rem;color:var(--text-dim);margin-top:2px;">${pct}%</div>
+          </div>
+        </div>`;
+      }).join('')}
+    `;
+  } catch(e) {
+    container.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Availability Monitor
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _availLoaded = false;
+
+async function toggleAvailability() {
+  const panel = document.getElementById('availPanel');
+  const btn = document.getElementById('btnToggleAvail');
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    btn.textContent = 'Hide Status ▴';
+    if (!_availLoaded) await loadAvailability();
+  } else {
+    panel.style.display = 'none';
+    btn.textContent = 'View Status ▾';
+  }
+}
+
+async function loadAvailability() {
+  const container = document.getElementById('availTable');
+  container.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Loading Radarr/Sonarr status…</div>';
+
+  try {
+    const r = await fetch(API + '/api/availability');
+    const d = await r.json();
+    _availLoaded = true;
+
+    const pendingMovies = (d.movies || {}).pending || [];
+    const pendingShows = (d.shows || {}).pending || [];
+
+    if (!pendingMovies.length && !pendingShows.length) {
+      const mTotal = (d.movies || {}).total_monitored || 0;
+      const sTotal = (d.shows || {}).total_monitored || 0;
+      container.innerHTML = `<div style="color:var(--green);padding:8px;">All clear! ${mTotal} movies and ${sTotal} shows fully available.</div>`;
+      return;
+    }
+
+    const statusBadge = (status) => {
+      const colors = {
+        monitored: 'var(--orange)',
+        downloading: 'var(--blue)',
+        partial: 'var(--accent-light)',
+      };
+      const c = colors[status] || 'var(--text-dim)';
+      return `<span style="background:rgba(0,0,0,0.2);color:${c};padding:2px 8px;border-radius:4px;font-size:0.72rem;font-weight:600;border:1px solid ${c}33;">${status}</span>`;
+    };
+
+    let html = '';
+
+    if (pendingMovies.length) {
+      html += `<div style="font-size:0.82rem;font-weight:600;margin:8px 0 6px;color:var(--text-dim);">🎬 Movies (${pendingMovies.length} pending)</div>`;
+      html += pendingMovies.map(m => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-bottom:1px solid var(--border);font-size:0.85rem;">
+          <span>${m.title}${m.year ? ` (${m.year})` : ''}</span>
+          <span style="display:flex;align-items:center;gap:6px;">
+            ${statusBadge(m.status)}
+            <span style="color:var(--text-dim);font-size:0.7rem;">${m.server}</span>
+          </span>
+        </div>
+      `).join('');
+    }
+
+    if (pendingShows.length) {
+      html += `<div style="font-size:0.82rem;font-weight:600;margin:12px 0 6px;color:var(--text-dim);">📺 Shows (${pendingShows.length} pending)</div>`;
+      html += pendingShows.map(s => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-bottom:1px solid var(--border);font-size:0.85rem;">
+          <span>${s.title}${s.year ? ` (${s.year})` : ''}
+            <span style="color:var(--text-dim);font-size:0.72rem;margin-left:6px;">${s.episodes_on_disk}/${s.episodes_total} eps</span>
+          </span>
+          <span style="display:flex;align-items:center;gap:6px;">
+            ${statusBadge(s.status)}
+            <span style="color:var(--text-dim);font-size:0.7rem;">${s.server}</span>
+          </span>
+        </div>
+      `).join('');
+    }
+
+    const mAvail = (d.movies || {}).available_count || 0;
+    const sAvail = (d.shows || {}).available_count || 0;
+    html += `<div style="color:var(--text-dim);font-size:0.75rem;padding:8px 10px;margin-top:4px;">
+      ✓ ${mAvail} movies and ${sAvail} shows fully available
+    </div>`;
+
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+  }
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Initialization

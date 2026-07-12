@@ -61,6 +61,12 @@ class SonarrClient:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    # -- Library listing ------------------------------------------------------
+
+    async def get_all_series(self) -> list[dict]:
+        """Return all series in Sonarr with episode counts and status."""
+        return await self._get("/series")
+
     # -- Lookup ---------------------------------------------------------------
 
     async def get_root_folders(self) -> list[dict]:

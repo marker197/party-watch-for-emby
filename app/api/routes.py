@@ -41,6 +41,7 @@ async def _first_emby_user_id() -> str | None:
 from app.services.rating_bias_detector.service import RatingBiasDetectorService
 from app.services.airing_alerts.service import AiringAlertsService
 from app.services.scrobble_audit.service import ScrobbleAuditService
+from app.services.watch_stats.service import WatchStatsService
 
 smart_queue_svc = SmartQueueService()
 ml_predictor_svc = MLPredictorService()
@@ -49,6 +50,7 @@ watch_party_svc = WatchPartyService()
 bias_detector_svc = RatingBiasDetectorService()
 airing_alerts_svc = AiringAlertsService()
 scrobble_audit_svc = ScrobbleAuditService()
+watch_stats_svc = WatchStatsService()
 
 log = structlog.get_logger()
 
@@ -2564,3 +2566,366 @@ async def refresh_connection_status():
     from app.main import run_heartbeat
     await run_heartbeat()
     return {"status": "ok"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Watch History Stats
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/stats/{user_id}")
+async def get_watch_stats(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return aggregated watch history stats for a user."""
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    return await watch_stats_svc.get_stats(user)
+
+
+@router.get("/stats", response_class=HTMLResponse)
+async def get_stats_page():
+    """Serve the Watch Stats page."""
+    try:
+        with open("frontend/templates/stats.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Page not found</h1>"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Continue Watching Audit
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/continue-watching/{user_id}")
+async def get_continue_watching(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Find shows the user started but stopped watching mid-season.
+
+    Returns a list of partially-watched series sorted by last watched
+    date (oldest first = most abandoned).
+    """
+    import json as _json
+
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user or not user.emby_user_id:
+        raise HTTPException(404, "User not found or no Emby user linked")
+
+    # Check cache
+    cache_key = f"continue_watching:{user.id}"
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return _json.loads(cached)
+    except Exception:
+        pass
+
+    emby = EmbyClient()
+    items: list[dict] = []
+
+    # Fetch all series for user with UserData fields
+    start = 0
+    batch = 500
+    all_series: list[dict] = []
+    while True:
+        resp = await emby.get_items(
+            user_id=user.emby_user_id,
+            item_type="Series",
+            fields="ProviderIds,UserData,UserDataLastPlayedDate",
+            sort_by="DatePlayed",
+            sort_order="Descending",
+            limit=batch,
+            start_index=start,
+        )
+        all_series.extend(resp.get("Items", []))
+        if start + batch >= resp.get("TotalRecordCount", 0):
+            break
+        start += batch
+
+    for series in all_series:
+        ud = series.get("UserData", {})
+        played_pct = ud.get("PlayedPercentage", 0) or 0
+        unplayed = ud.get("UnplayedItemCount")
+        play_count = ud.get("PlayCount", 0) or 0
+
+        # We want partially-watched: some episodes played but not all
+        if played_pct <= 0 and play_count <= 0:
+            continue  # never watched
+        if unplayed is not None and unplayed == 0:
+            continue  # fully watched
+
+        last_played = ud.get("LastPlayedDate")
+        if not last_played:
+            last_played = series.get("DateCreated")
+
+        # Calculate how long ago
+        days_ago = None
+        if last_played:
+            try:
+                from datetime import timezone as _tz
+                lp_dt = datetime.fromisoformat(last_played.replace("Z", "+00:00"))
+                days_ago = (datetime.now(_tz.utc) - lp_dt).days
+            except (ValueError, AttributeError):
+                pass
+
+        rec_ep_count = (series.get("RecursiveItemCount") or 0)
+        played_count = rec_ep_count - (unplayed or 0) if unplayed is not None else 0
+
+        items.append({
+            "emby_id": series.get("Id", ""),
+            "title": series.get("Name", ""),
+            "year": series.get("ProductionYear"),
+            "played_pct": round(played_pct, 1),
+            "episodes_watched": played_count,
+            "episodes_total": rec_ep_count,
+            "last_played": last_played,
+            "days_ago": days_ago,
+            "imdb_id": series.get("ProviderIds", {}).get("Imdb"),
+        })
+
+    # Sort: oldest last-watched first (most abandoned)
+    items.sort(key=lambda x: x.get("days_ago") or 0, reverse=True)
+
+    result = {"items": items, "total": len(items)}
+
+    try:
+        r = await get_redis()
+        await r.setex(cache_key, 3600, _json.dumps(result))
+    except Exception:
+        pass
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Radarr/Sonarr Availability Monitor
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/availability")
+async def get_availability():
+    """Check download status of items in Radarr/Sonarr.
+
+    Cross-references queue items marked as not-in-library with their
+    status in Radarr/Sonarr: monitored, downloading, available.
+    """
+    import json as _json
+    from app.utils.radarr_client import RadarrClient
+    from app.utils.sonarr_client import SonarrClient
+
+    # Check cache
+    cache_key = "availability_monitor"
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return _json.loads(cached)
+    except Exception:
+        pass
+
+    r = await get_redis()
+    movies_status: list[dict] = []
+    shows_status: list[dict] = []
+
+    # --- Radarr movies ---
+    raw_radarr = await r.get("radarr_servers")
+    if raw_radarr:
+        radarr_servers = _json.loads(raw_radarr)
+        for srv in radarr_servers:
+            try:
+                client = RadarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Radarr"))
+                all_movies = await client.get_all_movies()
+                await client.close()
+                for movie in all_movies:
+                    if not movie.get("monitored", False):
+                        continue
+                    has_file = movie.get("hasFile", False)
+                    status = "available" if has_file else "monitored"
+
+                    # Check queue for active download
+                    if not has_file and movie.get("queueStatus"):
+                        status = "downloading"
+
+                    movies_status.append({
+                        "title": movie.get("title", ""),
+                        "year": movie.get("year"),
+                        "tmdb_id": movie.get("tmdbId"),
+                        "imdb_id": movie.get("imdbId"),
+                        "status": status,
+                        "has_file": has_file,
+                        "server": srv.get("name", "Radarr"),
+                        "size_on_disk": movie.get("sizeOnDisk", 0),
+                    })
+            except Exception as e:
+                log.warning("availability.radarr_failed", server=srv.get("name"), error=str(e)[:120])
+
+    # --- Sonarr series ---
+    raw_sonarr = await r.get("sonarr_servers")
+    if raw_sonarr:
+        sonarr_servers = _json.loads(raw_sonarr)
+        for srv in sonarr_servers:
+            try:
+                client = SonarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Sonarr"))
+                all_series = await client.get_all_series()
+                await client.close()
+                for series in all_series:
+                    if not series.get("monitored", False):
+                        continue
+                    ep_file_count = series.get("episodeFileCount", 0)
+                    ep_count = series.get("episodeCount", 0)
+
+                    if ep_count == 0:
+                        continue
+
+                    if ep_file_count >= ep_count:
+                        status = "available"
+                    elif ep_file_count > 0:
+                        status = "partial"
+                    else:
+                        status = "monitored"
+
+                    shows_status.append({
+                        "title": series.get("title", ""),
+                        "year": series.get("year"),
+                        "tvdb_id": series.get("tvdbId"),
+                        "imdb_id": series.get("imdbId"),
+                        "status": status,
+                        "episodes_on_disk": ep_file_count,
+                        "episodes_total": ep_count,
+                        "server": srv.get("name", "Sonarr"),
+                        "size_on_disk": series.get("sizeOnDisk", 0),
+                    })
+            except Exception as e:
+                log.warning("availability.sonarr_failed", server=srv.get("name"), error=str(e)[:120])
+
+    # Filter to show only items that aren't fully available yet
+    pending_movies = [m for m in movies_status if m["status"] != "available"]
+    pending_shows = [s for s in shows_status if s["status"] != "available"]
+
+    result = {
+        "movies": {
+            "pending": pending_movies,
+            "available_count": len(movies_status) - len(pending_movies),
+            "total_monitored": len(movies_status),
+        },
+        "shows": {
+            "pending": pending_shows,
+            "available_count": len(shows_status) - len(pending_shows),
+            "total_monitored": len(shows_status),
+        },
+    }
+
+    try:
+        r = await get_redis()
+        await r.setex(cache_key, 300, _json.dumps(result))  # 5min cache
+    except Exception:
+        pass
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Smart Queue History & Feedback
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/queue-history/{user_id}")
+async def get_queue_history(
+    user_id: int,
+    days: int = Query(90, ge=7, le=365),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return queue recommendation vs play stats over time.
+
+    Shows play rates by source, current scoring weights, and recent
+    recommendation items with their played/ignored status.
+    """
+    from app.utils.redis_cache import cache_get
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    # Per-source stats
+    rows = (await db.execute(
+        select(
+            QueueItem.source,
+            func.count(QueueItem.id).label("total"),
+            func.count(QueueItem.played_at).label("played"),
+        )
+        .where(
+            QueueItem.user_id == user_id,
+            QueueItem.created_at >= cutoff,
+        )
+        .group_by(QueueItem.source)
+    )).all()
+
+    source_stats = []
+    for source, total, played in rows:
+        play_rate = round(played / total, 3) if total > 0 else 0
+        source_stats.append({
+            "source": source,
+            "recommended": total,
+            "played": played,
+            "play_rate": play_rate,
+        })
+
+    # Weekly breakdown for chart
+    weekly_rows = (await db.execute(
+        select(
+            func.date_trunc("week", QueueItem.created_at).label("week"),
+            QueueItem.source,
+            func.count(QueueItem.id).label("total"),
+            func.count(QueueItem.played_at).label("played"),
+        )
+        .where(
+            QueueItem.user_id == user_id,
+            QueueItem.created_at >= cutoff,
+        )
+        .group_by("week", QueueItem.source)
+        .order_by("week")
+    )).all()
+
+    weekly_data = []
+    for week, source, total, played in weekly_rows:
+        weekly_data.append({
+            "week": week.strftime("%Y-%m-%d") if week else None,
+            "source": source,
+            "recommended": total,
+            "played": played,
+        })
+
+    # Current weights
+    weights = {}
+    try:
+        raw = await cache_get(f"queue_weights:{user_id}")
+        if raw:
+            weights = raw if isinstance(raw, dict) else {}
+    except Exception:
+        pass
+
+    # Recent items (last 30)
+    recent_items = (await db.execute(
+        select(QueueItem)
+        .where(QueueItem.user_id == user_id)
+        .order_by(QueueItem.created_at.desc())
+        .limit(30)
+    )).scalars().all()
+
+    recent = [{
+        "title": item.title,
+        "source": item.source,
+        "score": round(item.score, 2) if item.score else 0,
+        "played": item.played,
+        "played_at": item.played_at.isoformat() if item.played_at else None,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "in_library": item.in_library,
+    } for item in recent_items]
+
+    return {
+        "source_stats": source_stats,
+        "weekly": weekly_data,
+        "weights": weights,
+        "recent_items": recent,
+        "period_days": days,
+    }

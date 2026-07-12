@@ -61,6 +61,12 @@ class RadarrClient:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    # -- Library listing ------------------------------------------------------
+
+    async def get_all_movies(self) -> list[dict]:
+        """Return all movies in Radarr with status fields."""
+        return await self._get("/movie")
+
     # -- Lookup ---------------------------------------------------------------
 
     async def get_root_folders(self) -> list[dict]:
