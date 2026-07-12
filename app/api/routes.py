@@ -2603,10 +2603,11 @@ async def get_continue_watching(
     user_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """Find shows the user started but stopped watching mid-season.
+    """Return items the user started watching but hasn't finished.
 
-    Returns a list of partially-watched series sorted by last watched
-    date (oldest first = most abandoned).
+    Uses Emby's ``Filters=IsResumable`` to find movies and episodes
+    with an active playback resume point.  Episodes are grouped by
+    their parent series for a cleaner display.
     """
     import json as _json
 
@@ -2614,8 +2615,8 @@ async def get_continue_watching(
     if not user or not user.emby_user_id:
         raise HTTPException(404, "User not found or no Emby user linked")
 
-    # Check cache
-    cache_key = f"continue_watching:{user.id}"
+    # Changed cache key so old stale cache is bypassed
+    cache_key = f"continue_watching_v2:{user.id}"
     try:
         r = await get_redis()
         cached = await r.get(cache_key)
@@ -2625,42 +2626,41 @@ async def get_continue_watching(
         pass
 
     emby = EmbyClient()
-    items: list[dict] = []
 
-    # Fetch all series for user with UserData fields
+    # Fetch all resumable items (movies + episodes with a resume point)
     start = 0
     batch = 500
-    all_series: list[dict] = []
+    all_resumable: list[dict] = []
     while True:
         resp = await emby.get_items(
             user_id=user.emby_user_id,
-            item_type="Series",
-            fields="ProviderIds,UserData,UserDataLastPlayedDate",
+            fields="ProviderIds,UserData,UserDataLastPlayedDate,RunTimeTicks",
+            filters="IsResumable",
             sort_by="DatePlayed",
             sort_order="Descending",
             limit=batch,
             start_index=start,
         )
-        all_series.extend(resp.get("Items", []))
+        all_resumable.extend(resp.get("Items", []))
         if start + batch >= resp.get("TotalRecordCount", 0):
             break
         start += batch
 
-    for series in all_series:
-        ud = series.get("UserData", {})
-        played_pct = ud.get("PlayedPercentage", 0) or 0
-        unplayed = ud.get("UnplayedItemCount")
-        play_count = ud.get("PlayCount", 0) or 0
+    log.info("continue_watching.fetched", resumable_count=len(all_resumable))
 
-        # We want partially-watched: some episodes played but not all
-        if played_pct <= 0 and play_count <= 0:
-            continue  # never watched
-        if unplayed is not None and unplayed == 0:
-            continue  # fully watched
+    movies: list[dict] = []
+    # Group episodes by series
+    series_map: dict[str, dict] = {}  # series_id → {info + episodes}
 
+    for item in all_resumable:
+        item_type = item.get("Type", "")
+        ud = item.get("UserData", {})
+        position_ticks = ud.get("PlaybackPositionTicks", 0) or 0
+        runtime_ticks = item.get("RunTimeTicks", 0) or 0
         last_played = ud.get("LastPlayedDate")
-        if not last_played:
-            last_played = series.get("DateCreated")
+
+        # Calculate progress percentage
+        progress_pct = round(position_ticks / runtime_ticks * 100, 1) if runtime_ticks > 0 else 0
 
         # Calculate how long ago
         days_ago = None
@@ -2672,25 +2672,59 @@ async def get_continue_watching(
             except (ValueError, AttributeError):
                 pass
 
-        rec_ep_count = (series.get("RecursiveItemCount") or 0)
-        played_count = rec_ep_count - (unplayed or 0) if unplayed is not None else 0
+        if item_type == "Movie":
+            movies.append({
+                "emby_id": item.get("Id", ""),
+                "title": item.get("Name", ""),
+                "year": item.get("ProductionYear"),
+                "type": "movie",
+                "progress_pct": progress_pct,
+                "last_played": last_played,
+                "days_ago": days_ago,
+                "imdb_id": item.get("ProviderIds", {}).get("Imdb"),
+            })
 
-        items.append({
-            "emby_id": series.get("Id", ""),
-            "title": series.get("Name", ""),
-            "year": series.get("ProductionYear"),
-            "played_pct": round(played_pct, 1),
-            "episodes_watched": played_count,
-            "episodes_total": rec_ep_count,
-            "last_played": last_played,
-            "days_ago": days_ago,
-            "imdb_id": series.get("ProviderIds", {}).get("Imdb"),
-        })
+        elif item_type == "Episode":
+            series_id = item.get("SeriesId", "")
+            series_name = item.get("SeriesName", "")
+            s_num = item.get("ParentIndexNumber", 0)
+            e_num = item.get("IndexNumber", 0)
+            ep_name = item.get("Name", "")
 
-    # Sort: oldest last-watched first (most abandoned)
-    items.sort(key=lambda x: x.get("days_ago") or 0, reverse=True)
+            if series_id not in series_map:
+                series_map[series_id] = {
+                    "emby_id": series_id,
+                    "title": series_name,
+                    "type": "show",
+                    "episodes": [],
+                    "last_played": last_played,
+                    "days_ago": days_ago,
+                }
 
-    result = {"items": items, "total": len(items)}
+            series_map[series_id]["episodes"].append({
+                "season": s_num,
+                "episode": e_num,
+                "title": ep_name,
+                "progress_pct": progress_pct,
+                "last_played": last_played,
+            })
+
+            # Update series-level last_played to the most recent episode
+            existing_days = series_map[series_id].get("days_ago")
+            if days_ago is not None and (existing_days is None or days_ago < existing_days):
+                series_map[series_id]["days_ago"] = days_ago
+                series_map[series_id]["last_played"] = last_played
+
+    shows = list(series_map.values())
+    for show in shows:
+        show["episode_count"] = len(show["episodes"])
+        show["episodes"].sort(key=lambda e: (e["season"], e["episode"]))
+
+    # Combine and sort: oldest first (most abandoned)
+    all_items = movies + shows
+    all_items.sort(key=lambda x: x.get("days_ago") or 0, reverse=True)
+
+    result = {"items": all_items, "total": len(all_items)}
 
     try:
         r = await get_redis()

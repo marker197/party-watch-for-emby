@@ -1905,34 +1905,50 @@ async function loadContinueWatching() {
 
   try {
     const r = await fetch(API + `/api/continue-watching/${currentUserId}`);
+    if (!r.ok) {
+      const txt = await r.text();
+      container.innerHTML = `<div style="color:var(--red);padding:8px;">HTTP ${r.status}: ${txt.substring(0,200)}</div>`;
+      return;
+    }
     const d = await r.json();
     const items = d.items || [];
     _continueLoaded = true;
 
     if (!items.length) {
-      container.innerHTML = '<div style="color:var(--text-dim);padding:8px;">No paused shows found — you finish what you start!</div>';
+      container.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Nothing resumable right now.</div>';
       return;
     }
 
     container.innerHTML = `
-      <div style="color:var(--text-dim);font-size:0.78rem;margin-bottom:8px;">${items.length} paused show${items.length !== 1 ? 's' : ''}</div>
+      <div style="color:var(--text-dim);font-size:0.78rem;margin-bottom:8px;">${items.length} resumable item${items.length !== 1 ? 's' : ''}</div>
       ${items.map(item => {
-        const pct = item.played_pct || 0;
+        const pct = item.progress_pct || 0;
         const daysText = item.days_ago != null
           ? (item.days_ago === 0 ? 'Today' : item.days_ago === 1 ? 'Yesterday' : `${item.days_ago} days ago`)
-          : 'Unknown';
+          : '';
         const barColor = item.days_ago > 180 ? 'var(--red)' : item.days_ago > 30 ? 'var(--orange)' : 'var(--green)';
         const imdbLink = item.imdb_id
           ? ` <a href="https://www.imdb.com/title/${item.imdb_id}/" target="_blank" style="color:#f5c518;font-size:0.7rem;font-weight:700;text-decoration:none;border:1px solid rgba(245,197,24,0.3);padding:1px 5px;border-radius:3px;">IMDb</a>`
           : '';
+
+        let subtitle = '';
+        if (item.type === 'movie') {
+          subtitle = `🎬 Movie · ${pct}% watched · ${daysText}`;
+        } else {
+          const epCount = item.episode_count || 0;
+          const epList = (item.episodes || []).map(e =>
+            `S${String(e.season).padStart(2,'0')}E${String(e.episode).padStart(2,'0')} (${e.progress_pct}%)`
+          ).join(', ');
+          subtitle = `📺 ${epCount} episode${epCount !== 1 ? 's' : ''} in progress · ${daysText}`;
+          if (epList) subtitle += `<br><span style="font-size:0.7rem;color:var(--text-dim);">${epList}</span>`;
+        }
+
         return `<div style="display:flex;align-items:center;gap:12px;padding:8px 10px;border-bottom:1px solid var(--border);">
           <div style="flex:1;min-width:0;">
             <div style="font-weight:600;font-size:0.88rem;">${item.title}${item.year ? ` <span style="color:var(--text-dim);font-weight:400;">(${item.year})</span>` : ''}${imdbLink}</div>
-            <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px;">
-              ${item.episodes_watched}/${item.episodes_total} episodes · Last watched: ${daysText}
-            </div>
+            <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px;">${subtitle}</div>
           </div>
-          <div style="width:100px;text-align:right;">
+          <div style="width:80px;text-align:right;">
             <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden;">
               <div style="background:${barColor};height:100%;width:${Math.min(pct, 100)}%;border-radius:4px;"></div>
             </div>

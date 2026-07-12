@@ -40,7 +40,7 @@ class WatchStatsService:
         if not user.trakt_access_token:
             return {"error": "No Trakt token"}
 
-        cache_key = f"watch_stats:{user.id}"
+        cache_key = f"watch_stats_v2:{user.id}"
         try:
             r = await get_redis()
             cached = await r.get(cache_key)
@@ -90,7 +90,7 @@ class WatchStatsService:
             resp = await trakt._client.get(
                 "/users/me/history",
                 headers=trakt._auth_headers(),
-                params={"page": page, "limit": per_page},
+                params={"page": page, "limit": per_page, "extended": "full"},
             )
             trakt._update_rate_limit(resp)
             if resp.status_code == 429:

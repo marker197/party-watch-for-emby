@@ -254,6 +254,11 @@ async function loadStats() {
 
   try {
     const r = await fetch(`/api/stats/${currentUserId}`);
+    if (!r.ok) {
+      const errText = await r.text();
+      document.getElementById('statsLoading').textContent = `HTTP ${r.status}: ${errText.substring(0, 300)}`;
+      return;
+    }
     const d = await r.json();
     if (d.error) {
       document.getElementById('statsLoading').textContent = 'Error: ' + d.error;
