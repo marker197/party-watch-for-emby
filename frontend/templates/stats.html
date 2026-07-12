@@ -122,6 +122,47 @@
 
     .loading { text-align: center; padding: 40px; color: var(--text-dim); }
 
+    /* Heatmap calendar */
+    .heatmap-wrap { overflow-x: auto; }
+    .heatmap-grid {
+      display: grid;
+      grid-template-columns: 30px repeat(53, 1fr);
+      gap: 2px;
+      min-width: 700px;
+    }
+    .heatmap-cell {
+      width: 100%; aspect-ratio: 1; border-radius: 2px;
+      background: var(--surface-hover);
+    }
+    .heatmap-cell.l1 { background: rgba(108,92,231,0.25); }
+    .heatmap-cell.l2 { background: rgba(108,92,231,0.45); }
+    .heatmap-cell.l3 { background: rgba(108,92,231,0.65); }
+    .heatmap-cell.l4 { background: rgba(108,92,231,0.85); }
+    .heatmap-day-label {
+      font-size: 0.65rem; color: var(--text-dim); display: flex;
+      align-items: center; justify-content: flex-end; padding-right: 4px;
+    }
+    .heatmap-month-row {
+      display: grid; grid-template-columns: 30px repeat(53, 1fr); gap: 2px;
+      margin-bottom: 2px; min-width: 700px;
+    }
+    .heatmap-month-label {
+      font-size: 0.65rem; color: var(--text-dim); text-align: center;
+    }
+    .heatmap-legend {
+      display: flex; align-items: center; gap: 4px; margin-top: 8px;
+      font-size: 0.72rem; color: var(--text-dim);
+    }
+    .heatmap-legend-cell {
+      width: 12px; height: 12px; border-radius: 2px;
+    }
+    .heatmap-tooltip {
+      position: absolute; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 10px; font-size: 0.75rem;
+      pointer-events: none; z-index: 100; white-space: nowrap;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+
     .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
     .tab-btn {
       background: var(--surface-hover); color: var(--text-dim); border: none;
@@ -162,6 +203,7 @@
 
   <div class="tabs">
     <button class="tab-btn active" onclick="showTab('overview', this)">Overview</button>
+    <button class="tab-btn" onclick="showTab('trends', this)">Trends</button>
     <button class="tab-btn" onclick="showTab('queue-history', this)">Queue Feedback</button>
   </div>
 
@@ -199,7 +241,27 @@
     </div>
   </div>
 
-  <!-- ═══ Tab 2: Queue Feedback ═══ -->
+  <!-- ═══ Tab 2: Trends ═══ -->
+  <div id="tab-trends" class="tab-content">
+    <div id="trendsLoading" class="loading">Loading trends…</div>
+    <div id="trendsContent" style="display:none;">
+
+      <div class="chart-row">
+        <div class="chart-card full-width">
+          <h3>📅 Year-over-Year: Monthly Watch Hours</h3>
+          <canvas id="yoyChart"></canvas>
+        </div>
+      </div>
+
+      <div class="chart-card" style="margin-bottom:28px;">
+        <h3>🟩 Watch Heatmap (Last 12 Months)</h3>
+        <div id="heatmapContainer" class="heatmap-wrap" style="margin-top:12px; position:relative;"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══ Tab 3: Queue Feedback ═══ -->
   <div id="tab-queue-history" class="tab-content">
     <div id="qhLoading" class="loading">Loading queue history…</div>
     <div id="qhContent" style="display:none;">
@@ -230,12 +292,15 @@
 let currentUserId = null;
 let charts = {};
 
+let cachedStatsData = null;
+
 function showTab(tabId, btn) {
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + tabId).classList.add('active');
   btn.classList.add('active');
   if (tabId === 'queue-history' && currentUserId) loadQueueHistory();
+  if (tabId === 'trends' && cachedStatsData) renderTrends(cachedStatsData);
 }
 
 async function loadUsers() {
@@ -274,7 +339,13 @@ async function loadStats() {
       document.getElementById('statsLoading').textContent = 'Error: ' + d.error;
       return;
     }
+    cachedStatsData = d;
+    trendsRendered = false;
     renderStats(d);
+    // Reset trends tab so it re-renders on next visit
+    document.getElementById('trendsContent').style.display = 'none';
+    document.getElementById('trendsLoading').style.display = 'block';
+    document.getElementById('trendsLoading').textContent = 'Switch to Trends tab to view…';
     document.getElementById('statsLoading').style.display = 'none';
     document.getElementById('statsContent').style.display = 'block';
   } catch(e) {
@@ -491,6 +562,173 @@ function chartOpts(yLabel) {
 
 function destroyChart(id) {
   if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+
+// ═══ Trends tab: Year-over-Year + Heatmap ═══
+
+let trendsRendered = false;
+
+function renderTrends(d) {
+  if (trendsRendered && document.getElementById('trendsContent').style.display !== 'none') return;
+
+  const yoy = d.monthly_by_year || [];
+  const heatmap = d.daily_heatmap || [];
+
+  if (!yoy.length && !heatmap.length) {
+    document.getElementById('trendsLoading').textContent = 'No historical data available yet.';
+    return;
+  }
+
+  // YoY chart
+  destroyChart('yoyChart');
+  const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const yoyColors = ['#6c5ce7','#00b894','#fdcb6e','#e17055','#74b9ff','#a29bfe','#55efc4','#fab1a0'];
+  const datasets = yoy.map((yr, i) => ({
+    label: String(yr.year),
+    data: yr.months,
+    borderColor: yoyColors[i % yoyColors.length],
+    backgroundColor: yoyColors[i % yoyColors.length] + '22',
+    fill: false,
+    tension: 0.3,
+    borderWidth: 2,
+    pointRadius: 3,
+  }));
+
+  charts.yoyChart = new Chart(document.getElementById('yoyChart'), {
+    type: 'line',
+    data: { labels: monthLabels, datasets },
+    options: {
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { ticks: { color: '#8b8fa3' }, grid: { color: 'rgba(42,46,62,0.5)' } },
+        y: {
+          ticks: { color: '#8b8fa3' },
+          grid: { color: 'rgba(42,46,62,0.5)' },
+          title: { display: true, text: 'Hours', color: '#8b8fa3' },
+        },
+      },
+      plugins: { legend: { labels: { color: '#e0e0e6' } } },
+    }
+  });
+
+  // Heatmap
+  renderHeatmap(heatmap);
+
+  document.getElementById('trendsLoading').style.display = 'none';
+  document.getElementById('trendsContent').style.display = 'block';
+  trendsRendered = true;
+}
+
+function renderHeatmap(data) {
+  const container = document.getElementById('heatmapContainer');
+  if (!data.length) { container.innerHTML = '<p style="color:var(--text-dim);">No heatmap data.</p>'; return; }
+
+  // Build a date→entry lookup
+  const lookup = {};
+  let maxCount = 0;
+  for (const d of data) {
+    lookup[d.date] = d;
+    if (d.count > maxCount) maxCount = d.count;
+  }
+
+  // Build the grid: 7 rows (Mon-Sun) × 53 columns (weeks)
+  // Start from the first date in data, aligned to Monday
+  const startDate = new Date(data[0].date + 'T00:00:00');
+  const endDate = new Date(data[data.length - 1].date + 'T00:00:00');
+
+  // Align start to previous Monday
+  const startDay = startDate.getDay(); // 0=Sun
+  const mondayOffset = startDay === 0 ? -6 : 1 - startDay;
+  const gridStart = new Date(startDate);
+  gridStart.setDate(gridStart.getDate() + mondayOffset);
+
+  // Calculate weeks
+  const msPerDay = 86400000;
+  const totalDays = Math.ceil((endDate - gridStart) / msPerDay) + 1;
+  const totalWeeks = Math.ceil(totalDays / 7);
+
+  // Month labels row
+  let monthHtml = '<div class="heatmap-month-row"><div></div>';
+  let prevMonth = -1;
+  for (let w = 0; w < totalWeeks; w++) {
+    const weekDate = new Date(gridStart.getTime() + w * 7 * msPerDay);
+    const m = weekDate.getMonth();
+    if (m !== prevMonth) {
+      const label = weekDate.toLocaleDateString([], { month: 'short' });
+      monthHtml += `<div class="heatmap-month-label">${label}</div>`;
+      prevMonth = m;
+    } else {
+      monthHtml += '<div></div>';
+    }
+  }
+  monthHtml += '</div>';
+
+  // Grid rows (Mon=0 .. Sun=6)
+  const dayLabels = ['Mon','','Wed','','Fri','','Sun'];
+  let gridHtml = '';
+  for (let row = 0; row < 7; row++) {
+    gridHtml += `<div class="heatmap-day-label">${dayLabels[row]}</div>`;
+    for (let w = 0; w < totalWeeks; w++) {
+      const cellDate = new Date(gridStart.getTime() + (w * 7 + row) * msPerDay);
+      const key = cellDate.toISOString().slice(0, 10);
+      const entry = lookup[key];
+      const count = entry ? entry.count : 0;
+      const hours = entry ? entry.hours : 0;
+
+      let level = '';
+      if (count > 0 && maxCount > 0) {
+        const ratio = count / maxCount;
+        if (ratio > 0.75) level = 'l4';
+        else if (ratio > 0.5) level = 'l3';
+        else if (ratio > 0.25) level = 'l2';
+        else level = 'l1';
+      }
+
+      // Only render cells within our data range
+      if (cellDate < startDate || cellDate > endDate) {
+        gridHtml += '<div class="heatmap-cell" style="opacity:0;"></div>';
+      } else {
+        const dateStr = cellDate.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+        gridHtml += `<div class="heatmap-cell ${level}" data-tip="${dateStr}: ${count} items, ${hours}h" 
+          onmouseenter="showHeatmapTip(event, this)" onmouseleave="hideHeatmapTip()"></div>`;
+      }
+    }
+  }
+
+  // Legend
+  const legendHtml = `
+    <div class="heatmap-legend">
+      <span>Less</span>
+      <div class="heatmap-legend-cell" style="background:var(--surface-hover);"></div>
+      <div class="heatmap-legend-cell" style="background:rgba(108,92,231,0.25);"></div>
+      <div class="heatmap-legend-cell" style="background:rgba(108,92,231,0.45);"></div>
+      <div class="heatmap-legend-cell" style="background:rgba(108,92,231,0.65);"></div>
+      <div class="heatmap-legend-cell" style="background:rgba(108,92,231,0.85);"></div>
+      <span>More</span>
+    </div>`;
+
+  container.innerHTML = monthHtml +
+    `<div class="heatmap-grid" style="grid-template-columns:30px repeat(${totalWeeks},1fr);">` +
+    gridHtml + '</div>' + legendHtml;
+}
+
+let heatmapTipEl = null;
+function showHeatmapTip(e, el) {
+  if (!heatmapTipEl) {
+    heatmapTipEl = document.createElement('div');
+    heatmapTipEl.className = 'heatmap-tooltip';
+    document.getElementById('heatmapContainer').appendChild(heatmapTipEl);
+  }
+  heatmapTipEl.textContent = el.dataset.tip;
+  heatmapTipEl.style.display = 'block';
+  const rect = el.getBoundingClientRect();
+  const containerRect = document.getElementById('heatmapContainer').getBoundingClientRect();
+  heatmapTipEl.style.left = (rect.left - containerRect.left + rect.width / 2) + 'px';
+  heatmapTipEl.style.top = (rect.top - containerRect.top - 32) + 'px';
+}
+function hideHeatmapTip() {
+  if (heatmapTipEl) heatmapTipEl.style.display = 'none';
 }
 
 loadUsers();

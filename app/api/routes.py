@@ -1131,8 +1131,24 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             except Exception:
                 pass
 
+    # ── Helper: invalidate Continue Watching cache ─────────────────────────
+    async def _invalidate_continue_watching():
+        """Delete the Continue Watching Redis cache for this user so
+        the next dashboard load fetches fresh data from Emby."""
+        try:
+            r = await get_redis()
+            key = f"continue_watching_v2:{user.id}"
+            deleted = await r.delete(key)
+            if deleted:
+                log.debug("webhook.continue_watching_cache_invalidated", user=user.id)
+        except Exception:
+            pass  # non-critical
+
     # ── playback.start → Trakt scrobble/start ("Watching…") ─────────────────
     if is_play_start:
+        # Invalidate continue watching cache — a new resume point is being created
+        await _invalidate_continue_watching()
+
         if user.trakt_access_token:
             try:
                 trakt = await _get_trakt_client()
@@ -1207,6 +1223,9 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
     # ── playback.stop / item.markplayed → Trakt watch history ───────────────
     if is_watched:
+        # Invalidate continue watching cache — item finished or resume point changed
+        await _invalidate_continue_watching()
+
         # Extract playback duration from session data
         duration_ticks = session_data.get("PlayState", {}).get("PositionTicks", 0)
 

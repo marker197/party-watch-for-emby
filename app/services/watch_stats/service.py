@@ -139,6 +139,15 @@ class WatchStatsService:
 
         watching_days: set[str] = set()
 
+        # Year-over-year: {year: {1..12: hours}}
+        monthly_by_year: dict[int, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+        # Daily heatmap: last 365 days {date_str: {count, minutes}}
+        heatmap_start = now - timedelta(days=364)
+        heatmap_buckets: dict[str, dict] = {}
+        for i in range(365):
+            d = (heatmap_start + timedelta(days=i)).strftime("%Y-%m-%d")
+            heatmap_buckets[d] = {"date": d, "count": 0, "minutes": 0.0}
+
         for entry in history:
             watched_at_str = entry.get("watched_at", "")
             try:
@@ -183,12 +192,20 @@ class WatchStatsService:
             for g in genres:
                 genre_counts[g] += 1
 
-            # Daily buckets
+            # Daily buckets (last 30 days)
             day_key = watched_at.strftime("%Y-%m-%d")
             watching_days.add(day_key)
             if day_key in daily_buckets:
                 daily_buckets[day_key]["minutes"] += runtime_min
                 daily_buckets[day_key]["count"] += 1
+
+            # Year-over-year monthly accumulation
+            monthly_by_year[watched_at.year][watched_at.month] += runtime_hrs
+
+            # Daily heatmap (last 365 days)
+            if day_key in heatmap_buckets:
+                heatmap_buckets[day_key]["count"] += 1
+                heatmap_buckets[day_key]["minutes"] += runtime_min
 
         # Sort daily buckets chronologically
         recent_daily = sorted(daily_buckets.values(), key=lambda d: d["date"])
@@ -206,6 +223,18 @@ class WatchStatsService:
             if watching_days else 0
         )
 
+        # Build YoY monthly data: [{year, months: [hours for Jan..Dec]}]
+        yoy_data = []
+        for year in sorted(monthly_by_year.keys()):
+            months = [round(monthly_by_year[year].get(m, 0), 1) for m in range(1, 13)]
+            yoy_data.append({"year": year, "months": months})
+
+        # Build heatmap: sorted list of {date, count, hours}
+        heatmap_data = sorted(heatmap_buckets.values(), key=lambda d: d["date"])
+        for d in heatmap_data:
+            d["hours"] = round(d["minutes"] / 60, 1)
+            del d["minutes"]
+
         return {
             "hours_by_period": {
                 "week": round(hours_week, 1),
@@ -219,6 +248,8 @@ class WatchStatsService:
             "recent_daily": recent_daily,
             "avg_per_session": avg_per_session,
             "total_items": len(history),
+            "monthly_by_year": yoy_data,
+            "daily_heatmap": heatmap_data,
         }
 
     @staticmethod
