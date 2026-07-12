@@ -3,112 +3,100 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rating Bias Detector — Emby-Trakt Suite</title>
+    <title>Taste Profile — Emby-Trakt Suite</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --surface-hover: #22263a;
+            --border: #2a2e3e;
+            --text: #e0e0e6;
+            --text-dim: #8b8fa3;
+            --accent: #6c5ce7;
+            --accent-light: #a29bfe;
+            --green: #00b894;
+            --orange: #fdcb6e;
+            --red: #e17055;
+            --blue: #74b9ff;
+            --radius: 10px;
+            --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         }
 
-        :root {
-            --primary: #6366f1;
-            --primary-dark: #4f46e5;
-            --bg-light: #ffffff;
-            --bg-dark: #1a1a2e;
-            --text-light: #1f2937;
-            --text-dark: #f3f4f6;
-            --border: #e5e7eb;
-            --success: #10b981;
-            --warning: #f59e0b;
-            --error: #ef4444;
+        body.light-mode {
+            --bg: #f5f6fa;
+            --surface: #ffffff;
+            --surface-hover: #f0f1f5;
+            --border: #e2e4ea;
+            --text: #1f2937;
+            --text-dim: #6b7280;
         }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--bg-light);
-            color: var(--text-light);
-            transition: background-color 0.3s, color 0.3s;
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font);
+            line-height: 1.6;
+            min-height: 100vh;
         }
 
-        body.dark-mode {
-            background: var(--bg-dark);
-            color: var(--text-dark);
-        }
-
-        header {
-            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
-            color: white;
-            padding: 2rem;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        .header {
+            padding: 28px 32px 20px;
+            border-bottom: 1px solid var(--border);
             display: flex;
+            align-items: center;
+            gap: 16px;
             justify-content: space-between;
+        }
+
+        .header h1 { font-size: 1.5rem; font-weight: 700; }
+
+        .container { max-width: 1400px; margin: 0 auto; padding: 28px 32px; }
+
+        .btn {
+            display: inline-flex;
             align-items: center;
-            flex-wrap: wrap;
-            gap: 1rem;
-        }
-
-        header h1 {
-            font-size: 1.8rem;
-            font-weight: 700;
-        }
-
-        .header-controls {
-            display: flex;
-            gap: 1rem;
-            align-items: center;
-        }
-
-        .theme-toggle {
-            background: rgba(255,255,255,0.2);
+            gap: 6px;
+            padding: 8px 16px;
             border: none;
-            color: white;
-            padding: 0.5rem 1rem;
-            border-radius: 0.5rem;
+            border-radius: 6px;
+            font-size: 0.82rem;
+            font-weight: 600;
             cursor: pointer;
-            font-size: 0.9rem;
-            transition: background 0.3s;
+            transition: opacity 0.2s;
+            color: #fff;
         }
 
-        .theme-toggle:hover {
-            background: rgba(255,255,255,0.3);
-        }
-
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
+        .btn-accent { background: var(--accent); }
+        .btn-blue { background: var(--blue); color: var(--bg); }
+        .btn:hover { opacity: 0.85; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
         .tabs {
             display: flex;
-            gap: 0.5rem;
-            margin-bottom: 2rem;
-            border-bottom: 2px solid var(--border);
+            gap: 12px;
+            margin-bottom: 24px;
+            border-bottom: 1px solid var(--border);
             flex-wrap: wrap;
         }
 
         .tab-btn {
-            padding: 0.75rem 1.5rem;
-            border: none;
+            padding: 8px 16px;
             background: transparent;
-            color: var(--text-light);
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-dim);
+            font-weight: 600;
             cursor: pointer;
-            font-size: 1rem;
-            font-weight: 500;
-            border-bottom: 3px solid transparent;
-            margin-bottom: -2px;
-            transition: all 0.3s;
-        }
-
-        body.dark-mode .tab-btn {
-            color: var(--text-dark);
+            transition: all 0.2s;
+            font-size: 0.9rem;
         }
 
         .tab-btn.active {
-            color: var(--primary);
-            border-bottom-color: var(--primary);
+            color: var(--accent);
+            border-bottom-color: var(--accent);
         }
 
         .tab-content {
@@ -116,381 +104,230 @@
             animation: fadeIn 0.3s;
         }
 
-        .tab-content.active {
-            display: block;
-        }
+        .tab-content.active { display: block; }
 
         @keyframes fadeIn {
             from { opacity: 0; }
             to { opacity: 1; }
         }
 
-        .button {
-            background: var(--primary);
-            color: white;
-            border: none;
-            padding: 0.75rem 1.5rem;
-            border-radius: 0.5rem;
-            cursor: pointer;
-            font-size: 1rem;
-            font-weight: 500;
-            transition: background 0.3s;
-        }
-
-        .button:hover {
-            background: var(--primary-dark);
-        }
-
-        .button.secondary {
-            background: transparent;
-            color: var(--primary);
-            border: 2px solid var(--primary);
-        }
-
-        .button.secondary:hover {
-            background: var(--primary);
-            color: white;
-        }
-
-        .button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .card {
-            background: var(--bg-light);
-            border: 1px solid var(--border);
-            border-radius: 0.75rem;
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-            transition: all 0.3s;
-        }
-
-        body.dark-mode .card {
-            background: #252d42;
-            border-color: #3a4255;
-        }
-
-        .card:hover {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }
-
         .stat-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin-bottom: 2rem;
+            gap: 16px;
+            margin-bottom: 24px;
         }
 
         .stat-box {
-            background: var(--bg-light);
+            background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 0.75rem;
-            padding: 1.5rem;
+            border-radius: var(--radius);
+            padding: 20px;
             text-align: center;
-            transition: all 0.3s;
+            transition: border-color 0.2s;
         }
 
-        body.dark-mode .stat-box {
-            background: #252d42;
-            border-color: #3a4255;
-        }
-
-        .stat-box:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }
+        .stat-box:hover { border-color: var(--accent); }
 
         .stat-value {
-            font-size: 2rem;
+            font-size: 1.8rem;
             font-weight: 700;
-            color: var(--primary);
-            margin: 0.5rem 0;
+            color: var(--accent);
+            margin: 6px 0;
         }
 
         .stat-label {
-            font-size: 0.9rem;
-            color: #6b7280;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.3px;
         }
 
-        body.dark-mode .stat-label {
-            color: #9ca3af;
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 24px;
+            margin-bottom: 20px;
+            transition: border-color 0.2s;
+        }
+
+        .card:hover { border-color: var(--accent); }
+
+        .card h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 16px;
         }
 
         .chart-container {
             position: relative;
             height: 300px;
-            margin-bottom: 2rem;
+            margin-bottom: 16px;
         }
 
-        .gem-list, .challenge-list {
-            list-style: none;
-        }
+        .gem-list, .challenge-list { list-style: none; }
 
         .gem-item, .challenge-item {
-            background: var(--bg-light);
-            border-left: 4px solid var(--primary);
-            padding: 1rem;
-            margin-bottom: 1rem;
-            border-radius: 0.5rem;
-            transition: all 0.3s;
+            background: var(--surface-hover);
+            border-left: 4px solid var(--accent);
+            padding: 16px;
+            margin-bottom: 12px;
+            border-radius: 0 8px 8px 0;
+            transition: transform 0.2s;
         }
 
-        body.dark-mode .gem-item, body.dark-mode .challenge-item {
-            background: #252d42;
-        }
-
-        .gem-item:hover, .challenge-item:hover {
-            transform: translateX(4px);
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        }
+        .gem-item:hover, .challenge-item:hover { transform: translateX(4px); }
 
         .gem-title, .challenge-title {
             font-weight: 600;
-            margin-bottom: 0.5rem;
+            margin-bottom: 6px;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
         .gap-badge {
-            background: var(--warning);
-            color: white;
-            padding: 0.25rem 0.75rem;
+            background: var(--orange);
+            color: var(--bg);
+            padding: 2px 10px;
             border-radius: 9999px;
-            font-size: 0.85rem;
-            font-weight: 600;
+            font-size: 0.75rem;
+            font-weight: 700;
         }
 
         .difficulty {
             display: inline-block;
-            padding: 0.25rem 0.75rem;
+            padding: 2px 10px;
             border-radius: 9999px;
-            font-size: 0.85rem;
-            font-weight: 600;
+            font-size: 0.75rem;
+            font-weight: 700;
         }
 
-        .difficulty.easy {
-            background: var(--success);
-            color: white;
-        }
-
-        .difficulty.medium {
-            background: var(--warning);
-            color: white;
-        }
-
-        .difficulty.hard {
-            background: var(--error);
-            color: white;
-        }
+        .difficulty.easy { background: rgba(0,184,148,0.2); color: var(--green); }
+        .difficulty.medium { background: rgba(253,203,110,0.2); color: var(--orange); }
+        .difficulty.hard { background: rgba(225,112,85,0.2); color: var(--red); }
 
         .filter-bar {
             display: flex;
-            gap: 1rem;
-            margin-bottom: 1.5rem;
+            gap: 12px;
+            margin-bottom: 20px;
             flex-wrap: wrap;
         }
 
-        .filter-input {
-            padding: 0.75rem;
+        .filter-input, .filter-select {
+            padding: 8px 12px;
             border: 1px solid var(--border);
-            border-radius: 0.5rem;
-            font-size: 1rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            background: var(--surface);
+            color: var(--text);
             flex: 1;
             min-width: 200px;
-            background: var(--bg-light);
-            color: var(--text-light);
         }
 
-        body.dark-mode .filter-input {
-            background: #252d42;
-            color: var(--text-dark);
-            border-color: #3a4255;
-        }
-
-        .filter-select {
-            padding: 0.75rem;
-            border: 1px solid var(--border);
-            border-radius: 0.5rem;
-            font-size: 1rem;
-            background: var(--bg-light);
-            color: var(--text-light);
-        }
-
-        body.dark-mode .filter-select {
-            background: #252d42;
-            color: var(--text-dark);
-            border-color: #3a4255;
-        }
+        .filter-select { flex: 0 0 auto; min-width: 180px; }
 
         .loading {
-            text-align: center;
-            padding: 2rem;
-            color: #6b7280;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            color: var(--text-dim);
+            font-size: 0.9rem;
         }
 
         .spinner {
             display: inline-block;
-            width: 40px;
-            height: 40px;
-            border: 4px solid var(--border);
-            border-top-color: var(--primary);
+            width: 24px;
+            height: 24px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
             border-radius: 50%;
-            animation: spin 1s linear infinite;
+            animation: spin 0.8s linear infinite;
+            margin-bottom: 12px;
         }
 
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
 
         .alert {
-            padding: 1rem;
-            border-radius: 0.5rem;
-            margin-bottom: 1rem;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 0.85rem;
+            font-weight: 500;
         }
 
         .alert.error {
-            background: #fee2e2;
-            color: #991b1b;
-            border-left: 4px solid var(--error);
+            background: rgba(225,112,85,0.15);
+            color: var(--red);
+            border-left: 4px solid var(--red);
         }
 
         .alert.success {
-            background: #dcfce7;
-            color: #166534;
-            border-left: 4px solid var(--success);
-        }
-
-        body.dark-mode .alert.error {
-            background: #7f1d1d;
-            color: #fecaca;
-        }
-
-        body.dark-mode .alert.success {
-            background: #1b4332;
-            color: #95d5b2;
+            background: rgba(0,184,148,0.15);
+            color: var(--green);
+            border-left: 4px solid var(--green);
         }
 
         .modal {
             display: none;
             position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.5);
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6);
             z-index: 1000;
             align-items: center;
             justify-content: center;
         }
 
-        .modal.active {
-            display: flex;
-        }
+        .modal.active { display: flex; }
 
         .modal-content {
-            background: var(--bg-light);
-            border-radius: 0.75rem;
-            padding: 2rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 32px;
             max-width: 500px;
             width: 90%;
-            max-height: 80vh;
-            overflow-y: auto;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-        }
-
-        body.dark-mode .modal-content {
-            background: #252d42;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
         }
 
         .modal-title {
-            font-size: 1.5rem;
+            font-size: 1.2rem;
             font-weight: 700;
-            margin-bottom: 1rem;
-        }
-
-        .modal-buttons {
-            display: flex;
-            gap: 1rem;
-            margin-top: 1.5rem;
-            justify-content: flex-end;
-        }
-
-        @media (max-width: 768px) {
-            header {
-                flex-direction: column;
-                text-align: center;
-            }
-
-            header h1 {
-                font-size: 1.4rem;
-            }
-
-            .container {
-                padding: 1rem;
-            }
-
-            .tabs {
-                gap: 0;
-            }
-
-            .tab-btn {
-                flex: 1;
-                padding: 0.5rem;
-                font-size: 0.9rem;
-            }
-
-            .stat-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-
-            .filter-bar {
-                flex-direction: column;
-            }
-
-            .filter-input, .filter-select {
-                width: 100%;
-            }
-
-            .chart-container {
-                height: 250px;
-            }
+            margin-bottom: 16px;
         }
 
         .progress-bar {
             width: 100%;
-            height: 8px;
+            height: 6px;
             background: var(--border);
-            border-radius: 4px;
+            border-radius: 3px;
             overflow: hidden;
-            margin: 0.5rem 0;
+            margin: 6px 0;
         }
 
         .progress-fill {
             height: 100%;
-            background: var(--primary);
+            background: var(--accent);
             transition: width 0.3s;
         }
 
-        .breadcrumb {
-            color: #6b7280;
-            margin-bottom: 1rem;
-        }
-
-        .breadcrumb a {
-            color: var(--primary);
-            text-decoration: none;
-            margin: 0 0.25rem;
-        }
-
-        .breadcrumb a:hover {
-            text-decoration: underline;
+        @media (max-width: 768px) {
+            .header { padding: 16px 20px; }
+            .container { padding: 16px 20px; }
+            .tabs { gap: 0; }
+            .tab-btn { flex: 1; padding: 8px 6px; font-size: 0.78rem; }
+            .stat-grid { grid-template-columns: repeat(2, 1fr); }
+            .filter-bar { flex-direction: column; }
+            .chart-container { height: 250px; }
         }
     </style>
 </head>
 <body>
+<script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
 <nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
     <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
     <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
@@ -502,12 +339,10 @@
     <a href="/watch-party" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
 </nav>
 
-    <header>
-        <h1>🎯 Rating Bias Detector</h1>
-        <div class="header-controls">
-            <button class="theme-toggle" onclick="toggleTheme()">🌙 Dark Mode</button>
-        </div>
-    </header>
+    <div class="header">
+        <h1>🎓 Taste Profile</h1>
+        <button class="btn btn-accent" onclick="triggerAnalysis()">🔄 Refresh Analysis</button>
+    </div>
 
     <div class="container">
         <div id="alert" class="alert" style="display:none;"></div>
@@ -555,14 +390,12 @@
                     <canvas id="genreChart"></canvas>
                 </div>
             </div>
-
-            <button class="button" onclick="triggerAnalysis()">🔄 Refresh Analysis</button>
         </div>
 
         <!-- Genre Analysis Tab -->
         <div id="genres" class="tab-content">
             <div class="filter-bar">
-                <input type="text" class="filter-input" id="genreFilter" placeholder="Filter genres..." onkeyup="filterGenres()">
+                <input type="text" class="filter-input" id="genreFilter" placeholder="Filter genres…" onkeyup="filterGenres()">
                 <select class="filter-select" id="genreSort" onchange="sortGenres()">
                     <option value="avg-desc">Highest Avg Rating</option>
                     <option value="avg-asc">Lowest Avg Rating</option>
@@ -586,22 +419,22 @@
 
         <!-- Hidden Gems Tab -->
         <div id="gems" class="tab-content">
-            <p style="margin-bottom:1rem; color:#6b7280;">Items the community loves more than you've rated them. These are opportunities to revisit and rate higher!</p>
+            <p style="margin-bottom:16px; color:var(--text-dim); font-size:0.85rem;">Items the community loves more than you've rated them — opportunities to revisit and rate higher.</p>
             <div class="filter-bar">
-                <input type="text" class="filter-input" id="gemFilter" placeholder="Search gems..." onkeyup="filterGems()">
+                <input type="text" class="filter-input" id="gemFilter" placeholder="Search gems…" onkeyup="filterGems()">
             </div>
             <ul id="gemsList" class="gem-list"></ul>
         </div>
 
         <!-- Challenges Tab -->
         <div id="challenges" class="tab-content">
-            <p style="margin-bottom:1rem; color:#6b7280;">Personalized challenges to explore your rating blind spots and expand your taste!</p>
+            <p style="margin-bottom:16px; color:var(--text-dim); font-size:0.85rem;">Personalized challenges to explore your rating blind spots and expand your taste.</p>
             <div id="challengesList"></div>
         </div>
 
         <!-- Against Your Taste Tab -->
         <div id="against" class="tab-content">
-            <p style="margin-bottom:1rem; color:#6b7280;">Step outside your comfort zone! These recommendations go against your typical rating patterns.</p>
+            <p style="margin-bottom:16px; color:var(--text-dim); font-size:0.85rem;">Step outside your comfort zone — recommendations that go against your typical rating patterns.</p>
             <div id="againstList"></div>
         </div>
     </div>
@@ -609,60 +442,64 @@
     <!-- Analysis Modal -->
     <div id="analysisModal" class="modal">
         <div class="modal-content">
-            <div class="modal-title">Running Analysis...</div>
+            <div class="modal-title">Running Analysis…</div>
             <div class="loading">
                 <div class="spinner"></div>
-                <p style="margin-top:1rem;">Analyzing your rating patterns...</p>
+                <p>Analyzing your rating patterns…</p>
             </div>
         </div>
     </div>
 
     <script>
-        // State
         let currentUser = null;
         let biasReport = null;
         let chartInstances = {};
 
-        // Theme Toggle
-        function toggleTheme() {
-            document.body.classList.toggle('dark-mode');
-            localStorage.setItem('theme', document.body.classList.contains('dark-mode') ? 'dark' : 'light');
+        const chartColors = {
+            grid: '#2a2e3e',
+            tick: '#8b8fa3',
+            tooltip: { bg: '#1a1d27', title: '#e0e0e6', body: '#8b8fa3', border: '#2a2e3e' }
+        };
+
+        function chartOpts(extra) {
+            return Object.assign({
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: chartColors.tooltip.bg,
+                        titleColor: chartColors.tooltip.title,
+                        bodyColor: chartColors.tooltip.body,
+                        borderColor: chartColors.tooltip.border,
+                        borderWidth: 1,
+                        padding: 12,
+                        cornerRadius: 6,
+                        displayColors: false,
+                    }
+                },
+                scales: {
+                    y: { ticks: { color: chartColors.tick }, grid: { color: chartColors.grid, drawBorder: false } },
+                    x: { ticks: { color: chartColors.tick }, grid: { display: false } }
+                }
+            }, extra);
         }
 
-        // Load theme from localStorage
-        function loadTheme() {
-            if (localStorage.getItem('theme') === 'dark') {
-                document.body.classList.add('dark-mode');
-                document.querySelector('.theme-toggle').textContent = '☀️ Light Mode';
-            }
-        }
-
-        // Initialize on page load
         document.addEventListener('DOMContentLoaded', async () => {
-            loadTheme();
-            
-            // Get user from URL or localStorage
-            currentUser = localStorage.getItem('currentUserId') || '1';
-            localStorage.setItem('currentUserId', currentUser);
-
+            currentUser = localStorage.getItem('currentUserId') || sessionStorage.getItem('currentUserId') || '1';
             await loadBiasReport();
         });
 
-        // Tab switching
         function switchTab(tabName) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-            
             document.getElementById(tabName).classList.add('active');
             event.target.classList.add('active');
-
-            // Trigger chart resize if needed
             setTimeout(() => {
                 Object.values(chartInstances).forEach(chart => chart?.resize?.());
             }, 100);
         }
 
-        // Load bias report
         async function loadBiasReport() {
             try {
                 const response = await fetch(`/bias/report/${currentUser}`);
@@ -677,14 +514,12 @@
             }
         }
 
-        // Trigger analysis
         async function triggerAnalysis() {
             showModal('analysisModal', true);
             try {
                 const response = await fetch(`/bias/analyze/${currentUser}`, { method: 'POST' });
                 const result = await response.json();
                 showModal('analysisModal', false);
-                
                 if (result.status === 'analyzed') {
                     showAlert('✓ Analysis complete!', 'success');
                     await loadBiasReport();
@@ -697,52 +532,31 @@
             }
         }
 
-        // Render dashboard
         function renderDashboard() {
             if (!biasReport) return;
-
             const analysis = biasReport.analysis;
             const overall = analysis.overall;
 
-            // Update stats
             document.getElementById('totalRatings').textContent = overall.count;
             document.getElementById('avgRating').textContent = overall.avg_rating.toFixed(1);
             document.getElementById('medianRating').textContent = overall.median_rating.toFixed(1);
             document.getElementById('stdDev').textContent = overall.std_dev.toFixed(2);
 
-            // Rating curve chart
             renderRatingCurveChart(overall.rating_distribution);
-
-            // Genre chart
             renderGenreChart(analysis.genre_biases);
-
-            // Era chart
             renderEraChart(analysis.era_biases);
-
-            // Genre list
             renderGenreList(analysis.genre_biases);
-
-            // Era list
             renderEraList(analysis.era_biases);
-
-            // Hidden gems
             renderHiddenGems(analysis.hidden_gems);
-
-            // Challenges
             renderChallenges(analysis.challenges);
-
-            // Against taste
             renderAgainstTaste(analysis.against_taste);
         }
 
-        // Chart rendering
         function renderRatingCurveChart(curve) {
             const ctx = document.getElementById('ratingCurveChart')?.getContext('2d');
             if (!ctx) return;
-
             const labels = Object.keys(curve).sort((a, b) => parseFloat(a) - parseFloat(b));
             const data = labels.map(l => curve[l]);
-
             if (chartInstances.ratingCurve) chartInstances.ratingCurve.destroy();
             chartInstances.ratingCurve = new Chart(ctx, {
                 type: 'bar',
@@ -751,31 +565,23 @@
                     datasets: [{
                         label: 'Ratings at this score',
                         data,
-                        backgroundColor: 'rgba(99, 102, 241, 0.6)',
-                        borderColor: 'rgba(99, 102, 241, 1)',
+                        backgroundColor: 'rgba(108, 92, 231, 0.6)',
+                        borderColor: 'rgba(108, 92, 231, 1)',
                         borderWidth: 1,
+                        borderRadius: 6,
+                        borderSkipped: false,
                     }]
                 },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
-                    scales: { y: { beginAtZero: true } }
-                }
+                options: chartOpts({ scales: { y: { beginAtZero: true, ticks: { color: chartColors.tick }, grid: { color: chartColors.grid, drawBorder: false } }, x: { ticks: { color: chartColors.tick }, grid: { display: false } } } })
             });
         }
 
         function renderGenreChart(genres) {
             const ctx = document.getElementById('genreChart')?.getContext('2d');
             if (!ctx) return;
-
-            const sorted = Object.entries(genres)
-                .sort((a, b) => b[1].avg - a[1].avg)
-                .slice(0, 10);
-
+            const sorted = Object.entries(genres).sort((a, b) => b[1].avg - a[1].avg).slice(0, 10);
             const labels = sorted.map(([g]) => g.charAt(0).toUpperCase() + g.slice(1));
             const data = sorted.map(([, s]) => s.avg);
-
             if (chartInstances.genre) chartInstances.genre.destroy();
             chartInstances.genre = new Chart(ctx, {
                 type: 'bar',
@@ -784,28 +590,22 @@
                     datasets: [{
                         label: 'Avg Rating',
                         data,
-                        backgroundColor: 'rgba(16, 185, 129, 0.6)',
-                        borderColor: 'rgba(16, 185, 129, 1)',
+                        backgroundColor: 'rgba(0, 184, 148, 0.6)',
+                        borderColor: 'rgba(0, 184, 148, 1)',
                         borderWidth: 1,
+                        borderRadius: 6,
+                        borderSkipped: false,
                     }]
                 },
-                options: {
-                    indexAxis: 'y',
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
-                    scales: { x: { min: 0, max: 10 } }
-                }
+                options: chartOpts({ indexAxis: 'y', scales: { x: { min: 0, max: 10, ticks: { color: chartColors.tick }, grid: { color: chartColors.grid, drawBorder: false } }, y: { ticks: { color: chartColors.tick }, grid: { display: false } } } })
             });
         }
 
         function renderEraChart(eras) {
             const ctx = document.getElementById('eraChart')?.getContext('2d');
             if (!ctx) return;
-
             const labels = Object.keys(eras).sort();
             const data = labels.map(e => eras[e].avg);
-
             if (chartInstances.era) chartInstances.era.destroy();
             chartInstances.era = new Chart(ctx, {
                 type: 'line',
@@ -814,44 +614,38 @@
                     datasets: [{
                         label: 'Avg Rating by Decade',
                         data,
-                        borderColor: 'rgba(245, 158, 11, 1)',
-                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                        borderColor: 'rgba(253, 203, 110, 1)',
+                        backgroundColor: 'rgba(253, 203, 110, 0.1)',
                         tension: 0.4,
                         fill: true,
                     }]
                 },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: true } },
-                    scales: { y: { min: 0, max: 10 } }
-                }
+                options: chartOpts({ plugins: { legend: { display: true, labels: { color: chartColors.tick } }, tooltip: { backgroundColor: chartColors.tooltip.bg, titleColor: chartColors.tooltip.title, bodyColor: chartColors.tooltip.body, borderColor: chartColors.tooltip.border, borderWidth: 1, padding: 12, cornerRadius: 6 } }, scales: { y: { min: 0, max: 10, ticks: { color: chartColors.tick }, grid: { color: chartColors.grid, drawBorder: false } }, x: { ticks: { color: chartColors.tick }, grid: { display: false } } } })
             });
         }
 
-        // Rendering functions
         function renderGenreList(genres) {
             const html = Object.entries(genres)
                 .sort((a, b) => b[1].avg - a[1].avg)
                 .map(([g, s]) => `
                     <div class="card">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <h3 style="margin-bottom: 0.5rem;">${g.charAt(0).toUpperCase() + g.slice(1)}</h3>
-                                <div style="display: flex; gap: 1rem; color: #6b7280;">
-                                    <span>Avg: <strong>${s.avg.toFixed(1)}</strong>/10</span>
-                                    <span>Count: <strong>${s.count}</strong></span>
-                                    <span>Bias: <strong>${s.bias_score > 0 ? '+' : ''}${s.bias_score.toFixed(1)}</strong></span>
+                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                            <div style="flex:1;">
+                                <h2 style="margin-bottom:8px;">${g.charAt(0).toUpperCase() + g.slice(1)}</h2>
+                                <div style="display:flex;gap:16px;color:var(--text-dim);font-size:0.85rem;">
+                                    <span>Avg: <strong style="color:var(--text);">${s.avg.toFixed(1)}</strong>/10</span>
+                                    <span>Count: <strong style="color:var(--text);">${s.count}</strong></span>
+                                    <span>Bias: <strong style="color:${s.bias_score > 0 ? 'var(--green)' : 'var(--red)'};">${s.bias_score > 0 ? '+' : ''}${s.bias_score.toFixed(1)}</strong></span>
                                 </div>
-                                <div class="progress-bar" style="margin-top: 0.5rem;">
-                                    <div class="progress-fill" style="width: ${(s.avg / 10) * 100}%"></div>
+                                <div class="progress-bar" style="margin-top:8px;">
+                                    <div class="progress-fill" style="width:${(s.avg / 10) * 100}%"></div>
                                 </div>
                             </div>
                         </div>
                     </div>
                 `)
                 .join('');
-            document.getElementById('genreList').innerHTML = html || '<p>No genres found</p>';
+            document.getElementById('genreList').innerHTML = html || '<p style="color:var(--text-dim);">No genres found</p>';
         }
 
         function renderEraList(eras) {
@@ -859,19 +653,19 @@
                 .sort((a, b) => b[1].avg - a[1].avg)
                 .map(([e, s]) => `
                     <div class="card">
-                        <h3 style="margin-bottom: 0.5rem;">${e}</h3>
-                        <div style="display: flex; gap: 1rem; color: #6b7280;">
-                            <span>Avg: <strong>${s.avg.toFixed(1)}</strong>/10</span>
-                            <span>Ratings: <strong>${s.count}</strong></span>
-                            <span>Range: <strong>${s.range}</strong></span>
+                        <h2 style="margin-bottom:8px;">${e}</h2>
+                        <div style="display:flex;gap:16px;color:var(--text-dim);font-size:0.85rem;">
+                            <span>Avg: <strong style="color:var(--text);">${s.avg.toFixed(1)}</strong>/10</span>
+                            <span>Ratings: <strong style="color:var(--text);">${s.count}</strong></span>
+                            <span>Range: <strong style="color:var(--text);">${s.range}</strong></span>
                         </div>
-                        <div class="progress-bar" style="margin-top: 0.5rem;">
-                            <div class="progress-fill" style="width: ${(s.avg / 10) * 100}%"></div>
+                        <div class="progress-bar" style="margin-top:8px;">
+                            <div class="progress-fill" style="width:${(s.avg / 10) * 100}%"></div>
                         </div>
                     </div>
                 `)
                 .join('');
-            document.getElementById('eraList').innerHTML = html || '<p>No eras found</p>';
+            document.getElementById('eraList').innerHTML = html || '<p style="color:var(--text-dim);">No eras found</p>';
         }
 
         function renderHiddenGems(gems) {
@@ -881,13 +675,13 @@
                         <span>${g.title}</span>
                         <span class="gap-badge">Gap: ${g.gap}</span>
                     </div>
-                    <p style="margin: 0.5rem 0; color: #6b7280; font-size: 0.9rem;">
-                        You rated: <strong>${g.your_rating}/10</strong> | Community: <strong>${g.community_rating}/10</strong>
+                    <p style="margin:6px 0;color:var(--text-dim);font-size:0.85rem;">
+                        You rated: <strong style="color:var(--text);">${g.your_rating}/10</strong> | Community: <strong style="color:var(--text);">${g.community_rating}/10</strong>
                     </p>
-                    <p style="margin: 0; color: #6b7280; font-size: 0.9rem;">${g.genres.join(', ')}</p>
+                    <p style="margin:0;color:var(--text-dim);font-size:0.85rem;">${g.genres.join(', ')}</p>
                 </li>
             `).join('');
-            document.getElementById('gemsList').innerHTML = html || '<p>No hidden gems found!</p>';
+            document.getElementById('gemsList').innerHTML = html || '<p style="color:var(--text-dim);">No hidden gems found!</p>';
         }
 
         function renderChallenges(challenges) {
@@ -897,10 +691,10 @@
                         <span>${c.name}</span>
                         <span class="difficulty ${c.difficulty}">${c.difficulty.toUpperCase()}</span>
                     </div>
-                    <p style="margin: 0; color: #6b7280; font-size: 0.95rem;">${c.description}</p>
+                    <p style="margin:0;color:var(--text-dim);font-size:0.85rem;">${c.description}</p>
                 </div>
             `).join('');
-            document.getElementById('challengesList').innerHTML = html || '<p>No challenges available</p>';
+            document.getElementById('challengesList').innerHTML = html || '<p style="color:var(--text-dim);">No challenges available</p>';
         }
 
         function renderAgainstTaste(items) {
@@ -908,26 +702,23 @@
                 <div class="challenge-item">
                     <div class="challenge-title">
                         <span>${item.name}</span>
-                        <span style="color: #f59e0b; font-weight: 600;">Gain: ${item.diversity_gain.toFixed(1)}</span>
+                        <span style="color:var(--orange);font-weight:700;font-size:0.85rem;">Gain: ${item.diversity_gain.toFixed(1)}</span>
                     </div>
-                    <p style="margin: 0; color: #6b7280; font-size: 0.95rem;">${item.description}</p>
+                    <p style="margin:0;color:var(--text-dim);font-size:0.85rem;">${item.description}</p>
                 </div>
             `).join('');
-            document.getElementById('againstList').innerHTML = html || '<p>No recommendations available</p>';
+            document.getElementById('againstList').innerHTML = html || '<p style="color:var(--text-dim);">No recommendations available</p>';
         }
 
-        // Filter functions
         function filterGenres() {
             const term = document.getElementById('genreFilter').value.toLowerCase();
             document.querySelectorAll('#genreList .card').forEach(card => {
-                const title = card.querySelector('h3').textContent.toLowerCase();
+                const title = card.querySelector('h2').textContent.toLowerCase();
                 card.style.display = title.includes(term) ? 'block' : 'none';
             });
         }
 
-        function sortGenres() {
-            // Implement sort by moving cards
-        }
+        function sortGenres() {}
 
         function filterGems() {
             const term = document.getElementById('gemFilter').value.toLowerCase();
@@ -937,7 +728,6 @@
             });
         }
 
-        // Utilities
         function showAlert(message, type) {
             const el = document.getElementById('alert');
             el.textContent = message;

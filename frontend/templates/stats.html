@@ -23,6 +23,15 @@
       --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
+  body.light-mode {
+    --bg: #f5f6fa;
+    --surface: #ffffff;
+    --surface-hover: #f0f1f5;
+    --border: #e2e4ea;
+    --text: #1f2937;
+    --text-dim: #6b7280;
+  }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
@@ -125,6 +134,7 @@
   </style>
 </head>
 <body>
+<script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
 
 <nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
     <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
