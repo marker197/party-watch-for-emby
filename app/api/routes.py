@@ -1424,6 +1424,12 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
                 if promoted:
                     await db.commit()
+                    # Invalidate availability cache — the item just arrived
+                    try:
+                        _r = await get_redis()
+                        await _r.delete("availability_monitor_v2")
+                    except Exception:
+                        pass
                     # Re-sync playlist for each affected user
                     affected_users = {qi.user_id for qi in missing_items if qi.in_library}
                     for uid in affected_users:
@@ -2915,21 +2921,12 @@ async def get_download_queue():
 
     Returns items currently being downloaded with progress, ETA, and
     size info.  Keyed by tmdb_id (movies) and tvdb_id (shows) so the
-    frontend can match them to smart queue cards.  Short TTL cache (30s)
-    to avoid hammering the *arr APIs on repeated dashboard loads.
+    frontend can match them to smart queue cards.  No caching — the
+    *arr queue endpoint is lightweight and progress changes constantly.
     """
     import json as _json
     from app.utils.radarr_client import RadarrClient
     from app.utils.sonarr_client import SonarrClient
-
-    cache_key = "download_queue_v1"
-    try:
-        r = await get_redis()
-        cached = await r.get(cache_key)
-        if cached:
-            return _json.loads(cached)
-    except Exception:
-        pass
 
     r = await get_redis()
     downloads: list[dict] = []
@@ -2958,16 +2955,7 @@ async def get_download_queue():
             except Exception as e:
                 log.warning("download_queue.sonarr_failed", server=srv.get("name"), error=str(e)[:120])
 
-    result = {"downloads": downloads, "count": len(downloads)}
-
-    # Short TTL — downloads change rapidly
-    try:
-        r = await get_redis()
-        await r.setex(cache_key, 30, _json.dumps(result))
-    except Exception:
-        pass
-
-    return result
+    return {"downloads": downloads, "count": len(downloads)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

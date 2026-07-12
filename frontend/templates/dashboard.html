@@ -783,6 +783,16 @@
       <button class="btn btn-blue btn-sm" id="btnToggleAvail" onclick="toggleAvailability()">View Status ▾</button>
     </div>
 
+    <!-- #10 Active Downloads -->
+    <div class="card">
+      <div class="card-header">
+        <h2>⬇️ Active Downloads</h2>
+        <span class="badge" id="dlCountBadge" style="display:none;">0</span>
+      </div>
+      <p>Live download progress from Radarr &amp; Sonarr.</p>
+      <div id="dlCardPreview" style="margin-top:8px;"></div>
+    </div>
+
   </div>
 
   <!-- Smart Queue panel — full width below the cards grid -->
@@ -1273,6 +1283,8 @@ async function _pollForQueueDone() {
   logTo('queueOutput', '⚠ Refresh is taking longer than expected — try opening the queue in a moment.', 'err');
 }
 
+let _dlPollTimer = null;
+
 function toggleQueue() {
   const panel = document.getElementById('queuePanel');
   const btn = document.getElementById('btnToggleQueue');
@@ -1280,9 +1292,30 @@ function toggleQueue() {
     panel.style.display = 'block';
     btn.textContent = 'Hide Queue ▴';
     viewQueue();
+    // Start polling download progress every 30s while panel is open
+    _startDlPoll();
   } else {
     panel.style.display = 'none';
     btn.textContent = 'View Queue ▾';
+    _stopDlPoll();
+  }
+}
+
+function _startDlPoll() {
+  _stopDlPoll();
+  _dlPollTimer = setInterval(() => {
+    if (document.getElementById('queuePanel').style.display === 'none') {
+      _stopDlPoll();
+      return;
+    }
+    viewQueue();
+  }, 5000);
+}
+
+function _stopDlPoll() {
+  if (_dlPollTimer) {
+    clearInterval(_dlPollTimer);
+    _dlPollTimer = null;
   }
 }
 
@@ -1523,6 +1556,8 @@ async function sendToRadarr(rowIdx, tmdbId, imdbId, title, year, serverIdx) {
       btn.textContent = '✓ Sent';
       btn.style.background = 'var(--green)';
       showNotification(`${title} sent to ${d.server || 'Radarr'}`);
+      // Refresh queue after a short delay so download progress shows
+      setTimeout(() => viewQueue(), 5000);
     } else {
       const reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Failed';
       btn.textContent = '✗';
@@ -1555,6 +1590,8 @@ async function sendToSonarr(rowIdx, tvdbId, imdbId, title, year, serverIdx) {
       btn.textContent = '✓ Sent';
       btn.style.background = 'var(--green)';
       showNotification(`${title} sent to ${d.server || 'Sonarr'}`);
+      // Refresh queue after a short delay so download progress shows
+      setTimeout(() => viewQueue(), 5000);
     } else {
       const reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Failed';
       btn.textContent = '✗';
@@ -2260,6 +2297,84 @@ async function loadAvailability() {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Active Downloads Card
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function refreshDownloadsCard() {
+  try {
+    const r = await fetch(API + '/api/download-queue');
+    if (!r.ok) return;
+    const d = await r.json();
+    const items = d.downloads || [];
+    const badge = document.getElementById('dlCountBadge');
+    const preview = document.getElementById('dlCardPreview');
+
+    if (items.length === 0) {
+      badge.style.display = 'none';
+      preview.innerHTML = '<div style="color:var(--text-dim);font-size:0.8rem;">No active downloads.</div>';
+      return;
+    }
+
+    badge.style.display = '';
+    badge.textContent = items.length;
+    badge.className = 'badge badge-on';
+
+    // Group by title (Sonarr can have multiple episodes per show)
+    const grouped = {};
+    for (const dl of items) {
+      const key = dl.type === 'show' ? `show:${dl.tvdb_id || dl.title}` : `movie:${dl.tmdb_id || dl.title}`;
+      if (!grouped[key]) {
+        grouped[key] = { title: dl.title, type: dl.type, server: dl.server, tracked_status: dl.tracked_status, items: [] };
+      }
+      grouped[key].items.push(dl);
+    }
+
+    const entries = Object.values(grouped);
+    preview.innerHTML = entries.slice(0, 5).map(g => {
+      const isWarn = g.items.some(d => d.tracked_status === 'warning');
+      const barColor = isWarn ? 'var(--orange)' : 'var(--blue)';
+
+      if (g.type === 'movie') {
+        const dl = g.items[0];
+        const pct = dl.progress || 0;
+        const etaStr = _formatEta(dl.eta);
+        const sizeStr = dl.size_mb ? `${dl.size_mb.toFixed(0)} MB` : '';
+        return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:0.78rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;">${dl.title}</span>
+            <span style="font-size:0.68rem;color:var(--text-dim);">${g.server}</span>
+          </div>
+          <div class="dl-progress-wrap" style="margin-top:2px;">
+            <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${pct}%;background:${barColor};"></div></div>
+            <span class="dl-progress-text">${pct.toFixed(0)}%</span>
+          </div>
+          <div style="font-size:0.6rem;color:var(--text-dim);">${etaStr}${sizeStr ? ' · ' + sizeStr : ''}</div>
+        </div>`;
+      } else {
+        // Show — aggregate episodes
+        const avgPct = g.items.reduce((s, d) => s + (d.progress || 0), 0) / g.items.length;
+        const epLabels = g.items.map(d => d.episode_label).filter(Boolean).slice(0, 4).join(', ');
+        const moreCount = g.items.length > 4 ? ` +${g.items.length - 4}` : '';
+        return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:0.78rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;">${g.title}</span>
+            <span style="font-size:0.68rem;color:var(--text-dim);">${g.server}</span>
+          </div>
+          <div class="dl-progress-wrap" style="margin-top:2px;">
+            <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${avgPct}%;background:${barColor};"></div></div>
+            <span class="dl-progress-text">${avgPct.toFixed(0)}%</span>
+          </div>
+          <div style="font-size:0.6rem;color:var(--text-dim);">${g.items.length} ep${g.items.length > 1 ? 's' : ''}${epLabels ? ': ' + epLabels : ''}${moreCount}</div>
+        </div>`;
+      }
+    }).join('') + (entries.length > 5 ? `<div style="font-size:0.7rem;color:var(--text-dim);padding:4px 0;">+${entries.length - 5} more</div>` : '');
+  } catch(e) {
+    // silent — card just shows stale data
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Initialization
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2270,10 +2385,12 @@ function init() {
   loadSchedulerStatus();
   loadSSLStatus();
   _loadArrServers();
+  refreshDownloadsCard();
   setInterval(dashboardPoll, 30000); // consolidated: health + activity + job completions
   setInterval(loadParties, 60000);
   setInterval(loadSchedulerStatus, 60000);
   setInterval(loadSSLStatus, 300000);
+  setInterval(refreshDownloadsCard, 5000);
 }
 
 // Start when page loads
