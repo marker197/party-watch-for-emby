@@ -108,51 +108,96 @@
       background: var(--surface-hover);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 16px;
-      transition: all 0.2s;
+      transition: border-color 0.2s;
     }
 
     .prediction-card:hover {
       border-color: var(--accent);
-      transform: translateY(-2px);
     }
 
     .prediction-header {
       display: flex;
-      justify-content: space-between;
-      align-items: start;
-      margin-bottom: 12px;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      cursor: pointer;
+      user-select: none;
     }
 
     .prediction-title {
       font-weight: 600;
       flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .prediction-score {
       display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      gap: 4px;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
     }
 
     .rating-big {
-      font-size: 1.4rem;
+      font-size: 1.2rem;
       font-weight: 700;
       color: var(--accent);
     }
 
     .confidence {
-      font-size: 0.7rem;
+      font-size: 0.65rem;
       text-transform: uppercase;
-      font-weight: 600;
+      font-weight: 700;
       padding: 2px 6px;
       border-radius: 3px;
+      letter-spacing: 0.3px;
     }
 
     .confidence.high { background: rgba(0, 184, 148, 0.2); color: var(--green); }
     .confidence.medium { background: rgba(253, 203, 110, 0.2); color: var(--orange); }
     .confidence.low { background: rgba(225, 112, 85, 0.2); color: var(--red); }
+
+    .prediction-chevron {
+      flex-shrink: 0;
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-dim);
+      transition: transform 0.3s ease;
+      font-size: 0.75rem;
+    }
+
+    .prediction-card.expanded .prediction-chevron {
+      transform: rotate(180deg);
+    }
+
+    .prediction-details {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.35s ease, opacity 0.25s ease;
+      opacity: 0;
+    }
+
+    .prediction-card.expanded .prediction-details {
+      max-height: 500px;
+      opacity: 1;
+    }
+
+    .prediction-details-inner {
+      padding: 0 16px 16px;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+    }
+
+    .prediction-overview {
+      font-size: 0.82rem;
+      color: var(--text-dim);
+      line-height: 1.5;
+      margin-bottom: 12px;
+    }
 
     .reasons {
       font-size: 0.8rem;
@@ -530,24 +575,31 @@
         const reasons = p.explanation
           ? String(p.explanation).replace(/^Based on\s*/i, '').split(';').map(s => s.trim()).filter(Boolean).slice(0, 3)
           : [];
+        const overview = p.overview || '';
 
         return `
           <div class="prediction-card">
-            <div class="prediction-header">
-              <div class="prediction-title">${escapeHtml(p.title || '')}</div>
+            <div class="prediction-header" onclick="this.parentElement.classList.toggle('expanded')">
+              <div class="prediction-title" title="${escapeHtml(p.title || '')}">${escapeHtml(p.title || '')}</div>
               <div class="prediction-score">
                 <div class="rating-big">${p.predicted_rating.toFixed(1)}</div>
                 <span class="confidence ${confidence}">${confidence}</span>
               </div>
+              <div class="prediction-chevron">▼</div>
             </div>
 
-            <div class="reasons">
-              ${reasons.map(r => `
-                <div class="reason">
-                  <span class="reason-icon">•</span>
-                  ${escapeHtml(r)}
-                </div>
-              `).join('')}
+            <div class="prediction-details">
+              <div class="prediction-details-inner">
+                ${overview ? `<div class="prediction-overview">${escapeHtml(overview)}</div>` : ''}
+                ${reasons.length ? `<div class="reasons">
+                  ${reasons.map(r => `
+                    <div class="reason">
+                      <span class="reason-icon">•</span>
+                      ${escapeHtml(r)}
+                    </div>
+                  `).join('')}
+                </div>` : ''}
+              </div>
             </div>
           </div>
         `;

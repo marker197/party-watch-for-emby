@@ -93,6 +93,7 @@ class Prediction(Base):
     predicted_rating = Column(Float, nullable=False)
     confidence = Column(Float)
     explanation = Column(Text)       # human-readable reason
+    overview = Column(Text)          # Emby item description / plot
     features_json = Column(JSON)     # raw feature vector for debugging
     created_at = Column(DateTime, default=datetime.utcnow)
 

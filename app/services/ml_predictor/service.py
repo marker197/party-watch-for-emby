@@ -241,6 +241,7 @@ class MLPredictorService:
                 "predicted_rating": r.predicted_rating,
                 "confidence": r.confidence,
                 "explanation": r.explanation,
+                "overview": r.overview or "",
             }
             for r in rows
         ]
@@ -502,6 +503,7 @@ class MLPredictorService:
                 "predicted_rating": round(pred, 1),
                 "confidence": self._confidence(features, pipeline),
                 "explanation": explanation,
+                "overview": item.get("Overview", ""),
                 "features": features.tolist(),
             })
 
@@ -515,6 +517,7 @@ class MLPredictorService:
                     predicted_rating=p["predicted_rating"],
                     confidence=p["confidence"],
                     explanation=p["explanation"],
+                    overview=p.get("overview", ""),
                     features_json=p["features"],
                 ))
             await db.commit()

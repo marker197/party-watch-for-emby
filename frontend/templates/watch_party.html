@@ -421,8 +421,12 @@ async function searchForParty() {
     }
     box.innerHTML = items.map(i => {
       const qual = i.quality ? ` <span style="color:var(--orange);font-size:0.75rem;font-weight:600;">${esc(i.quality)}</span>` : '';
-      return `<div class="search-result" onclick="selectCreateItem('${i.id}','${esc(i.title)}${i.quality ? ' ['+esc(i.quality)+']' : ''}')">${esc(i.title)}${i.year ? ' ('+i.year+')' : ''} — ${i.type}${qual}</div>`;
+      const label = i.title + (i.quality ? ' [' + i.quality + ']' : '');
+      return `<div class="search-result" data-item-id="${i.id}" data-item-label="${esc(label)}" style="cursor:pointer;">${esc(i.title)}${i.year ? ' ('+i.year+')' : ''} — ${i.type}${qual}</div>`;
     }).join('');
+    box.querySelectorAll('.search-result[data-item-id]').forEach(el => {
+      el.addEventListener('click', () => selectCreateItem(el.dataset.itemId, el.dataset.itemLabel));
+    });
   } catch(e) {
     box.innerHTML = `<div class="search-result" style="color:var(--red);">${e.message}</div>`;
   }
