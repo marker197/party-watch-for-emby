@@ -112,17 +112,23 @@ class AiringAlertsService:
                 is_finale = await self._is_season_finale(trakt, show_trakt_id, episode)
 
             in_library, emby_item_id = await self._match_in_library(show)
-            # Only surface shows actually in the library — this is an alert
-            # about what's coming for things you can watch, not a discovery
-            # feed (Smart Queue's calendar source already covers "shows you
-            # follow but don't have yet").
-            if not in_library:
+            # Shows already in the library always surface. For shows NOT
+            # in the library, only surface premieres (new seasons / series
+            # premieres) — these are shows the user follows on Trakt but
+            # doesn't have yet, and they want to know about the premiere
+            # so they can grab them (same rationale as movie alerts).
+            # Regular mid-season episodes for non-library shows are
+            # skipped — Smart Queue's calendar source handles discovery.
+            if not in_library and not is_premiere:
                 continue
 
             result = {
                 "media_type": "show",
                 "title": show.get("title", ""),
                 "trakt_id": show_trakt_id,
+                "tvdb_id": show.get("ids", {}).get("tvdb"),
+                "tmdb_id": show.get("ids", {}).get("tmdb"),
+                "imdb_id": show.get("ids", {}).get("imdb"),
                 "season": episode.get("season"),
                 "episode": episode.get("number"),
                 "episode_title": episode.get("title"),
@@ -132,6 +138,7 @@ class AiringAlertsService:
                 "is_finale": is_finale,
                 "in_library": in_library,
                 "emby_item_id": emby_item_id,
+                "year": show.get("year"),
                 "binge_plan": None,
             }
             results.append(result)

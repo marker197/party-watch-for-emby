@@ -149,9 +149,6 @@ class SmartQueueService:
             resolved_ids = await self._persist_queue(user, top)
             await self._sync_emby_collection(user, top, resolved_ids)
 
-            resolved_ids = await self._persist_queue(user, top)
-            await self._sync_emby_collection(user, top, resolved_ids)
-
             # Auto-send missing items to Radarr/Sonarr if enabled
             await self._auto_send_missing(top, resolved_ids)
 
@@ -182,6 +179,11 @@ class SmartQueueService:
                     "source": "watchlist",
                     "source_score": 1.0,  # raw; multiplied by weight later
                 }
+
+        wl_movies = sum(1 for c in candidates.values() if c["item_type"] == "movie")
+        wl_shows = sum(1 for c in candidates.values() if c["item_type"] == "show")
+        log.info("smart_queue.watchlist_gathered",
+                 total=len(candidates), movies=wl_movies, shows=wl_shows)
 
         # 2. Trending shows + movies (randomise page for variety)
         trending_page = random.randint(1, 3)

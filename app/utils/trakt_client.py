@@ -355,7 +355,17 @@ class TraktClient:
     # -- Watchlist -----------------------------------------------------------
 
     async def get_watchlist(self, kind: str = "all") -> list[dict]:
-        return await self._get(f"/users/me/watchlist/{kind}/added")
+        """Fetch user's Trakt watchlist.
+
+        When kind='all', fetches movies and shows separately and merges
+        the results.  This avoids edge-cases where the /all endpoint
+        returns inconsistent payloads on some Trakt API versions.
+        """
+        if kind == "all":
+            movies = await self._get("/users/me/watchlist/movies", params={"sort": "added"})
+            shows = await self._get("/users/me/watchlist/shows", params={"sort": "added"})
+            return (movies or []) + (shows or [])
+        return await self._get(f"/users/me/watchlist/{kind}", params={"sort": "added"})
 
     # -- Watch history -------------------------------------------------------
 
