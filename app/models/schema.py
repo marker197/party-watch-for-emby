@@ -59,6 +59,21 @@ class QueueItem(Base):
     user = relationship("User", back_populates="queue_items")
 
 
+class QueueWeightSnapshot(Base):
+    """Point-in-time snapshot of source weights and play-rate stats.
+
+    One row per _update_weights call so the dashboard can chart
+    how the scoring engine evolves over time.
+    """
+    __tablename__ = "queue_weight_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    weights_json = Column(JSON, nullable=False)    # {"watchlist": 10.0, "trending": 6.5, ...}
+    stats_json = Column(JSON)                       # [{source, total, played, play_rate}, ...]
+    snapshot_at = Column(DateTime, default=datetime.utcnow)
+
+
 class QueueBlocklist(Base):
     """Permanently dismissed smart queue items — never reappear."""
     __tablename__ = "queue_blocklist"

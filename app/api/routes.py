@@ -14,7 +14,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.schema import User, QueueItem, Prediction, MLModel, Universe, UniverseItem, AppSetting
+from app.models.schema import User, QueueItem, QueueWeightSnapshot, Prediction, MLModel, Universe, UniverseItem, AppSetting
 from app.utils.database import get_db
 from app.utils.trakt_client import TraktClient
 from app.utils.library_cache import LibraryCache
@@ -3218,3 +3218,134 @@ async def get_queue_history(
         "recent_items": recent,
         "period_days": days,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Queue Weight Evolution History
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/queue-weight-history/{user_id}")
+async def get_queue_weight_history(
+    user_id: int,
+    days: int = Query(90, ge=7, le=365),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return weight snapshots over time for the Chart.js timeline.
+
+    Each snapshot has the source weights and play-rate stats at the
+    time _update_weights ran.
+    """
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    rows = (await db.execute(
+        select(QueueWeightSnapshot)
+        .where(
+            QueueWeightSnapshot.user_id == user_id,
+            QueueWeightSnapshot.snapshot_at >= cutoff,
+        )
+        .order_by(QueueWeightSnapshot.snapshot_at.asc())
+    )).scalars().all()
+
+    snapshots = []
+    for s in rows:
+        snapshots.append({
+            "snapshot_at": s.snapshot_at.isoformat() if s.snapshot_at else None,
+            "weights": s.weights_json or {},
+            "stats": s.stats_json or [],
+        })
+
+    # Also return current weights for the "now" marker
+    current_weights = {}
+    try:
+        from app.utils.redis_cache import cache_get
+        raw = await cache_get(f"queue_weights:{user_id}")
+        if raw:
+            current_weights = raw if isinstance(raw, dict) else {}
+    except Exception:
+        pass
+
+    return {
+        "snapshots": snapshots,
+        "current_weights": current_weights,
+        "period_days": days,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Arr Library Check — items already in Radarr / Sonarr
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/arr-library")
+async def get_arr_library():
+    """Return sets of TMDB/TVDB IDs for items already in Radarr/Sonarr.
+
+    Used by the frontend to show 'In Radarr' / 'In Sonarr' instead of
+    the send button.  Cached 60s to avoid hammering the *arr APIs.
+    """
+    import json as _json
+    from app.utils.redis_cache import cache_get, cache_set
+
+    cache_key = "arr_library_ids_v1"
+    try:
+        cached = await cache_get(cache_key)
+        if cached:
+            data = _json.loads(cached) if isinstance(cached, str) else cached
+            return data
+    except Exception:
+        pass
+
+    radarr_tmdb: list[int] = []
+    sonarr_tvdb: list[int] = []
+    radarr_server_names: dict[int, str] = {}
+    sonarr_server_names: dict[int, str] = {}
+
+    r = await get_redis()
+
+    # --- Radarr ---
+    raw_radarr = await r.get("radarr_servers")
+    if raw_radarr:
+        from app.utils.radarr_client import RadarrClient
+        for srv in _json.loads(raw_radarr):
+            try:
+                client = RadarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Radarr"))
+                movies = await client.get_all_movies()
+                await client.close()
+                for m in movies:
+                    tmdb = m.get("tmdbId")
+                    if tmdb:
+                        radarr_tmdb.append(tmdb)
+                        radarr_server_names[tmdb] = srv.get("name", "Radarr")
+            except Exception as e:
+                log.warning("arr_library.radarr_failed", server=srv.get("name"), error=str(e)[:120])
+
+    # --- Sonarr ---
+    raw_sonarr = await r.get("sonarr_servers")
+    if raw_sonarr:
+        from app.utils.sonarr_client import SonarrClient
+        for srv in _json.loads(raw_sonarr):
+            try:
+                client = SonarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Sonarr"))
+                series = await client.get_all_series()
+                await client.close()
+                for s in series:
+                    tvdb = s.get("tvdbId")
+                    if tvdb:
+                        sonarr_tvdb.append(tvdb)
+                        sonarr_server_names[tvdb] = srv.get("name", "Sonarr")
+            except Exception as e:
+                log.warning("arr_library.sonarr_failed", server=srv.get("name"), error=str(e)[:120])
+
+    result = {
+        "radarr_tmdb": radarr_tmdb,
+        "sonarr_tvdb": sonarr_tvdb,
+        "radarr_names": radarr_server_names,
+        "sonarr_names": sonarr_server_names,
+    }
+
+    # Cache for 60 seconds
+    try:
+        await cache_set(cache_key, _json.dumps(result), ttl=60)
+    except Exception:
+        pass
+
+    return result

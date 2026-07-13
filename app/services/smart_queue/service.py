@@ -152,6 +152,27 @@ class SmartQueueService:
             # Auto-send missing items to Radarr/Sonarr if enabled
             await self._auto_send_missing(top, resolved_ids)
 
+            # Snapshot weights for history chart (daily cadence)
+            try:
+                cutoff = datetime.utcnow() - timedelta(days=90)
+                async with async_session() as snap_db:
+                    snap_rows = (await snap_db.execute(
+                        select(
+                            QueueItem.source,
+                            func.count(QueueItem.id).label("total"),
+                            func.count(QueueItem.played_at).label("played"),
+                        )
+                        .where(
+                            QueueItem.user_id == user.id,
+                            QueueItem.created_at >= cutoff,
+                        )
+                        .group_by(QueueItem.source)
+                    )).all()
+                if snap_rows:
+                    await self._save_weight_snapshot(user.id, weights, snap_rows)
+            except Exception:
+                log.warning("smart_queue.daily_snapshot_failed", user_id=user.id)
+
             log.info("smart_queue.user_done", user=user.emby_username,
                      items=len(top), overflow=len(overflow))
         finally:
@@ -858,6 +879,35 @@ class SmartQueueService:
 
         # Persist updated weights
         await cache_set(f"queue_weights:{user_id}", weights, ttl=86400 * 365)
+
+        # Snapshot for weight history chart
+        await self._save_weight_snapshot(user_id, weights, rows)
+
+    async def _save_weight_snapshot(self, user_id: int, weights: dict,
+                                     stats_rows: list) -> None:
+        """Persist a point-in-time snapshot of weights and play-rate stats."""
+        from app.models.schema import QueueWeightSnapshot
+
+        stats = []
+        for source, total, played in stats_rows:
+            stats.append({
+                "source": source,
+                "total": total,
+                "played": played,
+                "play_rate": round(played / total, 3) if total > 0 else 0,
+            })
+
+        try:
+            async with async_session() as db:
+                db.add(QueueWeightSnapshot(
+                    user_id=user_id,
+                    weights_json=weights,
+                    stats_json=stats,
+                ))
+                await db.commit()
+            log.info("smart_queue.weight_snapshot_saved", user_id=user_id)
+        except Exception:
+            log.warning("smart_queue.weight_snapshot_failed", user_id=user_id)
 
     # ===================================================================
     # Overflow cache — pre-scored backfill candidates

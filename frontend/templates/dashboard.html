@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Emby-Trakt Suite</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
 <style>
   :root {
     --bg: #0f1117;
@@ -526,6 +527,14 @@
     font-weight: 600;
     border: 1px solid rgba(116, 185, 255, 0.25);
   }
+  .arr-in-badge {
+    color: var(--green);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
   .dl-badge.warning {
     background: rgba(253, 203, 110, 0.15);
     color: var(--orange);
@@ -729,6 +738,7 @@
       <p>Trakt-powered recommendations ranked by watchlist, trending, friends, and calendar data. Updated daily.</p>
       <button class="btn btn-accent" onclick="triggerQueue()">Refresh Now</button>
       <button class="btn btn-blue btn-sm" id="btnToggleQueue" onclick="toggleQueue()">View Queue ▾</button>
+      <button class="btn btn-sm" style="background:var(--surface-hover);color:var(--text-dim);" id="btnToggleWeightHistory" onclick="toggleWeightHistory()">📈 Weight History ▾</button>
       <div id="queueOutput" class="log-area" style="display:none; margin-top:12px;"></div>
     </div>
 
@@ -877,6 +887,19 @@
       <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleAvailability()">✕ Close</button>
     </div>
     <div id="availTable"></div>
+  </div>
+
+  <!-- Weight History panel -->
+  <div id="weightHistoryPanel" class="card" style="display:none; margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h3 style="font-size:0.95rem;">📈 Weight Evolution</h3>
+      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleWeightHistory()">✕ Close</button>
+    </div>
+    <div id="weightHistorySummary" style="margin-bottom:10px;"></div>
+    <div style="position:relative;height:320px;margin-bottom:12px;">
+      <canvas id="weightHistoryChart"></canvas>
+    </div>
+    <div id="weightHistoryTable"></div>
   </div>
 
   <!-- Scheduler status -->
@@ -1347,9 +1370,10 @@ function _stopDlPoll() {
 async function viewQueue() {
   if (!currentUserId) return alert('Select a user first');
   try {
-    const [qr, dlr] = await Promise.all([
+    const [qr, dlr, arrr] = await Promise.all([
       fetch(API + `/queue/${currentUserId}?limit=30`),
       fetch(API + '/api/download-queue').catch(() => null),
+      fetch(API + '/api/arr-library').catch(() => null),
     ]);
     const items = await qr.json();
     const el = document.getElementById('queueTable');
@@ -1370,6 +1394,15 @@ async function viewQueue() {
           dlByTvdb[dl.tvdb_id].push(dl);
         }
       }
+    }
+
+    // Build arr-library lookup: tmdb_id → server name, tvdb_id → server name
+    const arrRadarr = {};
+    const arrSonarr = {};
+    if (arrr && arrr.ok) {
+      const arrData = await arrr.json();
+      for (const tid of (arrData.radarr_tmdb || [])) arrRadarr[tid] = (arrData.radarr_names || {})[tid] || 'Radarr';
+      for (const tid of (arrData.sonarr_tvdb || [])) arrSonarr[tid] = (arrData.sonarr_names || {})[tid] || 'Sonarr';
     }
 
     el.innerHTML = '<table class="queue-table"><thead><tr>' +
@@ -1431,6 +1464,12 @@ async function viewQueue() {
           // Item is downloading — show the server badge instead of action button
           const srvName = dl ? dl.server : dlEps[0].server;
           actionBtn = `<span class="dl-badge">${srvName}</span>`;
+        } else if (!inLib && i.tmdb_id && i.type === 'movie' && arrRadarr[i.tmdb_id]) {
+          // Already in Radarr — show label instead of send button
+          actionBtn = `<span class="arr-in-badge">In ${arrRadarr[i.tmdb_id]}</span>`;
+        } else if (!inLib && i.type === 'show' && i.tvdb_id && arrSonarr[i.tvdb_id]) {
+          // Already in Sonarr — show label instead of send button
+          actionBtn = `<span class="arr-in-badge">In ${arrSonarr[i.tvdb_id]}</span>`;
         } else if (!inLib && i.tmdb_id && i.type === 'movie') {
           if (_radarrServers.length > 1) {
             const opts = _radarrServers.map((s, si) =>
@@ -1532,10 +1571,21 @@ async function viewAiring() {
   const el = document.getElementById('airingTable');
   el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Loading…</div>';
   try {
-    const r = await fetch(API + `/api/airing-soon/${currentUserId}?days=14`);
+    const [r, arrr] = await Promise.all([
+      fetch(API + `/api/airing-soon/${currentUserId}?days=14`),
+      fetch(API + '/api/arr-library').catch(() => null),
+    ]);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
     const items = data.items || [];
+
+    // Build arr-library lookup
+    const arrSonarr = {};
+    if (arrr && arrr.ok) {
+      const arrData = await arrr.json();
+      for (const tid of (arrData.sonarr_tvdb || [])) arrSonarr[tid] = (arrData.sonarr_names || {})[tid] || 'Sonarr';
+    }
+
     if (items.length === 0) {
       el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Nothing airing in the next 14 days.</div>';
       return;
@@ -1596,8 +1646,12 @@ async function viewAiring() {
         // Sonarr button for non-library show premieres
         let actionBtn = '';
         if (i.media_type === 'show' && !i.in_library && i.is_premiere) {
-          const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-          actionBtn = `<button class="queue-sonarr-btn" id="airing-sonarr-${idx}" onclick="sendToSonarr(${1000 + idx}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Sonarr</button>`;
+          if (i.tvdb_id && arrSonarr[i.tvdb_id]) {
+            actionBtn = `<span class="arr-in-badge">In ${arrSonarr[i.tvdb_id]}</span>`;
+          } else {
+            const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            actionBtn = `<button class="queue-sonarr-btn" id="airing-sonarr-${idx}" onclick="sendToSonarr(${1000 + idx}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Sonarr</button>`;
+          }
         }
         return `<tr class="${rowClass}">
           <td>${titleCell}${binge}${releaseDates}</td>
@@ -2369,6 +2423,177 @@ async function loadAvailability() {
   } catch(e) {
     container.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
   }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Queue Weight History
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _weightChart = null;
+
+function toggleWeightHistory() {
+  const panel = document.getElementById('weightHistoryPanel');
+  const btn = document.getElementById('btnToggleWeightHistory');
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    btn.textContent = '📈 Hide History ▴';
+    loadWeightHistory();
+  } else {
+    panel.style.display = 'none';
+    btn.textContent = '📈 Weight History ▾';
+  }
+}
+
+async function loadWeightHistory() {
+  if (!currentUserId) return;
+  const summary = document.getElementById('weightHistorySummary');
+  const table = document.getElementById('weightHistoryTable');
+  summary.innerHTML = '<div style="color:var(--text-dim);font-size:0.82rem;">Loading…</div>';
+  table.innerHTML = '';
+
+  try {
+    const r = await fetch(API + `/api/queue-weight-history/${currentUserId}?days=90`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    const snaps = data.snapshots || [];
+    const current = data.current_weights || {};
+
+    if (snaps.length === 0) {
+      summary.innerHTML = '<div style="color:var(--text-dim);font-size:0.82rem;">No weight history yet — snapshots are recorded each time the queue refreshes.</div>';
+      // Still show current weights if available
+      if (Object.keys(current).length > 0) {
+        table.innerHTML = _buildCurrentWeightsTable(current);
+      }
+      return;
+    }
+
+    // Build chart
+    _renderWeightChart(snaps);
+
+    // Current weights summary
+    summary.innerHTML = _buildCurrentWeightsTable(current);
+
+    // Recent snapshots table
+    const recent = snaps.slice(-10).reverse();
+    let tbl = '<div style="font-size:0.82rem;font-weight:600;margin:12px 0 6px;color:var(--text-dim);">Recent Snapshots</div>';
+    tbl += '<table class="queue-table"><thead><tr><th>Date</th>';
+    const sources = [...new Set(snaps.flatMap(s => Object.keys(s.weights || {})))].sort();
+    sources.forEach(s => { tbl += `<th style="width:70px;">${s}</th>`; });
+    tbl += '</tr></thead><tbody>';
+    recent.forEach(s => {
+      const dt = s.snapshot_at ? new Date(s.snapshot_at).toLocaleDateString('en-GB', {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '—';
+      tbl += `<tr><td style="font-size:0.78rem;color:var(--text-dim);">${dt}</td>`;
+      sources.forEach(src => {
+        const w = (s.weights || {})[src];
+        tbl += `<td style="font-size:0.82rem;">${w != null ? w.toFixed(1) : '—'}</td>`;
+      });
+      tbl += '</tr>';
+    });
+    tbl += '</tbody></table>';
+    table.innerHTML = tbl;
+
+  } catch(e) {
+    summary.innerHTML = `<div style="color:var(--red);font-size:0.82rem;">Failed: ${e.message}</div>`;
+  }
+}
+
+function _buildCurrentWeightsTable(weights) {
+  const sourceColors = {
+    watchlist: 'var(--green)',
+    trending: 'var(--blue)',
+    recommended: 'var(--accent-light)',
+    friend: 'var(--orange)',
+    calendar: 'var(--red)',
+    affinity: 'var(--text-dim)',
+  };
+  let html = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 8px;">';
+  for (const [src, val] of Object.entries(weights).sort((a,b) => b[1] - a[1])) {
+    const color = sourceColors[src] || 'var(--text-dim)';
+    html += `<span style="background:rgba(0,0,0,0.2);border:1px solid ${color}44;color:${color};padding:3px 10px;border-radius:5px;font-size:0.78rem;font-weight:600;">${src}: ${Number(val).toFixed(1)}</span>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+function _renderWeightChart(snapshots) {
+  const canvas = document.getElementById('weightHistoryChart');
+  if (_weightChart) {
+    _weightChart.destroy();
+    _weightChart = null;
+  }
+
+  const sources = [...new Set(snapshots.flatMap(s => Object.keys(s.weights || {})))].sort();
+  const labels = snapshots.map(s => {
+    if (!s.snapshot_at) return '';
+    const d = new Date(s.snapshot_at);
+    return d.toLocaleDateString('en-GB', {day:'numeric',month:'short'});
+  });
+
+  const sourceColors = {
+    watchlist: '#00b894',
+    trending: '#74b9ff',
+    recommended: '#a29bfe',
+    friend: '#fdcb6e',
+    calendar: '#e17055',
+    affinity: '#8b8fa3',
+  };
+
+  const datasets = sources.map(src => ({
+    label: src,
+    data: snapshots.map(s => (s.weights || {})[src] ?? null),
+    borderColor: sourceColors[src] || '#666',
+    backgroundColor: (sourceColors[src] || '#666') + '22',
+    borderWidth: 2,
+    pointRadius: 3,
+    pointHoverRadius: 5,
+    tension: 0.3,
+    spanGaps: true,
+  }));
+
+  const isDark = !document.body.classList.contains('light-mode');
+  const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
+  const textColor = isDark ? '#8b8fa3' : '#6b7280';
+
+  _weightChart = new Chart(canvas, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { color: textColor, font: { size: 11 }, boxWidth: 12, padding: 12 },
+        },
+        tooltip: {
+          backgroundColor: isDark ? '#1a1d27' : '#fff',
+          titleColor: isDark ? '#e0e0e6' : '#1f2937',
+          bodyColor: isDark ? '#e0e0e6' : '#1f2937',
+          borderColor: isDark ? '#2a2e3e' : '#e2e4ea',
+          borderWidth: 1,
+          padding: 10,
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y != null ? ctx.parsed.y.toFixed(1) : '—'}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: textColor, font: { size: 10 }, maxRotation: 45 },
+          grid: { color: gridColor },
+        },
+        y: {
+          min: 0,
+          max: 22,
+          ticks: { color: textColor, font: { size: 10 }, stepSize: 2 },
+          grid: { color: gridColor },
+          title: { display: true, text: 'Weight', color: textColor, font: { size: 11 } },
+        },
+      },
+    },
+  });
 }
 
 
