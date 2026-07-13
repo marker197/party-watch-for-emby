@@ -1551,7 +1551,6 @@ async function viewAiring() {
         // Premiere star inline with episode number
         let rowClass = '';
         if (i.is_premiere && i.media_type !== 'movie') {
-          se = `<span style="color:var(--accent-light);font-weight:700;">★</span> ${epNum}`;
           rowClass = 'airing-premiere-row';
         }
         const days = i.days_until_air;
@@ -1563,8 +1562,18 @@ async function viewAiring() {
             : '<span class="queue-badge missing">release · not in library</span>';
         }
         else if (i.is_premiere && !i.in_library) flag = '<span class="queue-badge missing">not in library</span>';
-        else if (i.is_premiere) flag = '<span class="queue-badge premiere">PREMIERE</span>';
         else if (i.is_finale) flag = '<span class="queue-badge missing">🏁 finale</span>';
+
+        // Build title cell with inline premiere label
+        let titleCell = (i.title || '').replace(/</g,'&lt;');
+        if (i.is_premiere && i.media_type !== 'movie') {
+          titleCell += ` — <span style="color:var(--orange);font-weight:700;">Premiere</span>`;
+          if (i.episode_title) {
+            titleCell += ` : <span style="color:var(--text-dim);font-size:0.78rem;">${i.episode_title.replace(/</g,'&lt;')}</span>`;
+          }
+        } else if (i.episode_title) {
+          titleCell += ` <span style="color:var(--text-dim);font-size:0.78rem;">— ${i.episode_title.replace(/</g,'&lt;')}</span>`;
+        }
         let binge = '';
         if (i.binge_plan && i.is_finale) {
           const bp = i.binge_plan;
@@ -1591,7 +1600,7 @@ async function viewAiring() {
           actionBtn = `<button class="queue-sonarr-btn" id="airing-sonarr-${idx}" onclick="sendToSonarr(${1000 + idx}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Sonarr</button>`;
         }
         return `<tr class="${rowClass}">
-          <td>${(i.title || '').replace(/</g,'&lt;')}${i.episode_title ? ` <span style="color:var(--text-dim);font-size:0.78rem;">— ${i.episode_title.replace(/</g,'&lt;')}</span>` : ''}${binge}${releaseDates}</td>
+          <td>${titleCell}${binge}${releaseDates}</td>
           <td class="queue-source">${se}</td>
           <td>${inStr}</td>
           <td>${flag}</td>

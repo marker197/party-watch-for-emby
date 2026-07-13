@@ -77,14 +77,14 @@ class AiringAlertsService:
                               user: User | None = None) -> list[dict]:
         try:
             upcoming = await trakt.get_my_shows(start_date=today, days=days)
-        except Exception:
-            log.warning("airing_alerts.my_shows_failed")
+        except Exception as e:
+            log.warning("airing_alerts.my_shows_failed", error=str(e)[:200])
             upcoming = []
 
         try:
             premieres = await trakt.get_my_premieres(start_date=today, days=days)
-        except Exception:
-            log.warning("airing_alerts.premieres_failed")
+        except Exception as e:
+            log.warning("airing_alerts.premieres_failed", error=str(e)[:200])
             premieres = []
 
         # Key by (show trakt id, season, episode) to dedupe between the
@@ -309,8 +309,8 @@ class AiringAlertsService:
     async def _get_movie_alerts(self, trakt: TraktClient, today: str, days: int) -> list[dict]:
         try:
             releases = await trakt.get_my_movies(start_date=today, days=days)
-        except Exception:
-            log.warning("airing_alerts.my_movies_failed")
+        except Exception as e:
+            log.warning("airing_alerts.my_movies_failed", error=str(e)[:200])
             releases = []
 
         results = []

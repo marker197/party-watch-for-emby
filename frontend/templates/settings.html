@@ -1648,21 +1648,33 @@
         const r = await fetch('/auth/users');
         const users = await r.json();
         if (Array.isArray(users) && users.length > 0) {
-          currentUserId = users[0].id;
+          // Pick the first user with a linked Trakt account (has a username)
+          const linked = users.find(u => u.trakt_username) || users[0];
+          currentUserId = linked.id;
         }
       } catch(e) {}
     }
 
     async function loadBlocklist() {
-      await resolveUserId();
       const el = document.getElementById('blocklistTable');
-      if (!currentUserId) { el.innerHTML = '<div style="color:var(--text-dim);">No users found.</div>'; return; }
       el.innerHTML = '<div style="color:var(--text-dim);">Loading…</div>';
       try {
-        const r = await fetch(`/api/queue/blocklist/${currentUserId}`);
-        const d = await r.json();
-        const items = d.items || [];
-        if (items.length === 0) {
+        // Fetch users and query blocklist for each, merge results
+        await resolveUserId();
+        const userRes = await fetch('/auth/users');
+        const users = await userRes.json();
+        let allItems = [];
+        for (const u of (users || [])) {
+          try {
+            const r = await fetch(`/api/queue/blocklist/${u.id}`);
+            const d = await r.json();
+            for (const item of (d.items || [])) {
+              item._user = u.emby_username || u.id;
+              allItems.push(item);
+            }
+          } catch(e) {}
+        }
+        if (allItems.length === 0) {
           el.innerHTML = '<div style="color:var(--text-dim);">No blocked items.</div>';
           return;
         }
@@ -1672,7 +1684,7 @@
           '<th style="width:90px;padding:6px 8px;border-bottom:1px solid var(--border);">Blocked</th>' +
           '<th style="width:70px;padding:6px 8px;border-bottom:1px solid var(--border);"></th>' +
           '</tr></thead><tbody>' +
-          items.map(i => {
+          allItems.map(i => {
             const date = i.blocked_at ? new Date(i.blocked_at).toLocaleDateString('en-GB', {day:'numeric',month:'short'}) : '—';
             return `<tr>
               <td style="padding:6px 8px;border-bottom:1px solid var(--border);">${(i.title || '').replace(/</g,'&lt;')}</td>
