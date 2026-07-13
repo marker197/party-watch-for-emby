@@ -693,7 +693,7 @@
           : '';
 
         return `
-          <div class="item ${status}" draggable="true" data-idx="${idx}" data-emby-id="${item.emby_item_id || ''}" data-universe-id="${universeId}">
+          <div class="item ${status}" draggable="true" data-idx="${idx}" data-item-id="${item.id}" data-emby-id="${item.emby_item_id || ''}" data-universe-id="${universeId}">
             <span class="drag-handle">☰</span>
             ${radarrCheck}
             <div class="item-check" title="${statusText}">${statusIcon}</div>
@@ -785,27 +785,28 @@
       if (!container) return;
 
       const items = [...container.querySelectorAll('.item[draggable]')];
-      const embyIds = items
-        .map(el => el.dataset.embyId)
-        .filter(id => id && id !== 'None' && id !== '');
+      // Send DB item IDs so the backend can persist the order
+      const itemIds = items
+        .map(el => parseInt(el.dataset.itemId))
+        .filter(id => !isNaN(id));
 
-      if (!embyIds.length) {
-        showToast('No library items to send');
+      if (!itemIds.length) {
+        showToast('No items to reorder');
         return;
       }
 
       const btn = container.querySelector('.btn-send');
-      if (btn) { btn.disabled = true; btn.textContent = '📤 Sending...'; }
+      if (btn) { btn.disabled = true; btn.textContent = '📤 Saving...'; }
 
       try {
         const resp = await fetch(`/api/universes/${universeId}/reorder`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ item_ids: embyIds }),
+          body: JSON.stringify({ item_ids: itemIds }),
         });
         const data = await resp.json();
         if (data.status === 'ok') {
-          showToast(`✓ Playlist created with ${data.items} items`);
+          showToast(`✓ Order saved & playlist created (${data.items} items)`);
         } else {
           showToast('Error: ' + (data.reason || 'unknown'));
         }

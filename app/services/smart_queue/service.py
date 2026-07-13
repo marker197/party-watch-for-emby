@@ -277,6 +277,15 @@ class SmartQueueService:
         except Exception:
             log.warning("smart_queue.friends_skip")
 
+        # Filter out permanently blocked items
+        blocked_ids = await self._load_blocklist(user.id)
+        if blocked_ids:
+            before_block = len(candidates)
+            candidates = {tid: c for tid, c in candidates.items() if tid not in blocked_ids}
+            removed = before_block - len(candidates)
+            if removed:
+                log.info("smart_queue.blocklist_filtered", user_id=user.id, removed=removed)
+
         return list(candidates.values())
 
     # -----------------------------------------------------------------------
@@ -292,6 +301,15 @@ class SmartQueueService:
         except Exception:
             pass
         return {}
+
+    async def _load_blocklist(self, user_id: int) -> set[str]:
+        """Load permanently blocked Trakt IDs for a user."""
+        from app.models.schema import QueueBlocklist
+        async with async_session() as db:
+            rows = (await db.execute(
+                select(QueueBlocklist.trakt_id).where(QueueBlocklist.user_id == user_id)
+            )).scalars().all()
+            return set(rows)
 
     async def _save_staleness(self, user_id: int, staleness: dict[str, int]):
         """Persist staleness counters to Redis."""

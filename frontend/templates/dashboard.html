@@ -416,6 +416,21 @@
     font-size: 0.65rem;
   }
 
+  .queue-badge.premiere {
+    background: linear-gradient(135deg, rgba(108, 92, 231, 0.25), rgba(162, 155, 254, 0.18));
+    color: var(--accent-light);
+    border: 1px solid rgba(108, 92, 231, 0.4);
+    font-size: 0.78rem;
+    padding: 4px 10px;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .airing-premiere-row {
+    background: rgba(108, 92, 231, 0.06) !important;
+    border-left: 3px solid var(--accent);
+  }
+
   .queue-title.missing {
     color: var(--red);
     font-style: italic;
@@ -517,6 +532,17 @@
     color: var(--orange);
     border-color: rgba(253, 203, 110, 0.25);
   }
+  .queue-block-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 0.7rem;
+    padding: 2px 4px;
+    opacity: 0.3;
+    transition: opacity 0.15s, color 0.15s;
+  }
+  .queue-block-btn:hover { opacity: 1; color: var(--red); }
 
   .queue-source {
     font-size: 0.78rem;
@@ -1348,7 +1374,7 @@ async function viewQueue() {
     }
 
     el.innerHTML = '<table class="queue-table"><thead><tr>' +
-      '<th style="width:30px;">#</th><th>Title</th><th style="width:80px;">Source</th><th style="width:55px;">Score</th><th style="width:80px;">Status</th><th style="width:70px;"></th>' +
+      '<th style="width:30px;">#</th><th>Title</th><th style="width:80px;">Source</th><th style="width:55px;">Score</th><th style="width:80px;">Status</th><th style="width:70px;"></th><th style="width:24px;"></th>' +
       '</tr></thead><tbody>' +
       items.map((i, n) => {
         const inLib = i.in_library !== false;
@@ -1430,18 +1456,45 @@ async function viewQueue() {
           actionBtn = `<button class="btn btn-sm" style="background:var(--accent);padding:2px 7px;font-size:0.7rem;" onclick="createPartyFromQueue('${i.emby_item_id}', '${safeTitle}')">🎉 Party</button>`;
         }
 
-        return `<tr>
+        // Block button
+        const blockBtn = i.trakt_id
+          ? `<button class="queue-block-btn" title="Never show again" onclick="blockQueueItem('${i.trakt_id}', '${safeTitle}', '${i.type || ''}')">✕</button>`
+          : '';
+
+        return `<tr id="queue-row-${n}">
           <td style="color:var(--text-dim);font-size:0.78rem;">${n + 1}</td>
           <td><span class="${titleClass}">${i.title}</span>${yearStr}${rating}${imdbLink}</td>
           <td class="queue-source"><span class="source-tag source-${i.source}">${i.source}</span></td>
           <td class="queue-score">${i.score}</td>
           <td>${statusBadge}</td>
           <td>${actionBtn}</td>
+          <td>${blockBtn}</td>
         </tr>`;
       }).join('') +
       '</tbody></table>';
   } catch(e) {
     document.getElementById('queueTable').innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+  }
+}
+
+async function blockQueueItem(traktId, title, itemType) {
+  if (!currentUserId) return;
+  if (!confirm(`Permanently hide "${title}" from your Smart Queue?\n\nIt will never appear again. You can undo this from Settings.`)) return;
+  try {
+    const r = await fetch(API + '/api/queue/block', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: currentUserId, trakt_id: traktId, title: title, item_type: itemType }),
+    });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      showNotification(`"${title}" blocked — won't appear again`);
+      viewQueue();
+    } else {
+      showNotification('Error: ' + (d.detail || 'unknown'));
+    }
+  } catch(e) {
+    showNotification('Error: ' + e.message);
   }
 }
 
@@ -1498,13 +1551,20 @@ async function viewAiring() {
         const days = i.days_until_air;
         const inStr = days == null ? '—' : (days === 0 ? 'today' : days === 1 ? 'tomorrow' : `${days}d`);
         let flag = '';
+        let rowClass = '';
         if (i.media_type === 'movie') {
           flag = i.in_library
             ? '<span class="queue-badge unwatched">🎬 release · in library</span>'
             : '<span class="queue-badge missing">🎬 release · not in library</span>';
         }
-        else if (i.is_premiere && !i.in_library) flag = '<span class="queue-badge missing">🎬 premiere · not in library</span>';
-        else if (i.is_premiere) flag = '<span class="queue-badge unwatched">🎬 premiere</span>';
+        else if (i.is_premiere && !i.in_library) {
+          flag = '<span class="queue-badge premiere">★ PREMIERE · not in library</span>';
+          rowClass = 'airing-premiere-row';
+        }
+        else if (i.is_premiere) {
+          flag = '<span class="queue-badge premiere">★ PREMIERE</span>';
+          rowClass = 'airing-premiere-row';
+        }
         else if (i.is_finale) flag = '<span class="queue-badge missing">🏁 finale</span>';
         let binge = '';
         if (i.binge_plan && i.is_finale) {
@@ -1531,7 +1591,7 @@ async function viewAiring() {
           const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
           actionBtn = `<button class="queue-sonarr-btn" id="airing-sonarr-${idx}" onclick="sendToSonarr(${1000 + idx}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Sonarr</button>`;
         }
-        return `<tr>
+        return `<tr class="${rowClass}">
           <td>${(i.title || '').replace(/</g,'&lt;')}${i.episode_title ? ` <span style="color:var(--text-dim);font-size:0.78rem;">— ${i.episode_title.replace(/</g,'&lt;')}</span>` : ''}${binge}${releaseDates}</td>
           <td class="queue-source">${se}</td>
           <td>${inStr}</td>

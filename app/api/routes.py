@@ -322,10 +322,120 @@ async def get_queue(
             "tmdb_id": (i.metadata_json or {}).get("ids", {}).get("tmdb"),
             "imdb_id": (i.metadata_json or {}).get("ids", {}).get("imdb"),
             "tvdb_id": (i.metadata_json or {}).get("ids", {}).get("tvdb"),
+            "trakt_id": (i.metadata_json or {}).get("trakt_id"),
             "year": (i.metadata_json or {}).get("year"),
         }
         for i in items
     ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Smart Queue Blocklist
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/api/queue/block")
+async def block_queue_item(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently dismiss a smart queue item so it never reappears."""
+    from app.models.schema import QueueBlocklist
+
+    user_id = payload.get("user_id")
+    trakt_id = str(payload.get("trakt_id", ""))
+    title = payload.get("title", "")
+    item_type = payload.get("item_type", "")
+
+    if not trakt_id or not user_id:
+        raise HTTPException(400, "user_id and trakt_id required")
+    require_user_ownership(current_user.id, user_id, "queue_block")
+
+    # Insert into blocklist (ignore duplicate)
+    existing = (await db.execute(
+        select(QueueBlocklist).where(
+            QueueBlocklist.user_id == user_id,
+            QueueBlocklist.trakt_id == trakt_id,
+        )
+    )).scalar_one_or_none()
+    if not existing:
+        db.add(QueueBlocklist(
+            user_id=user_id, trakt_id=trakt_id,
+            title=title, item_type=item_type,
+        ))
+
+    # Remove from current queue (match by trakt_id in metadata_json)
+    queue_items = (await db.execute(
+        select(QueueItem).where(QueueItem.user_id == user_id)
+    )).scalars().all()
+    for qi in queue_items:
+        meta = qi.metadata_json or {}
+        if str(meta.get("ids", {}).get("trakt", "")) == trakt_id:
+            await db.delete(qi)
+    await db.commit()
+
+    # Backfill from overflow
+    try:
+        await smart_queue_svc.remove_and_backfill(user_id, emby_item_id=None, trakt_id=trakt_id)
+    except Exception:
+        pass  # non-critical — next full refresh will handle it
+
+    log.info("queue.item_blocked", user_id=user_id, trakt_id=trakt_id, title=title)
+    return {"status": "ok", "blocked": trakt_id, "title": title}
+
+
+@router.get("/api/queue/blocklist/{user_id}")
+async def get_queue_blocklist(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all permanently blocked queue items for a user."""
+    from app.models.schema import QueueBlocklist
+    require_user_ownership(current_user.id, user_id, "queue_blocklist")
+
+    items = (await db.execute(
+        select(QueueBlocklist)
+        .where(QueueBlocklist.user_id == user_id)
+        .order_by(QueueBlocklist.blocked_at.desc())
+    )).scalars().all()
+
+    return {
+        "count": len(items),
+        "items": [
+            {
+                "id": i.id,
+                "trakt_id": i.trakt_id,
+                "title": i.title,
+                "item_type": i.item_type,
+                "blocked_at": i.blocked_at.isoformat() if i.blocked_at else None,
+            }
+            for i in items
+        ],
+    }
+
+
+@router.delete("/api/queue/block/{block_id}")
+async def unblock_queue_item(
+    block_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove an item from the blocklist so it can appear in future queues."""
+    from app.models.schema import QueueBlocklist
+
+    item = (await db.execute(
+        select(QueueBlocklist).where(QueueBlocklist.id == block_id)
+    )).scalar_one_or_none()
+    if not item:
+        raise HTTPException(404, "blocklist entry not found")
+    require_user_ownership(current_user.id, item.user_id, "queue_unblock")
+
+    title = item.title
+    await db.delete(item)
+    await db.commit()
+    log.info("queue.item_unblocked", block_id=block_id, title=title)
+    return {"status": "ok", "unblocked": title}
 
 
 @router.get("/api/airing-soon/{user_id}")
@@ -591,6 +701,7 @@ async def create_universe(payload: dict):
             slug=slug,
             description=description,
             total_items=0,
+            is_custom=True,
         )
         db.add(universe)
         await db.commit()
@@ -729,10 +840,11 @@ async def import_universes(request: Request):
 
 @router.post("/api/universes/{universe_id}/reorder")
 async def reorder_universe(universe_id: int, payload: dict):
-    """Reorder items within a universe and recreate the Emby playlist.
+    """Reorder items within a universe, persist to DB, and recreate Emby playlist.
 
-    Payload: {"item_ids": ["emby_id_1", "emby_id_2", ...]}
-    The order of IDs is the new playlist order.
+    Payload: {"item_ids": [db_item_id_1, db_item_id_2, ...]}
+    The order of IDs is the new watch order.  Updates release_order on
+    each UniverseItem row so the order survives scans and restarts.
     """
     item_ids = payload.get("item_ids", [])
     if not item_ids:
@@ -745,16 +857,37 @@ async def reorder_universe(universe_id: int, payload: dict):
         if not universe:
             return {"status": "error", "reason": "universe_not_found"}
 
+        # Update release_order on each item to match the new order
+        items = (await db.execute(
+            select(UniverseItem).where(UniverseItem.universe_id == universe_id)
+        )).scalars().all()
+        id_to_item = {i.id: i for i in items}
+        emby_ids = []
+        for pos, item_id in enumerate(item_ids):
+            item_id_int = int(item_id) if not isinstance(item_id, int) else item_id
+            if item_id_int in id_to_item:
+                id_to_item[item_id_int].release_order = pos + 1
+                if id_to_item[item_id_int].emby_item_id:
+                    emby_ids.append(id_to_item[item_id_int].emby_item_id)
+
+        await db.commit()
+
         first_user = (await db.execute(
             select(User).order_by(User.id)
         )).scalars().first()
         emby_user_id = first_user.emby_user_id if first_user else None
 
-    emby = EmbyClient()
-    playlist_name = f"🌌 {universe.name}"
-    playlist_id = await emby.recreate_playlist(
-        playlist_name, item_ids, user_id=emby_user_id,
-    )
+    # Recreate Emby playlist with new order
+    if emby_ids:
+        emby = EmbyClient()
+        playlist_name = f"🌌 {universe.name}"
+        playlist_id = await emby.recreate_playlist(
+            playlist_name, emby_ids, user_id=emby_user_id,
+        )
+    else:
+        playlist_id = None
+
+    log.info("universe.reordered", universe_id=universe_id, items=len(item_ids))
     return {"status": "ok", "playlist_id": playlist_id, "items": len(item_ids)}
 
 

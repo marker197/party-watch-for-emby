@@ -3,6 +3,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, JSON,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -56,6 +57,22 @@ class QueueItem(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="queue_items")
+
+
+class QueueBlocklist(Base):
+    """Permanently dismissed smart queue items — never reappear."""
+    __tablename__ = "queue_blocklist"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    trakt_id = Column(String(64), nullable=False)
+    title = Column(String(512))
+    item_type = Column(String(32))
+    blocked_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "trakt_id", name="uq_blocklist_user_trakt"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +145,7 @@ class Universe(Base):
     slug = Column(String(256), unique=True, nullable=False)
     description = Column(Text)
     total_items = Column(Integer, default=0)
+    is_custom = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

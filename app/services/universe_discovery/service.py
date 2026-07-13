@@ -421,17 +421,23 @@ class UniverseDiscoveryService:
                 )).scalar_one_or_none()
 
                 if existing:
+                    # Skip user-created (custom) universes entirely
+                    if existing.is_custom:
+                        log.info("universe_discovery.skip_custom", name=existing.name)
+                        continue
                     universe = existing
                 else:
                     universe = Universe(
                         name=u_def["name"],
                         slug=u_def["slug"],
                         description=u_def.get("description", ""),
+                        is_custom=False,
                     )
                     db.add(universe)
                     await db.flush()
 
-                # upsert items
+                # upsert items — only add new items, never overwrite existing
+                # release_order on existing items (user may have reordered)
                 for item_def in u_def["items"]:
                     existing_item = (await db.execute(
                         select(UniverseItem).where(
@@ -444,6 +450,7 @@ class UniverseDiscoveryService:
                         # Backfill trakt_slug if it was added after initial seed
                         if item_def.get("trakt_slug") and not existing_item.trakt_id:
                             existing_item.trakt_id = item_def["trakt_slug"]
+                        # Do NOT overwrite release_order — user may have reordered
                     else:
                         db.add(UniverseItem(
                             universe_id=universe.id,
@@ -455,7 +462,14 @@ class UniverseDiscoveryService:
                             chronological_order=item_def.get("chronological_order", 0),
                         ))
 
-                universe.total_items = len(u_def["items"])
+                # Update total_items to reflect actual DB count (may include
+                # user-added items beyond the hardcoded list)
+                actual_count = (await db.execute(
+                    select(func.count(UniverseItem.id)).where(
+                        UniverseItem.universe_id == universe.id
+                    )
+                )).scalar()
+                universe.total_items = actual_count or len(u_def["items"])
 
             await db.commit()
         log.info("universe_discovery.seeded", count=len(KNOWN_UNIVERSES))
