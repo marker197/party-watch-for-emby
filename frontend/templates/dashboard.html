@@ -417,13 +417,12 @@
   }
 
   .queue-badge.premiere {
-    background: linear-gradient(135deg, rgba(108, 92, 231, 0.25), rgba(162, 155, 254, 0.18));
+    background: rgba(108, 92, 231, 0.15);
     color: var(--accent-light);
-    border: 1px solid rgba(108, 92, 231, 0.4);
-    font-size: 0.78rem;
-    padding: 4px 10px;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
+    border: 1px solid rgba(108, 92, 231, 0.3);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
   }
 
   .airing-premiere-row {
@@ -1545,26 +1544,26 @@ async function viewAiring() {
       '<th>Title</th><th style="width:70px;">S/E</th><th style="width:90px;">Airs</th><th style="width:110px;">Flag</th><th style="width:70px;"></th>' +
       '</tr></thead><tbody>' +
       items.map((i, idx) => {
-        const se = i.media_type === 'movie'
+        const epNum = (i.season != null && i.episode != null) ? `S${String(i.season).padStart(2,'0')}E${String(i.episode).padStart(2,'0')}` : '—';
+        let se = i.media_type === 'movie'
           ? '<span style="color:var(--text-dim);">movie</span>'
-          : ((i.season != null && i.episode != null) ? `S${String(i.season).padStart(2,'0')}E${String(i.episode).padStart(2,'0')}` : '—');
+          : epNum;
+        // Premiere star inline with episode number
+        let rowClass = '';
+        if (i.is_premiere && i.media_type !== 'movie') {
+          se = `<span style="color:var(--accent-light);font-weight:700;">★</span> ${epNum}`;
+          rowClass = 'airing-premiere-row';
+        }
         const days = i.days_until_air;
         const inStr = days == null ? '—' : (days === 0 ? 'today' : days === 1 ? 'tomorrow' : `${days}d`);
         let flag = '';
-        let rowClass = '';
         if (i.media_type === 'movie') {
           flag = i.in_library
-            ? '<span class="queue-badge unwatched">🎬 release · in library</span>'
-            : '<span class="queue-badge missing">🎬 release · not in library</span>';
+            ? '<span class="queue-badge unwatched">release · in library</span>'
+            : '<span class="queue-badge missing">release · not in library</span>';
         }
-        else if (i.is_premiere && !i.in_library) {
-          flag = '<span class="queue-badge premiere">★ PREMIERE · not in library</span>';
-          rowClass = 'airing-premiere-row';
-        }
-        else if (i.is_premiere) {
-          flag = '<span class="queue-badge premiere">★ PREMIERE</span>';
-          rowClass = 'airing-premiere-row';
-        }
+        else if (i.is_premiere && !i.in_library) flag = '<span class="queue-badge missing">not in library</span>';
+        else if (i.is_premiere) flag = '<span class="queue-badge premiere">PREMIERE</span>';
         else if (i.is_finale) flag = '<span class="queue-badge missing">🏁 finale</span>';
         let binge = '';
         if (i.binge_plan && i.is_finale) {

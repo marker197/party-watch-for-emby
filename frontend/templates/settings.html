@@ -456,6 +456,14 @@
       </div>
     </div>
 
+    <!-- Smart Queue Blocklist -->
+    <div class="section">
+      <h2>🚫 Queue Blocklist</h2>
+      <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:12px;">Items you've permanently dismissed from the Smart Queue. Unblock to let them appear again.</p>
+      <button class="btn btn-sm" style="background:var(--accent);margin-bottom:12px;" onclick="loadBlocklist()">Load Blocklist</button>
+      <div id="blocklistTable"></div>
+    </div>
+
     <!-- Scheduler Configuration -->
     <div class="section">
       <h2>🕐 Scheduler Configuration</h2>
@@ -1628,6 +1636,70 @@
       } catch(e) {
         showNotification('Failed to save queue setting: ' + e.message);
         el.classList.toggle('active');
+      }
+    }
+
+    // --- Queue Blocklist ---
+    let currentUserId = null;
+
+    async function resolveUserId() {
+      if (currentUserId) return;
+      try {
+        const r = await fetch('/auth/users');
+        const users = await r.json();
+        if (Array.isArray(users) && users.length > 0) {
+          currentUserId = users[0].id;
+        }
+      } catch(e) {}
+    }
+
+    async function loadBlocklist() {
+      await resolveUserId();
+      const el = document.getElementById('blocklistTable');
+      if (!currentUserId) { el.innerHTML = '<div style="color:var(--text-dim);">No users found.</div>'; return; }
+      el.innerHTML = '<div style="color:var(--text-dim);">Loading…</div>';
+      try {
+        const r = await fetch(`/api/queue/blocklist/${currentUserId}`);
+        const d = await r.json();
+        const items = d.items || [];
+        if (items.length === 0) {
+          el.innerHTML = '<div style="color:var(--text-dim);">No blocked items.</div>';
+          return;
+        }
+        el.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;"><thead><tr>' +
+          '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">Title</th>' +
+          '<th style="width:60px;padding:6px 8px;border-bottom:1px solid var(--border);">Type</th>' +
+          '<th style="width:90px;padding:6px 8px;border-bottom:1px solid var(--border);">Blocked</th>' +
+          '<th style="width:70px;padding:6px 8px;border-bottom:1px solid var(--border);"></th>' +
+          '</tr></thead><tbody>' +
+          items.map(i => {
+            const date = i.blocked_at ? new Date(i.blocked_at).toLocaleDateString('en-GB', {day:'numeric',month:'short'}) : '—';
+            return `<tr>
+              <td style="padding:6px 8px;border-bottom:1px solid var(--border);">${(i.title || '').replace(/</g,'&lt;')}</td>
+              <td style="padding:6px 8px;border-bottom:1px solid var(--border);color:var(--text-dim);">${i.item_type || '—'}</td>
+              <td style="padding:6px 8px;border-bottom:1px solid var(--border);color:var(--text-dim);">${date}</td>
+              <td style="padding:6px 8px;border-bottom:1px solid var(--border);"><button class="btn btn-sm" style="background:var(--green);padding:3px 8px;font-size:0.75rem;" onclick="unblockItem(${i.id}, '${(i.title || '').replace(/'/g,"\\'")}')">Unblock</button></td>
+            </tr>`;
+          }).join('') +
+          '</tbody></table>';
+      } catch(e) {
+        el.innerHTML = `<div style="color:var(--red);">Failed: ${e.message}</div>`;
+      }
+    }
+
+    async function unblockItem(blockId, title) {
+      if (!confirm(`Unblock "${title}"? It may appear in future Smart Queue refreshes.`)) return;
+      try {
+        const r = await fetch(`/api/queue/block/${blockId}`, { method: 'DELETE' });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          showToast(`✓ Unblocked "${d.unblocked}"`);
+          loadBlocklist();
+        } else {
+          showToast('Error: ' + (d.detail || 'unknown'));
+        }
+      } catch(e) {
+        showToast('Error: ' + e.message);
       }
     }
 

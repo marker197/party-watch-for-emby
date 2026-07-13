@@ -363,22 +363,47 @@ async def block_queue_item(
             user_id=user_id, trakt_id=trakt_id,
             title=title, item_type=item_type,
         ))
+        await db.flush()
 
-    # Remove from current queue (match by trakt_id in metadata_json)
+    # Find and remove matching queue item
     queue_items = (await db.execute(
         select(QueueItem).where(QueueItem.user_id == user_id)
     )).scalars().all()
+    removed = False
     for qi in queue_items:
-        meta = qi.metadata_json or {}
-        if str(meta.get("ids", {}).get("trakt", "")) == trakt_id:
+        qi_trakt = str((qi.metadata_json or {}).get("trakt_id", ""))
+        if qi_trakt == trakt_id:
             await db.delete(qi)
+            removed = True
     await db.commit()
 
-    # Backfill from overflow
-    try:
-        await smart_queue_svc.remove_and_backfill(user_id, emby_item_id=None, trakt_id=trakt_id)
-    except Exception:
-        pass  # non-critical — next full refresh will handle it
+    # Backfill from overflow and re-sync playlist
+    if removed:
+        try:
+            # Pop best overflow candidate
+            replacement = await smart_queue_svc._pop_best_overflow(user_id, 0.0)
+            if replacement:
+                emby_id = await smart_queue_svc._find_in_emby(replacement)
+                async with async_session_ctx() as db2:
+                    db2.add(QueueItem(
+                        user_id=user_id,
+                        emby_item_id=emby_id,
+                        title=replacement["title"],
+                        item_type=replacement["item_type"],
+                        source=replacement["source"],
+                        score=replacement["score"],
+                        trakt_trending_rank=replacement.get("trending_rank"),
+                        trakt_rating=replacement.get("friend_rating"),
+                        metadata_json=replacement,
+                        in_library=emby_id is not None,
+                    ))
+                    await db2.commit()
+                log.info("queue.backfill_after_block",
+                         user_id=user_id, title=replacement["title"])
+            # Re-sync Emby playlist
+            await smart_queue_svc._resync_playlist_from_db(user_id)
+        except Exception as e:
+            log.warning("queue.backfill_failed", error=str(e)[:120])
 
     log.info("queue.item_blocked", user_id=user_id, trakt_id=trakt_id, title=title)
     return {"status": "ok", "blocked": trakt_id, "title": title}
