@@ -3349,3 +3349,172 @@ async def get_arr_library():
         pass
 
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Metadata Enrichment (#12) — production endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/api/enrichment/scan")
+async def enrichment_scan(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Batch-enrich library items with Trakt metadata.
+
+    Body: { user_id: int, limit: 100 }
+    Scans Emby library, looks up each item on Trakt, stores enriched
+    metadata in the DB.  Skips items already enriched and fresh (<30 days).
+    """
+    user_id = payload.get("user_id", current_user.id)
+    limit = min(payload.get("limit", 100), 200)
+
+    user = (await db.execute(
+        select(User).where(User.id == user_id)
+    )).scalar_one_or_none()
+    if not user or not user.trakt_access_token:
+        raise HTTPException(400, "User not found or Trakt not linked")
+
+    async def on_token_refresh(access, refresh, expires):
+        async with async_session_ctx() as rdb:
+            u = (await rdb.execute(select(User).where(User.id == user_id))).scalar_one()
+            u.trakt_access_token = access
+            u.trakt_refresh_token = refresh
+            u.trakt_token_expires = expires
+            await rdb.commit()
+
+    trakt = TraktClient(
+        access_token=user.trakt_access_token,
+        refresh_token=user.trakt_refresh_token,
+        token_expires=user.trakt_token_expires,
+        token_refresh_callback=on_token_refresh,
+    )
+    try:
+        from app.services.metadata_enrichment.service import MetadataEnrichmentService
+        svc = MetadataEnrichmentService()
+        result = await svc.batch_enrich(trakt, user.emby_user_id, limit=limit)
+        return result
+    finally:
+        await trakt.close()
+
+
+@router.get("/api/enrichment/status")
+async def enrichment_status(db: AsyncSession = Depends(get_db)):
+    """Return counts of enriched items and how many are expired."""
+    from app.models.schema import EnrichedMetadata
+
+    total = (await db.execute(
+        select(func.count(EnrichedMetadata.id))
+    )).scalar() or 0
+
+    fresh = (await db.execute(
+        select(func.count(EnrichedMetadata.id)).where(
+            EnrichedMetadata.expires_at > datetime.utcnow()
+        )
+    )).scalar() or 0
+
+    return {
+        "total_enriched": total,
+        "fresh": fresh,
+        "expired": total - fresh,
+    }
+
+
+@router.get("/api/enrichment/comparison")
+async def enrichment_comparison(
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compare Trakt vs Emby metadata for enriched items.
+
+    Shows differences (rating gaps, missing taglines, new genres/tags)
+    so the user can decide what to push to Emby.
+    """
+    # Get first linked user for Emby user_id
+    user = (await db.execute(
+        select(User).where(User.emby_user_id.isnot(None)).limit(1)
+    )).scalar_one_or_none()
+
+    from app.services.metadata_enrichment.service import MetadataEnrichmentService
+    svc = MetadataEnrichmentService()
+    items = await svc.get_comparison(
+        user.emby_user_id if user else None, limit=limit,
+    )
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/api/enrichment/push")
+async def enrichment_push(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+):
+    """Push enriched metadata to Emby for specific items.
+
+    Body: { emby_item_ids: [str], fields: ["tags", "tagline", "community_rating"] }
+    Or:   { all: true, fields: ["tags", "tagline"] }
+
+    Only modifies the specified fields.  Tags are additive (merged with
+    existing Emby tags).  Tagline only set if Emby has none.
+    """
+    fields = payload.get("fields", ["tags", "tagline"])
+    emby_ids = payload.get("emby_item_ids", [])
+    push_all = payload.get("all", False)
+
+    from app.services.metadata_enrichment.service import MetadataEnrichmentService
+    svc = MetadataEnrichmentService()
+
+    if push_all:
+        result = await svc.batch_push_to_emby(fields, limit=200)
+        return result
+    elif emby_ids:
+        results = []
+        for eid in emby_ids[:50]:
+            r = await svc.push_to_emby(eid, fields)
+            results.append({"emby_item_id": eid, **r})
+        return {"results": results}
+    else:
+        raise HTTPException(400, "Provide emby_item_ids or set all=true")
+
+
+@router.get("/api/enrichment/items")
+async def enrichment_items(
+    limit: int = Query(50, ge=1, le=200),
+    sort: str = Query("social_score", regex="^(social_score|trakt_rating|enriched_at|trakt_votes)$"),
+    db: AsyncSession = Depends(get_db),
+):
+    """List enriched items sorted by the given field."""
+    from app.models.schema import EnrichedMetadata
+
+    sort_col = {
+        "social_score": EnrichedMetadata.social_score.desc(),
+        "trakt_rating": EnrichedMetadata.trakt_rating.desc(),
+        "enriched_at": EnrichedMetadata.enriched_at.desc(),
+        "trakt_votes": EnrichedMetadata.trakt_votes.desc(),
+    }[sort]
+
+    rows = (await db.execute(
+        select(EnrichedMetadata)
+        .where(EnrichedMetadata.metadata_json.isnot(None))
+        .order_by(sort_col)
+        .limit(limit)
+    )).scalars().all()
+
+    items = []
+    for r in rows:
+        meta = r.metadata_json or {}
+        items.append({
+            "emby_item_id": r.emby_item_id,
+            "title": r.title,
+            "trakt_rating": r.trakt_rating,
+            "trakt_votes": r.trakt_votes,
+            "social_score": round(r.social_score or 0, 3),
+            "tagline": r.tagline,
+            "themes": r.themes or [],
+            "genres": meta.get("genres", []),
+            "certification": meta.get("certification", ""),
+            "network": meta.get("network", ""),
+            "enriched_at": r.enriched_at.isoformat() if r.enriched_at else None,
+        })
+
+    return {"items": items, "count": len(items)}

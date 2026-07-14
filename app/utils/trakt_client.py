@@ -539,7 +539,45 @@ class TraktClient:
         )
 
     async def get_item_details(self, kind: str, trakt_id: str) -> dict:
-        return await self._get(f"/{kind}/{trakt_id}?extended=full")
+        return await self._get(f"/{kind}/{trakt_id}", params={"extended": "full"})
+
+    async def get_movie_by_id(self, id_value: str, id_type: str = "imdb") -> dict | None:
+        """Lookup a movie by IMDB, TMDB, or Trakt ID.  Returns full metadata.
+
+        Trakt's /movies/{id} path accepts IMDB IDs (tt...) and Trakt slugs
+        but NOT bare TMDB numeric IDs.  For TMDB use /search/tmdb/{id}.
+        """
+        try:
+            if id_type == "tmdb" or (id_type != "imdb" and id_value.isdigit()):
+                # TMDB numeric ID → use search endpoint to get slug first
+                results = await self._get(f"/search/tmdb/{id_value}", params={"type": "movie"})
+                if results and isinstance(results, list) and results[0].get("movie"):
+                    slug = results[0]["movie"].get("ids", {}).get("slug")
+                    if slug:
+                        return await self._get(f"/movies/{slug}", params={"extended": "full"})
+                    return results[0]["movie"]
+                return None
+            else:
+                # IMDB (tt...) or Trakt slug → direct path lookup
+                return await self._get(f"/movies/{id_value}", params={"extended": "full"})
+        except Exception:
+            return None
+
+    async def get_show_by_id(self, id_value: str, id_type: str = "imdb") -> dict | None:
+        """Lookup a show by IMDB, TMDB, or Trakt ID.  Returns full metadata."""
+        try:
+            if id_type == "tmdb" or (id_type != "imdb" and id_value.isdigit()):
+                results = await self._get(f"/search/tmdb/{id_value}", params={"type": "show"})
+                if results and isinstance(results, list) and results[0].get("show"):
+                    slug = results[0]["show"].get("ids", {}).get("slug")
+                    if slug:
+                        return await self._get(f"/shows/{slug}", params={"extended": "full"})
+                    return results[0]["show"]
+                return None
+            else:
+                return await self._get(f"/shows/{id_value}", params={"extended": "full"})
+        except Exception:
+            return None
 
     async def search(self, query: str, kind: str = "movie,show") -> list[dict]:
         return await self._get(f"/search/{kind}", params={"query": query})

@@ -1,388 +1,489 @@
 """
-Metadata Enrichment Service
-Enriches Emby library items with Trakt metadata (taglines, themes, quotes, social scores).
+Metadata Enrichment Service — Feature #12
 
-Feature #12: Metadata Enrichment
-- Pull Trakt ratings and taglines
-- Genre/theme tagging from Trakt
-- Social score calculation (trending)
-- Quote integration
-- Batch enrichment processing
-- 30-day auto-refresh
+Enriches Emby library items with richer Trakt metadata:
+- Community ratings (Trakt vs Emby comparison)
+- Genres / themes / tone tags from Trakt
+- Taglines (first sentence of Trakt overview when Emby lacks one)
+- Social/trending scores
+- Selective push to Emby: Tags and Taglines (safe, non-destructive)
+
+Enrichment runs per-item or as a batch scan.  Data is cached in the
+enriched_metadata table with a 30-day TTL.  Push to Emby is optional
+and only modifies Tags and Taglines — never overwrites core fields.
 """
 
-import logging
+from __future__ import annotations
+
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, func
+from typing import Any
+
+import structlog
+from sqlalchemy import select, and_
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import EnrichedMetadata, User
 from app.utils.trakt_client import TraktClient
+from app.utils.emby_client import EmbyClient
 from app.utils.library_cache import LibraryCache
+from app.utils.database import async_session
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 class MetadataEnrichmentService:
-    """Enrich Emby metadata with Trakt data."""
+    """Enrich Emby metadata with Trakt data and optionally push back."""
 
-    def __init__(self, db: Session, trakt_client: TraktClient, cache: LibraryCache):
-        self.db = db
-        self.trakt = trakt_client
-        self.cache = cache
+    def __init__(self):
+        self.emby = EmbyClient()
 
-    async def enrich_item(self, emby_item_id: str, title: str, item_type: str = "movie", force: bool = False) -> Dict:
+    # ===================================================================
+    # Single-item enrichment
+    # ===================================================================
+
+    async def enrich_item(
+        self,
+        trakt: TraktClient,
+        emby_item_id: str,
+        provider_ids: dict,
+        title: str,
+        item_type: str = "movie",
+        force: bool = False,
+    ) -> dict | None:
+        """Enrich one item.  Tries Trakt lookup by IMDB → TMDB → slug → title search.
+
+        Returns enriched dict or None on failure.
         """
-        Enrich a single library item with Trakt metadata.
-
-        Args:
-            emby_item_id: Emby item ID
-            title: Item title
-            item_type: 'movie' or 'episode'
-            force: Force refresh even if cached
-
-        Returns:
-            {
-                'emby_item_id': str,
-                'title': str,
-                'tagline': str,
-                'themes': [str],
-                'quotes': [str],
-                'social_score': float,  # 0-1 trending
-                'trakt_rating': float,
-                'trakt_votes': int,
-                'enriched': bool,
-                'from_cache': bool,
-                'expires_at': datetime
-            }
-        """
-        try:
-            # Check if already enriched and fresh
+        async with async_session() as db:
+            # Check cache
             if not force:
-                existing = (await self.db.execute(select(EnrichedMetadata).filter(
-                    EnrichedMetadata.emby_item_id == emby_item_id
-                ))).scalars().first()
-
-                if existing and (not existing.expires_at or existing.expires_at > datetime.utcnow()):
-                    # Return cached metadata
-                    return self._format_enriched_response(existing, from_cache=True)
+                existing = (await db.execute(
+                    select(EnrichedMetadata).where(
+                        EnrichedMetadata.emby_item_id == emby_item_id
+                    )
+                )).scalar_one_or_none()
+                if existing and existing.expires_at and existing.expires_at > datetime.utcnow():
+                    return self._format(existing, from_cache=True)
 
             # Fetch from Trakt
-            if item_type == "movie":
-                trakt_item = await self.trakt.get_movie(title)
-            else:
-                trakt_item = await self.trakt.get_show(title)
-
-            if not trakt_item:
-                return {"error": f"Could not find {title} on Trakt", "enriched": False}
-
-            # Extract metadata
-            enriched_data = await self._extract_trakt_metadata(trakt_item)
-
-            # Calculate social score (trending)
-            social_score = await self._calculate_social_score(trakt_item)
-
-            # Store in database
-            metadata_record = (await self.db.execute(select(EnrichedMetadata).filter(
-                EnrichedMetadata.emby_item_id == emby_item_id
-            ))).scalars().first()
-
-            if not metadata_record:
-                metadata_record = EnrichedMetadata(emby_item_id=emby_item_id)
-
-            metadata_record.trakt_id = trakt_item.get('ids', {}).get('trakt')
-            metadata_record.trakt_slug = trakt_item.get('ids', {}).get('slug')
-            metadata_record.title = trakt_item.get('title')
-            metadata_record.tagline = enriched_data.get('tagline')
-            metadata_record.themes = enriched_data.get('themes')
-            metadata_record.quotes = enriched_data.get('quotes')
-            metadata_record.social_score = social_score
-            metadata_record.trakt_rating = trakt_item.get('rating')
-            metadata_record.trakt_votes = trakt_item.get('votes', 0)
-            metadata_record.themes_from_trakt = True
-            metadata_record.enriched_at = datetime.utcnow()
-            metadata_record.expires_at = datetime.utcnow() + timedelta(days=30)
-            metadata_record.metadata_json = {
-                'tagline': enriched_data.get('tagline'),
-                'themes': enriched_data.get('themes'),
-                'quotes': enriched_data.get('quotes'),
-                'social_score': social_score,
-                'trakt_rating': trakt_item.get('rating'),
-                'trakt_votes': trakt_item.get('votes'),
-                'overview': trakt_item.get('overview')
-            }
-
-            self.db.add(metadata_record)
-            await self.db.commit()
-
-            return self._format_enriched_response(metadata_record, from_cache=False)
-
-        except Exception as e:
-            logger.error(f"Error enriching item {emby_item_id}: {e}")
-            await self.db.rollback()
-            return {"error": str(e), "enriched": False}
-
-    async def batch_enrich_library(self, user_id: int, item_ids: Optional[List[str]] = None) -> Dict:
-        """
-        Enrich multiple library items at once.
-
-        Args:
-            user_id: User ID
-            item_ids: List of Emby item IDs to enrich (if None, all in library)
-
-        Returns:
-            {
-                'total': int,
-                'enriched': int,
-                'errors': int,
-                'skipped': int,  # already enriched and fresh
-                'results': [...]
-            }
-        """
-        try:
-            total = 0
-            enriched = 0
-            errors = 0
-            skipped = 0
-            results = []
-
-            # Get library items from cache
-            cache_key = f"library:{user_id}"
-            library_data = self.cache.get(cache_key)
-
-            if not library_data:
-                return {"error": "Library cache empty", "total": 0, "enriched": 0}
-
-            items_to_process = library_data.get('items', [])[:100]  # Limit to 100 to avoid rate limits
-
-            for item in items_to_process:
-                total += 1
-                emby_id = item.get('id')
-                title = item.get('title')
-                item_type = item.get('type')
-
-                # Check if already fresh
-                existing = (await self.db.execute(select(EnrichedMetadata).filter(
-                    EnrichedMetadata.emby_item_id == emby_id
-                ))).scalars().first()
-
-                if existing and existing.expires_at and existing.expires_at > datetime.utcnow():
-                    skipped += 1
-                    continue
-
-                try:
-                    result = await self.enrich_item(emby_id, title, item_type)
-                    if result.get('enriched'):
-                        enriched += 1
-                    else:
-                        errors += 1
-                    results.append(result)
-                except Exception as e:
-                    logger.error(f"Error enriching {title}: {e}")
-                    errors += 1
-
-            return {
-                "total": total,
-                "enriched": enriched,
-                "errors": errors,
-                "skipped": skipped,
-                "results": results
-            }
-
-        except Exception as e:
-            logger.error(f"Error in batch_enrich_library: {e}")
-            return {"error": str(e), "total": 0}
-
-    async def get_enriched_metadata(self, emby_item_id: str) -> Optional[Dict]:
-        """
-        Retrieve enriched metadata for an item.
-
-        Returns:
-            {
-                'emby_item_id': str,
-                'title': str,
-                'tagline': str,
-                'themes': [str],
-                'quotes': [str],
-                'social_score': float,
-                'trakt_rating': float,
-                'trakt_votes': int
-            } or None if not enriched
-        """
-        try:
-            metadata = (await self.db.execute(select(EnrichedMetadata).filter(
-                EnrichedMetadata.emby_item_id == emby_item_id
-            ))).scalars().first()
-
-            if not metadata:
+            trakt_data = await self._lookup_trakt(trakt, provider_ids, title, item_type)
+            if not trakt_data:
+                log.warning("enrichment.trakt_lookup_miss", title=title, emby_id=emby_item_id)
                 return None
 
-            return self._format_enriched_response(metadata, from_cache=True)
+            # Extract enriched fields
+            trakt_rating = trakt_data.get("rating")
+            trakt_votes = trakt_data.get("votes", 0)
+            genres = trakt_data.get("genres", [])
+            overview = trakt_data.get("overview", "")
+            tagline = trakt_data.get("tagline", "")
+            if not tagline and overview:
+                tagline = overview.split(".")[0][:120]
 
-        except Exception as e:
-            logger.error(f"Error getting enriched metadata: {e}")
-            return None
+            themes = list(genres)
+            if trakt_rating and trakt_rating >= 8.0:
+                themes.append("acclaimed")
 
-    async def get_social_scores(self, limit: int = 20) -> List[Dict]:
-        """
-        Get items ranked by social score (trending).
+            social_score = self._calc_social_score(trakt_votes, trakt_rating or 0)
 
-        Returns:
-            [{
-                'title': str,
-                'social_score': float,
-                'trakt_rating': float,
-                'themes': [str]
-            }, ...]
-        """
-        try:
-            trending = (await self.db.execute(select(EnrichedMetadata).order_by(
-                EnrichedMetadata.social_score.desc()
-            ).limit(limit))).scalars().all()
+            trakt_ids = trakt_data.get("ids", {})
 
-            return [
-                {
-                    "title": m.title,
-                    "emby_item_id": m.emby_item_id,
-                    "social_score": round(m.social_score, 3) if m.social_score else 0,
-                    "trakt_rating": m.trakt_rating,
-                    "themes": m.themes or [],
-                    "trakt_votes": m.trakt_votes
-                }
-                for m in trending
-            ]
-
-        except Exception as e:
-            logger.error(f"Error getting social scores: {e}")
-            return []
-
-    async def refresh_expired_metadata(self, days_old: int = 30) -> Dict:
-        """
-        Refresh metadata that has expired (older than days_old).
-
-        Returns:
-            {'refreshed': int, 'errors': int}
-        """
-        try:
-            cutoff_date = datetime.utcnow() - timedelta(days=days_old)
-
-            expired = (await self.db.execute(select(EnrichedMetadata).filter(
-                and_(
-                    EnrichedMetadata.expires_at < cutoff_date,
-                    EnrichedMetadata.metadata_json.is_not(None)
+            # Upsert
+            record = (await db.execute(
+                select(EnrichedMetadata).where(
+                    EnrichedMetadata.emby_item_id == emby_item_id
                 )
-            ).limit(50))).scalars().all()  # Limit to 50 to avoid rate limits
+            )).scalar_one_or_none()
 
-            refreshed = 0
-            errors = 0
+            if not record:
+                record = EnrichedMetadata(emby_item_id=emby_item_id)
+                db.add(record)
 
-            for metadata in expired:
-                try:
-                    # Re-enrich the item
-                    await self.enrich_item(
-                        metadata.emby_item_id,
-                        metadata.title,
-                        force=True
-                    )
-                    refreshed += 1
-                except Exception as e:
-                    logger.error(f"Error refreshing {metadata.title}: {e}")
-                    errors += 1
-
-            return {"refreshed": refreshed, "errors": errors}
-
-        except Exception as e:
-            logger.error(f"Error in refresh_expired_metadata: {e}")
-            return {"error": str(e), "refreshed": 0}
-
-    async def _extract_trakt_metadata(self, trakt_item: Dict) -> Dict:
-        """
-        Extract rich metadata from Trakt API response.
-
-        Returns:
-            {
-                'tagline': str,
-                'themes': [str],
-                'quotes': [str],
-                'genres': [str]
+            record.trakt_id = str(trakt_ids.get("trakt", ""))
+            record.trakt_slug = trakt_ids.get("slug", "")
+            record.title = trakt_data.get("title", title)
+            record.tagline = tagline
+            record.themes = themes[:8]
+            record.quotes = []  # Trakt doesn't expose quotes
+            record.social_score = social_score
+            record.trakt_rating = trakt_rating
+            record.trakt_votes = trakt_votes
+            record.themes_from_trakt = True
+            record.enriched_at = datetime.utcnow()
+            record.expires_at = datetime.utcnow() + timedelta(days=30)
+            record.metadata_json = {
+                "tagline": tagline,
+                "themes": themes[:8],
+                "genres": genres,
+                "overview": overview[:500],
+                "trakt_rating": trakt_rating,
+                "trakt_votes": trakt_votes,
+                "social_score": social_score,
+                "certification": trakt_data.get("certification", ""),
+                "runtime": trakt_data.get("runtime"),
+                "network": trakt_data.get("network", ""),
+                "status": trakt_data.get("status", ""),
+                "country": trakt_data.get("country", ""),
+                "language": trakt_data.get("language", ""),
+                "trakt_ids": trakt_ids,
             }
+
+            await db.commit()
+            await db.refresh(record)
+            return self._format(record, from_cache=False)
+
+    # ===================================================================
+    # Batch enrichment
+    # ===================================================================
+
+    async def batch_enrich(
+        self, trakt: TraktClient, user_id: str, limit: int = 100,
+    ) -> dict:
+        """Enrich library items that haven't been enriched or are expired.
+
+        Scans Emby library via LibraryCache, skips already-fresh items.
+        Returns summary stats.
         """
+        enriched = 0
+        skipped = 0
+        errors = 0
+        items_processed = []
+
+        # Get library items from Emby (movies + series)
+        all_items = []
+        for item_type in ("Movie", "Series"):
+            try:
+                resp = await self.emby.get_items(
+                    user_id=user_id, item_type=item_type,
+                    fields="ProviderIds,ProductionYear,Genres,CommunityRating,Taglines,Tags",
+                    limit=limit,
+                )
+                all_items.extend(resp.get("Items", []))
+            except Exception as e:
+                log.warning("enrichment.library_fetch_failed", item_type=item_type,
+                            error=str(e)[:120])
+
+        log.info("enrichment.batch_start", total_items=len(all_items))
+
+        async with async_session() as db:
+            # Get set of already-enriched (fresh AND actually has data) emby IDs
+            fresh_ids = set()
+            rows = (await db.execute(
+                select(EnrichedMetadata.emby_item_id).where(
+                    EnrichedMetadata.expires_at > datetime.utcnow(),
+                    EnrichedMetadata.trakt_rating.isnot(None),
+                )
+            )).scalars().all()
+            fresh_ids = set(rows)
+
+        for item in all_items:
+            emby_id = str(item.get("Id", ""))
+            if emby_id in fresh_ids:
+                skipped += 1
+                continue
+
+            provider_ids = item.get("ProviderIds", {})
+            title = item.get("Name", "")
+            itype = "show" if item.get("Type") == "Series" else "movie"
+
+            try:
+                result = await self.enrich_item(
+                    trakt, emby_id, provider_ids, title, itype,
+                    force=True,  # always force — skip check is done above
+                )
+                if result:
+                    enriched += 1
+                    items_processed.append({
+                        "title": title,
+                        "emby_id": emby_id,
+                        "trakt_rating": result.get("trakt_rating"),
+                        "social_score": result.get("social_score"),
+                    })
+                else:
+                    errors += 1
+            except Exception:
+                errors += 1
+                log.warning("enrichment.item_failed", title=title)
+
+        log.info("enrichment.batch_done",
+                 enriched=enriched, skipped=skipped, errors=errors)
+
         return {
-            "tagline": self._extract_tagline(trakt_item),
-            "themes": self._extract_themes(trakt_item),
-            "quotes": self._extract_quotes(trakt_item),
-            "genres": trakt_item.get('genres', [])
+            "total": len(all_items),
+            "enriched": enriched,
+            "skipped": skipped,
+            "errors": errors,
+            "items": items_processed[:50],  # cap response size
         }
 
-    def _extract_tagline(self, item: Dict) -> str:
-        """Extract or generate tagline from Trakt data."""
-        # Trakt doesn't provide taglines directly, create from overview
-        overview = item.get('overview', '')
-        if overview:
-            # Take first sentence
-            sentences = overview.split('.')
-            return sentences[0][:100] if sentences else ''
-        return ''
+    # ===================================================================
+    # Push to Emby — selective, non-destructive
+    # ===================================================================
 
-    def _extract_themes(self, item: Dict) -> List[str]:
-        """Extract themes/genres from Trakt data."""
-        genres = item.get('genres', [])
-        # Add computed themes based on genres and rating
-        themes = genres.copy()
+    async def push_to_emby(self, emby_item_id: str, fields: list[str]) -> dict:
+        """Push enriched metadata fields to Emby for a single item.
 
-        rating = item.get('rating', 0)
-        if rating >= 8.0:
-            themes.append('acclaimed')
-        if rating <= 5.0:
-            themes.append('underrated')
+        Supported fields:
+          - tags: Adds Trakt genre/theme tags to Emby's Tags (additive)
+          - tagline: Sets Emby Taglines if empty or force
+          - community_rating: Updates CommunityRating with Trakt's rating
 
-        return themes[:5]  # Top 5 themes
-
-    def _extract_quotes(self, item: Dict) -> List[str]:
-        """Extract notable quotes about the item."""
-        # Trakt API doesn't provide quotes directly
-        # In production, would call IMDb API or third-party quotes service
-        quotes = []
-
-        # Placeholder - these would come from external source
-        if item.get('title'):
-            quotes.append(f"A notable entry in the {', '.join(item.get('genres', [])[:2])} genre")
-
-        return quotes
-
-    async def _calculate_social_score(self, trakt_item: Dict) -> float:
+        Returns {pushed: [fields], skipped: [fields], error: str|None}
         """
-        Calculate social score (0-1) based on trending/popularity.
+        async with async_session() as db:
+            record = (await db.execute(
+                select(EnrichedMetadata).where(
+                    EnrichedMetadata.emby_item_id == emby_item_id
+                )
+            )).scalar_one_or_none()
 
-        Formula:
-            - Base: votes / 10000
-            - Rating boost: rating / 10
-            - Normalization: clamp to 0-1
-        """
-        votes = trakt_item.get('votes', 0)
-        rating = trakt_item.get('rating', 0)
+        if not record or not record.metadata_json:
+            return {"pushed": [], "skipped": fields, "error": "Not enriched yet"}
 
-        # Simple scoring: higher votes and ratings = higher social score
-        vote_component = min(votes / 10000, 0.5)  # Max 50%
-        rating_component = (rating / 10.0) * 0.5  # Max 50%
+        meta = record.metadata_json
+        updates: dict[str, Any] = {}
+        pushed = []
+        skipped_fields = []
 
-        social_score = vote_component + rating_component
-        return min(social_score, 1.0)
+        # Get current Emby item to compare
+        try:
+            current = await self.emby.get_item_safe(emby_item_id)
+        except Exception:
+            current = None
+        if not current:
+            return {"pushed": [], "skipped": fields, "error": "Could not fetch item from Emby"}
 
-    def _format_enriched_response(self, metadata: EnrichedMetadata, from_cache: bool = False) -> Dict:
-        """Format enriched metadata for API response."""
+        if "tags" in fields:
+            trakt_tags = meta.get("themes", []) + meta.get("genres", [])
+            trakt_tags = list(dict.fromkeys(trakt_tags))  # dedupe, preserve order
+            existing_tags = current.get("Tags", []) or []
+            # Additive — merge without duplicates
+            merged = list(dict.fromkeys(existing_tags + trakt_tags))
+            if merged != existing_tags:
+                updates["Tags"] = merged
+                pushed.append("tags")
+            else:
+                skipped_fields.append("tags")
+
+        if "tagline" in fields:
+            tagline = meta.get("tagline", "")
+            existing_taglines = current.get("Taglines", []) or []
+            if tagline and not existing_taglines:
+                updates["Taglines"] = [tagline]
+                pushed.append("tagline")
+            else:
+                skipped_fields.append("tagline")
+
+        if "community_rating" in fields:
+            trakt_rating = meta.get("trakt_rating")
+            if trakt_rating:
+                # Trakt is 0-10, Emby CommunityRating is also 0-10
+                updates["CommunityRating"] = round(trakt_rating, 1)
+                pushed.append("community_rating")
+            else:
+                skipped_fields.append("community_rating")
+
+        if updates:
+            ok = await self.emby.update_item(emby_item_id, updates)
+            if not ok:
+                return {"pushed": [], "skipped": fields, "error": "Emby update failed"}
+
+        return {"pushed": pushed, "skipped": skipped_fields, "error": None}
+
+    async def batch_push_to_emby(self, fields: list[str], limit: int = 200) -> dict:
+        """Push enriched metadata to Emby for all enriched items."""
+        async with async_session() as db:
+            records = (await db.execute(
+                select(EnrichedMetadata).where(
+                    EnrichedMetadata.metadata_json.isnot(None)
+                ).limit(limit)
+            )).scalars().all()
+
+        total = len(records)
+        pushed_count = 0
+        skipped_count = 0
+        errors_count = 0
+
+        for record in records:
+            try:
+                result = await self.push_to_emby(record.emby_item_id, fields)
+                if result.get("pushed"):
+                    pushed_count += 1
+                elif result.get("error"):
+                    errors_count += 1
+                else:
+                    skipped_count += 1
+            except Exception:
+                errors_count += 1
+
         return {
-            "emby_item_id": metadata.emby_item_id,
-            "title": metadata.title,
-            "tagline": metadata.tagline,
-            "themes": metadata.themes or [],
-            "quotes": metadata.quotes or [],
-            "social_score": round(metadata.social_score, 3) if metadata.social_score else 0.0,
-            "trakt_rating": metadata.trakt_rating,
-            "trakt_votes": metadata.trakt_votes,
+            "total": total,
+            "pushed": pushed_count,
+            "skipped": skipped_count,
+            "errors": errors_count,
+            "fields": fields,
+        }
+
+    # ===================================================================
+    # Comparison report
+    # ===================================================================
+
+    async def get_comparison(self, user_id: str, limit: int = 50) -> list[dict]:
+        """Compare Trakt vs Emby metadata for enriched items.
+
+        Returns items where Trakt and Emby data differ — useful for
+        deciding what to push.
+        """
+        async with async_session() as db:
+            records = (await db.execute(
+                select(EnrichedMetadata).where(
+                    EnrichedMetadata.metadata_json.isnot(None)
+                ).order_by(EnrichedMetadata.trakt_votes.desc())
+                .limit(limit)
+            )).scalars().all()
+
+        log.info("enrichment.comparison_start",
+                 records=len(records),
+                 sample_rating=records[0].trakt_rating if records else None,
+                 sample_votes=records[0].trakt_votes if records else None,
+                 sample_title=records[0].title if records else None)
+
+        comparisons = []
+        for record in records:
+            try:
+                emby_item = await self.emby.get_item_safe(record.emby_item_id)
+            except Exception:
+                continue
+            if not emby_item:
+                continue
+
+            meta = record.metadata_json or {}
+            emby_rating = emby_item.get("CommunityRating")
+            trakt_rating = meta.get("trakt_rating")
+            emby_genres = emby_item.get("Genres", [])
+            trakt_genres = meta.get("genres", [])
+            emby_tags = emby_item.get("Tags", []) or []
+            emby_taglines = emby_item.get("Taglines", []) or []
+            trakt_tagline = meta.get("tagline", "")
+
+            # Calculate differences
+            diffs = []
+            if trakt_rating and emby_rating:
+                diff = abs(trakt_rating - emby_rating)
+                if diff >= 0.5:
+                    diffs.append(f"rating: Emby {emby_rating:.1f} vs Trakt {trakt_rating:.1f}")
+            elif trakt_rating and not emby_rating:
+                diffs.append(f"rating: Emby missing, Trakt {trakt_rating:.1f}")
+
+            new_genres = [g for g in trakt_genres if g not in emby_genres]
+            if new_genres:
+                diffs.append(f"genres: +{', '.join(new_genres[:3])}")
+
+            if trakt_tagline and not emby_taglines:
+                diffs.append("tagline: Emby missing")
+
+            comparisons.append({
+                "emby_item_id": record.emby_item_id,
+                "title": record.title,
+                "emby_rating": emby_rating,
+                "trakt_rating": trakt_rating,
+                "trakt_votes": meta.get("trakt_votes", 0),
+                "social_score": round(record.social_score or 0, 3),
+                "emby_genres": emby_genres,
+                "trakt_genres": trakt_genres,
+                "emby_tags": emby_tags,
+                "trakt_themes": meta.get("themes", []),
+                "emby_taglines": emby_taglines,
+                "trakt_tagline": trakt_tagline,
+                "diffs": diffs,
+                "has_diffs": len(diffs) > 0,
+                "enriched_at": record.enriched_at.isoformat() if record.enriched_at else None,
+            })
+
+        # Sort: items with differences first
+        comparisons.sort(key=lambda c: (not c["has_diffs"], -(c.get("trakt_votes") or 0)))
+        return comparisons
+
+    # ===================================================================
+    # Helpers
+    # ===================================================================
+
+    async def _lookup_trakt(
+        self, trakt: TraktClient, provider_ids: dict,
+        title: str, item_type: str,
+    ) -> dict | None:
+        """Try to find the item on Trakt via provider IDs, then title search."""
+        imdb = provider_ids.get("Imdb") or provider_ids.get("imdb")
+        tmdb = provider_ids.get("Tmdb") or provider_ids.get("tmdb")
+
+        lookup_fn = trakt.get_movie_by_id if item_type == "movie" else trakt.get_show_by_id
+
+        # Try IMDB first (direct path lookup — most reliable)
+        if imdb:
+            result = await lookup_fn(imdb, id_type="imdb")
+            if result:
+                log.info("enrichment.trakt_found", title=title, via="imdb",
+                         has_rating=result.get("rating") is not None,
+                         rating=result.get("rating"),
+                         votes=result.get("votes", 0),
+                         keys=list(result.keys())[:10])
+                return result
+
+        # Try TMDB (requires search endpoint)
+        if tmdb:
+            result = await lookup_fn(str(tmdb), id_type="tmdb")
+            if result:
+                log.info("enrichment.trakt_found", title=title, via="tmdb",
+                         has_rating=result.get("rating") is not None,
+                         rating=result.get("rating"),
+                         votes=result.get("votes", 0),
+                         keys=list(result.keys())[:10])
+                return result
+
+        # Fallback: title search
+        try:
+            kind = "movie" if item_type == "movie" else "show"
+            results = await trakt.search(title, kind=kind)
+            if results:
+                item = results[0].get(kind, results[0])
+                slug = item.get("ids", {}).get("slug")
+                if slug:
+                    result = await lookup_fn(slug, id_type="slug")
+                    if result:
+                        log.info("enrichment.trakt_found", title=title, via="search",
+                                 has_rating=result.get("rating") is not None)
+                        return result
+        except Exception:
+            pass
+
+        log.warning("enrichment.trakt_lookup_miss", title=title,
+                    has_imdb=bool(imdb), has_tmdb=bool(tmdb))
+        return None
+
+    @staticmethod
+    def _calc_social_score(votes: int, rating: float) -> float:
+        vote_part = min(votes / 10000, 0.5)
+        rating_part = (rating / 10.0) * 0.5
+        return min(round(vote_part + rating_part, 4), 1.0)
+
+    @staticmethod
+    def _format(record: EnrichedMetadata, from_cache: bool = False) -> dict:
+        meta = record.metadata_json or {}
+        return {
+            "emby_item_id": record.emby_item_id,
+            "title": record.title,
+            "tagline": record.tagline,
+            "themes": record.themes or [],
+            "social_score": round(record.social_score or 0, 3),
+            "trakt_rating": record.trakt_rating,
+            "trakt_votes": record.trakt_votes,
+            "certification": meta.get("certification", ""),
+            "runtime": meta.get("runtime"),
+            "network": meta.get("network", ""),
+            "status": meta.get("status", ""),
+            "genres": meta.get("genres", []),
             "enriched": True,
             "from_cache": from_cache,
-            "enriched_at": metadata.enriched_at.isoformat() if metadata.enriched_at else None,
-            "expires_at": metadata.expires_at.isoformat() if metadata.expires_at else None
+            "enriched_at": record.enriched_at.isoformat() if record.enriched_at else None,
+            "expires_at": record.expires_at.isoformat() if record.expires_at else None,
         }

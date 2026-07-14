@@ -410,3 +410,39 @@ class EmbyClient:
             f"/Sessions/{session_id}/Playing/{command}",
             params=params,
         )
+
+    # -- Metadata update (for enrichment push) --------------------------------
+
+    async def update_item(self, item_id: str, updates: dict) -> bool:
+        """Update an Emby item's metadata fields.
+
+        GET the full item first, merge updates, POST back.
+        Emby requires the full item object on POST /Items/{id}.
+
+        Safe fields to update: Tags, Taglines, CommunityRating,
+        Genres, Overview, OfficialRating.  Changes propagate to
+        all Emby clients automatically.
+        """
+        try:
+            # Use safe fetch — /Items/{id} 404s on some Emby builds
+            item = await self.get_item_safe(item_id)
+            if not item:
+                log.warning("emby.update_item_not_found", item_id=item_id)
+                return False
+
+            for key, val in updates.items():
+                item[key] = val
+
+            resp = await self._client.post(
+                self._url(f"/Items/{item_id}"),
+                json=item,
+                params=self._params(),
+            )
+            resp.raise_for_status()
+            log.info("emby.item_updated", item_id=item_id,
+                     fields=list(updates.keys()))
+            return True
+        except Exception as e:
+            log.warning("emby.item_update_failed", item_id=item_id,
+                        error=str(e)[:120])
+            return False
