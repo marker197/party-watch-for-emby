@@ -596,59 +596,6 @@ def _register_jobs():
         )
         log.info("scheduler.job_added", job="ssl_cert_check", cron=cron, domain=settings.ssl_domain)
 
-    # Metadata Enrichment — daily at 4:30 AM (after ML retrain at 4 AM)
-    async def run_enrichment_scan():
-        from app.services.metadata_enrichment.service import MetadataEnrichmentService
-        from app.utils.trakt_client import TraktClient
-        from app.models.schema import User
-        from app.utils.database import async_session as _async_session
-
-        async with _async_session() as db:
-            user = (await db.execute(
-                select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
-            )).scalars().first()
-
-        if not user or not user.trakt_access_token:
-            log.warning("enrichment.scheduled_skip", reason="no linked user")
-            return
-
-        async def on_token_refresh(access, refresh, expires):
-            async with _async_session() as rdb:
-                u = (await rdb.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.trakt_access_token = access
-                u.trakt_refresh_token = refresh
-                u.trakt_token_expires = expires
-                await rdb.commit()
-
-        trakt = TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=on_token_refresh,
-        )
-        try:
-            svc = MetadataEnrichmentService()
-            result = await svc.batch_enrich(trakt, user.emby_user_id, limit=400)
-            log.info("enrichment.scheduled_done",
-                     enriched=result.get("enriched", 0),
-                     remaining=result.get("remaining", 0))
-        finally:
-            await trakt.close()
-
-    cron = "30 4 * * *"
-    _job_crons["enrichment_scan"] = cron
-
-    async def _run_enrichment(_fn=run_enrichment_scan):
-        await _tracked_job("enrichment_scan", _fn)
-
-    scheduler.add_job(
-        _run_enrichment,
-        CronTrigger(hour=4, minute=30),
-        id="enrichment_scan",
-        replace_existing=True,
-    )
-    log.info("scheduler.job_added", job="enrichment_scan", cron=cron)
-
     # Connection heartbeat — every 5 minutes
     scheduler.add_job(
         run_heartbeat,

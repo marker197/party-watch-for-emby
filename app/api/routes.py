@@ -3404,13 +3404,30 @@ async def enrichment_status(db: AsyncSession = Depends(get_db)):
     """Return counts of enriched items and how many are expired."""
     from app.models.schema import EnrichedMetadata
 
+    from sqlalchemy import or_
+
     total = (await db.execute(
-        select(func.count(EnrichedMetadata.id))
+        select(func.count(EnrichedMetadata.id)).where(
+            or_(
+                EnrichedMetadata.trakt_slug.is_(None),
+                EnrichedMetadata.trakt_slug != "__not_found__",
+            ),
+        )
+    )).scalar() or 0
+
+    not_found = (await db.execute(
+        select(func.count(EnrichedMetadata.id)).where(
+            EnrichedMetadata.trakt_slug == "__not_found__",
+        )
     )).scalar() or 0
 
     fresh = (await db.execute(
         select(func.count(EnrichedMetadata.id)).where(
-            EnrichedMetadata.expires_at > datetime.utcnow()
+            EnrichedMetadata.expires_at > datetime.utcnow(),
+            or_(
+                EnrichedMetadata.trakt_slug.is_(None),
+                EnrichedMetadata.trakt_slug != "__not_found__",
+            ),
         )
     )).scalar() or 0
 
@@ -3418,12 +3435,13 @@ async def enrichment_status(db: AsyncSession = Depends(get_db)):
         "total_enriched": total,
         "fresh": fresh,
         "expired": total - fresh,
+        "not_found": not_found,
     }
 
 
 @router.get("/api/enrichment/comparison")
 async def enrichment_comparison(
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(500, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
 ):
     """Compare Trakt vs Emby metadata for enriched items.
@@ -3465,12 +3483,12 @@ async def enrichment_push(
     svc = MetadataEnrichmentService()
 
     if push_all:
-        result = await svc.batch_push_to_emby(fields, limit=200)
+        result = await svc.batch_push_to_emby(fields, user_id=current_user.emby_user_id, limit=200)
         return result
     elif emby_ids:
         results = []
         for eid in emby_ids[:50]:
-            r = await svc.push_to_emby(eid, fields)
+            r = await svc.push_to_emby(eid, fields, user_id=current_user.emby_user_id)
             results.append({"emby_item_id": eid, **r})
         return {"results": results}
     else:

@@ -69,6 +69,22 @@ class MetadataEnrichmentService:
             trakt_data = await self._lookup_trakt(trakt, provider_ids, title, item_type)
             if not trakt_data:
                 log.warning("enrichment.trakt_lookup_miss", title=title, emby_id=emby_item_id)
+                # Save a tombstone so this item is skipped on subsequent scans.
+                # Short TTL (7 days) — will retry after expiry in case Trakt
+                # adds the item or provider IDs change.
+                record = (await db.execute(
+                    select(EnrichedMetadata).where(
+                        EnrichedMetadata.emby_item_id == emby_item_id
+                    )
+                )).scalar_one_or_none()
+                if not record:
+                    record = EnrichedMetadata(emby_item_id=emby_item_id)
+                    db.add(record)
+                record.title = title
+                record.trakt_slug = "__not_found__"
+                record.enriched_at = datetime.utcnow()
+                record.expires_at = datetime.utcnow() + timedelta(days=7)
+                await db.commit()
                 return None
 
             # Extract enriched fields
@@ -77,8 +93,6 @@ class MetadataEnrichmentService:
             genres = trakt_data.get("genres", [])
             overview = trakt_data.get("overview", "")
             tagline = trakt_data.get("tagline", "")
-            if not tagline and overview:
-                tagline = overview.split(".")[0][:120]
 
             themes = list(genres)
             if trakt_rating and trakt_rating >= 8.0:
@@ -166,12 +180,16 @@ class MetadataEnrichmentService:
                             error=str(e)[:120])
 
         async with async_session() as db:
-            # Get set of already-enriched (fresh AND actually has data) emby IDs
+            # Get set of emby IDs to skip: items that are either
+            # successfully enriched (has rating + not expired) OR
+            # tombstoned as not-found on Trakt (within 7-day retry TTL).
             fresh_ids = set()
             rows = (await db.execute(
                 select(EnrichedMetadata.emby_item_id).where(
                     EnrichedMetadata.expires_at > datetime.utcnow(),
-                    EnrichedMetadata.trakt_rating.isnot(None),
+                    # Skip if has real data OR is a not-found tombstone
+                    (EnrichedMetadata.trakt_rating.isnot(None)) |
+                    (EnrichedMetadata.trakt_slug == "__not_found__"),
                 )
             )).scalars().all()
             fresh_ids = set(rows)
@@ -238,7 +256,7 @@ class MetadataEnrichmentService:
     # Push to Emby — selective, non-destructive
     # ===================================================================
 
-    async def push_to_emby(self, emby_item_id: str, fields: list[str]) -> dict:
+    async def push_to_emby(self, emby_item_id: str, fields: list[str], user_id: str | None = None) -> dict:
         """Push enriched metadata fields to Emby for a single item.
 
         Supported fields:
@@ -265,7 +283,7 @@ class MetadataEnrichmentService:
 
         # Get current Emby item to compare
         try:
-            current = await self.emby.get_item_safe(emby_item_id)
+            current = await self.emby.get_item_safe(emby_item_id, user_id=user_id)
         except Exception:
             current = None
         if not current:
@@ -302,37 +320,100 @@ class MetadataEnrichmentService:
                 skipped_fields.append("community_rating")
 
         if updates:
-            ok = await self.emby.update_item(emby_item_id, updates)
+            ok = await self.emby.update_item(emby_item_id, updates, current_item=current)
             if not ok:
                 return {"pushed": [], "skipped": fields, "error": "Emby update failed"}
 
         return {"pushed": pushed, "skipped": skipped_fields, "error": None}
 
-    async def batch_push_to_emby(self, fields: list[str], limit: int = 200) -> dict:
-        """Push enriched metadata to Emby for all enriched items."""
+    async def batch_push_to_emby(self, fields: list[str], user_id: str | None = None, limit: int = 200) -> dict:
+        """Push enriched metadata to Emby for all enriched items.
+
+        Batch-fetches all Emby items in one call, then pushes only items
+        with actual changes.  Much faster than per-item fetch+push.
+
+        user_id: Emby user ID — required to fetch full item data (Overview etc).
+        """
+        from sqlalchemy import or_
+
         async with async_session() as db:
             records = (await db.execute(
                 select(EnrichedMetadata).where(
-                    EnrichedMetadata.metadata_json.isnot(None)
+                    EnrichedMetadata.metadata_json.isnot(None),
+                    or_(
+                        EnrichedMetadata.trakt_slug.is_(None),
+                        EnrichedMetadata.trakt_slug != "__not_found__",
+                    ),
                 ).limit(limit)
             )).scalars().all()
 
+        if not records:
+            return {"total": 0, "pushed": 0, "skipped": 0, "errors": 0, "fields": fields}
+
         total = len(records)
+
+        # Batch-fetch all Emby items in one call — user-scoped to get full data
+        emby_ids = [r.emby_item_id for r in records]
+        try:
+            emby_items = await self.emby.get_items_by_ids(emby_ids, user_id=user_id)
+        except Exception as e:
+            log.warning("enrichment.batch_push_emby_fetch_failed", error=str(e)[:120])
+            return {"total": total, "pushed": 0, "skipped": 0, "errors": total, "fields": fields}
+
+        # Build lookup: emby_id → item dict
+        emby_map = {}
+        for item in emby_items:
+            eid = str(item.get("Id", ""))
+            if eid:
+                emby_map[eid] = item
+
         pushed_count = 0
         skipped_count = 0
         errors_count = 0
 
         for record in records:
+            emby_item = emby_map.get(record.emby_item_id)
+            if not emby_item:
+                errors_count += 1
+                continue
+
+            meta = record.metadata_json or {}
+            updates: dict = {}
+
+            if "tags" in fields:
+                trakt_tags = meta.get("themes", []) + meta.get("genres", [])
+                trakt_tags = list(dict.fromkeys(trakt_tags))
+                existing_tags = emby_item.get("Tags", []) or []
+                merged = list(dict.fromkeys(existing_tags + trakt_tags))
+                if merged != existing_tags:
+                    updates["Tags"] = merged
+
+            if "tagline" in fields:
+                tagline = meta.get("tagline", "")
+                existing_taglines = emby_item.get("Taglines", []) or []
+                if tagline and not existing_taglines:
+                    updates["Taglines"] = [tagline]
+
+            if "community_rating" in fields:
+                trakt_rating = meta.get("trakt_rating")
+                if trakt_rating:
+                    updates["CommunityRating"] = round(trakt_rating, 1)
+
+            if not updates:
+                skipped_count += 1
+                continue
+
             try:
-                result = await self.push_to_emby(record.emby_item_id, fields)
-                if result.get("pushed"):
+                ok = await self.emby.update_item(record.emby_item_id, updates, current_item=emby_item)
+                if ok:
                     pushed_count += 1
-                elif result.get("error"):
-                    errors_count += 1
                 else:
-                    skipped_count += 1
+                    errors_count += 1
             except Exception:
                 errors_count += 1
+
+        log.info("enrichment.batch_push_done",
+                 total=total, pushed=pushed_count, skipped=skipped_count, errors=errors_count)
 
         return {
             "total": total,
@@ -346,21 +427,26 @@ class MetadataEnrichmentService:
     # Comparison report
     # ===================================================================
 
-    async def get_comparison(self, user_id: str, limit: int = 50) -> list[dict]:
+    async def get_comparison(self, user_id: str, limit: int = 500) -> list[dict]:
         """Compare Trakt vs Emby metadata for enriched items.
 
         Returns items where Trakt and Emby data differ — useful for
         deciding what to push.
         """
         async with async_session() as db:
+            from sqlalchemy import or_
             records = (await db.execute(
                 select(EnrichedMetadata).where(
-                    EnrichedMetadata.metadata_json.isnot(None)
+                    EnrichedMetadata.metadata_json.isnot(None),
+                    or_(
+                        EnrichedMetadata.trakt_slug.is_(None),
+                        EnrichedMetadata.trakt_slug != "__not_found__",
+                    ),
                 ).order_by(EnrichedMetadata.trakt_votes.desc())
                 .limit(limit)
             )).scalars().all()
 
-        log.info("enrichment.comparison_start",
+        log.debug("enrichment.comparison_start",
                  records=len(records),
                  sample_rating=records[0].trakt_rating if records else None,
                  sample_votes=records[0].trakt_votes if records else None,

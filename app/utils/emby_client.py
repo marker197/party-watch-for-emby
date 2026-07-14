@@ -168,7 +168,7 @@ class EmbyClient:
 
     async def get_item(self, item_id: str, user_id: str | None = None) -> dict:
         path = f"/Users/{user_id}/Items/{item_id}" if user_id else f"/Items/{item_id}"
-        return await self._get(path, {"Fields": "ProviderIds,Genres,Overview,People,Studios,RunTimeTicks"})
+        return await self._get(path, {"Fields": "ProviderIds,Genres,Overview,People,Studios,RunTimeTicks,Tags,Taglines,CommunityRating,OfficialRating"})
 
     async def get_library_items(
         self,
@@ -193,14 +193,21 @@ class EmbyClient:
         resp = await self.get_items(search_term=term, item_type=item_type, limit=20)
         return resp.get("Items", [])
 
-    async def get_items_by_ids(self, item_ids: list[str]) -> list[dict]:
-        """Batch fetch items by ID (single call). Works server-scope on all Emby
-        versions, unlike /Items/{id} which 404s on some builds."""
+    async def get_items_by_ids(self, item_ids: list[str], user_id: str | None = None) -> list[dict]:
+        """Batch fetch items by ID (single call).
+
+        When user_id is provided, uses /Users/{uid}/Items which returns
+        full item data on all Emby builds.  Server-scope /Items may omit
+        fields like Overview on some builds.
+        """
         if not item_ids:
             return []
-        resp = await self._get("/Items", {
+        fields = ("CommunityRating,OfficialRating,ProductionYear,ProviderIds,"
+                  "RunTimeTicks,Genres,Overview,Tags,Taglines,People,Studios")
+        path = f"/Users/{user_id}/Items" if user_id else "/Items"
+        resp = await self._get(path, {
             "Ids": ",".join(str(i) for i in item_ids),
-            "Fields": "CommunityRating,OfficialRating,ProductionYear,ProviderIds,RunTimeTicks,Genres",
+            "Fields": fields,
         })
         return resp.get("Items", [])
 
@@ -230,7 +237,7 @@ class EmbyClient:
             return await self.get_item(item_id)
         except Exception:
             pass
-        items = await self.get_items_by_ids([item_id])
+        items = await self.get_items_by_ids([item_id], user_id=user_id)
         return items[0] if items else None
 
     # -- Provider ID helpers -------------------------------------------------
@@ -413,19 +420,21 @@ class EmbyClient:
 
     # -- Metadata update (for enrichment push) --------------------------------
 
-    async def update_item(self, item_id: str, updates: dict) -> bool:
+    async def update_item(self, item_id: str, updates: dict, current_item: dict | None = None) -> bool:
         """Update an Emby item's metadata fields.
 
         GET the full item first, merge updates, POST back.
         Emby requires the full item object on POST /Items/{id}.
+        Pass current_item to skip the fetch if you already have it.
 
         Safe fields to update: Tags, Taglines, CommunityRating,
         Genres, Overview, OfficialRating.  Changes propagate to
         all Emby clients automatically.
         """
         try:
-            # Use safe fetch — /Items/{id} 404s on some Emby builds
-            item = await self.get_item_safe(item_id)
+            item = current_item
+            if not item:
+                item = await self.get_item_safe(item_id)
             if not item:
                 log.warning("emby.update_item_not_found", item_id=item_id)
                 return False

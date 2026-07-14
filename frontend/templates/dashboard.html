@@ -828,19 +828,6 @@
       <div id="dlCardPreview" style="margin-top:8px;"></div>
     </div>
 
-    <!-- #11 Metadata Enrichment -->
-    <div class="card">
-      <div class="card-header">
-        <h2>🎨 Metadata Enrichment</h2>
-        <span class="badge" id="enrichBadge" style="display:none;">0</span>
-      </div>
-      <p>Enrich your library with Trakt ratings, genres, taglines, and trending scores. Push changes to Emby.</p>
-      <div id="enrichCardStatus" style="font-size:0.72rem;color:var(--text-dim);margin:4px 0 8px;"></div>
-      <button class="btn btn-accent btn-sm" onclick="runEnrichmentScan()">Scan Library</button>
-      <button class="btn btn-blue btn-sm" id="btnToggleEnrich" onclick="toggleEnrichment()">View Details ▾</button>
-      <div style="font-size:0.68rem;color:var(--text-dim);margin-top:8px;">Scans ~400 items per run. Scheduled daily at 4:30 AM UTC. Large libraries enrich over multiple runs.</div>
-    </div>
-
   </div>
 
   <!-- Smart Queue panel — full width below the cards grid -->
@@ -916,18 +903,6 @@
   </div>
 
   <!-- Metadata Enrichment panel -->
-  <div id="enrichPanel" class="card" style="display:none; margin-bottom:20px;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-      <h3 style="font-size:0.95rem;">🎨 Metadata Enrichment</h3>
-      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleEnrichment()">✕ Close</button>
-    </div>
-    <div id="enrichStatusBar" style="margin-bottom:10px;"></div>
-    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-      <button class="btn btn-sm btn-green" onclick="pushEnrichToEmby(['tags','tagline'])">Push Tags + Taglines to Emby</button>
-      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="pushEnrichToEmby(['community_rating'])">Push Trakt Ratings to Emby</button>
-    </div>
-    <div id="enrichTable"></div>
-  </div>
 
   <!-- Scheduler status -->
   <div style="margin-bottom:24px;">
@@ -2192,6 +2167,19 @@ function dismissToast(el) {
   setTimeout(() => el.remove(), 250);
 }
 
+function showNotification(message) {
+  const container = document.getElementById('toastContainer');
+  while (container.children.length >= _MAX_TOASTS) {
+    dismissToast(container.firstElementChild);
+  }
+  const el = document.createElement('div');
+  el.className = 'toast toast-ok';
+  el.innerHTML = `<div class="toast-detail">${message}</div>` +
+    `<button class="toast-close" onclick="dismissToast(this.parentElement)">&times;</button>`;
+  container.appendChild(el);
+  setTimeout(() => dismissToast(el), 10000);
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Consolidated dashboard poll (replaces separate activity + health + job-completions)
@@ -2622,202 +2610,6 @@ function _renderWeightChart(snapshots) {
     },
   });
 }
-
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Metadata Enrichment
-// ═══════════════════════════════════════════════════════════════════════════
-
-function toggleEnrichment() {
-  const panel = document.getElementById('enrichPanel');
-  const btn = document.getElementById('btnToggleEnrich');
-  if (panel.style.display === 'none') {
-    panel.style.display = 'block';
-    btn.textContent = 'Hide Details ▴';
-    loadEnrichmentData();
-  } else {
-    panel.style.display = 'none';
-    btn.textContent = 'View Details ▾';
-  }
-}
-
-async function loadEnrichmentData() {
-  const statusBar = document.getElementById('enrichStatusBar');
-  const table = document.getElementById('enrichTable');
-  statusBar.innerHTML = '<span style="color:var(--text-dim);font-size:0.82rem;">Loading…</span>';
-  table.innerHTML = '';
-
-  try {
-    const [statusR, compR] = await Promise.all([
-      fetch(API + '/api/enrichment/status'),
-      fetch(API + '/api/enrichment/comparison?limit=50'),
-    ]);
-    const status = await statusR.json();
-    const comp = await compR.json();
-
-    // Update badge
-    const badge = document.getElementById('enrichBadge');
-    if (status.total_enriched > 0) {
-      badge.style.display = '';
-      badge.textContent = status.total_enriched;
-      badge.className = 'badge badge-on';
-    }
-
-    // Status bar
-    statusBar.innerHTML = `<div style="display:flex;gap:12px;flex-wrap:wrap;">
-      <span style="font-size:0.82rem;color:var(--green);">✓ ${status.fresh} fresh</span>
-      <span style="font-size:0.82rem;color:var(--orange);">${status.expired} expired</span>
-      <span style="font-size:0.82rem;color:var(--text-dim);">${status.total_enriched} total enriched</span>
-    </div>`;
-
-    // Comparison table
-    const items = comp.items || [];
-    if (items.length === 0) {
-      table.innerHTML = '<div style="color:var(--text-dim);padding:8px;font-size:0.82rem;">No enriched items yet — click "Scan Library" to start.</div>';
-      return;
-    }
-
-    let html = '<table class="queue-table"><thead><tr>' +
-      '<th>Title</th><th style="width:90px;">Emby ★</th><th style="width:90px;">Trakt ★</th><th style="width:65px;">Votes</th><th style="width:60px;">Social</th><th>Differences</th><th style="width:60px;"></th>' +
-      '</tr></thead><tbody>';
-
-    items.forEach(i => {
-      const embyR = i.emby_rating != null ? Number(i.emby_rating).toFixed(1) : '—';
-      const traktR = i.trakt_rating != null ? Number(i.trakt_rating).toFixed(1) : '—';
-      const social = i.social_score ? (i.social_score * 100).toFixed(0) + '%' : '—';
-      const votes = i.trakt_votes || 0;
-
-      // Rating diff color
-      let ratingClass = '';
-      if (i.emby_rating && i.trakt_rating) {
-        const diff = Math.abs(i.trakt_rating - i.emby_rating);
-        if (diff >= 1.0) ratingClass = 'style="color:var(--red);"';
-        else if (diff >= 0.5) ratingClass = 'style="color:var(--orange);"';
-      }
-
-      const diffs = (i.diffs || []).map(d =>
-        `<span style="font-size:0.7rem;color:var(--text-dim);display:block;">${d}</span>`
-      ).join('');
-
-      const pushBtn = i.has_diffs
-        ? `<button class="btn btn-sm" style="background:var(--accent);padding:2px 6px;font-size:0.65rem;" onclick="pushSingleEnrich('${i.emby_item_id}')">Push</button>`
-        : '';
-
-      html += `<tr>
-        <td style="font-size:0.82rem;">${i.title}${i.tagline ? `<div style="font-size:0.7rem;color:var(--text-dim);font-style:italic;margin-top:1px;">${i.tagline.substring(0, 80)}</div>` : ''}</td>
-        <td style="text-align:center;">${embyR}</td>
-        <td ${ratingClass} style="text-align:center;">${traktR}</td>
-        <td style="text-align:center;font-size:0.78rem;color:var(--text-dim);">${votes.toLocaleString()}</td>
-        <td style="text-align:center;font-size:0.78rem;">${social}</td>
-        <td>${diffs || '<span style="font-size:0.7rem;color:var(--green);">✓ in sync</span>'}</td>
-        <td>${pushBtn}</td>
-      </tr>`;
-    });
-
-    html += '</tbody></table>';
-    table.innerHTML = html;
-
-  } catch(e) {
-    statusBar.innerHTML = `<span style="color:var(--red);font-size:0.82rem;">Failed: ${e.message}</span>`;
-  }
-}
-
-async function runEnrichmentScan() {
-  if (!currentUserId) return alert('Select a user first');
-  showNotification('Scanning library — enriching from Trakt…');
-
-  try {
-    const r = await fetch(API + '/api/enrichment/scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUserId, limit: 400 }),
-    });
-    const d = await r.json();
-    const remaining = d.remaining || 0;
-    let msg = `Done: ${d.enriched || 0} enriched, ${d.skipped || 0} skipped, ${d.errors || 0} errors out of ${d.total || 0}`;
-    if (remaining > 0) msg += ` · ${remaining} remaining (next batch on next run)`;
-    showNotification(msg);
-
-    // Refresh panel if open
-    if (document.getElementById('enrichPanel').style.display !== 'none') {
-      loadEnrichmentData();
-    }
-    // Update badge
-    const sr = await fetch(API + '/api/enrichment/status');
-    const st = await sr.json();
-    const badge = document.getElementById('enrichBadge');
-    if (st.total_enriched > 0) {
-      badge.style.display = '';
-      badge.textContent = st.total_enriched;
-      badge.className = 'badge badge-on';
-    }
-  } catch(e) {
-    showNotification('Scan error: ' + e.message);
-  }
-}
-
-async function pushEnrichToEmby(fields) {
-  if (!confirm(`Push ${fields.join(' + ')} to Emby for all enriched items?\n\nTags are additive (merged with existing). Taglines only set where Emby has none.`)) return;
-
-  const table = document.getElementById('enrichTable');
-  const prevHtml = table.innerHTML;
-  table.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Pushing to Emby…</div>';
-
-  try {
-    const r = await fetch(API + '/api/enrichment/push', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ all: true, fields }),
-    });
-    const d = await r.json();
-    const msg = `Pushed: ${d.pushed || 0} items, skipped: ${d.skipped || 0}, errors: ${d.errors || 0}`;
-    showNotification(msg);
-    table.innerHTML = `<div style="color:var(--green);padding:8px;font-size:0.82rem;">${msg}</div>`;
-    // Reload comparison after a short delay to let Emby reflect changes
-    setTimeout(() => loadEnrichmentData(), 2000);
-  } catch(e) {
-    showNotification('Push failed: ' + e.message);
-    table.innerHTML = prevHtml;
-  }
-}
-
-async function pushSingleEnrich(embyItemId) {
-  try {
-    const r = await fetch(API + '/api/enrichment/push', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ emby_item_ids: [embyItemId], fields: ['tags', 'tagline'] }),
-    });
-    const d = await r.json();
-    const result = (d.results || [])[0];
-    if (result && result.pushed && result.pushed.length) {
-      showNotification(`Pushed ${result.pushed.join(', ')} to Emby`);
-    } else {
-      showNotification('Nothing to push (already in sync)');
-    }
-    loadEnrichmentData();
-  } catch(e) {
-    showNotification('Push failed: ' + e.message);
-  }
-}
-
-// Load enrichment badge on startup
-(async function() {
-  try {
-    const r = await fetch(API + '/api/enrichment/status');
-    const st = await r.json();
-    if (st.total_enriched > 0) {
-      const badge = document.getElementById('enrichBadge');
-      badge.style.display = '';
-      badge.textContent = st.total_enriched;
-      badge.className = 'badge badge-on';
-    }
-    const cs = document.getElementById('enrichCardStatus');
-    if (cs) {
-      cs.innerHTML = `${st.fresh} enriched · ${st.expired} expired · ${st.total_enriched} total`;
-    }
-  } catch(e) {}
-})();
 
 
 // ═══════════════════════════════════════════════════════════════════════════
