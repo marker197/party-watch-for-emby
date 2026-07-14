@@ -3368,7 +3368,7 @@ async def enrichment_scan(
     metadata in the DB.  Skips items already enriched and fresh (<30 days).
     """
     user_id = payload.get("user_id", current_user.id)
-    limit = min(payload.get("limit", 100), 200)
+    limit = min(payload.get("limit", 400), 500)
 
     user = (await db.execute(
         select(User).where(User.id == user_id)

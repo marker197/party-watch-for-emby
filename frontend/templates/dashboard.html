@@ -835,9 +835,10 @@
         <span class="badge" id="enrichBadge" style="display:none;">0</span>
       </div>
       <p>Enrich your library with Trakt ratings, genres, taglines, and trending scores. Push changes to Emby.</p>
+      <div id="enrichCardStatus" style="font-size:0.72rem;color:var(--text-dim);margin:4px 0 8px;"></div>
       <button class="btn btn-accent btn-sm" onclick="runEnrichmentScan()">Scan Library</button>
       <button class="btn btn-blue btn-sm" id="btnToggleEnrich" onclick="toggleEnrichment()">View Details ▾</button>
-      <div id="enrichOutput" class="log-area" style="display:none; margin-top:12px;"></div>
+      <div style="font-size:0.68rem;color:var(--text-dim);margin-top:8px;">Scans ~400 items per run. Scheduled daily at 4:30 AM UTC. Large libraries enrich over multiple runs.</div>
     </div>
 
   </div>
@@ -2723,19 +2724,19 @@ async function loadEnrichmentData() {
 
 async function runEnrichmentScan() {
   if (!currentUserId) return alert('Select a user first');
-  const out = document.getElementById('enrichOutput');
-  out.style.display = 'block';
-  out.innerHTML = 'Scanning library and enriching from Trakt…';
+  showNotification('Scanning library — enriching from Trakt…');
 
   try {
     const r = await fetch(API + '/api/enrichment/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUserId, limit: 100 }),
+      body: JSON.stringify({ user_id: currentUserId, limit: 400 }),
     });
     const d = await r.json();
-    out.innerHTML = `Done: ${d.enriched || 0} enriched, ${d.skipped || 0} skipped (fresh), ${d.errors || 0} errors out of ${d.total || 0} items.`;
-    setTimeout(() => { out.style.display = 'none'; }, 10000);
+    const remaining = d.remaining || 0;
+    let msg = `Done: ${d.enriched || 0} enriched, ${d.skipped || 0} skipped, ${d.errors || 0} errors out of ${d.total || 0}`;
+    if (remaining > 0) msg += ` · ${remaining} remaining (next batch on next run)`;
+    showNotification(msg);
 
     // Refresh panel if open
     if (document.getElementById('enrichPanel').style.display !== 'none') {
@@ -2751,7 +2752,7 @@ async function runEnrichmentScan() {
       badge.className = 'badge badge-on';
     }
   } catch(e) {
-    out.innerHTML = `Error: ${e.message}`;
+    showNotification('Scan error: ' + e.message);
   }
 }
 
@@ -2810,6 +2811,10 @@ async function pushSingleEnrich(embyItemId) {
       badge.style.display = '';
       badge.textContent = st.total_enriched;
       badge.className = 'badge badge-on';
+    }
+    const cs = document.getElementById('enrichCardStatus');
+    if (cs) {
+      cs.innerHTML = `${st.fresh} enriched · ${st.expired} expired · ${st.total_enriched} total`;
     }
   } catch(e) {}
 })();

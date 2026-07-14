@@ -137,33 +137,33 @@ class MetadataEnrichmentService:
     # ===================================================================
 
     async def batch_enrich(
-        self, trakt: TraktClient, user_id: str, limit: int = 100,
+        self, trakt: TraktClient, user_id: str, limit: int = 400,
     ) -> dict:
         """Enrich library items that haven't been enriched or are expired.
 
-        Scans Emby library via LibraryCache, skips already-fresh items.
-        Returns summary stats.
+        Fetches the full Emby library, skips already-fresh items, then
+        enriches up to `limit` new/stale items per run.  Large libraries
+        are processed across multiple runs (~400 items/run to stay within
+        Trakt's 1000 calls/day budget alongside other services).
         """
         enriched = 0
         skipped = 0
         errors = 0
         items_processed = []
 
-        # Get library items from Emby (movies + series)
+        # Get ALL library items from Emby (movies + series)
         all_items = []
         for item_type in ("Movie", "Series"):
             try:
                 resp = await self.emby.get_items(
                     user_id=user_id, item_type=item_type,
                     fields="ProviderIds,ProductionYear,Genres,CommunityRating,Taglines,Tags",
-                    limit=limit,
+                    limit=5000,
                 )
                 all_items.extend(resp.get("Items", []))
             except Exception as e:
                 log.warning("enrichment.library_fetch_failed", item_type=item_type,
                             error=str(e)[:120])
-
-        log.info("enrichment.batch_start", total_items=len(all_items))
 
         async with async_session() as db:
             # Get set of already-enriched (fresh AND actually has data) emby IDs
@@ -176,11 +176,26 @@ class MetadataEnrichmentService:
             )).scalars().all()
             fresh_ids = set(rows)
 
+        # Filter to only items needing enrichment
+        to_enrich = []
         for item in all_items:
             emby_id = str(item.get("Id", ""))
-            if emby_id in fresh_ids:
+            if emby_id not in fresh_ids:
+                to_enrich.append(item)
+            else:
                 skipped += 1
-                continue
+
+        log.info("enrichment.batch_start",
+                 library_total=len(all_items),
+                 fresh_skipped=skipped,
+                 to_enrich=len(to_enrich),
+                 batch_limit=limit)
+
+        # Cap this run's enrichment calls
+        batch = to_enrich[:limit]
+
+        for item in batch:
+            emby_id = str(item.get("Id", ""))
 
             provider_ids = item.get("ProviderIds", {})
             title = item.get("Name", "")
@@ -205,14 +220,17 @@ class MetadataEnrichmentService:
                 errors += 1
                 log.warning("enrichment.item_failed", title=title)
 
+        remaining = len(to_enrich) - len(batch)
         log.info("enrichment.batch_done",
-                 enriched=enriched, skipped=skipped, errors=errors)
+                 enriched=enriched, skipped=skipped, errors=errors,
+                 remaining=remaining)
 
         return {
             "total": len(all_items),
             "enriched": enriched,
             "skipped": skipped,
             "errors": errors,
+            "remaining": remaining,
             "items": items_processed[:50],  # cap response size
         }
 
