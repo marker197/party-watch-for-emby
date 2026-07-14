@@ -61,9 +61,13 @@ class AiringAlertsService:
 
         try:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+            # Determine server country for release-date lookups
+            server_country = await self._get_server_country()
+
             results = []
             results.extend(await self._get_show_alerts(trakt, today, days, user=user))
-            results.extend(await self._get_movie_alerts(trakt, today, days))
+            results.extend(await self._get_movie_alerts(trakt, today, days, country=server_country))
             results.sort(key=lambda r: (r["days_until_air"] if r["days_until_air"] is not None else 9999))
             return results
         finally:
@@ -306,7 +310,8 @@ class AiringAlertsService:
     # Movies (watchlist releases)
     # ------------------------------------------------------------------
 
-    async def _get_movie_alerts(self, trakt: TraktClient, today: str, days: int) -> list[dict]:
+    async def _get_movie_alerts(self, trakt: TraktClient, today: str, days: int,
+                               country: str = "us") -> list[dict]:
         try:
             releases = await trakt.get_my_movies(start_date=today, days=days)
         except Exception as e:
@@ -338,7 +343,7 @@ class AiringAlertsService:
 
             # Fetch typed release dates (theatrical / digital)
             theatrical_release, digital_release = await self._get_typed_releases(
-                trakt, movie_trakt_id,
+                trakt, movie_trakt_id, country=country,
             )
 
             results.append({
@@ -361,16 +366,18 @@ class AiringAlertsService:
 
     async def _get_typed_releases(
         self, trakt: TraktClient, movie_trakt_id: str,
+        country: str = "us",
     ) -> tuple[str | None, str | None]:
         """Return (theatrical_date, digital_date) for a movie.
 
-        Checks US releases first, falls back to GB. Cached 24h per movie
-        since release dates don't change often.
+        Uses the Emby server's metadata country code for the primary lookup,
+        falling back to 'us' if the primary country has no data. Cached 24h
+        per movie+country since release dates don't change often.
         """
         if not movie_trakt_id:
             return None, None
 
-        cache_key = f"airing_alerts:releases:{movie_trakt_id}"
+        cache_key = f"airing_alerts:releases:{movie_trakt_id}:{country}"
         try:
             r = await get_redis()
             cached = await r.get(cache_key)
@@ -383,12 +390,18 @@ class AiringAlertsService:
         theatrical = None
         digital = None
 
-        for country in ("us", "gb"):
+        # Build country list: server country first, then US as fallback
+        # (skip duplicate if server country is already US)
+        countries = [country]
+        if country != "us":
+            countries.append("us")
+
+        for c in countries:
             try:
-                releases = await trakt.get_movie_releases(movie_trakt_id, country=country)
+                releases = await trakt.get_movie_releases(movie_trakt_id, country=c)
             except Exception:
                 log.debug("airing_alerts.releases_fetch_failed",
-                          movie_trakt_id=movie_trakt_id, country=country)
+                          movie_trakt_id=movie_trakt_id, country=c)
                 continue
 
             for rel in releases or []:
@@ -415,6 +428,41 @@ class AiringAlertsService:
             pass
 
         return theatrical, digital
+
+    # ------------------------------------------------------------------
+    # Server country
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _get_server_country() -> str:
+        """Return the Emby server's MetadataCountryCode, lowercased.
+
+        Cached in Redis for 24h — the server country setting almost never
+        changes and we don't want to hit /System/Configuration on every
+        Airing Soon refresh.
+        """
+        cache_key = "airing_alerts:server_country"
+        try:
+            r = await get_redis()
+            cached = await r.get(cache_key)
+            if cached:
+                return cached
+        except Exception:
+            pass
+
+        try:
+            emby = EmbyClient()
+            country = await emby.get_metadata_country()
+        except Exception:
+            log.warning("airing_alerts.server_country_failed")
+            country = "us"
+
+        try:
+            await r.setex(cache_key, SEASON_INFO_CACHE_TTL, country)
+        except Exception:
+            pass
+
+        return country
 
     # ------------------------------------------------------------------
     # Shared helpers

@@ -559,11 +559,34 @@ class SmartQueueService:
         """
         resolved: dict[int, str] = {}
         async with async_session() as db:
-            await db.execute(delete(QueueItem).where(QueueItem.user_id == user.id))
+            # Only delete UNPLAYED items — keep played items for feedback history
+            await db.execute(
+                delete(QueueItem).where(
+                    QueueItem.user_id == user.id,
+                    QueueItem.played == False,
+                )
+            )
+
+            # Collect emby IDs of played items so we don't re-insert them
+            played_emby_ids: set[str] = set()
+            played_rows = (await db.execute(
+                select(QueueItem.emby_item_id)
+                .where(
+                    QueueItem.user_id == user.id,
+                    QueueItem.played == True,
+                    QueueItem.emby_item_id.isnot(None),
+                )
+            )).scalars().all()
+            played_emby_ids = {eid for eid in played_rows if eid}
+
             for idx, item in enumerate(items):
                 # Use pre-resolved ID if available, otherwise look up
                 emby_id = item.get("_resolved_emby_id") or await self._find_in_emby(item)
                 in_library = emby_id is not None
+
+                # Skip items that already have a played history record
+                if emby_id and emby_id in played_emby_ids:
+                    continue
 
                 if in_library:
                     resolved[idx] = emby_id
@@ -582,7 +605,16 @@ class SmartQueueService:
                 ))
             await db.commit()
 
-        in_lib = len(resolved)
+            # Prune played history older than 90 days to keep the table bounded
+            history_cutoff = datetime.utcnow() - timedelta(days=90)
+            await db.execute(
+                delete(QueueItem).where(
+                    QueueItem.user_id == user.id,
+                    QueueItem.played == True,
+                    QueueItem.played_at < history_cutoff,
+                )
+            )
+            await db.commit()
         missing = len(items) - in_lib
         log.info("smart_queue.persisted", user_id=user.id,
                  total=len(items), in_library=in_lib, missing=missing)
@@ -949,40 +981,42 @@ class SmartQueueService:
     # ===================================================================
 
     async def remove_and_backfill(self, user_id: int, emby_item_id: str):
-        """Remove a watched item from the queue and backfill with the next best candidate.
+        """Remove a watched item from the active queue and backfill with the next best candidate.
 
         Called from the webhook handler after record_play.
+        The item is already marked played=True by record_play() — we keep it
+        for feedback history and just backfill the gap.
         Steps:
-          1. Delete the watched QueueItem row
+          1. Verify the item is marked played (don't delete it)
           2. Try overflow pool first (pre-scored, no API calls)
           3. If overflow is empty or too low-scoring, pull fresh trending
-          4. Re-sync the Emby playlist
+          4. Re-sync the Emby playlist (excludes played items)
         """
         async with async_session() as db:
-            # Delete the watched item
+            # Confirm the item exists and is played — we keep it for history
             watched = (await db.execute(
                 select(QueueItem).where(
                     QueueItem.user_id == user_id,
                     QueueItem.emby_item_id == emby_item_id,
+                    QueueItem.played == True,
                 )
             )).scalar_one_or_none()
 
             if not watched:
-                return  # not in queue, nothing to do
+                return  # not in queue or not yet marked played
 
             watched_title = watched.title
-            await db.execute(
-                delete(QueueItem).where(QueueItem.id == watched.id)
-            )
-            await db.commit()
 
-            log.info("smart_queue.removed_watched",
+            log.info("smart_queue.item_played_kept_for_history",
                      user_id=user_id, title=watched_title)
 
-            # Get remaining queue to find the lowest score
+            # Get remaining ACTIVE (unplayed) queue to find the lowest score
             remaining = (await db.execute(
                 select(QueueItem)
-                .where(QueueItem.user_id == user_id)
+                .where(
+                    QueueItem.user_id == user_id,
+                    QueueItem.played == False,
+                )
                 .order_by(QueueItem.score.desc())
             )).scalars().all()
 
@@ -1080,7 +1114,10 @@ class SmartQueueService:
 
             items = (await db.execute(
                 select(QueueItem)
-                .where(QueueItem.user_id == user_id)
+                .where(
+                    QueueItem.user_id == user_id,
+                    QueueItem.played == False,
+                )
                 .order_by(QueueItem.score.desc())
             )).scalars().all()
 

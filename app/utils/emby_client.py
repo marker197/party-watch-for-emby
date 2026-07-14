@@ -69,6 +69,20 @@ class EmbyClient:
     async def get_system_info(self) -> dict:
         return await self._get("/System/Info/Public")
 
+    async def get_metadata_country(self) -> str:
+        """Return the server's MetadataCountryCode from /System/Configuration.
+
+        Falls back to 'us' if the field is missing or the call fails.
+        Requires admin-level API key (which the suite already uses).
+        """
+        try:
+            config = await self._get("/System/Configuration")
+            code = config.get("MetadataCountryCode", "") or ""
+            return code.lower() if code else "us"
+        except Exception:
+            log.warning("emby.metadata_country_failed")
+            return "us"
+
     # -- Users ---------------------------------------------------------------
 
     async def get_users(self) -> list[dict]:

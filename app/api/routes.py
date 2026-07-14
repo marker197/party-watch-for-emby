@@ -288,7 +288,10 @@ async def get_queue(
     
     items = (await db.execute(
         select(QueueItem)
-        .where(QueueItem.user_id == user_id)
+        .where(
+            QueueItem.user_id == user_id,
+            QueueItem.played == False,
+        )
         .order_by(QueueItem.score.desc())
         .limit(limit)
     )).scalars().all()
