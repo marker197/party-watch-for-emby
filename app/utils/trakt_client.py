@@ -181,11 +181,27 @@ class TraktClient:
 
     # -- Exponential backoff for 429 -----------------------------------------
 
+    MAX_RATE_LIMIT_WAIT = 60  # Never sleep more than 60s on a 429
+
     async def _wait_for_rate_limit_reset(self) -> None:
-        """Sleep until rate limit resets."""
+        """Handle a 429 rate limit response.
+
+        If the reset is within MAX_RATE_LIMIT_WAIT (60s), sleep and let the
+        caller retry.  If the reset is further out (e.g. the daily 86400s
+        window), raise immediately so the caller fails fast instead of
+        hanging for hours.
+        """
         if self._rate_limit_reset > time.time():
-            sleep_time = self._rate_limit_reset - time.time() + 1  # +1 for safety
-            log.warning("trakt.rate_limit_wait", sleep_seconds=sleep_time)
+            sleep_time = self._rate_limit_reset - time.time() + 1
+            if sleep_time > self.MAX_RATE_LIMIT_WAIT:
+                log.error("trakt.rate_limit_exceeded",
+                          sleep_would_be=round(sleep_time),
+                          max_wait=self.MAX_RATE_LIMIT_WAIT)
+                raise HTTPException(
+                    429,
+                    f"Trakt daily rate limit exceeded — resets in {int(sleep_time // 3600)}h {int((sleep_time % 3600) // 60)}m",
+                )
+            log.warning("trakt.rate_limit_wait", sleep_seconds=round(sleep_time))
             await asyncio.sleep(sleep_time)
 
     # -- Helpers ---------------------------------------------------------

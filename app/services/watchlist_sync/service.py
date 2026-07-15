@@ -209,6 +209,7 @@ class WatchlistSyncService:
                 servers = _json.loads(raw)
                 if servers:
                     srv = servers[0]  # Use first server
+                    client = None
                     try:
                         client = RadarrClient(
                             srv["url"], srv["api_key"],
@@ -242,10 +243,12 @@ class WatchlistSyncService:
                                     log.warning("watchlist_sync.wl_to_arr.radarr_add_error",
                                                 tmdb=tmdb, error=err)
                                     movies_failed += 1
-                        await client.close()
                     except Exception:
                         log.exception("watchlist_sync.wl_to_arr.radarr_connect_failed",
                                       server=srv.get("name"))
+                    finally:
+                        if client:
+                            await client.close()
 
         # --- Shows → Sonarr ---
         shows_to_add = {
@@ -261,6 +264,7 @@ class WatchlistSyncService:
                 servers = _json.loads(raw)
                 if servers:
                     srv = servers[0]  # Use first server
+                    client = None
                     try:
                         client = SonarrClient(
                             srv["url"], srv["api_key"],
@@ -293,10 +297,12 @@ class WatchlistSyncService:
                                     log.warning("watchlist_sync.wl_to_arr.sonarr_add_error",
                                                 tvdb=tvdb, error=err)
                                     shows_failed += 1
-                        await client.close()
                     except Exception:
                         log.exception("watchlist_sync.wl_to_arr.sonarr_connect_failed",
                                       server=srv.get("name"))
+                    finally:
+                        if client:
+                            await client.close()
 
         log.info("watchlist_sync.wl_to_arr.done",
                  user_id=user.id,
@@ -342,13 +348,13 @@ class WatchlistSyncService:
         raw = await r.get("radarr_servers")
         if raw:
             for srv in _json.loads(raw):
+                client = None
                 try:
                     client = RadarrClient(
                         srv["url"], srv["api_key"],
                         name=srv.get("name", "Radarr"),
                     )
                     movies = await client.get_missing_movies()
-                    await client.close()
                     for m in movies:
                         tmdb = m.get("tmdbId")
                         if tmdb:
@@ -358,18 +364,21 @@ class WatchlistSyncService:
                 except Exception:
                     log.exception("watchlist_sync.radarr_fetch_failed",
                                   server=srv.get("name"))
+                finally:
+                    if client:
+                        await client.close()
 
         # --- Sonarr ---
         raw = await r.get("sonarr_servers")
         if raw:
             for srv in _json.loads(raw):
+                client = None
                 try:
                     client = SonarrClient(
                         srv["url"], srv["api_key"],
                         name=srv.get("name", "Sonarr"),
                     )
                     series = await client.get_missing_series()
-                    await client.close()
                     for s in series:
                         tvdb = s.get("tvdbId")
                         if tvdb:
@@ -379,6 +388,9 @@ class WatchlistSyncService:
                 except Exception:
                     log.exception("watchlist_sync.sonarr_fetch_failed",
                                   server=srv.get("name"))
+                finally:
+                    if client:
+                        await client.close()
 
         # Deduplicate (dual-server setups)
         missing_tmdb = list(set(missing_tmdb))
@@ -407,13 +419,13 @@ class WatchlistSyncService:
         raw = await r.get("radarr_servers")
         if raw:
             for srv in _json.loads(raw):
+                client = None
                 try:
                     client = RadarrClient(
                         srv["url"], srv["api_key"],
                         name=srv.get("name", "Radarr"),
                     )
                     movies = await client.get_all_movies()
-                    await client.close()
                     for m in movies:
                         tmdb = m.get("tmdbId")
                         if tmdb:
@@ -421,17 +433,20 @@ class WatchlistSyncService:
                 except Exception:
                     log.exception("watchlist_sync.radarr_all_fetch_failed",
                                   server=srv.get("name"))
+                finally:
+                    if client:
+                        await client.close()
 
         raw = await r.get("sonarr_servers")
         if raw:
             for srv in _json.loads(raw):
+                client = None
                 try:
                     client = SonarrClient(
                         srv["url"], srv["api_key"],
                         name=srv.get("name", "Sonarr"),
                     )
                     series = await client.get_all_series()
-                    await client.close()
                     for s in series:
                         tvdb = s.get("tvdbId")
                         if tvdb:
@@ -439,6 +454,9 @@ class WatchlistSyncService:
                 except Exception:
                     log.exception("watchlist_sync.sonarr_all_fetch_failed",
                                   server=srv.get("name"))
+                finally:
+                    if client:
+                        await client.close()
 
         return radarr_tmdb, sonarr_tvdb
 

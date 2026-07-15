@@ -25,6 +25,7 @@ from app.utils.redis_cache import get_redis
 from app.security.auth import get_current_user, require_user_ownership, issue_tokens
 
 from app.services.smart_queue.service import SmartQueueService
+from app.middleware.rate_limit import limiter, LIMITS
 from app.services.ml_predictor.service import MLPredictorService
 from app.services.universe_discovery.service import UniverseDiscoveryService
 from app.services.watch_party.service import WatchPartyService
@@ -91,7 +92,8 @@ class LinkPollRequest(BaseModel):
 
 
 @router.post("/auth/trakt/device-code")
-async def trakt_device_code(body: LinkRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit(LIMITS["auth"])
+async def trakt_device_code(request: Request, body: LinkRequest, db: AsyncSession = Depends(get_db)):
     """Start Trakt device-code flow.  Returns user_code + verification_url."""
     user = (await db.execute(
         select(User).where(User.emby_user_id == body.emby_user_id)
@@ -119,7 +121,8 @@ async def trakt_device_code(body: LinkRequest, db: AsyncSession = Depends(get_db
 
 
 @router.post("/auth/trakt/poll")
-async def trakt_poll(body: LinkPollRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit(LIMITS["auth"])
+async def trakt_poll(request: Request, body: LinkPollRequest, db: AsyncSession = Depends(get_db)):
     """Poll for completed Trakt authorisation."""
     trakt = TraktClient()
     try:
