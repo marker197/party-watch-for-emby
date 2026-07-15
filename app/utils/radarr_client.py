@@ -67,6 +67,14 @@ class RadarrClient:
         """Return all movies in Radarr with status fields."""
         return await self._get("/movie")
 
+    async def get_missing_movies(self) -> list[dict]:
+        """Return monitored movies that don't have a file yet."""
+        all_movies = await self.get_all_movies()
+        return [
+            m for m in all_movies
+            if m.get("monitored") and not m.get("hasFile")
+        ]
+
     # -- Lookup ---------------------------------------------------------------
 
     async def get_root_folders(self) -> list[dict]:

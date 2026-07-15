@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timedelta
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
@@ -469,9 +469,10 @@ async def unblock_queue_item(
 @router.get("/api/airing-soon/{user_id}")
 async def get_airing_soon(
     user_id: int,
-    days: int = Query(14, ge=1, le=60),
+    days: int = Query(30, ge=1, le=90),
     current_user: User = Depends(get_current_user),  # ✅ SECURITY
     db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """Upcoming episodes (for shows already in the library) with premiere/
     finale badges and a days-until-air countdown."""
@@ -486,6 +487,26 @@ async def get_airing_soon(
     except Exception:
         log.exception("airing_soon.fetch_failed", user_id=user_id)
         raise HTTPException(502, "failed to fetch airing calendar from Trakt")
+
+    # Fire watchlist sync in background — ensures missing Radarr/Sonarr
+    # items are on the Trakt watchlist so they appear in Airing Soon.
+    # Throttled: runs at most once every 30 minutes per user.
+    if user.trakt_access_token:
+        r = await get_redis()
+        throttle_key = f"watchlist_sync:last_run:{user_id}"
+        already_ran = await r.get(throttle_key)
+        if not already_ran:
+            from app.services.watchlist_sync.service import WatchlistSyncService
+            _wls = WatchlistSyncService()
+
+            async def _bg_sync():
+                try:
+                    await r.setex(throttle_key, 1800, "1")  # 30 min throttle
+                    await _wls._sync_user(user)
+                except Exception:
+                    log.warning("watchlist_sync.background_failed", user_id=user_id)
+
+            background_tasks.add_task(_bg_sync)
 
     return {"count": len(alerts), "items": alerts}
 
@@ -2962,9 +2983,9 @@ async def get_availability():
             try:
                 client = RadarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Radarr"))
                 all_movies = await client.get_all_movies()
-                await client.close()
                 # Fetch download queue for accurate status
                 dl_queue = await client.get_download_queue()
+                await client.close()
                 dl_movie_ids = {d.get("tmdb_id") for d in dl_queue if d.get("tmdb_id")}
 
                 for movie in all_movies:
@@ -3117,6 +3138,25 @@ async def get_download_queue():
                 log.warning("download_queue.sonarr_failed", server=srv.get("name"), error=str(e)[:120])
 
     return {"downloads": downloads, "count": len(downloads)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Watchlist Sync (Radarr/Sonarr → Trakt Watchlist)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/api/watchlist-sync/run")
+async def run_watchlist_sync(
+    current_user: User = Depends(get_current_user),
+):
+    """Manually trigger a Radarr/Sonarr → Trakt watchlist sync."""
+    from app.services.watchlist_sync.service import WatchlistSyncService
+    svc = WatchlistSyncService()
+    try:
+        await svc._sync_user(current_user)
+        return {"status": "ok"}
+    except Exception as e:
+        log.exception("watchlist_sync.manual_failed", user_id=current_user.id)
+        raise HTTPException(500, f"Watchlist sync failed: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3283,12 +3323,13 @@ async def get_arr_library():
     """Return sets of TMDB/TVDB IDs for items already in Radarr/Sonarr.
 
     Used by the frontend to show 'In Radarr' / 'In Sonarr' instead of
-    the send button.  Cached 60s to avoid hammering the *arr APIs.
+    the send button, and by the watchlist sync job to find missing items.
+    Cached 60s to avoid hammering the *arr APIs.
     """
     import json as _json
     from app.utils.redis_cache import cache_get, cache_set
 
-    cache_key = "arr_library_ids_v1"
+    cache_key = "arr_library_ids_v2"
     try:
         cached = await cache_get(cache_key)
         if cached:
@@ -3301,6 +3342,8 @@ async def get_arr_library():
     sonarr_tvdb: list[int] = []
     radarr_server_names: dict[int, str] = {}
     sonarr_server_names: dict[int, str] = {}
+    radarr_missing_tmdb: list[int] = []
+    sonarr_missing_tvdb: list[int] = []
 
     r = await get_redis()
 
@@ -3318,6 +3361,8 @@ async def get_arr_library():
                     if tmdb:
                         radarr_tmdb.append(tmdb)
                         radarr_server_names[tmdb] = srv.get("name", "Radarr")
+                        if m.get("monitored") and not m.get("hasFile"):
+                            radarr_missing_tmdb.append(tmdb)
             except Exception as e:
                 log.warning("arr_library.radarr_failed", server=srv.get("name"), error=str(e)[:120])
 
@@ -3335,14 +3380,26 @@ async def get_arr_library():
                     if tvdb:
                         sonarr_tvdb.append(tvdb)
                         sonarr_server_names[tvdb] = srv.get("name", "Sonarr")
+                        if s.get("monitored"):
+                            stats = s.get("statistics") or {}
+                            total = stats.get("episodeCount", 0)
+                            on_disk = stats.get("episodeFileCount", 0)
+                            if total > 0 and on_disk < total:
+                                sonarr_missing_tvdb.append(tvdb)
             except Exception as e:
                 log.warning("arr_library.sonarr_failed", server=srv.get("name"), error=str(e)[:120])
+
+    # Deduplicate missing IDs (dual-server setups)
+    radarr_missing_tmdb = list(set(radarr_missing_tmdb))
+    sonarr_missing_tvdb = list(set(sonarr_missing_tvdb))
 
     result = {
         "radarr_tmdb": radarr_tmdb,
         "sonarr_tvdb": sonarr_tvdb,
         "radarr_names": radarr_server_names,
         "sonarr_names": sonarr_server_names,
+        "radarr_missing_tmdb": radarr_missing_tmdb,
+        "sonarr_missing_tvdb": sonarr_missing_tvdb,
     }
 
     # Cache for 60 seconds

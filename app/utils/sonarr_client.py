@@ -67,6 +67,20 @@ class SonarrClient:
         """Return all series in Sonarr with episode counts and status."""
         return await self._get("/series")
 
+    async def get_missing_series(self) -> list[dict]:
+        """Return monitored series that have missing episodes."""
+        all_series = await self.get_all_series()
+        missing = []
+        for s in all_series:
+            if not s.get("monitored"):
+                continue
+            stats = s.get("statistics") or {}
+            total = stats.get("episodeCount", 0)
+            on_disk = stats.get("episodeFileCount", 0)
+            if total > 0 and on_disk < total:
+                missing.append(s)
+        return missing
+
     # -- Lookup ---------------------------------------------------------------
 
     async def get_root_folders(self) -> list[dict]:

@@ -139,6 +139,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         log.warning("suite.initial_heartbeat_failed")
 
+    # First-run watchlist sync — ensures missing Radarr/Sonarr items are
+    # on the Trakt watchlist from the moment the container starts
+    try:
+        from app.services.watchlist_sync.service import WatchlistSyncService
+        _wls_startup = WatchlistSyncService()
+        await _wls_startup.run_for_all_users()
+    except Exception:
+        log.warning("suite.initial_watchlist_sync_failed")
+
     yield  # app is running
 
     # Shutdown
@@ -537,6 +546,25 @@ def _register_jobs():
             replace_existing=True,
         )
         log.info("scheduler.job_added", job="bias_analysis", cron=cron)
+
+    # Watchlist Sync — daily at 2:30 AM (after smart queue at 2 AM)
+    # Scans Radarr/Sonarr for missing items, adds to Trakt watchlist,
+    # refreshes Airing Soon so new watchlisted premieres appear.
+    from app.services.watchlist_sync.service import WatchlistSyncService
+    _wls_svc = WatchlistSyncService()
+    wls_cron = "30 2 * * *"
+    _job_crons["watchlist_sync"] = wls_cron
+
+    async def _run_watchlist_sync(_fn=_wls_svc.run_for_all_users):
+        await _tracked_job("watchlist_sync", _fn)
+
+    scheduler.add_job(
+        _run_watchlist_sync,
+        CronTrigger(**_parse_cron(wls_cron)),
+        id="watchlist_sync",
+        replace_existing=True,
+    )
+    log.info("scheduler.job_added", job="watchlist_sync", cron=wls_cron)
 
     # Library cache rebuild — daily at 1:30 AM (before smart queue at 2 AM)
     async def rebuild_library_cache():

@@ -775,7 +775,7 @@
       <div class="card-header">
         <h2>📅 Airing Soon</h2>
       </div>
-      <p>Upcoming episodes and watchlisted movie releases for things already in your library — premieres and season finales flagged, next 14 days.</p>
+      <p>Upcoming episodes and watchlisted movie releases for things already in your library — premieres and season finales flagged, next 30 days.</p>
       <button class="btn btn-blue btn-sm" id="btnToggleAiring" onclick="toggleAiring()">View Airing Soon ▾</button>
       <div id="airingOutput" class="log-area" style="display:none; margin-top:12px;"></div>
     </div>
@@ -1574,7 +1574,7 @@ async function viewAiring() {
   el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Loading…</div>';
   try {
     const [r, arrr] = await Promise.all([
-      fetch(API + `/api/airing-soon/${currentUserId}?days=14`),
+      fetch(API + `/api/airing-soon/${currentUserId}?days=30`),
       fetch(API + '/api/arr-library').catch(() => null),
     ]);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -1589,7 +1589,7 @@ async function viewAiring() {
     }
 
     if (items.length === 0) {
-      el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Nothing airing in the next 14 days.</div>';
+      el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Nothing airing in the next 30 days.</div>';
       return;
     }
     el.innerHTML = '<table class="queue-table"><thead><tr>' +

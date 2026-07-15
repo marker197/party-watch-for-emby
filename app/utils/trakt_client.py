@@ -367,6 +367,26 @@ class TraktClient:
             return (movies or []) + (shows or [])
         return await self._get(f"/users/me/watchlist/{kind}", params={"sort": "added"})
 
+    async def add_to_watchlist(
+        self,
+        movies: list[dict] | None = None,
+        shows: list[dict] | None = None,
+    ) -> dict:
+        """Add items to the user's Trakt watchlist.
+
+        movies: list of {"ids": {"tmdb": int}} or {"ids": {"imdb": "ttXXX"}}
+        shows:  list of {"ids": {"tvdb": int}} or {"ids": {"imdb": "ttXXX"}}
+        Returns the Trakt sync response with added/existing counts.
+        """
+        body: dict = {}
+        if movies:
+            body["movies"] = movies
+        if shows:
+            body["shows"] = shows
+        if not body:
+            return {"added": {"movies": 0, "shows": 0}}
+        return await self._post("/sync/watchlist", body)
+
     # -- Watch history -------------------------------------------------------
 
     async def get_history(self, kind: str = "all", limit: int = 100) -> list[dict]:
