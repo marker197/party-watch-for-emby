@@ -3148,7 +3148,7 @@ async def get_download_queue():
 async def run_watchlist_sync(
     current_user: User = Depends(get_current_user),
 ):
-    """Manually trigger a Radarr/Sonarr → Trakt watchlist sync."""
+    """Manually trigger a Radarr/Sonarr ↔ Trakt watchlist sync."""
     from app.services.watchlist_sync.service import WatchlistSyncService
     svc = WatchlistSyncService()
     try:
@@ -3157,6 +3157,42 @@ async def run_watchlist_sync(
     except Exception as e:
         log.exception("watchlist_sync.manual_failed", user_id=current_user.id)
         raise HTTPException(500, f"Watchlist sync failed: {e}")
+
+
+@router.get("/api/watchlist-sync/settings")
+async def get_watchlist_sync_settings(db: AsyncSession = Depends(get_db)):
+    """Read watchlist sync toggle state (Redis → DB fallback)."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get("watchlist_sync_settings")
+    if not raw:
+        raw = await _get_setting(db, "watchlist_sync_settings", "")
+    if raw:
+        try:
+            return _json.loads(raw)
+        except Exception:
+            pass
+    return {"arr_to_watchlist": False, "watchlist_to_arr": False}
+
+
+@router.put("/api/watchlist-sync/settings")
+async def update_watchlist_sync_settings(payload: dict, db: AsyncSession = Depends(get_db)):
+    """Save watchlist sync toggle state to DB + Redis.
+
+    Payload: {"arr_to_watchlist": true/false, "watchlist_to_arr": true/false}
+    """
+    import json as _json
+    r = await get_redis()
+    sync_settings = {
+        "arr_to_watchlist": bool(payload.get("arr_to_watchlist", False)),
+        "watchlist_to_arr": bool(payload.get("watchlist_to_arr", False)),
+    }
+    encoded = _json.dumps(sync_settings)
+    await r.set("watchlist_sync_settings", encoded)
+    await _put_setting(db, "watchlist_sync_settings", encoded)
+    await db.commit()
+    log.info("watchlist_sync.settings_saved", **sync_settings)
+    return {"status": "ok", **sync_settings}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

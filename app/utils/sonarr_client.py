@@ -212,6 +212,41 @@ class SonarrClient:
                 "http_status": e.response.status_code,
             }
 
+    # -- Calendar -------------------------------------------------------------
+
+    async def get_calendar(self, start: str, end: str) -> list[dict]:
+        """Fetch upcoming episodes from Sonarr's calendar.
+
+        Parameters:
+            start: ISO date string (e.g. "2026-07-15")
+            end:   ISO date string (e.g. "2026-08-15")
+
+        Returns normalised list of upcoming episodes with air dates,
+        series TVDB ID, season/episode numbers, and file status.
+        """
+        try:
+            data = await self._get(
+                f"/calendar?start={start}&end={end}"
+                "&includeSeries=true&includeEpisodeFile=false"
+            )
+            result = []
+            for ep in (data if isinstance(data, list) else []):
+                series = ep.get("series") or {}
+                result.append({
+                    "tvdb_id": series.get("tvdbId"),
+                    "series_title": series.get("title", ""),
+                    "season": ep.get("seasonNumber"),
+                    "episode": ep.get("episodeNumber"),
+                    "episode_title": ep.get("title", ""),
+                    "air_date_utc": ep.get("airDateUtc"),
+                    "has_file": ep.get("hasFile", False),
+                })
+            return result
+        except Exception as e:
+            log.warning("sonarr.calendar_fetch_failed",
+                        server=self._name, error=str(e)[:120])
+            return []
+
     # -- Download queue -------------------------------------------------------
 
     async def get_download_queue(self) -> list[dict]:

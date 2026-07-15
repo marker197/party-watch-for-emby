@@ -1255,35 +1255,75 @@ function glog(msg, cls='') {
 // Auth
 // ═══════════════════════════════════════════════════════════════════════════
 
+let _authPollInterval = null;
+let _authPollTimeout = null;
+
 async function startLink() {
   const uid = document.getElementById('embyUserId').value;
   const uname = document.getElementById('embyUsername').value;
   if (!uid) return alert('Enter Emby User ID');
 
-  logTo('authOutput', 'Requesting device code…');
-  const r = await fetch(API + '/auth/trakt/device-code', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({emby_user_id: uid, emby_username: uname})
-  });
-  const d = await r.json();
-  logTo('authOutput', `Go to ${d.verification_url} and enter: ${d.user_code}`, 'ok');
+  // Cancel any previous poll loop
+  if (_authPollInterval) { clearInterval(_authPollInterval); _authPollInterval = null; }
+  if (_authPollTimeout) { clearTimeout(_authPollTimeout); _authPollTimeout = null; }
 
-  // Poll
-  const interval = setInterval(async () => {
-    const pr = await fetch(API + '/auth/trakt/poll', {
+  logTo('authOutput', 'Requesting device code…');
+  try {
+    const r = await fetch(API + '/auth/trakt/device-code', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({emby_user_id: uid, device_code: d.device_code})
+      body: JSON.stringify({emby_user_id: uid, emby_username: uname})
     });
-    const pd = await pr.json();
-    if (pd.status === 'linked') {
-      clearInterval(interval);
-      logTo('authOutput', `Linked as ${pd.trakt_username}!`, 'ok');
-      glog(`User linked: ${pd.trakt_username}`, 'ok');
-      loadUsers();
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      logTo('authOutput', `Failed to get device code: ${err.detail || r.status}`, 'err');
+      return;
     }
-  }, (d.interval || 5) * 1000);
+    const d = await r.json();
+    logTo('authOutput', `Go to ${d.verification_url} and enter: ${d.user_code}`, 'ok');
+
+    const expiresIn = (d.expires_in || 600) * 1000;
+    const pollInterval = (d.interval || 5) * 1000;
+
+    // Auto-stop after expiry
+    _authPollTimeout = setTimeout(() => {
+      if (_authPollInterval) { clearInterval(_authPollInterval); _authPollInterval = null; }
+      logTo('authOutput', 'Device code expired — click Link again to get a new code.', 'err');
+    }, expiresIn);
+
+    // Poll loop
+    _authPollInterval = setInterval(async () => {
+      try {
+        const pr = await fetch(API + '/auth/trakt/poll', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({emby_user_id: uid, device_code: d.device_code})
+        });
+        if (!pr.ok) {
+          // 429 or server error — stop polling
+          clearInterval(_authPollInterval); _authPollInterval = null;
+          clearTimeout(_authPollTimeout); _authPollTimeout = null;
+          logTo('authOutput', `Poll error (HTTP ${pr.status}) — click Link to retry.`, 'err');
+          return;
+        }
+        const pd = await pr.json();
+        if (pd.status === 'linked') {
+          clearInterval(_authPollInterval); _authPollInterval = null;
+          clearTimeout(_authPollTimeout); _authPollTimeout = null;
+          logTo('authOutput', `Linked as ${pd.trakt_username}!`, 'ok');
+          glog(`User linked: ${pd.trakt_username}`, 'ok');
+          loadUsers();
+        }
+      } catch(e) {
+        // Network error — stop polling
+        clearInterval(_authPollInterval); _authPollInterval = null;
+        clearTimeout(_authPollTimeout); _authPollTimeout = null;
+        logTo('authOutput', 'Poll failed: ' + e.message, 'err');
+      }
+    }, pollInterval);
+  } catch(e) {
+    logTo('authOutput', 'Failed: ' + e.message, 'err');
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1582,9 +1622,11 @@ async function viewAiring() {
     const items = data.items || [];
 
     // Build arr-library lookup
+    const arrRadarr = {};
     const arrSonarr = {};
     if (arrr && arrr.ok) {
       const arrData = await arrr.json();
+      for (const tid of (arrData.radarr_tmdb || [])) arrRadarr[tid] = (arrData.radarr_names || {})[tid] || 'Radarr';
       for (const tid of (arrData.sonarr_tvdb || [])) arrSonarr[tid] = (arrData.sonarr_names || {})[tid] || 'Sonarr';
     }
 
@@ -1636,23 +1678,32 @@ async function viewAiring() {
             binge = `<div style="font-size:0.72rem;color:${diffColor};margin-top:2px;">📺 ${bp.message}</div>`;
           }
         }
-        // Movie release dates (cinema + digital)
+        // Movie release dates (cinema + digital + physical)
         let releaseDates = '';
-        if (i.media_type === 'movie' && (i.theatrical_release || i.digital_release)) {
+        if (i.media_type === 'movie' && (i.theatrical_release || i.digital_release || i.physical_release)) {
           const fmtDate = (d) => { if (!d) return '—'; try { const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString('en-GB', {day:'numeric',month:'short',year:'numeric'}); } catch(e) { return d; } };
           const lines = [];
           if (i.theatrical_release) lines.push(`🎬 Cinema: ${fmtDate(i.theatrical_release)}`);
           if (i.digital_release) lines.push(`💿 Digital: ${fmtDate(i.digital_release)}`);
-          releaseDates = `<div style="font-size:0.72rem;color:var(--text-dim);margin-top:2px;">${lines.join('<br>')}</div>`;
+          if (i.physical_release) lines.push(`📀 Physical: ${fmtDate(i.physical_release)}`);
+          const src = i.release_source ? ` <span style="opacity:0.5;">via ${i.release_source}</span>` : '';
+          releaseDates = `<div style="font-size:0.72rem;color:var(--text-dim);margin-top:2px;">${lines.join('<br>')}${src}</div>`;
         }
-        // Sonarr button for non-library show premieres
+        // Arr badges / send buttons
         let actionBtn = '';
-        if (i.media_type === 'show' && !i.in_library && i.is_premiere) {
+        if (i.media_type === 'movie' && !i.in_library) {
+          if (i.tmdb_id && arrRadarr[i.tmdb_id]) {
+            actionBtn = `<span class="arr-in-badge">In ${arrRadarr[i.tmdb_id]}</span>`;
+          } else if (i.tmdb_id) {
+            const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            actionBtn = `<button class="queue-radarr-btn" id="radarr-btn-${2000 + idx}-0" onclick="sendToRadarr(${2000 + idx}, ${i.tmdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Radarr</button>`;
+          }
+        } else if (i.media_type === 'show' && !i.in_library) {
           if (i.tvdb_id && arrSonarr[i.tvdb_id]) {
             actionBtn = `<span class="arr-in-badge">In ${arrSonarr[i.tvdb_id]}</span>`;
-          } else {
+          } else if (i.is_premiere) {
             const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-            actionBtn = `<button class="queue-sonarr-btn" id="airing-sonarr-${idx}" onclick="sendToSonarr(${1000 + idx}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Sonarr</button>`;
+            actionBtn = `<button class="queue-sonarr-btn" id="sonarr-btn-${1000 + idx}-0" onclick="sendToSonarr(${1000 + idx}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Sonarr</button>`;
           }
         }
         return `<tr class="${rowClass}">

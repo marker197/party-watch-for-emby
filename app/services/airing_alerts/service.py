@@ -6,16 +6,16 @@ movies — with the Emby library so the dashboard can surface a single
 "Airing Soon" feed with premiere/finale badges and a days-until-air
 countdown, covering both shows and movies.
 
-Reuses TraktClient.get_my_shows (already used by Smart Queue for its 14-day
-calendar candidate source) but exposes it, plus get_my_premieres and
-get_my_movies, as a distinct, richer feed rather than folding them
-anonymously into the queue.
+Release dates are sourced with a priority cascade:
+  1. Radarr / Sonarr (primary — most accurate for items in arr)
+  2. Trakt /releases/{country} (first fallback)
+  3. Future: TMDB (second fallback for movies)
 """
 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import structlog
 
@@ -30,6 +30,7 @@ from sqlalchemy import select
 log = structlog.get_logger()
 
 SEASON_INFO_CACHE_TTL = 86400  # 24h — season episode counts rarely change mid-run
+ARR_RELEASE_CACHE_TTL = 300    # 5 min — short enough to stay current
 
 
 class AiringAlertsService:
@@ -65,20 +66,131 @@ class AiringAlertsService:
             # Determine server country for release-date lookups
             server_country = await self._get_server_country()
 
+            # Build arr release date index (cached 5 min)
+            arr_dates = await self._build_arr_release_index(today, days)
+
             results = []
-            results.extend(await self._get_show_alerts(trakt, today, days, user=user))
-            results.extend(await self._get_movie_alerts(trakt, today, days, country=server_country))
+            results.extend(await self._get_show_alerts(
+                trakt, today, days, user=user, arr_dates=arr_dates,
+            ))
+            results.extend(await self._get_movie_alerts(
+                trakt, today, days, country=server_country, arr_dates=arr_dates,
+            ))
             results.sort(key=lambda r: (r["days_until_air"] if r["days_until_air"] is not None else 9999))
             return results
         finally:
             await trakt.close()
 
     # ------------------------------------------------------------------
+    # Arr release date index
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _build_arr_release_index(today: str, days: int) -> dict:
+        """Build a cached index of release dates from Radarr and Sonarr.
+
+        Returns:
+            {
+                "movies": {tmdb_id: {"theatrical": str|None, "digital": str|None, "physical": str|None}},
+                "sonarr_calendar": {tvdb_id: [{season, episode, air_date_utc, episode_title}, ...]},
+            }
+        """
+        import json as _json
+
+        r = await get_redis()
+
+        # Check cache
+        cache_key = "arr_release_dates"
+        try:
+            cached = await r.get(cache_key)
+            if cached:
+                return _json.loads(cached)
+        except Exception:
+            pass
+
+        result: dict = {"movies": {}, "sonarr_calendar": {}}
+
+        # --- Radarr movie release dates ---
+        raw = await r.get("radarr_servers")
+        if raw:
+            from app.utils.radarr_client import RadarrClient
+            for srv in _json.loads(raw):
+                try:
+                    client = RadarrClient(
+                        srv["url"], srv["api_key"],
+                        name=srv.get("name", "Radarr"),
+                    )
+                    movies = await client.get_all_movies()
+                    await client.close()
+                    for m in movies:
+                        tmdb = m.get("tmdbId")
+                        if not tmdb:
+                            continue
+                        # Only store if we have at least one date
+                        theatrical = m.get("inCinemas")
+                        digital = m.get("digitalRelease")
+                        physical = m.get("physicalRelease")
+                        if theatrical or digital or physical:
+                            # Normalise to date-only strings (Radarr returns ISO datetimes)
+                            result["movies"][str(tmdb)] = {
+                                "theatrical": _normalise_date(theatrical),
+                                "digital": _normalise_date(digital),
+                                "physical": _normalise_date(physical),
+                            }
+                    log.debug("arr_release_index.radarr_loaded",
+                              server=srv.get("name"), movies_with_dates=len(result["movies"]))
+                except Exception:
+                    log.warning("arr_release_index.radarr_failed",
+                                server=srv.get("name"))
+
+        # --- Sonarr calendar (upcoming episodes) ---
+        raw = await r.get("sonarr_servers")
+        if raw:
+            from app.utils.sonarr_client import SonarrClient
+            end_date = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
+            for srv in _json.loads(raw):
+                try:
+                    client = SonarrClient(
+                        srv["url"], srv["api_key"],
+                        name=srv.get("name", "Sonarr"),
+                    )
+                    episodes = await client.get_calendar(today, end_date)
+                    await client.close()
+                    for ep in episodes:
+                        tvdb = ep.get("tvdb_id")
+                        if not tvdb:
+                            continue
+                        key = str(tvdb)
+                        if key not in result["sonarr_calendar"]:
+                            result["sonarr_calendar"][key] = []
+                        result["sonarr_calendar"][key].append({
+                            "season": ep.get("season"),
+                            "episode": ep.get("episode"),
+                            "air_date_utc": ep.get("air_date_utc"),
+                            "episode_title": ep.get("episode_title", ""),
+                        })
+                    log.debug("arr_release_index.sonarr_calendar_loaded",
+                              server=srv.get("name"),
+                              episodes=sum(len(v) for v in result["sonarr_calendar"].values()))
+                except Exception:
+                    log.warning("arr_release_index.sonarr_calendar_failed",
+                                server=srv.get("name"))
+
+        # Cache for 5 minutes
+        try:
+            await r.setex(cache_key, ARR_RELEASE_CACHE_TTL, _json.dumps(result))
+        except Exception:
+            pass
+
+        return result
+
+    # ------------------------------------------------------------------
     # Shows
     # ------------------------------------------------------------------
 
     async def _get_show_alerts(self, trakt: TraktClient, today: str, days: int,
-                              user: User | None = None) -> list[dict]:
+                              user: User | None = None,
+                              arr_dates: dict | None = None) -> list[dict]:
         try:
             upcoming = await trakt.get_my_shows(start_date=today, days=days)
         except Exception as e:
@@ -99,6 +211,8 @@ class AiringAlertsService:
         for entry in premieres:
             self._merge_entry(merged, entry, is_premiere_source=True)
 
+        sonarr_cal = (arr_dates or {}).get("sonarr_calendar", {})
+
         results = []
         # Track shows with finales for binge planner
         finale_shows: dict[str, dict] = {}  # trakt_id → {days_until, season, emby_item_id}
@@ -107,8 +221,27 @@ class AiringAlertsService:
             show = entry["show"]
             episode = entry["episode"]
             show_trakt_id = str(show.get("ids", {}).get("trakt", ""))
+            show_tvdb_id = show.get("ids", {}).get("tvdb")
 
             days_until = self._days_until(entry.get("first_aired"))
+            air_date = entry.get("first_aired")
+
+            # Cross-reference with Sonarr calendar for more accurate air date
+            release_source = "trakt"
+            if show_tvdb_id and str(show_tvdb_id) in sonarr_cal:
+                sonarr_ep = _find_sonarr_episode(
+                    sonarr_cal[str(show_tvdb_id)],
+                    episode.get("season"),
+                    episode.get("number"),
+                )
+                if sonarr_ep and sonarr_ep.get("air_date_utc"):
+                    sonarr_air = sonarr_ep["air_date_utc"]
+                    sonarr_days = self._days_until(sonarr_air)
+                    # Prefer Sonarr date if it differs (usually more accurate)
+                    if sonarr_days is not None:
+                        air_date = sonarr_air
+                        days_until = sonarr_days
+                        release_source = "sonarr"
 
             is_premiere = entry["is_premiere"] or episode.get("number") == 1
             is_finale = False
@@ -130,13 +263,13 @@ class AiringAlertsService:
                 "media_type": "show",
                 "title": show.get("title", ""),
                 "trakt_id": show_trakt_id,
-                "tvdb_id": show.get("ids", {}).get("tvdb"),
+                "tvdb_id": show_tvdb_id,
                 "tmdb_id": show.get("ids", {}).get("tmdb"),
                 "imdb_id": show.get("ids", {}).get("imdb"),
                 "season": episode.get("season"),
                 "episode": episode.get("number"),
                 "episode_title": episode.get("title"),
-                "air_date": entry.get("first_aired"),
+                "air_date": air_date,
                 "days_until_air": days_until,
                 "is_premiere": is_premiere,
                 "is_finale": is_finale,
@@ -144,6 +277,7 @@ class AiringAlertsService:
                 "emby_item_id": emby_item_id,
                 "year": show.get("year"),
                 "binge_plan": None,
+                "release_source": release_source,
             }
             results.append(result)
 
@@ -311,12 +445,15 @@ class AiringAlertsService:
     # ------------------------------------------------------------------
 
     async def _get_movie_alerts(self, trakt: TraktClient, today: str, days: int,
-                               country: str = "us") -> list[dict]:
+                               country: str = "us",
+                               arr_dates: dict | None = None) -> list[dict]:
         try:
             releases = await trakt.get_my_movies(start_date=today, days=days)
         except Exception as e:
             log.warning("airing_alerts.my_movies_failed", error=str(e)[:200])
             releases = []
+
+        radarr_movies = (arr_dates or {}).get("movies", {})
 
         results = []
         seen: set[str] = set()
@@ -333,23 +470,21 @@ class AiringAlertsService:
             days_until = self._days_until(release_date)
 
             in_library, emby_item_id = await self._match_in_library(movie)
-            # Unlike shows, do NOT filter movies to "already in library" —
-            # a watchlist movie with a release date next week can't possibly
-            # be in the Emby library yet; that's the whole point of this
-            # alert (know it's coming so you can grab it via Radarr). We
-            # still surface in_library/emby_item_id so the UI can badge
-            # anything you already happen to have (e.g. an early digital
-            # release you grabbed ahead of the calendar date).
 
-            # Fetch typed release dates (theatrical / digital)
-            theatrical_release, digital_release = await self._get_typed_releases(
-                trakt, movie_trakt_id, country=country,
+            movie_tmdb_id = movie.get("ids", {}).get("tmdb")
+
+            # Fetch typed release dates (theatrical / digital / physical)
+            theatrical, digital, physical, release_source = await self._get_release_dates(
+                trakt, movie_trakt_id, movie_tmdb_id, country=country,
+                arr_movies=radarr_movies,
             )
 
             results.append({
                 "media_type": "movie",
                 "title": movie.get("title", ""),
                 "trakt_id": movie_trakt_id,
+                "tmdb_id": movie_tmdb_id,
+                "imdb_id": movie.get("ids", {}).get("imdb"),
                 "season": None,
                 "episode": None,
                 "episode_title": None,
@@ -359,23 +494,27 @@ class AiringAlertsService:
                 "is_finale": False,
                 "in_library": in_library,
                 "emby_item_id": emby_item_id,
-                "theatrical_release": theatrical_release,
-                "digital_release": digital_release,
+                "year": movie.get("year"),
+                "theatrical_release": theatrical,
+                "digital_release": digital,
+                "physical_release": physical,
+                "release_source": release_source,
             })
         return results
 
-    async def _get_typed_releases(
+    async def _get_release_dates(
         self, trakt: TraktClient, movie_trakt_id: str,
+        tmdb_id: int | None = None,
         country: str = "us",
-    ) -> tuple[str | None, str | None]:
-        """Return (theatrical_date, digital_date) for a movie.
+        arr_movies: dict | None = None,
+    ) -> tuple[str | None, str | None, str | None, str]:
+        """Return (theatrical, digital, physical, source) for a movie.
 
-        Uses the Emby server's metadata country code for the primary lookup,
-        falling back to 'us' if the primary country has no data. Cached 24h
-        per movie+country since release dates don't change often.
+        Priority: Radarr → Trakt → (future: TMDB).
+        Cached 24h per movie+country.
         """
         if not movie_trakt_id:
-            return None, None
+            return None, None, None, ""
 
         cache_key = f"airing_alerts:releases:{movie_trakt_id}:{country}"
         try:
@@ -383,15 +522,65 @@ class AiringAlertsService:
             cached = await r.get(cache_key)
             if cached:
                 data = json.loads(cached)
-                return data.get("theatrical"), data.get("digital")
+                return (data.get("theatrical"), data.get("digital"),
+                        data.get("physical"), data.get("source", "cache"))
         except Exception:
             pass
 
         theatrical = None
         digital = None
+        physical = None
+        source = ""
 
-        # Build country list: server country first, then US as fallback
-        # (skip duplicate if server country is already US)
+        # ── Tier 1: Radarr ──
+        if tmdb_id and arr_movies:
+            radarr_data = arr_movies.get(str(tmdb_id))
+            if radarr_data:
+                theatrical = radarr_data.get("theatrical")
+                digital = radarr_data.get("digital")
+                physical = radarr_data.get("physical")
+                if theatrical or digital or physical:
+                    source = "radarr"
+
+        # ── Tier 2: Trakt (fallback for any missing dates) ──
+        if not theatrical or not digital:
+            trakt_theatrical, trakt_digital = await self._get_trakt_releases(
+                trakt, movie_trakt_id, country,
+            )
+            if not theatrical and trakt_theatrical:
+                theatrical = trakt_theatrical
+                if not source:
+                    source = "trakt"
+            if not digital and trakt_digital:
+                digital = trakt_digital
+                if not source:
+                    source = "trakt"
+
+        # Set source if we only got data from Trakt
+        if not source and (theatrical or digital):
+            source = "trakt"
+
+        # Cache result (even if all None — avoids re-fetching for movies
+        # that genuinely have no typed releases)
+        try:
+            await r.setex(cache_key, SEASON_INFO_CACHE_TTL,
+                          json.dumps({"theatrical": theatrical, "digital": digital,
+                                      "physical": physical, "source": source}))
+        except Exception:
+            pass
+
+        return theatrical, digital, physical, source
+
+    async def _get_trakt_releases(
+        self, trakt: TraktClient, movie_trakt_id: str, country: str,
+    ) -> tuple[str | None, str | None]:
+        """Fetch theatrical + digital dates from Trakt /releases/{country}.
+
+        Uses server country first, falls back to US.
+        """
+        theatrical = None
+        digital = None
+
         countries = [country]
         if country != "us":
             countries.append("us")
@@ -409,23 +598,13 @@ class AiringAlertsService:
                 rdate = rel.get("release_date")
                 if not rdate:
                     continue
-                # Theatrical: premiere, limited, or theatrical
                 if rtype in ("premiere", "limited", "theatrical") and not theatrical:
                     theatrical = rdate
                 elif rtype == "digital" and not digital:
                     digital = rdate
 
-            # If we got at least one date from this country, stop
             if theatrical or digital:
                 break
-
-        # Cache result (even if both None — avoids re-fetching for movies
-        # that genuinely have no typed releases)
-        try:
-            await r.setex(cache_key, SEASON_INFO_CACHE_TTL,
-                          json.dumps({"theatrical": theatrical, "digital": digital}))
-        except Exception:
-            pass
 
         return theatrical, digital
 
@@ -496,3 +675,28 @@ class AiringAlertsService:
 
         return False, None
 
+
+# ── Module-level helpers ──────────────────────────────────────────────
+
+
+def _normalise_date(dt_str: str | None) -> str | None:
+    """Convert an ISO datetime (e.g. from Radarr) to a date-only string."""
+    if not dt_str:
+        return None
+    try:
+        # Handle both "2026-07-15" and "2026-07-15T00:00:00Z" formats
+        return dt_str[:10]
+    except Exception:
+        return None
+
+
+def _find_sonarr_episode(
+    episodes: list[dict], season: int | None, episode_num: int | None,
+) -> dict | None:
+    """Find a matching episode in a Sonarr calendar list."""
+    if season is None or episode_num is None:
+        return None
+    for ep in episodes:
+        if ep.get("season") == season and ep.get("episode") == episode_num:
+            return ep
+    return None
