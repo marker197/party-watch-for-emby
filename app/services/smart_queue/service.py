@@ -558,6 +558,7 @@ class SmartQueueService:
         so they can be shown in the UI with a 'Send to Radarr/Sonarr' option.
         """
         resolved: dict[int, str] = {}
+        in_lib = 0
         async with async_session() as db:
             # Only delete UNPLAYED items — keep played items for feedback history
             await db.execute(
@@ -590,6 +591,7 @@ class SmartQueueService:
 
                 if in_library:
                     resolved[idx] = emby_id
+                    in_lib += 1
 
                 db.add(QueueItem(
                     user_id=user.id,

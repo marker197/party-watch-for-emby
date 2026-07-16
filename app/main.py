@@ -237,6 +237,9 @@ app.include_router(phase5_router)
 
 templates = Jinja2Templates(directory="frontend/templates")
 
+# Static assets (provider icons, etc.)
+app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
+
 
 @app.get("/")
 async def dashboard(request: Request):

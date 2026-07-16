@@ -84,12 +84,67 @@ class AiringAlertsService:
             # Upcoming digital/physical releases for missing Radarr movies
             home_releases = await self._get_upcoming_home_releases(today, days)
 
+            # Enrich with streaming provider logos (TMDB)
+            await self._enrich_with_providers(results, server_country)
+            await self._enrich_with_providers(home_releases, server_country)
+
             return {
                 "items": results,
                 "upcoming_home_releases": home_releases,
             }
         finally:
             await trakt.close()
+
+    # ------------------------------------------------------------------
+    # Streaming provider enrichment (TMDB)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _enrich_with_providers(items: list[dict], country: str) -> None:
+        """Add ``streaming_services`` field to items that have a ``tmdb_id``."""
+        from app.utils.tmdb_client import get_watch_providers, _get_api_key
+
+        api_key = await _get_api_key()
+        if not api_key:
+            log.debug("enrich_providers.skipped_no_api_key")
+            return
+
+        # Force-clear any stale cached empty results so fresh calls go through
+        try:
+            r = await get_redis()
+            cursor = b"0"
+            stale_keys = []
+            while True:
+                cursor, keys = await r.scan(cursor, match="tmdb_providers:*", count=100)
+                for k in keys:
+                    val = await r.get(k)
+                    if val == b"[]":
+                        stale_keys.append(k)
+                if cursor == b"0" or cursor == 0:
+                    break
+            if stale_keys:
+                await r.delete(*stale_keys)
+                log.info("enrich_providers.stale_cache_cleared", count=len(stale_keys))
+        except Exception:
+            pass
+
+        enriched = 0
+        for item in items:
+            tmdb_id = item.get("tmdb_id")
+            if not tmdb_id:
+                continue
+            media_type = item.get("media_type", "movie")
+            providers = await get_watch_providers(
+                tmdb_id,
+                media_type="tv" if media_type == "show" else "movie",
+                country=country,
+            )
+            item["streaming_services"] = providers
+            if providers:
+                enriched += 1
+        log.info("enrich_providers.done",
+                 total_items=len(items), with_tmdb_id=sum(1 for i in items if i.get("tmdb_id")),
+                 enriched=enriched, country=country)
 
     # ------------------------------------------------------------------
     # Arr release date index

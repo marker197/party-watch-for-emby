@@ -3206,6 +3206,77 @@ async def update_watchlist_sync_settings(payload: dict, db: AsyncSession = Depen
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# TMDB API Key
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/api/tmdb/key")
+async def get_tmdb_key(db: AsyncSession = Depends(get_db)):
+    """Return whether a TMDB API key is configured (never returns the key itself)."""
+    r = await get_redis()
+    raw = await r.get("tmdb_api_key")
+    if not raw:
+        raw = await _get_setting(db, "tmdb_api_key", "")
+        if raw:
+            await r.set("tmdb_api_key", raw)
+    return {"configured": bool(raw)}
+
+
+@router.put("/api/tmdb/key")
+async def save_tmdb_key(payload: dict, db: AsyncSession = Depends(get_db)):
+    """Save or clear the TMDB API key."""
+    import json as _json
+    key = (payload.get("api_key") or "").strip()
+    r = await get_redis()
+    if key:
+        await r.set("tmdb_api_key", key)
+        await _put_setting(db, "tmdb_api_key", key)
+        await db.commit()
+        # Clear any cached empty provider results from before the key was set
+        try:
+            cached_keys = []
+            cursor = b"0"
+            while True:
+                cursor, keys = await r.scan(cursor, match="tmdb_providers:*", count=100)
+                cached_keys.extend(keys)
+                if cursor == b"0" or cursor == 0:
+                    break
+            if cached_keys:
+                await r.delete(*cached_keys)
+                log.info("tmdb.cache_cleared", keys_removed=len(cached_keys))
+        except Exception:
+            pass
+        return {"status": "ok", "configured": True}
+    else:
+        await r.delete("tmdb_api_key")
+        await _put_setting(db, "tmdb_api_key", "")
+        await db.commit()
+        return {"status": "ok", "configured": False}
+
+
+@router.post("/api/tmdb/test")
+async def test_tmdb_key(payload: dict):
+    """Test a TMDB API key by fetching a known movie."""
+    import httpx
+    key = (payload.get("api_key") or "").strip()
+    if not key:
+        raise HTTPException(400, "api_key required")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://api.themoviedb.org/3/movie/550",
+                params={"api_key": key},
+            )
+            if resp.status_code == 401:
+                return {"status": "error", "message": "Invalid API key"}
+            resp.raise_for_status()
+            data = resp.json()
+            return {"status": "ok", "message": f"Connected — {data.get('title', 'OK')}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)[:200]}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Smart Queue History & Feedback
 # ═══════════════════════════════════════════════════════════════════════════
 

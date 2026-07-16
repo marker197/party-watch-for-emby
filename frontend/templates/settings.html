@@ -682,6 +682,24 @@
       </div>
     </div>
 
+    <!-- TMDB API -->
+    <div class="section">
+      <h2>🎬 TMDB API</h2>
+      <p style="color: var(--text-dim); font-size: 0.82rem; margin-bottom: 12px;">
+        Optional. Enables streaming service logos on Airing Soon items.
+        Get a free API key at <a href="https://www.themoviedb.org/settings/api" target="_blank" style="color:var(--blue);">themoviedb.org</a>.
+      </p>
+      <div class="form-group">
+        <label>API Key</label>
+        <div style="display:flex;gap:8px;">
+          <input type="password" id="tmdbApiKey" placeholder="Enter TMDB API key" style="flex:1;">
+          <button class="btn btn-blue" id="btnTestTmdb">Test</button>
+          <button class="btn btn-green" id="btnSaveTmdb">Save</button>
+        </div>
+        <div id="tmdbStatus" style="font-size:0.78rem;margin-top:6px;"></div>
+      </div>
+    </div>
+
     <!-- Danger Zone -->
     <div class="section danger-zone">
       <h2>⚠️ Danger Zone</h2>
@@ -742,6 +760,7 @@
       loadAutoSendSettings();
       loadWatchlistSyncSettings();
       loadQueueSettings();
+      loadTmdbSettings();
       loadConnectionStatus();
       setupEventListeners();
     }
@@ -893,8 +912,8 @@
       document.getElementById('embyUrl').addEventListener('input', enableButton('saveEmby'));
       document.getElementById('embyApiKey').addEventListener('input', enableButton('saveEmby'));
 
-      // Features
-      document.querySelectorAll('.toggle-switch').forEach(toggle => {
+      // Feature toggles only (ones with data-feature attr)
+      document.querySelectorAll('.toggle-switch[data-feature]').forEach(toggle => {
         toggle.addEventListener('click', () => toggle.classList.toggle('active'));
       });
       document.getElementById('saveFeatures').addEventListener('click', () => saveFeatures());
@@ -1248,7 +1267,10 @@
     async function restoreBackup() {
       const file = document.getElementById('restoreFile').files[0];
       if (!file) return alert('Select a .sql backup file first');
-      if (!confirm('⚠ This will OVERWRITE all current data with the backup. Are you sure?')) return;
+      showConfirmation(
+        'Restore Backup?',
+        '⚠ This will OVERWRITE all current data with the backup. Are you sure?',
+        async () => {
 
       const status = document.getElementById('restoreStatus');
       status.innerHTML = '<span style="color:var(--text-dim);">Restoring…</span>';
@@ -1267,6 +1289,8 @@
       } catch(e) {
         status.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
       }
+        }
+      );
     }
 
     // Universe Export / Import
@@ -1766,20 +1790,89 @@
     }
 
     async function unblockItem(blockId, title) {
-      if (!confirm(`Unblock "${title}"? It may appear in future Smart Queue refreshes.`)) return;
+      showConfirmation(
+        'Unblock Item?',
+        `Unblock "${title}"? It may appear in future Smart Queue refreshes.`,
+        async () => {
+          try {
+            const r = await fetch(`/api/queue/block/${blockId}`, { method: 'DELETE' });
+            const d = await r.json();
+            if (d.status === 'ok') {
+              showToast(`✓ Unblocked "${d.unblocked}"`);
+              loadBlocklist();
+            } else {
+              showToast('Error: ' + (d.detail || 'unknown'));
+            }
+          } catch(e) {
+            showToast('Error: ' + e.message);
+          }
+        }
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // TMDB Settings
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function loadTmdbSettings() {
       try {
-        const r = await fetch(`/api/queue/block/${blockId}`, { method: 'DELETE' });
+        const r = await fetch('/api/tmdb/key');
+        if (!r.ok) return;
+        const data = await r.json();
+        const status = document.getElementById('tmdbStatus');
+        if (data.configured) {
+          document.getElementById('tmdbApiKey').placeholder = '••••••••  (key saved)';
+          status.innerHTML = '<span style="color:var(--green);">✓ API key configured</span>';
+        }
+      } catch(e) {}
+    }
+
+    document.getElementById('btnTestTmdb').addEventListener('click', async () => {
+      const key = document.getElementById('tmdbApiKey').value.trim();
+      const status = document.getElementById('tmdbStatus');
+      if (!key) { status.innerHTML = '<span style="color:var(--red);">Enter an API key first</span>'; return; }
+      status.innerHTML = '<span style="color:var(--text-dim);">Testing…</span>';
+      try {
+        const r = await fetch('/api/tmdb/test', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ api_key: key }),
+        });
         const d = await r.json();
         if (d.status === 'ok') {
-          showToast(`✓ Unblocked "${d.unblocked}"`);
-          loadBlocklist();
+          status.innerHTML = `<span style="color:var(--green);">✓ ${d.message}</span>`;
         } else {
-          showToast('Error: ' + (d.detail || 'unknown'));
+          status.innerHTML = `<span style="color:var(--red);">✗ ${d.message}</span>`;
         }
       } catch(e) {
-        showToast('Error: ' + e.message);
+        status.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
       }
-    }
+    });
+
+    document.getElementById('btnSaveTmdb').addEventListener('click', async () => {
+      const key = document.getElementById('tmdbApiKey').value.trim();
+      const status = document.getElementById('tmdbStatus');
+      try {
+        const r = await fetch('/api/tmdb/key', {
+          method: 'PUT',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ api_key: key }),
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          if (d.configured) {
+            document.getElementById('tmdbApiKey').value = '';
+            document.getElementById('tmdbApiKey').placeholder = '••••••••  (key saved)';
+            status.innerHTML = '<span style="color:var(--green);">✓ Saved</span>';
+          } else {
+            document.getElementById('tmdbApiKey').placeholder = 'Enter TMDB API key';
+            status.innerHTML = '<span style="color:var(--text-dim);">Key cleared</span>';
+          }
+        }
+      } catch(e) {
+        status.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
+      }
+    });
 
     init();
   </script>
