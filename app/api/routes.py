@@ -486,10 +486,13 @@ async def get_airing_soon(
         raise HTTPException(404, "user not found")
 
     try:
-        alerts = await airing_alerts_svc.get_airing_soon(user, days=days)
+        result = await airing_alerts_svc.get_airing_soon(user, days=days)
     except Exception:
         log.exception("airing_soon.fetch_failed", user_id=user_id)
         raise HTTPException(502, "failed to fetch airing calendar from Trakt")
+
+    alerts = result.get("items", [])
+    home_releases = result.get("upcoming_home_releases", [])
 
     # Fire watchlist sync in background — ensures missing Radarr/Sonarr
     # items are on the Trakt watchlist so they appear in Airing Soon.
@@ -511,7 +514,11 @@ async def get_airing_soon(
 
             background_tasks.add_task(_bg_sync)
 
-    return {"count": len(alerts), "items": alerts}
+    return {
+        "count": len(alerts),
+        "items": alerts,
+        "upcoming_home_releases": home_releases,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -30,20 +30,23 @@ from sqlalchemy import select
 log = structlog.get_logger()
 
 SEASON_INFO_CACHE_TTL = 86400  # 24h — season episode counts rarely change mid-run
-ARR_RELEASE_CACHE_TTL = 300    # 5 min — short enough to stay current
 
 
 class AiringAlertsService:
-    async def get_airing_soon(self, user: User, days: int = 14) -> list[dict]:
+    async def get_airing_soon(self, user: User, days: int = 14) -> dict:
         """Return upcoming episodes + watchlisted movie releases for `user`,
-        sorted by days_until_air.
+        sorted by days_until_air, plus upcoming digital/physical releases for
+        movies missing in Radarr.
 
-        Each entry: media_type ("show"/"movie"), title, season/episode
-        (shows only), air_date, days_until_air, is_premiere, is_finale
-        (shows only), in_library, emby_item_id.
+        Returns:
+            {
+                "items": [...],                   # main airing feed
+                "upcoming_home_releases": [...],  # Radarr missing movies with
+                                                  # digital/physical dates in window
+            }
         """
         if not user.trakt_access_token:
-            return []
+            return {"items": [], "upcoming_home_releases": []}
 
         async def on_token_refresh(access, refresh, expires):
             async with async_session() as db:
@@ -66,7 +69,7 @@ class AiringAlertsService:
             # Determine server country for release-date lookups
             server_country = await self._get_server_country()
 
-            # Build arr release date index (cached 5 min)
+            # Build arr release date index from live calendar data
             arr_dates = await self._build_arr_release_index(today, days)
 
             results = []
@@ -77,7 +80,14 @@ class AiringAlertsService:
                 trakt, today, days, country=server_country, arr_dates=arr_dates,
             ))
             results.sort(key=lambda r: (r["days_until_air"] if r["days_until_air"] is not None else 9999))
-            return results
+
+            # Upcoming digital/physical releases for missing Radarr movies
+            home_releases = await self._get_upcoming_home_releases(today, days)
+
+            return {
+                "items": results,
+                "upcoming_home_releases": home_releases,
+            }
         finally:
             await trakt.close()
 
@@ -87,7 +97,11 @@ class AiringAlertsService:
 
     @staticmethod
     async def _build_arr_release_index(today: str, days: int) -> dict:
-        """Build a cached index of release dates from Radarr and Sonarr.
+        """Build a live index of release dates from Radarr and Sonarr calendars.
+
+        Both arr services have calendar endpoints that return only items with
+        releases in the requested date range — no need to pull the full library
+        or cache the result.
 
         Returns:
             {
@@ -98,64 +112,57 @@ class AiringAlertsService:
         import json as _json
 
         r = await get_redis()
-
-        # Check cache
-        cache_key = "arr_release_dates"
-        try:
-            cached = await r.get(cache_key)
-            if cached:
-                return _json.loads(cached)
-        except Exception:
-            pass
+        end_date = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
 
         result: dict = {"movies": {}, "sonarr_calendar": {}}
 
-        # --- Radarr movie release dates ---
+        # --- Radarr calendar (upcoming movie releases) ---
         raw = await r.get("radarr_servers")
         if raw:
             from app.utils.radarr_client import RadarrClient
             for srv in _json.loads(raw):
+                client = None
                 try:
                     client = RadarrClient(
                         srv["url"], srv["api_key"],
                         name=srv.get("name", "Radarr"),
                     )
-                    movies = await client.get_all_movies()
-                    await client.close()
+                    movies = await client.get_calendar(today, end_date)
                     for m in movies:
-                        tmdb = m.get("tmdbId")
+                        tmdb = m.get("tmdb_id")
                         if not tmdb:
                             continue
-                        # Only store if we have at least one date
-                        theatrical = m.get("inCinemas")
-                        digital = m.get("digitalRelease")
-                        physical = m.get("physicalRelease")
+                        theatrical = _normalise_date(m.get("in_cinemas"))
+                        digital = _normalise_date(m.get("digital_release"))
+                        physical = _normalise_date(m.get("physical_release"))
                         if theatrical or digital or physical:
-                            # Normalise to date-only strings (Radarr returns ISO datetimes)
                             result["movies"][str(tmdb)] = {
-                                "theatrical": _normalise_date(theatrical),
-                                "digital": _normalise_date(digital),
-                                "physical": _normalise_date(physical),
+                                "theatrical": theatrical,
+                                "digital": digital,
+                                "physical": physical,
                             }
-                    log.debug("arr_release_index.radarr_loaded",
-                              server=srv.get("name"), movies_with_dates=len(result["movies"]))
+                    log.debug("arr_release_index.radarr_calendar_loaded",
+                              server=srv.get("name"),
+                              movies_with_dates=len(result["movies"]))
                 except Exception:
-                    log.warning("arr_release_index.radarr_failed",
+                    log.warning("arr_release_index.radarr_calendar_failed",
                                 server=srv.get("name"))
+                finally:
+                    if client:
+                        await client.close()
 
         # --- Sonarr calendar (upcoming episodes) ---
         raw = await r.get("sonarr_servers")
         if raw:
             from app.utils.sonarr_client import SonarrClient
-            end_date = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
             for srv in _json.loads(raw):
+                client = None
                 try:
                     client = SonarrClient(
                         srv["url"], srv["api_key"],
                         name=srv.get("name", "Sonarr"),
                     )
                     episodes = await client.get_calendar(today, end_date)
-                    await client.close()
                     for ep in episodes:
                         tvdb = ep.get("tvdb_id")
                         if not tvdb:
@@ -175,14 +182,88 @@ class AiringAlertsService:
                 except Exception:
                     log.warning("arr_release_index.sonarr_calendar_failed",
                                 server=srv.get("name"))
-
-        # Cache for 5 minutes
-        try:
-            await r.setex(cache_key, ARR_RELEASE_CACHE_TTL, _json.dumps(result))
-        except Exception:
-            pass
+                finally:
+                    if client:
+                        await client.close()
 
         return result
+
+    # ------------------------------------------------------------------
+    # Upcoming home releases (digital/physical) for missing Radarr movies
+    # ------------------------------------------------------------------
+
+    async def _get_upcoming_home_releases(self, today: str, days: int) -> list[dict]:
+        """Return Radarr movies that are monitored but missing (no file) and
+        have a digital or physical release date within the next `days` days.
+
+        These are movies the user has added to Radarr but can't download yet
+        because they haven't been released digitally/physically — surfacing
+        them lets the user know when they'll become available.
+        """
+        import json as _json
+
+        r = await get_redis()
+        raw = await r.get("radarr_servers")
+        if not raw:
+            return []
+
+        from app.utils.radarr_client import RadarrClient
+
+        today_date = datetime.now(timezone.utc).date()
+        end_date = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
+        results = []
+        seen_tmdb: set[str] = set()
+
+        for srv in _json.loads(raw):
+            client = None
+            try:
+                client = RadarrClient(
+                    srv["url"], srv["api_key"],
+                    name=srv.get("name", "Radarr"),
+                )
+                movies = await client.get_calendar(today, end_date)
+                for m in movies:
+                    tmdb = m.get("tmdb_id")
+                    if not tmdb or str(tmdb) in seen_tmdb:
+                        continue
+                    # Only missing movies (in Radarr but no file)
+                    if m.get("has_file"):
+                        continue
+
+                    digital = _normalise_date(m.get("digital_release"))
+                    physical = _normalise_date(m.get("physical_release"))
+
+                    # Must have at least one home release date in the window
+                    digital_in_window = _date_in_window(digital, today_date, days)
+                    physical_in_window = _date_in_window(physical, today_date, days)
+                    if not digital_in_window and not physical_in_window:
+                        continue
+
+                    seen_tmdb.add(str(tmdb))
+
+                    # Pick the nearest home release for sorting
+                    nearest_date = digital if digital_in_window else physical
+                    if digital_in_window and physical_in_window:
+                        nearest_date = min(digital, physical)
+
+                    results.append({
+                        "title": m.get("title", ""),
+                        "tmdb_id": tmdb,
+                        "digital_release": digital,
+                        "physical_release": physical,
+                        "theatrical_release": _normalise_date(m.get("in_cinemas")),
+                        "days_until": self._days_until(nearest_date),
+                        "server": srv.get("name", "Radarr"),
+                    })
+            except Exception:
+                log.warning("upcoming_home_releases.radarr_failed",
+                            server=srv.get("name"))
+            finally:
+                if client:
+                    await client.close()
+
+        results.sort(key=lambda r: r["days_until"] if r["days_until"] is not None else 9999)
+        return results
 
     # ------------------------------------------------------------------
     # Shows
@@ -700,3 +781,14 @@ def _find_sonarr_episode(
         if ep.get("season") == season and ep.get("episode") == episode_num:
             return ep
     return None
+
+
+def _date_in_window(date_str: str | None, today_date, days: int) -> bool:
+    """Check if a date string falls within today .. today+days (inclusive)."""
+    if not date_str:
+        return False
+    try:
+        dt = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        return today_date <= dt <= today_date + timedelta(days=days)
+    except Exception:
+        return False

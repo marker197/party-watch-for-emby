@@ -1630,11 +1630,19 @@ async function viewAiring() {
       for (const tid of (arrData.sonarr_tvdb || [])) arrSonarr[tid] = (arrData.sonarr_names || {})[tid] || 'Sonarr';
     }
 
-    if (items.length === 0) {
+    const homeReleases = data.upcoming_home_releases || [];
+    const fmtDate = (d) => { if (!d) return '—'; try { const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString('en-GB', {day:'numeric',month:'short',year:'numeric'}); } catch(e) { return d; } };
+
+    let html = '';
+
+    if (items.length === 0 && homeReleases.length === 0) {
       el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Nothing airing in the next 30 days.</div>';
       return;
     }
-    el.innerHTML = '<table class="queue-table"><thead><tr>' +
+
+    // ── Main airing table ──
+    if (items.length > 0) {
+    html += '<table class="queue-table"><thead><tr>' +
       '<th>Title</th><th style="width:70px;">S/E</th><th style="width:90px;">Airs</th><th style="width:110px;">Flag</th><th style="width:70px;"></th>' +
       '</tr></thead><tbody>' +
       items.map((i, idx) => {
@@ -1681,7 +1689,6 @@ async function viewAiring() {
         // Movie release dates (cinema + digital + physical)
         let releaseDates = '';
         if (i.media_type === 'movie' && (i.theatrical_release || i.digital_release || i.physical_release)) {
-          const fmtDate = (d) => { if (!d) return '—'; try { const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString('en-GB', {day:'numeric',month:'short',year:'numeric'}); } catch(e) { return d; } };
           const lines = [];
           if (i.theatrical_release) lines.push(`🎬 Cinema: ${fmtDate(i.theatrical_release)}`);
           if (i.digital_release) lines.push(`💿 Digital: ${fmtDate(i.digital_release)}`);
@@ -1715,6 +1722,37 @@ async function viewAiring() {
         </tr>`;
       }).join('') +
       '</tbody></table>';
+    }
+
+    // ── Upcoming Digital / Physical Releases (missing in Radarr) ──
+    if (homeReleases.length > 0) {
+      html += `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--surface-hover);">
+        <h4 style="font-size:0.85rem;margin:0 0 8px;">💿 Upcoming Digital / Physical Releases</h4>
+        <table class="queue-table"><thead><tr>
+          <th>Title</th><th style="width:120px;">Digital</th><th style="width:120px;">Physical</th><th style="width:70px;">In</th>
+        </tr></thead><tbody>` +
+        homeReleases.map(m => {
+          const title = (m.title || '').replace(/</g, '&lt;');
+          const digital = m.digital_release ? fmtDate(m.digital_release) : '—';
+          const physical = m.physical_release ? fmtDate(m.physical_release) : '—';
+          const daysStr = m.days_until == null ? '' : (m.days_until === 0 ? 'today' : m.days_until === 1 ? 'tomorrow' : `${m.days_until}d`);
+          const digitalCell = m.digital_release
+            ? `${digital} <span style="opacity:0.5;font-size:0.72rem;">${m.digital_release && m.days_until != null && m.digital_release <= (m.physical_release || '9') ? daysStr : ''}</span>`
+            : '—';
+          const physicalCell = m.physical_release
+            ? `${physical} <span style="opacity:0.5;font-size:0.72rem;">${m.physical_release && m.days_until != null && (m.physical_release <= (m.digital_release || '9')) ? daysStr : ''}</span>`
+            : '—';
+          return `<tr>
+            <td>${title}</td>
+            <td style="font-size:0.8rem;">${digitalCell}</td>
+            <td style="font-size:0.8rem;">${physicalCell}</td>
+            <td style="font-size:0.75rem;color:var(--text-dim);">${daysStr}</td>
+          </tr>`;
+        }).join('') +
+        '</tbody></table></div>';
+    }
+
+    el.innerHTML = html;
   } catch(e) {
     el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
   }

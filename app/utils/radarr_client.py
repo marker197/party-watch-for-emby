@@ -217,6 +217,39 @@ class RadarrClient:
                 "http_status": e.response.status_code,
             }
 
+    # -- Calendar --------------------------------------------------------------
+
+    async def get_calendar(self, start: str, end: str) -> list[dict]:
+        """Fetch upcoming movie releases from Radarr's calendar.
+
+        Parameters:
+            start: ISO date string (e.g. "2026-07-15")
+            end:   ISO date string (e.g. "2026-08-15")
+
+        Returns list of movies with release dates (inCinemas, digitalRelease,
+        physicalRelease) that fall within the date range.
+        """
+        try:
+            data = await self._get(f"/calendar?start={start}&end={end}")
+            result = []
+            for m in (data if isinstance(data, list) else []):
+                tmdb = m.get("tmdbId")
+                if not tmdb:
+                    continue
+                result.append({
+                    "tmdb_id": tmdb,
+                    "title": m.get("title", ""),
+                    "in_cinemas": m.get("inCinemas"),
+                    "digital_release": m.get("digitalRelease"),
+                    "physical_release": m.get("physicalRelease"),
+                    "has_file": m.get("hasFile", False),
+                })
+            return result
+        except Exception as e:
+            log.warning("radarr.calendar_fetch_failed",
+                        server=self._name, error=str(e)[:120])
+            return []
+
     # -- Download queue -------------------------------------------------------
 
     async def get_download_queue(self) -> list[dict]:
