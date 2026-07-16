@@ -187,13 +187,26 @@ app.add_middleware(
 
 # 3. CORS with restricted origins (SECURITY FIX: No more allow_origins=["*"])
 def _get_allowed_origins() -> list[str]:
-    """Get allowed CORS origins from environment."""
+    """Get allowed CORS origins from environment.
+
+    Always includes moz-extension:// and chrome-extension:// so the
+    Emby Remote Play browser extension can reach the API.
+    """
     allowed = os.environ.get("ALLOWED_ORIGINS", "http://localhost:8000").split(",")
-    return [o.strip() for o in allowed if o.strip()]
+    origins = [o.strip() for o in allowed if o.strip()]
+    # Browser extension origins use random UUIDs — can't be predicted,
+    # so we must use allow_origin_regex below instead.
+    return origins
+
+
+# Extension origins (moz-extension://{uuid}, chrome-extension://{id})
+# can't be enumerated, so use a regex alongside the explicit list.
+_EXTENSION_ORIGIN_RE = r"^(moz-extension|chrome-extension)://.*$"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_allowed_origins(),
+    allow_origin_regex=_EXTENSION_ORIGIN_RE,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],

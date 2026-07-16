@@ -3642,3 +3642,268 @@ async def enrichment_items(
         })
 
     return {"items": items, "count": len(items)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Remote Play — browser extension integration
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/api/remote-play/libraries")
+async def remote_play_libraries(db: AsyncSession = Depends(get_db)):
+    """Return Emby library folders for the extension options page.
+
+    Lists movies/tvshows libraries so the user can set priority order.
+    """
+    try:
+        emby = EmbyClient()
+        folders = await emby.get_virtual_folders()
+        media_folders = [
+            f for f in folders
+            if f.get("collection_type") in ("movies", "tvshows", "mixed", "")
+        ]
+        return {"libraries": media_folders}
+    except Exception as e:
+        log.warning("remote_play.libraries_failed", error=str(e)[:200])
+        raise HTTPException(502, "failed to fetch Emby libraries")
+
+
+@router.get("/api/remote-play/sessions/{user_id}")
+async def remote_play_sessions(user_id: int, db: AsyncSession = Depends(get_db)):
+    """Return active controllable Emby sessions for a user."""
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user or not user.emby_user_id:
+        raise HTTPException(404, "user not found or no Emby account linked")
+
+    try:
+        emby = EmbyClient()
+        all_sessions = await emby.get_sessions()
+        user_sessions = []
+        for s in all_sessions:
+            if s.get("UserId") != user.emby_user_id:
+                continue
+            if not s.get("SupportsRemoteControl", False):
+                continue
+            user_sessions.append({
+                "session_id": s.get("Id"),
+                "device_name": s.get("DeviceName", "Unknown"),
+                "client": s.get("Client", ""),
+                "now_playing": s.get("NowPlayingItem", {}).get("Name"),
+            })
+        return {"sessions": user_sessions}
+    except Exception as e:
+        log.warning("remote_play.sessions_failed", error=str(e)[:200])
+        raise HTTPException(502, "failed to fetch Emby sessions")
+
+
+@router.post("/api/remote-play")
+async def remote_play(request: Request, db: AsyncSession = Depends(get_db)):
+    """Resolve a media item from provider IDs and start playback on Emby.
+
+    Called by the browser extension.  Accepts IDs from Trakt, IMDB, or TMDB,
+    resolves to an Emby library item, finds an active session for the user,
+    and sends a play command.
+    """
+    body = await request.json()
+    user_id = body.get("user_id")
+    media_type = body.get("media_type", "movie")
+    ids = body.get("ids", {})
+    season = body.get("season")
+    episode = body.get("episode")
+    session_id = body.get("session_id")
+    library_priority = body.get("library_priority", [])
+
+    if not user_id:
+        raise HTTPException(400, "user_id required")
+    if not ids:
+        raise HTTPException(400, "at least one ID required (imdb_id, tmdb_id, trakt_slug)")
+
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user or not user.emby_user_id:
+        raise HTTPException(404, "user not found or no Emby account linked")
+
+    # ── Step 1: Resolve to Emby library item ──
+
+    matches = []
+
+    for provider_type, id_key in [
+        ("Imdb", "imdb_id"),
+        ("Tmdb", "tmdb_id"),
+        ("Tvdb", "tvdb_id"),
+    ]:
+        pid = ids.get(id_key)
+        if pid:
+            cached = await LibraryCache.find_by_provider_id(provider_type, str(pid))
+            if cached:
+                matches.append(cached)
+
+    # Trakt slug → resolve via Trakt API to get provider IDs
+    if not matches and ids.get("trakt_slug") and user.trakt_access_token:
+        try:
+            trakt = TraktClient(access_token=user.trakt_access_token)
+            kind = "movie" if media_type == "movie" else "show"
+            results = await trakt.search(query=ids["trakt_slug"], kind=kind)
+            await trakt.close()
+            if results:
+                item_data = results[0].get(kind, {})
+                trakt_ids = item_data.get("ids", {})
+                for ptype, tkey in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
+                    pid = trakt_ids.get(tkey)
+                    if pid:
+                        cached = await LibraryCache.find_by_provider_id(ptype, str(pid))
+                        if cached:
+                            matches.append(cached)
+                            break
+        except Exception:
+            log.debug("remote_play.trakt_resolve_failed", slug=ids.get("trakt_slug"))
+
+    # Title fallback
+    if not matches and ids.get("title"):
+        cached = await LibraryCache.find_by_title(
+            ids["title"], year=ids.get("year"),
+        )
+        if cached:
+            matches.append(cached)
+
+    if not matches:
+        return {"status": "not_in_library", "message": "Item not found in Emby library"}
+
+    # Dedupe and pick best match based on library priority
+    seen_ids: set[str] = set()
+    unique_matches = []
+    for m in matches:
+        if m["emby_id"] not in seen_ids:
+            seen_ids.add(m["emby_id"])
+            unique_matches.append(m)
+
+    if len(unique_matches) > 1 and library_priority:
+        try:
+            emby = EmbyClient()
+            for m in unique_matches:
+                item_detail = await emby.get_item(m["emby_id"], user_id=user.emby_user_id)
+                m["_parent_id"] = item_detail.get("ParentId", "")
+        except Exception:
+            pass
+
+        def priority_key(m):
+            pid = m.get("_parent_id", "")
+            try:
+                return library_priority.index(pid)
+            except ValueError:
+                return 999
+
+        unique_matches.sort(key=priority_key)
+
+    emby_item = unique_matches[0]
+
+    # ── Step 2: For shows, resolve to specific episode ──
+
+    play_item_id = emby_item["emby_id"]
+
+    if media_type == "show" and season is not None and episode is not None:
+        try:
+            emby = EmbyClient()
+            episodes = await emby.get_items(
+                user_id=user.emby_user_id,
+                item_type="Episode",
+                parent_id=emby_item["emby_id"],
+                fields="ProviderIds,ProductionYear",
+                sort_by="ParentIndexNumber,IndexNumber",
+            )
+            for ep in episodes.get("Items", []):
+                if (ep.get("ParentIndexNumber") == season
+                        and ep.get("IndexNumber") == episode):
+                    play_item_id = ep["Id"]
+                    break
+            else:
+                return {
+                    "status": "episode_not_found",
+                    "message": f"S{season:02d}E{episode:02d} not found in library",
+                    "series_found": emby_item["title"],
+                }
+        except Exception as e:
+            log.warning("remote_play.episode_resolve_failed", error=str(e)[:200])
+            return {"status": "error", "message": "Failed to resolve episode"}
+    elif media_type == "show" and season is None:
+        # No specific episode — play next unwatched
+        try:
+            emby = EmbyClient()
+            next_up = await emby.get_items(
+                user_id=user.emby_user_id,
+                item_type="Episode",
+                parent_id=emby_item["emby_id"],
+                filters="IsUnplayed",
+                sort_by="ParentIndexNumber,IndexNumber",
+                limit=1,
+            )
+            next_items = next_up.get("Items", [])
+            if next_items:
+                play_item_id = next_items[0]["Id"]
+        except Exception:
+            pass
+
+    # ── Step 3: Find active session ──
+
+    try:
+        emby = EmbyClient()
+        all_sessions = await emby.get_sessions()
+    except Exception as e:
+        log.warning("remote_play.sessions_failed", error=str(e)[:200])
+        return {"status": "error", "message": "Failed to connect to Emby"}
+
+    user_sessions = [
+        s for s in all_sessions
+        if s.get("UserId") == user.emby_user_id
+        and s.get("SupportsRemoteControl", False)
+    ]
+
+    if not user_sessions:
+        return {
+            "status": "no_active_session",
+            "message": "No controllable Emby session found — open Emby on a device first",
+        }
+
+    target_session = None
+    if session_id:
+        target_session = next((s for s in user_sessions if s.get("Id") == session_id), None)
+        if not target_session:
+            return {"status": "session_not_found", "message": "Requested session no longer active"}
+    elif len(user_sessions) == 1:
+        target_session = user_sessions[0]
+    else:
+        playing = [s for s in user_sessions if s.get("NowPlayingItem")]
+        if len(playing) == 1:
+            target_session = playing[0]
+        else:
+            return {
+                "status": "multiple_sessions",
+                "message": "Multiple Emby sessions found — pick one",
+                "sessions": [
+                    {
+                        "session_id": s.get("Id"),
+                        "device_name": s.get("DeviceName", "Unknown"),
+                        "client": s.get("Client", ""),
+                        "now_playing": s.get("NowPlayingItem", {}).get("Name"),
+                    }
+                    for s in user_sessions
+                ],
+            }
+
+    # ── Step 4: Send play command ──
+
+    try:
+        emby = EmbyClient()
+        await emby.play_item_on_session(
+            session_id=target_session["Id"],
+            item_id=play_item_id,
+            controlling_user_id=user.emby_user_id,
+        )
+        return {
+            "status": "playing",
+            "title": emby_item.get("title", ""),
+            "emby_id": play_item_id,
+            "device": target_session.get("DeviceName", ""),
+        }
+    except Exception as e:
+        log.warning("remote_play.play_failed", error=str(e)[:200])
+        return {"status": "error", "message": f"Play command failed: {str(e)[:100]}"}
