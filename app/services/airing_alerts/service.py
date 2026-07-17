@@ -8,8 +8,8 @@ countdown, covering both shows and movies.
 
 Release dates are sourced with a priority cascade:
   1. Radarr / Sonarr (primary — most accurate for items in arr)
-  2. Trakt /releases/{country} (first fallback)
-  3. Future: TMDB (second fallback for movies)
+  2. TMDB /movie/{id}/release_dates (second — broad coverage, typed releases)
+  3. Trakt /releases/{country} (last resort)
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from app.utils.trakt_client import TraktClient
 from app.utils.emby_client import EmbyClient
 from app.utils.library_cache import LibraryCache
 from app.utils.redis_cache import get_redis
+from app.utils.tmdb_client import get_movie_release_dates as _tmdb_release_dates
 from app.utils.database import async_session
 from sqlalchemy import select
 
@@ -646,13 +647,13 @@ class AiringAlertsService:
     ) -> tuple[str | None, str | None, str | None, str]:
         """Return (theatrical, digital, physical, source) for a movie.
 
-        Priority: Radarr → Trakt → (future: TMDB).
+        Priority: Radarr → TMDB → Trakt.
         Cached 24h per movie+country.
         """
         if not movie_trakt_id:
             return None, None, None, ""
 
-        cache_key = f"airing_alerts:releases:{movie_trakt_id}:{country}"
+        cache_key = f"airing_alerts:releases:{movie_trakt_id}:{country}_v2"
         try:
             r = await get_redis()
             cached = await r.get(cache_key)
@@ -678,7 +679,25 @@ class AiringAlertsService:
                 if theatrical or digital or physical:
                     source = "radarr"
 
-        # ── Tier 2: Trakt (fallback for any missing dates) ──
+        # ── Tier 2: TMDB (fills any gaps left by Radarr) ──
+        if tmdb_id and (not theatrical or not digital or not physical):
+            tmdb_theat, tmdb_dig, tmdb_phys = await _tmdb_release_dates(
+                tmdb_id, country=country,
+            )
+            if not theatrical and tmdb_theat:
+                theatrical = tmdb_theat
+                if not source:
+                    source = "tmdb"
+            if not digital and tmdb_dig:
+                digital = tmdb_dig
+                if not source:
+                    source = "tmdb"
+            if not physical and tmdb_phys:
+                physical = tmdb_phys
+                if not source:
+                    source = "tmdb"
+
+        # ── Tier 3: Trakt (last resort for any still-missing dates) ──
         if not theatrical or not digital:
             trakt_theatrical, trakt_digital = await self._get_trakt_releases(
                 trakt, movie_trakt_id, country,
@@ -692,8 +711,8 @@ class AiringAlertsService:
                 if not source:
                     source = "trakt"
 
-        # Set source if we only got data from Trakt
-        if not source and (theatrical or digital):
+        # Resolve source label when only lower tiers contributed
+        if not source and (theatrical or digital or physical):
             source = "trakt"
 
         # Cache result (even if all None — avoids re-fetching for movies

@@ -700,6 +700,15 @@
       </div>
     </div>
 
+    <!-- Trakt List Import -->
+    <div class="section">
+      <h2>📋 Trakt List Import</h2>
+      <p style="color: var(--text-dim); font-size: 0.82rem; margin-bottom: 12px;">
+        Import your personal Trakt lists as Emby playlists. Items are matched against your library cache.
+      </p>
+      <div id="traktListsContainer" style="font-size:0.85rem;color:var(--text-dim);">Loading lists…</div>
+    </div>
+
     <!-- Danger Zone -->
     <div class="section danger-zone">
       <h2>⚠️ Danger Zone</h2>
@@ -1234,6 +1243,19 @@
       // Implement toast notification
       console.log(message);
       alert(message); // Fallback
+    }
+
+    function showToast(msg) {
+      const el = document.createElement('div');
+      el.textContent = msg;
+      Object.assign(el.style, {
+        position:'fixed', bottom:'24px', right:'24px', background:'var(--surface)',
+        border:'1px solid var(--border)', borderRadius:'8px', padding:'12px 20px',
+        color:'var(--text)', fontSize:'0.85rem', zIndex:'9999', maxWidth:'460px',
+        boxShadow:'0 4px 16px rgba(0,0,0,0.3)', animation:'fadeIn 0.2s',
+      });
+      document.body.appendChild(el);
+      setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, 4000);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1874,6 +1896,102 @@
       }
     });
 
+    // ── Trakt List Import ──
+    async function loadTraktLists() {
+      const container = document.getElementById('traktListsContainer');
+      try {
+        const resp = await fetch('/api/trakt-lists');
+        if (!resp.ok) {
+          container.innerHTML = '<span style="color:var(--text-dim);">Could not load lists — is Trakt linked?</span>';
+          return;
+        }
+        const data = await resp.json();
+        const lists = data.lists || [];
+        if (!lists.length) {
+          container.innerHTML = '<span style="color:var(--text-dim);">No personal lists found on your Trakt account.</span>';
+          return;
+        }
+        container.innerHTML = `
+          <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border);text-align:left;">
+                <th style="padding:8px 6px;color:var(--text-dim);font-weight:500;">List Name</th>
+                <th style="padding:8px 6px;color:var(--text-dim);font-weight:500;text-align:center;">Items</th>
+                <th style="padding:8px 6px;color:var(--text-dim);font-weight:500;text-align:center;">Privacy</th>
+                <th style="padding:8px 6px;text-align:right;"></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${lists.map(l => `
+                <tr style="border-bottom:1px solid var(--border);" data-slug="${l.slug}">
+                  <td style="padding:8px 6px;">
+                    <div style="font-weight:500;color:var(--text);">${escapeHtml(l.name)}</div>
+                    ${l.description ? `<div style="color:var(--text-dim);font-size:0.78rem;margin-top:2px;">${escapeHtml(l.description).substring(0, 80)}</div>` : ''}
+                  </td>
+                  <td style="padding:8px 6px;text-align:center;color:var(--text-dim);">${l.item_count}</td>
+                  <td style="padding:8px 6px;text-align:center;color:var(--text-dim);">${l.privacy}</td>
+                  <td style="padding:8px 6px;text-align:right;">
+                    <button class="btn btn-green" style="font-size:0.78rem;padding:5px 10px;"
+                      onclick="importTraktList('${l.slug}', '${escapeHtml(l.name).replace(/'/g, "\\'")}')">
+                      Import to Emby
+                    </button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      } catch (err) {
+        container.innerHTML = `<span style="color:var(--red);">Error: ${err.message}</span>`;
+      }
+    }
+
+    async function importTraktList(slug, defaultName) {
+      const playlistName = prompt('Playlist name in Emby:', defaultName);
+      if (playlistName === null) return;  // cancelled
+
+      const btn = event.target;
+      const origText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Importing…';
+
+      try {
+        const resp = await fetch('/api/trakt-lists/import', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({list_slug: slug, playlist_name: playlistName || null}),
+        });
+        const data = await resp.json();
+        if (data.status === 'ok') {
+          let msg = `✓ Imported ${data.matched} items as Emby playlist`;
+          if (data.unmatched > 0) {
+            const names = (data.unmatched_items || []).map(i => i.title).slice(0, 5).join(', ');
+            msg += ` · ${data.unmatched} not in library`;
+            if (names) msg += ` (${names}${data.unmatched > 5 ? '…' : ''})`;
+          }
+          btn.textContent = '✓ Done';
+          btn.style.background = 'var(--surface-hover)';
+          btn.style.color = 'var(--green)';
+          setTimeout(() => { btn.textContent = origText; btn.disabled = false; btn.style.background = ''; btn.style.color = ''; }, 3000);
+          showToast(msg);
+        } else {
+          showToast('Error: ' + (data.message || data.reason || 'unknown'));
+          btn.textContent = origText;
+          btn.disabled = false;
+        }
+      } catch (err) {
+        showToast('Error: ' + err.message);
+        btn.textContent = origText;
+        btn.disabled = false;
+      }
+    }
+
+    function escapeHtml(s) {
+      if (!s) return '';
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    loadTraktLists();
     init();
   </script>
 </body>

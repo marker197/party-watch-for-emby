@@ -334,6 +334,41 @@
     .card-actions .btn-icon:hover { border-color: var(--accent); color: var(--accent); }
     .card-actions .btn-delete:hover { border-color: var(--red); color: var(--red); }
 
+    .playlist-toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      font-size: 0.82rem;
+    }
+    .playlist-toggle-row input[type="checkbox"] {
+      accent-color: var(--accent);
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+    .playlist-toggle-row label { color: var(--text-dim); cursor: pointer; }
+    .playlist-toggle-row label.active { color: var(--green); }
+
+    .rename-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+      font-size: 0.82rem;
+    }
+    .rename-row input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 4px 8px;
+      font-size: 0.82rem;
+    }
+    .rename-row input:focus { border-color: var(--accent); outline: none; }
+    .rename-row .rename-label { color: var(--text-dim); white-space: nowrap; }
+
     .card-description {
       color: var(--text-dim);
       font-size: 0.85rem;
@@ -622,7 +657,7 @@
         return `
           <div class="universe-card" data-universe-id="${universe.id}">
             <div class="universe-header">
-              <div class="universe-title">${escapeHtml(universe.name)}</div>
+              <div class="universe-title">${escapeHtml(universe.custom_name || universe.name)}</div>
               <div class="universe-badge">
                 <div class="completion">${percentage}%</div>
                 <div class="item-count">${universe.watched ?? 0}✓ watched · ${universe.in_library ?? 0}/${universe.total_items ?? 0} in library</div>
@@ -638,6 +673,21 @@
               ${hasItems ? `<button class="expand-btn" data-universe-id="${universe.id}" onclick="toggleExpand(this, ${universe.id})">▶ Show Details</button>` : `<span style="flex:1;color:var(--text-dim);font-size:0.82rem;">No items yet — add some below</span>`}
               <button class="btn-icon" onclick="toggleAddItem(${universe.id})" title="Add item">➕ Add Item</button>
               <button class="btn-icon btn-delete" onclick="deleteUniverse(${universe.id}, '${escapeHtml(universe.name).replace(/'/g, "\\'")}')" title="Delete universe">🗑️</button>
+            </div>
+
+            <div class="rename-row">
+              <span class="rename-label">Name:</span>
+              <input type="text" id="renameInput-${universe.id}"
+                value="${escapeHtml(universe.custom_name || universe.name)}"
+                placeholder="${escapeHtml(universe.name)}"
+                onblur="saveRename(${universe.id})"
+                onkeydown="if(event.key==='Enter')this.blur()" />
+            </div>
+
+            <div class="playlist-toggle-row">
+              <input type="checkbox" id="plToggle-${universe.id}" ${universe.playlist_enabled ? 'checked' : ''}
+                onchange="updateUniverseSettings(${universe.id}, {playlist_enabled: this.checked})" />
+              <label for="plToggle-${universe.id}" class="${universe.playlist_enabled ? 'active' : ''}">Sync to Emby Playlist</label>
             </div>
 
             <p class="card-description" id="desc-${universe.id}">
@@ -1129,6 +1179,53 @@
           await loadUniverses();
         } else {
           showToast('Error: ' + (data.reason || 'unknown'));
+        }
+      } catch (err) {
+        showToast('Error: ' + err.message);
+      }
+    }
+
+    // --- Universe playlist settings ---
+    async function updateUniverseSettings(universeId, settings) {
+      try {
+        const resp = await fetch(`/api/universes/${universeId}/settings`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(settings),
+        });
+        const data = await resp.json();
+        if (data.status === 'ok') {
+          // Update label styling
+          const label = document.querySelector(`label[for="plToggle-${universeId}"]`);
+          if (label) label.className = data.playlist_enabled ? 'active' : '';
+          const action = data.playlist_enabled ? 'enabled' : 'disabled';
+          showToast(`✓ Playlist ${action}`);
+        }
+      } catch (err) {
+        showToast('Error: ' + err.message);
+      }
+    }
+
+    async function saveRename(universeId) {
+      const input = document.getElementById(`renameInput-${universeId}`);
+      if (!input) return;
+      const val = input.value.trim();
+      if (!val) return;  // don't save blank
+      try {
+        const resp = await fetch(`/api/universes/${universeId}/settings`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({custom_name: val}),
+        });
+        const data = await resp.json();
+        if (data.status === 'ok') {
+          // Update card title
+          const card = document.querySelector(`.universe-card[data-universe-id="${universeId}"]`);
+          if (card) {
+            const titleEl = card.querySelector('.universe-title');
+            if (titleEl) titleEl.textContent = val;
+          }
+          showToast('✓ Name saved');
         }
       } catch (err) {
         showToast('Error: ' + err.message);

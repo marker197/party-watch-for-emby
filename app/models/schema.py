@@ -161,6 +161,8 @@ class Universe(Base):
     description = Column(Text)
     total_items = Column(Integer, default=0)
     is_custom = Column(Boolean, default=False)
+    playlist_enabled = Column(Boolean, default=False)
+    custom_name = Column(String(256), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

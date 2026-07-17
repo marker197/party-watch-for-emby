@@ -790,7 +790,32 @@ async def delete_universe(universe_id: int):
     return {"status": "ok", "removed": name}
 
 
-@router.get("/api/universes/export")
+@router.put("/api/universes/{universe_id}/settings")
+async def update_universe_settings(universe_id: int, payload: dict):
+    """Update universe display settings (playlist toggle, custom name).
+
+    Payload: {"playlist_enabled": bool, "custom_name": str|null}
+    """
+    async with async_session_ctx() as db:
+        universe = (await db.execute(
+            select(Universe).where(Universe.id == universe_id)
+        )).scalar_one_or_none()
+        if not universe:
+            return {"status": "error", "reason": "universe_not_found"}
+
+        if "playlist_enabled" in payload:
+            universe.playlist_enabled = bool(payload["playlist_enabled"])
+        if "custom_name" in payload:
+            val = (payload["custom_name"] or "").strip() or None
+            universe.custom_name = val
+
+        await db.commit()
+
+    return {
+        "status": "ok",
+        "playlist_enabled": bool(universe.playlist_enabled),
+        "custom_name": universe.custom_name,
+    }
 async def export_universes():
     """Export all universes and their items as JSON for backup/transfer."""
     async with async_session_ctx() as db:
@@ -939,7 +964,8 @@ async def reorder_universe(universe_id: int, payload: dict):
     # Recreate Emby playlist with new order
     if emby_ids:
         emby = EmbyClient()
-        playlist_name = f"🌌 {universe.name}"
+        display_name = universe.custom_name or universe.name
+        playlist_name = f"🌌 {display_name}"
         playlist_id = await emby.recreate_playlist(
             playlist_name, emby_ids, user_id=emby_user_id,
         )
@@ -3274,6 +3300,152 @@ async def test_tmdb_key(payload: dict):
             return {"status": "ok", "message": f"Connected — {data.get('title', 'OK')}"}
     except Exception as e:
         return {"status": "error", "message": str(e)[:200]}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Trakt Personal Lists → Emby Playlists
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/trakt-lists")
+async def get_trakt_lists():
+    """Fetch the authenticated user's personal Trakt lists with library match counts."""
+    async with async_session_ctx() as db:
+        user = (await db.execute(
+            select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+        )).scalars().first()
+        if not user or not user.trakt_access_token:
+            raise HTTPException(400, "No Trakt-linked user found")
+
+        async def _on_refresh(access, refresh, expires):
+            async with async_session_ctx() as rdb:
+                u = (await rdb.execute(select(User).where(User.id == user.id))).scalar_one()
+                u.trakt_access_token = access
+                u.trakt_refresh_token = refresh
+                u.trakt_token_expires = expires
+                await rdb.commit()
+
+        trakt = TraktClient(
+            access_token=user.trakt_access_token,
+            refresh_token=user.trakt_refresh_token,
+            token_expires=user.trakt_token_expires,
+            token_refresh_callback=_on_refresh,
+        )
+
+    try:
+        lists_data = await trakt.get_my_lists()
+    finally:
+        await trakt.close()
+
+    results = []
+    for lst in lists_data or []:
+        ids = lst.get("ids", {})
+        results.append({
+            "name": lst.get("name", ""),
+            "slug": ids.get("slug", ""),
+            "item_count": lst.get("item_count", 0),
+            "description": lst.get("description") or "",
+            "privacy": lst.get("privacy", "private"),
+            "likes": lst.get("likes", 0),
+        })
+    return {"lists": results}
+
+
+@router.post("/api/trakt-lists/import")
+async def import_trakt_list(payload: dict):
+    """Import a personal Trakt list into an Emby playlist.
+
+    Payload: {"list_slug": "...", "playlist_name": "..."}
+    Resolves list items against LibraryCache, creates an Emby playlist
+    with matched items in list order.
+    """
+    list_slug = (payload.get("list_slug") or "").strip()
+    if not list_slug:
+        raise HTTPException(400, "list_slug required")
+    playlist_name = (payload.get("playlist_name") or "").strip()
+
+    async with async_session_ctx() as db:
+        user = (await db.execute(
+            select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+        )).scalars().first()
+        if not user or not user.trakt_access_token:
+            raise HTTPException(400, "No Trakt-linked user found")
+
+        async def _on_refresh(access, refresh, expires):
+            async with async_session_ctx() as rdb:
+                u = (await rdb.execute(select(User).where(User.id == user.id))).scalar_one()
+                u.trakt_access_token = access
+                u.trakt_refresh_token = refresh
+                u.trakt_token_expires = expires
+                await rdb.commit()
+
+        trakt = TraktClient(
+            access_token=user.trakt_access_token,
+            refresh_token=user.trakt_refresh_token,
+            token_expires=user.trakt_token_expires,
+            token_refresh_callback=_on_refresh,
+        )
+
+    try:
+        # Fetch items — the endpoint returns items under /users/me/lists/{slug}/items
+        items = await trakt.get_list_items("me", list_slug)
+    finally:
+        await trakt.close()
+
+    if not items:
+        return {"status": "ok", "matched": 0, "unmatched": 0, "message": "List is empty"}
+
+    emby = EmbyClient()
+    emby_ids = []
+    unmatched = []
+
+    try:
+        for entry in items:
+            # Each entry has a type key ("movie", "show") and the item data under that key
+            item_type = entry.get("type", "")
+            item_data = entry.get(item_type, {}) if item_type else {}
+            ids = item_data.get("ids", {})
+            title = item_data.get("title", "Unknown")
+
+            # Try to resolve via LibraryCache using provider IDs
+            match = None
+
+            # Try IMDB
+            if ids.get("imdb"):
+                match = await LibraryCache.find_by_provider_id("Imdb", ids["imdb"])
+
+            # Try TMDB
+            if not match and ids.get("tmdb"):
+                match = await LibraryCache.find_by_provider_id("Tmdb", str(ids["tmdb"]))
+
+            # Try TVDB (shows)
+            if not match and ids.get("tvdb"):
+                match = await LibraryCache.find_by_provider_id("Tvdb", str(ids["tvdb"]))
+
+            if match and match.get("emby_id"):
+                emby_ids.append(match["emby_id"])
+            else:
+                unmatched.append({"title": title, "year": item_data.get("year")})
+
+        # Create Emby playlist
+        playlist_id = None
+        if emby_ids:
+            emby_user_id = (await _first_emby_user_id()) or None
+            final_name = playlist_name or f"📋 {list_slug}"
+            playlist_id = await emby.recreate_playlist(
+                final_name, emby_ids, user_id=emby_user_id,
+            )
+            log.info("trakt_list.imported", slug=list_slug, name=final_name,
+                     matched=len(emby_ids), unmatched=len(unmatched))
+    finally:
+        await emby.close()
+
+    return {
+        "status": "ok",
+        "matched": len(emby_ids),
+        "unmatched": len(unmatched),
+        "unmatched_items": unmatched[:20],  # cap to avoid huge responses
+        "playlist_id": playlist_id,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════

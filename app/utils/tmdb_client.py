@@ -1,4 +1,4 @@
-"""Lightweight TMDB API client for watch providers.
+"""Lightweight TMDB API client — watch providers & release dates.
 
 The API key is stored in Redis (key ``tmdb_api_key``), configured via the
 settings page.  If no key is set, all methods return empty results so the
@@ -186,3 +186,79 @@ async def get_watch_providers(
         log.debug("tmdb.providers_failed", tmdb_id=tmdb_id,
                   media_type=kind, error=str(e)[:120])
         return []
+
+
+# TMDB release_date type codes
+_RELEASE_TYPE_THEATRICAL = {1, 2, 3}  # Premiere, Theatrical (limited), Theatrical
+_RELEASE_TYPE_DIGITAL = {4}
+_RELEASE_TYPE_PHYSICAL = {5}
+
+
+async def get_movie_release_dates(
+    tmdb_id: int,
+    country: str = "us",
+) -> tuple[str | None, str | None, str | None]:
+    """Return (theatrical, digital, physical) date strings for a movie.
+
+    Hits ``/movie/{id}/release_dates`` which returns typed releases per
+    country.  Tries the requested country first, falls back to US.
+
+    Returns ISO date strings (YYYY-MM-DD) or None for each slot.
+    Degrades silently if no TMDB key is configured.
+    """
+    api_key = await _get_api_key()
+    if not api_key or not tmdb_id:
+        return None, None, None
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{TMDB_BASE}/movie/{tmdb_id}/release_dates",
+                params={"api_key": api_key},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        log.debug("tmdb.release_dates_failed", tmdb_id=tmdb_id,
+                  error=str(e)[:120])
+        return None, None, None
+
+    # Build lookup: country_code → list of releases
+    by_country: dict[str, list[dict]] = {}
+    for entry in data.get("results", []):
+        cc = (entry.get("iso_3166_1") or "").lower()
+        if cc:
+            by_country[cc] = entry.get("release_dates", [])
+
+    # Try requested country first, then US fallback
+    countries = [country.lower()]
+    if country.lower() != "us":
+        countries.append("us")
+
+    theatrical = None
+    digital = None
+    physical = None
+
+    for cc in countries:
+        releases = by_country.get(cc, [])
+        for rel in releases:
+            rtype = rel.get("type")
+            rdate = (rel.get("release_date") or "")[:10]  # "2026-07-15T00:00:00.000Z" → "2026-07-15"
+            if not rdate or len(rdate) < 10:
+                continue
+
+            if rtype in _RELEASE_TYPE_THEATRICAL and not theatrical:
+                theatrical = rdate
+            elif rtype in _RELEASE_TYPE_DIGITAL and not digital:
+                digital = rdate
+            elif rtype in _RELEASE_TYPE_PHYSICAL and not physical:
+                physical = rdate
+
+        if theatrical or digital or physical:
+            break  # got data from this country, stop
+
+    log.debug("tmdb.release_dates_resolved", tmdb_id=tmdb_id,
+              country=country, theatrical=theatrical,
+              digital=digital, physical=physical)
+
+    return theatrical, digital, physical

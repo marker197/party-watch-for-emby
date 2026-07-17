@@ -386,6 +386,8 @@ class UniverseDiscoveryService:
                     "name": u.name,
                     "slug": u.slug,
                     "description": u.description,
+                    "playlist_enabled": bool(u.playlist_enabled),
+                    "custom_name": u.custom_name,
                     "total_items": len(items),
                     "in_library": in_library,
                     "watched": watched,
@@ -668,11 +670,14 @@ class UniverseDiscoveryService:
     # -----------------------------------------------------------------------
 
     async def _create_collections(self):
-        """Create ordered Emby playlists for each universe.
+        """Create ordered Emby playlists for universes with playlist_enabled=True.
 
         Uses playlists (not collections) because playlists preserve the
         insertion order of item IDs.  Collections sort by their own rules
         (release date / name) and ignore the order items were added.
+
+        Only creates playlists for universes where the user has opted in
+        via the playlist_enabled toggle.
         """
         async with async_session() as db:
             first_user = (await db.execute(
@@ -680,7 +685,9 @@ class UniverseDiscoveryService:
             )).scalars().first()
             emby_user_id = first_user.emby_user_id if first_user else None
 
-            universes = (await db.execute(select(Universe))).scalars().all()
+            universes = (await db.execute(
+                select(Universe).where(Universe.playlist_enabled == True)
+            )).scalars().all()
 
             for u in universes:
                 items = (await db.execute(
@@ -694,9 +701,10 @@ class UniverseDiscoveryService:
 
                 emby_ids = [i.emby_item_id for i in items if i.emby_item_id]
                 if emby_ids:
-                    playlist_name = f"🌌 {u.name}"
+                    display_name = u.custom_name or u.name
+                    playlist_name = f"🌌 {display_name}"
                     await self.emby.recreate_playlist(
                         playlist_name, emby_ids, user_id=emby_user_id,
                     )
                     log.info("universe_discovery.playlist_created",
-                             universe=u.name, items=len(emby_ids))
+                             universe=display_name, items=len(emby_ids))
