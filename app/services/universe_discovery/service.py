@@ -703,8 +703,13 @@ class UniverseDiscoveryService:
                 if emby_ids:
                     display_name = u.custom_name or u.name
                     playlist_name = f"🌌 {display_name}"
-                    await self.emby.recreate_playlist(
+                    playlist_id = await self.emby.recreate_playlist(
                         playlist_name, emby_ids, user_id=emby_user_id,
                     )
+                    if playlist_id and u.description:
+                        await self.emby.set_playlist_overview(
+                            playlist_id, u.description,
+                            user_id=emby_user_id,
+                        )
                     log.info("universe_discovery.playlist_created",
                              universe=display_name, items=len(emby_ids))

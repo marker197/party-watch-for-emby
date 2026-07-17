@@ -792,9 +792,9 @@ async def delete_universe(universe_id: int):
 
 @router.put("/api/universes/{universe_id}/settings")
 async def update_universe_settings(universe_id: int, payload: dict):
-    """Update universe display settings (playlist toggle, custom name).
+    """Update universe display settings (playlist toggle, custom name, description).
 
-    Payload: {"playlist_enabled": bool, "custom_name": str|null}
+    Payload: {"playlist_enabled": bool, "custom_name": str|null, "description": str|null}
     """
     async with async_session_ctx() as db:
         universe = (await db.execute(
@@ -808,6 +808,8 @@ async def update_universe_settings(universe_id: int, payload: dict):
         if "custom_name" in payload:
             val = (payload["custom_name"] or "").strip() or None
             universe.custom_name = val
+        if "description" in payload:
+            universe.description = (payload["description"] or "").strip() or None
 
         await db.commit()
 
@@ -815,6 +817,7 @@ async def update_universe_settings(universe_id: int, payload: dict):
         "status": "ok",
         "playlist_enabled": bool(universe.playlist_enabled),
         "custom_name": universe.custom_name,
+        "description": universe.description,
     }
 async def export_universes():
     """Export all universes and their items as JSON for backup/transfer."""
@@ -966,9 +969,17 @@ async def reorder_universe(universe_id: int, payload: dict):
         emby = EmbyClient()
         display_name = universe.custom_name or universe.name
         playlist_name = f"🌌 {display_name}"
-        playlist_id = await emby.recreate_playlist(
-            playlist_name, emby_ids, user_id=emby_user_id,
-        )
+        try:
+            playlist_id = await emby.recreate_playlist(
+                playlist_name, emby_ids, user_id=emby_user_id,
+            )
+            if playlist_id and universe.description:
+                await emby.set_playlist_overview(
+                    playlist_id, universe.description,
+                    user_id=emby_user_id,
+                )
+        finally:
+            await emby.close()
     else:
         playlist_id = None
 
@@ -3362,6 +3373,7 @@ async def import_trakt_list(payload: dict):
     if not list_slug:
         raise HTTPException(400, "list_slug required")
     playlist_name = (payload.get("playlist_name") or "").strip()
+    description = (payload.get("description") or "").strip()
 
     async with async_session_ctx() as db:
         user = (await db.execute(
@@ -3434,6 +3446,12 @@ async def import_trakt_list(payload: dict):
             playlist_id = await emby.recreate_playlist(
                 final_name, emby_ids, user_id=emby_user_id,
             )
+            # Set Overview (description) on the playlist item
+            if playlist_id and description:
+                await emby.set_playlist_overview(
+                    playlist_id, description,
+                    user_id=emby_user_id,
+                )
             log.info("trakt_list.imported", slug=list_slug, name=final_name,
                      matched=len(emby_ids), unmatched=len(unmatched))
     finally:

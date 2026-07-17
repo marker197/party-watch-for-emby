@@ -434,12 +434,86 @@ class EmbyClient:
 
     # -- Metadata update (for enrichment push) --------------------------------
 
-    async def update_item(self, item_id: str, updates: dict, current_item: dict | None = None) -> bool:
+    async def set_playlist_overview(
+        self, playlist_id: str, overview: str,
+        user_id: str | None = None,
+    ) -> bool:
+        """Set Overview on a playlist item.
+
+        1. Wait 2s for Emby to fully index the playlist
+        2. GET /Users/{uid}/Items/{id} — full response
+        3. Set Overview, LockedFields, LockData
+        4. POST /Items/{id}
+        """
+        if not playlist_id or not overview:
+            return False
+
+        try:
+            # Step 1: Wait for Emby to fully index the playlist
+            import asyncio
+            await asyncio.sleep(2)
+
+            # Step 2: GET the full playlist object (user-scoped, no Fields)
+            get_url = self._url(f"/Users/{user_id}/Items/{playlist_id}")
+            get_resp = await self._client.get(
+                get_url,
+                params={"api_key": self._key},
+                headers={"X-MediaBrowser-Token": self._key},
+            )
+            get_resp.raise_for_status()
+            item = get_resp.json()
+
+            if not item or not item.get("Id"):
+                log.warning("emby.set_overview_item_not_found",
+                            playlist_id=playlist_id)
+                return False
+
+            # Step 3: Set Overview, lock it, and lock metadata
+            item["Overview"] = overview
+            locked = list(set(item.get("LockedFields") or []) | {"Overview"})
+            item["LockedFields"] = locked
+            item["LockData"] = True
+
+            # Step 4: POST the complete object with auth header
+            post_url = self._url(f"/Items/{playlist_id}")
+            resp = await self._client.post(
+                post_url,
+                json=item,
+                params={"api_key": self._key},
+                headers={
+                    "Content-Type": "application/json",
+                    "X-MediaBrowser-Token": self._key,
+                },
+            )
+            log.info("emby.set_playlist_overview",
+                     playlist_id=playlist_id,
+                     status=resp.status_code,
+                     overview_len=len(overview))
+
+            return resp.status_code < 400
+        except Exception as e:
+            log.warning("emby.set_overview_failed",
+                        playlist_id=playlist_id,
+                        error=str(e)[:200])
+            return False
+
+    async def update_item(
+        self, item_id: str, updates: dict,
+        current_item: dict | None = None,
+        user_id: str | None = None,
+        lock_fields: list[str] | None = None,
+    ) -> bool:
         """Update an Emby item's metadata fields.
 
-        GET the full item first, merge updates, POST back.
-        Emby requires the full item object on POST /Items/{id}.
-        Pass current_item to skip the fetch if you already have it.
+        GET the full item first (user-scoped for complete data), merge
+        updates, POST back.  Emby requires the full item object on
+        POST /Items/{id} — partial objects cause field blanking.
+
+        Pass user_id for the user-scoped GET (required on builds where
+        /Items/{id} returns 404).
+
+        lock_fields: list of field names to add to LockedFields so Emby
+        won't overwrite them on the next metadata refresh.
 
         Safe fields to update: Tags, Taglines, CommunityRating,
         Genres, Overview, OfficialRating.  Changes propagate to
@@ -448,24 +522,39 @@ class EmbyClient:
         try:
             item = current_item
             if not item:
-                item = await self.get_item_safe(item_id)
+                item = await self.get_item_safe(item_id, user_id=user_id)
             if not item:
                 log.warning("emby.update_item_not_found", item_id=item_id)
                 return False
 
+            log.debug("emby.update_item_got",
+                       item_id=item_id,
+                       item_name=item.get("Name"),
+                       item_type=item.get("Type"),
+                       has_overview=bool(item.get("Overview")),
+                       keys=sorted(item.keys())[:20])
+
             for key, val in updates.items():
                 item[key] = val
+
+            # Lock updated fields to prevent Emby metadata refresh
+            # from overwriting them
+            if lock_fields:
+                locked = set(item.get("LockedFields") or [])
+                locked.update(lock_fields)
+                item["LockedFields"] = list(locked)
 
             resp = await self._client.post(
                 self._url(f"/Items/{item_id}"),
                 json=item,
                 params=self._params(),
             )
-            resp.raise_for_status()
             log.info("emby.item_updated", item_id=item_id,
-                     fields=list(updates.keys()))
+                     fields=list(updates.keys()),
+                     status_code=resp.status_code)
+            resp.raise_for_status()
             return True
         except Exception as e:
             log.warning("emby.item_update_failed", item_id=item_id,
-                        error=str(e)[:120])
+                        error=str(e)[:200])
             return False

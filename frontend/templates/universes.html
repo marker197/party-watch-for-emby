@@ -369,13 +369,24 @@
     .rename-row input:focus { border-color: var(--accent); outline: none; }
     .rename-row .rename-label { color: var(--text-dim); white-space: nowrap; }
 
-    .card-description {
-      color: var(--text-dim);
-      font-size: 0.85rem;
+    .desc-row {
       margin-bottom: 12px;
-      display: none;
     }
-    .card-description.visible { display: block; }
+    .desc-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text-dim);
+      padding: 6px 8px;
+      font-size: 0.82rem;
+      font-family: inherit;
+      resize: vertical;
+      min-height: 32px;
+      line-height: 1.4;
+    }
+    .desc-input:focus { border-color: var(--accent); outline: none; color: var(--text); }
+    .desc-input::placeholder { color: var(--text-dim); opacity: 0.5; }
 
     .expand-btn {
       width: 100%;
@@ -690,9 +701,13 @@
               <label for="plToggle-${universe.id}" class="${universe.playlist_enabled ? 'active' : ''}">Sync to Emby Playlist</label>
             </div>
 
-            <p class="card-description" id="desc-${universe.id}">
-              ${escapeHtml(universe.description || '')}
-            </p>
+            <div class="desc-row">
+              <textarea class="desc-input" id="descInput-${universe.id}"
+                placeholder="Add a description…"
+                onblur="saveDescription(${universe.id})"
+                onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();this.blur();}"
+                rows="2">${escapeHtml(universe.description || '')}</textarea>
+            </div>
 
             <div class="items-list" id="items-${universe.id}">
               ${generateItemsList(universe.items || [], universe.id)}
@@ -876,11 +891,9 @@
 
     function toggleExpand(btn, universeId) {
       const itemsList = document.getElementById(`items-${universeId}`);
-      const desc = document.getElementById(`desc-${universeId}`);
       const isExpanding = !itemsList.classList.contains('visible');
 
       itemsList.classList.toggle('visible');
-      if (desc) desc.classList.toggle('visible');
       btn.classList.toggle('active');
       btn.textContent = isExpanding ? '▼ Hide Details' : '▶ Show Details';
     }
@@ -1226,6 +1239,25 @@
             if (titleEl) titleEl.textContent = val;
           }
           showToast('✓ Name saved');
+        }
+      } catch (err) {
+        showToast('Error: ' + err.message);
+      }
+    }
+
+    async function saveDescription(universeId) {
+      const input = document.getElementById(`descInput-${universeId}`);
+      if (!input) return;
+      const val = input.value.trim();
+      try {
+        const resp = await fetch(`/api/universes/${universeId}/settings`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({description: val || null}),
+        });
+        const data = await resp.json();
+        if (data.status === 'ok') {
+          showToast('✓ Description saved');
         }
       } catch (err) {
         showToast('Error: ' + err.message);

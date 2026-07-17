@@ -1932,7 +1932,7 @@
                   <td style="padding:8px 6px;text-align:center;color:var(--text-dim);">${l.privacy}</td>
                   <td style="padding:8px 6px;text-align:right;">
                     <button class="btn btn-green" style="font-size:0.78rem;padding:5px 10px;"
-                      onclick="importTraktList('${l.slug}', '${escapeHtml(l.name).replace(/'/g, "\\'")}')">
+                      onclick="importTraktList('${l.slug}', '${escapeHtml(l.name).replace(/'/g, "\\'")}', '${escapeHtml(l.description || '').replace(/'/g, "\\'")}')">
                       Import to Emby
                     </button>
                   </td>
@@ -1946,7 +1946,7 @@
       }
     }
 
-    async function importTraktList(slug, defaultName) {
+    async function importTraktList(slug, defaultName, description) {
       const playlistName = prompt('Playlist name in Emby:', defaultName);
       if (playlistName === null) return;  // cancelled
 
@@ -1959,7 +1959,7 @@
         const resp = await fetch('/api/trakt-lists/import', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({list_slug: slug, playlist_name: playlistName || null}),
+          body: JSON.stringify({list_slug: slug, playlist_name: playlistName || null, description: description || null}),
         });
         const data = await resp.json();
         if (data.status === 'ok') {
