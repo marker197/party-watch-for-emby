@@ -1479,8 +1479,58 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             category="playback",
         )
 
+        # ── Send scrobble/stop to clear Trakt "watching" state ──────────
+        # Only for actual playback stops (not manual mark-as-played).
+        # If progress > 80%, Trakt auto-adds to history (action=scrobble)
+        # and we skip the manual add_to_history to avoid duplicates.
+        scrobble_already_added = False
+        if is_play_stop and user.trakt_access_token:
+            try:
+                trakt = await _get_trakt_client()
+                scrobble = _build_scrobble_payload()
+                if scrobble:
+                    progress = _calc_progress()
+                    result = await trakt.scrobble_stop(scrobble, progress=progress)
+                    action = result.get("action", "") if isinstance(result, dict) else ""
+                    if action == "scrobble":
+                        # >80% progress — Trakt added to history automatically
+                        scrobble_already_added = True
+                        trakt_synced = True
+                        await _activity_log(
+                            f"✓ Trakt scrobbled: {item_name} ({progress:.0f}%)",
+                            category="trakt",
+                        )
+                    else:
+                        # <80% — Trakt saved as pause/playback progress
+                        await _activity_log(
+                            f"⏹ Trakt stop: {item_name} ({progress:.0f}%) — action={action}",
+                            category="trakt",
+                        )
+            except Exception as e:
+                err_str = str(e)
+                if "409" in err_str:
+                    # Already scrobbled recently — watching state is cleared
+                    scrobble_already_added = True
+                    trakt_synced = True
+                    await _activity_log(
+                        f"⏹ Trakt stop (already scrobbled): {item_name}",
+                        category="trakt",
+                    )
+                elif "422" in err_str:
+                    # Progress < 1% — Trakt ignores, but watching state is cleared
+                    await _activity_log(
+                        f"⏹ Trakt stop ignored (<1%): {item_name}",
+                        category="trakt",
+                    )
+                else:
+                    log.warning("webhook.trakt_scrobble_stop_failed", error=err_str)
+                    await _activity_log(
+                        f"⚠ Trakt stop failed: {item_name} — {err_str[:80]}",
+                        category="trakt",
+                    )
+
         # Scrobble to Trakt watch history if user has a token
-        if user.trakt_access_token:
+        if user.trakt_access_token and not scrobble_already_added:
             try:
                 trakt = await _get_trakt_client()
 
