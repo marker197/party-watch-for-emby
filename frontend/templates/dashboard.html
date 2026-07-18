@@ -724,7 +724,7 @@
   <!-- Feature cards -->
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
     <span style="color:var(--text-dim);font-size:0.82rem;font-weight:600;letter-spacing:0.3px;">FEATURES</span>
-    <button onclick="this.textContent=this.textContent==='Show'?'Hide':'Show';var g=document.getElementById('featureCardsGrid');if(g.style.maxHeight==='0px'){g.style.maxHeight=g.scrollHeight+'px';g.style.opacity='1';g.style.marginBottom='20px'}else{g.style.maxHeight='0px';g.style.opacity='0';g.style.marginBottom='0'}" style="background:var(--accent);color:#fff;border:none;padding:5px 18px;border-radius:5px;font-size:0.8rem;font-weight:600;cursor:pointer;letter-spacing:0.3px;">Show</button>
+    <button onclick="this.textContent=this.textContent==='Show'?'Hide':'Show';var g=document.getElementById('featureCardsGrid');if(g.style.maxHeight==='0px'){g.style.maxHeight=g.scrollHeight+'px';g.style.opacity='1';g.style.marginBottom='20px';var _t=function(){g.style.maxHeight='none';g.removeEventListener('transitionend',_t)};g.addEventListener('transitionend',_t)}else{g.style.maxHeight=g.scrollHeight+'px';requestAnimationFrame(function(){g.style.maxHeight='0px';g.style.opacity='0';g.style.marginBottom='0'})}" style="background:var(--accent);color:#fff;border:none;padding:5px 18px;border-radius:5px;font-size:0.8rem;font-weight:600;cursor:pointer;letter-spacing:0.3px;">Show</button>
   </div>
   <div class="grid" id="featureCardsGrid" style="max-height:0px;opacity:0;overflow:hidden;transition:max-height 0.4s ease,opacity 0.3s ease,margin-bottom 0.3s ease;margin-bottom:0;">
 
@@ -2945,12 +2945,22 @@ async function refreshDownloadsCard() {
     if (items.length === 0) {
       badge.style.display = 'none';
       preview.innerHTML = '<div style="color:var(--text-dim);font-size:0.8rem;">No active downloads.</div>';
+      const _grid0 = document.getElementById('featureCardsGrid');
+      if (_grid0 && _grid0.style.maxHeight !== '0px') {
+        requestAnimationFrame(() => { _grid0.style.maxHeight = _grid0.scrollHeight + 'px'; });
+      }
       return;
     }
 
     badge.style.display = '';
     badge.textContent = items.length;
     badge.className = 'badge badge-on';
+
+    // Ensure the feature cards grid expands to fit new content
+    const _grid = document.getElementById('featureCardsGrid');
+    if (_grid && _grid.style.maxHeight !== '0px') {
+      requestAnimationFrame(() => { _grid.style.maxHeight = _grid.scrollHeight + 'px'; });
+    }
 
     // Group by title (Sonarr can have multiple episodes per show)
     const grouped = {};
@@ -2970,8 +2980,11 @@ async function refreshDownloadsCard() {
       if (g.type === 'movie') {
         const dl = g.items[0];
         const pct = dl.progress || 0;
-        const etaStr = _formatEta(dl.eta);
+        const sabStatus = dl.sab_status || '';
+        const etaStr = dl.sab_eta || _formatEta(dl.eta);
         const sizeStr = dl.size_mb ? `${dl.size_mb.toFixed(0)} MB` : '';
+        const speedStr = dl.sab_speed ? `${dl.sab_speed}/s` : '';
+        const statusLabel = sabStatus && sabStatus !== 'Downloading' ? `<span style="font-size:0.6rem;color:var(--accent-light);margin-left:4px;">${sabStatus}</span>` : '';
         return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <span style="font-size:0.78rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;">${dl.title}</span>
@@ -2979,15 +2992,19 @@ async function refreshDownloadsCard() {
           </div>
           <div class="dl-progress-wrap" style="margin-top:2px;">
             <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${pct}%;background:${barColor};"></div></div>
-            <span class="dl-progress-text">${pct.toFixed(0)}%</span>
+            <span class="dl-progress-text">${pct.toFixed(0)}%${statusLabel}</span>
           </div>
-          <div style="font-size:0.6rem;color:var(--text-dim);">${etaStr}${sizeStr ? ' · ' + sizeStr : ''}</div>
+          <div style="font-size:0.6rem;color:var(--text-dim);">${etaStr}${sizeStr ? ' · ' + sizeStr : ''}${speedStr ? ' · ' + speedStr : ''}</div>
         </div>`;
       } else {
         // Show — aggregate episodes
         const avgPct = g.items.reduce((s, d) => s + (d.progress || 0), 0) / g.items.length;
         const epLabels = g.items.map(d => d.episode_label).filter(Boolean).slice(0, 4).join(', ');
         const moreCount = g.items.length > 4 ? ` +${g.items.length - 4}` : '';
+        // Use first item's SABnzbd status as representative for the group
+        const sabStatus = g.items[0].sab_status || '';
+        const speedStr = g.items[0].sab_speed ? `${g.items[0].sab_speed}/s` : '';
+        const statusLabel = sabStatus && sabStatus !== 'Downloading' ? ` · ${sabStatus}` : '';
         return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <span style="font-size:0.78rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;">${g.title}</span>
@@ -2997,7 +3014,7 @@ async function refreshDownloadsCard() {
             <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${avgPct}%;background:${barColor};"></div></div>
             <span class="dl-progress-text">${avgPct.toFixed(0)}%</span>
           </div>
-          <div style="font-size:0.6rem;color:var(--text-dim);">${g.items.length} ep${g.items.length > 1 ? 's' : ''}${epLabels ? ': ' + epLabels : ''}${moreCount}</div>
+          <div style="font-size:0.6rem;color:var(--text-dim);">${g.items.length} ep${g.items.length > 1 ? 's' : ''}${epLabels ? ': ' + epLabels : ''}${moreCount}${statusLabel}${speedStr ? ' · ' + speedStr : ''}</div>
         </div>`;
       }
     }).join('') + (entries.length > 5 ? `<div style="font-size:0.7rem;color:var(--text-dim);padding:4px 0;">+${entries.length - 5} more</div>` : '');

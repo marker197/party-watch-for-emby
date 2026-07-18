@@ -519,6 +519,8 @@
       <button class="btn btn-blue" id="refreshBtn">
         ↻ Refresh
       </button>
+      <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" onclick="toggleAllPlaylists(true)" title="Enable playlist sync for all universes">☑ Select All</button>
+      <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" onclick="toggleAllPlaylists(false)" title="Disable playlist sync for all universes">☐ Select None</button>
     </div>
 
     <!-- Create universe inline form -->
@@ -942,6 +944,41 @@
       const checks = container.querySelectorAll('.radarr-check');
       const allChecked = Array.from(checks).every(c => c.checked);
       checks.forEach(c => c.checked = !allChecked);
+    }
+
+    async function toggleAllPlaylists(enabled) {
+      if (!allUniverses.length) return;
+      const already = enabled
+        ? allUniverses.every(u => u.playlist_enabled)
+        : allUniverses.every(u => !u.playlist_enabled);
+      if (already) {
+        showToast(enabled ? 'All playlists already enabled' : 'All playlists already disabled');
+        return;
+      }
+
+      const targets = allUniverses.filter(u => u.playlist_enabled !== enabled);
+      showToast(`${enabled ? 'Enabling' : 'Disabling'} ${targets.length} playlist${targets.length > 1 ? 's' : ''}…`);
+
+      let ok = 0;
+      for (const u of targets) {
+        try {
+          const resp = await fetch(`/api/universes/${u.id}/settings`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({playlist_enabled: enabled}),
+          });
+          const data = await resp.json();
+          if (data.status === 'ok') {
+            ok++;
+            u.playlist_enabled = enabled;
+            const cb = document.getElementById(`plToggle-${u.id}`);
+            if (cb) cb.checked = enabled;
+            const label = document.querySelector(`label[for="plToggle-${u.id}"]`);
+            if (label) label.className = enabled ? 'active' : '';
+          }
+        } catch(e) {}
+      }
+      showToast(`✓ ${ok} playlist${ok > 1 ? 's' : ''} ${enabled ? 'enabled' : 'disabled'}`);
     }
 
     async function sendToRadarr(universeId) {

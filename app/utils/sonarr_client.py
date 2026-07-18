@@ -278,6 +278,7 @@ class SonarrClient:
                     "size_mb": round(rec.get("size", 0) / 1_048_576, 1),
                     "sizeleft_mb": round(rec.get("sizeleft", 0) / 1_048_576, 1),
                     "eta": rec.get("estimatedCompletionTime"),
+                    "download_id": rec.get("downloadId", ""),
                     "download_client": rec.get("downloadClient", ""),
                     "server": self._name,
                     "type": "show",

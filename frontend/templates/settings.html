@@ -661,6 +661,30 @@
       </div>
     </div>
 
+    <!-- SABnzbd Servers -->
+    <div class="section">
+      <h2>⬇️ SABnzbd Integration <span id="badgeSabnzbd" class="conn-badge unknown" onclick="refreshStatus()" title="Click to refresh"><span class="dot"></span> —</span></h2>
+      <p style="color:var(--text-dim);margin-bottom:16px;">Connect up to 2 SABnzbd servers for real-time download progress. Replaces the stale progress from Radarr/Sonarr with live data from the download client.</p>
+
+      <div id="sabnzbdServers">
+        <div class="form-group sabnzbd-server" data-idx="0">
+          <label>Server 1</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <input type="text" class="sabnzbd-name" placeholder="Name (e.g. SABnzbd)" style="flex:1;min-width:140px;" />
+            <input type="text" class="sabnzbd-url" placeholder="http://192.168.1.x:8080" style="flex:2;min-width:200px;" />
+            <input type="password" class="sabnzbd-key" placeholder="API Key" style="flex:2;min-width:180px;" />
+            <button class="btn btn-blue" style="padding:8px 12px;font-size:0.78rem;" onclick="testSabnzbd(0)">Test</button>
+          </div>
+          <span class="sabnzbd-status" style="font-size:0.78rem;margin-top:4px;display:block;"></span>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" id="addSabnzbdBtn" onclick="addSabnzbdServer()">+ Add Second Server</button>
+        <button class="btn btn-blue" onclick="saveSabnzbdServers()">💾 Save SABnzbd Servers</button>
+      </div>
+    </div>
+
     <!-- Watchlist Sync -->
     <div class="section">
       <h2>🔄 Watchlist Sync</h2>
@@ -767,6 +791,7 @@
       loadSettings();
       loadRadarrServers();
       loadSonarrServers();
+      loadSabnzbdServers();
       loadAutoSendSettings();
       loadWatchlistSyncSettings();
       loadQueueSettings();
@@ -858,6 +883,22 @@
             setBadge('badgeSonarr', 'unknown', 'Checking…');
           }
         }
+        // SABnzbd — may have 0+ servers
+        const sabnzbd = data.sabnzbd || [];
+        if (sabnzbd.length === 0) {
+          setBadge('badgeSabnzbd', 'unknown', 'Not configured');
+        } else {
+          const allOk = sabnzbd.every(s => s.status === 'ok');
+          const anyErr = sabnzbd.some(s => s.status === 'error');
+          if (allOk) {
+            setBadge('badgeSabnzbd', 'ok', sabnzbd.length + ' server' + (sabnzbd.length > 1 ? 's' : '') + ' connected');
+          } else if (anyErr) {
+            const okCount = sabnzbd.filter(s => s.status === 'ok').length;
+            setBadge('badgeSabnzbd', 'error', okCount + '/' + sabnzbd.length + ' online');
+          } else {
+            setBadge('badgeSabnzbd', 'unknown', 'Checking…');
+          }
+        }
       } catch (e) {
         console.warn('Failed to load connection status:', e);
       }
@@ -868,6 +909,7 @@
       setBadge('badgeTrakt', 'checking', 'Checking…');
       setBadge('badgeRadarr', 'checking', 'Checking…');
       setBadge('badgeSonarr', 'checking', 'Checking…');
+      setBadge('badgeSabnzbd', 'checking', 'Checking…');
       try {
         await fetch('/api/connection-status/refresh', { method: 'POST' });
         await loadConnectionStatus();
@@ -1626,6 +1668,108 @@
         });
         const d = await r.json();
         showNotification(`Sonarr servers saved (${d.servers} server${d.servers !== 1 ? 's' : ''})`);
+      } catch(e) { showNotification('Failed to save: ' + e.message); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SABnzbd Servers
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function loadSabnzbdServers() {
+      try {
+        const r = await fetch('/api/sabnzbd/servers');
+        const d = await r.json();
+        const servers = d.servers || [];
+        if (servers.length === 0) return;
+
+        const s0 = document.querySelector('.sabnzbd-server[data-idx="0"]');
+        if (s0 && servers[0]) {
+          s0.querySelector('.sabnzbd-name').value = servers[0].name || '';
+          s0.querySelector('.sabnzbd-url').value = servers[0].url || '';
+          s0.querySelector('.sabnzbd-key').value = servers[0].api_key || '';
+        }
+
+        if (servers.length > 1) {
+          addSabnzbdServer();
+          const s1 = document.querySelector('.sabnzbd-server[data-idx="1"]');
+          if (s1) {
+            s1.querySelector('.sabnzbd-name').value = servers[1].name || '';
+            s1.querySelector('.sabnzbd-url').value = servers[1].url || '';
+            s1.querySelector('.sabnzbd-key').value = servers[1].api_key || '';
+          }
+        }
+      } catch(e) { console.warn('Failed to load SABnzbd servers:', e); }
+    }
+
+    function addSabnzbdServer() {
+      const container = document.getElementById('sabnzbdServers');
+      if (container.querySelectorAll('.sabnzbd-server').length >= 2) return;
+      const btn = document.getElementById('addSabnzbdBtn');
+      btn.style.display = 'none';
+
+      const div = document.createElement('div');
+      div.className = 'form-group sabnzbd-server';
+      div.dataset.idx = '1';
+      div.innerHTML = `
+        <label>Server 2</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input type="text" class="sabnzbd-name" placeholder="Name (e.g. SABnzbd 2)" style="flex:1;min-width:140px;" />
+          <input type="text" class="sabnzbd-url" placeholder="http://192.168.1.x:8081" style="flex:2;min-width:200px;" />
+          <input type="password" class="sabnzbd-key" placeholder="API Key" style="flex:2;min-width:180px;" />
+          <button class="btn btn-blue" style="padding:8px 12px;font-size:0.78rem;" onclick="testSabnzbd(1)">Test</button>
+          <button class="btn" style="background:var(--red);padding:8px 12px;font-size:0.78rem;" onclick="removeSabnzbdServer()">✕</button>
+        </div>
+        <span class="sabnzbd-status" style="font-size:0.78rem;margin-top:4px;display:block;"></span>
+      `;
+      container.appendChild(div);
+    }
+
+    function removeSabnzbdServer() {
+      const s = document.querySelector('.sabnzbd-server[data-idx="1"]');
+      if (s) s.remove();
+      document.getElementById('addSabnzbdBtn').style.display = '';
+    }
+
+    async function testSabnzbd(idx) {
+      const row = document.querySelector(`.sabnzbd-server[data-idx="${idx}"]`);
+      if (!row) return;
+      const url = row.querySelector('.sabnzbd-url').value.trim();
+      const key = row.querySelector('.sabnzbd-key').value.trim();
+      const status = row.querySelector('.sabnzbd-status');
+      if (!url || !key) { status.textContent = '⚠ URL and API key required'; status.style.color = 'var(--orange)'; return; }
+      status.textContent = 'Testing…'; status.style.color = 'var(--text-dim)';
+      try {
+        const r = await fetch('/api/sabnzbd/test', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({url, api_key: key})
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          status.textContent = `✓ Connected — SABnzbd ${d.version}`; status.style.color = 'var(--green)';
+          loadConnectionStatus();
+        } else {
+          status.textContent = `✗ ${d.message}`; status.style.color = 'var(--red)';
+        }
+      } catch(e) { status.textContent = `✗ ${e.message}`; status.style.color = 'var(--red)'; }
+    }
+
+    async function saveSabnzbdServers() {
+      const servers = [];
+      document.querySelectorAll('.sabnzbd-server').forEach(row => {
+        const name = row.querySelector('.sabnzbd-name').value.trim();
+        const url = row.querySelector('.sabnzbd-url').value.trim();
+        const key = row.querySelector('.sabnzbd-key').value.trim();
+        if (url && key) {
+          servers.push({name: name || `SABnzbd ${servers.length+1}`, url, api_key: key});
+        }
+      });
+      try {
+        const r = await fetch('/api/sabnzbd/servers', {
+          method: 'PUT', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({servers})
+        });
+        const d = await r.json();
+        showNotification(`SABnzbd servers saved (${d.servers} server${d.servers !== 1 ? 's' : ''})`);
       } catch(e) { showNotification('Failed to save: ' + e.message); }
     }
 

@@ -2956,6 +2956,20 @@ async def connection_status():
                 hb = {"status": "unknown", "checked_at": None, "name": _srv.get("name", f"Sonarr {i+1}")}
             sonarr_list.append(hb)
     result["sonarr"] = sonarr_list
+    # SABnzbd — may have 0, 1, or 2 servers
+    sab_list = []
+    raw_sab = await r.get("sabnzbd_servers")
+    if raw_sab:
+        sab_servers = _json.loads(raw_sab)
+        for i, _srv in enumerate(sab_servers):
+            raw_hb = await r.get(f"heartbeat:sabnzbd:{i}")
+            if raw_hb:
+                hb = _json.loads(raw_hb)
+                hb["name"] = _srv.get("name", f"SABnzbd {i+1}")
+            else:
+                hb = {"status": "unknown", "checked_at": None, "name": _srv.get("name", f"SABnzbd {i+1}")}
+            sab_list.append(hb)
+    result["sabnzbd"] = sab_list
     return result
 
 
@@ -3313,41 +3327,171 @@ async def get_download_queue():
 
     Returns items currently being downloaded with progress, ETA, and
     size info.  Keyed by tmdb_id (movies) and tvdb_id (shows) so the
-    frontend can match them to smart queue cards.  No caching — the
-    *arr queue endpoint is lightweight and progress changes constantly.
+    frontend can match them to smart queue cards.
+
+    Cached for 10 seconds to avoid creating fresh httpx clients on
+    every poll cycle (the dashboard and queue panel both poll at 5s
+    intervals, so without caching this endpoint gets hit twice per
+    cycle, each creating and tearing down connections — the root
+    cause of intermittent 'client closed' errors).
     """
     import json as _json
     from app.utils.radarr_client import RadarrClient
     from app.utils.sonarr_client import SonarrClient
 
     r = await get_redis()
+
+    # Short-lived cache — prevents overlapping polls from creating
+    # duplicate httpx clients that get GC'd mid-request.
+    cache_key = "download_queue_cache_v1"
+    try:
+        cached = await r.get(cache_key)
+        if cached:
+            return _json.loads(cached)
+    except Exception:
+        pass
+
     downloads: list[dict] = []
 
     # --- Radarr queues ---
     raw_radarr = await r.get("radarr_servers")
     if raw_radarr:
         for srv in _json.loads(raw_radarr):
+            client = None
             try:
                 client = RadarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Radarr"))
                 items = await client.get_download_queue()
-                await client.close()
                 downloads.extend(items)
             except Exception as e:
                 log.warning("download_queue.radarr_failed", server=srv.get("name"), error=str(e)[:120])
+            finally:
+                if client:
+                    await client.close()
 
     # --- Sonarr queues ---
     raw_sonarr = await r.get("sonarr_servers")
     if raw_sonarr:
         for srv in _json.loads(raw_sonarr):
+            client = None
             try:
                 client = SonarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Sonarr"))
                 items = await client.get_download_queue()
-                await client.close()
                 downloads.extend(items)
             except Exception as e:
                 log.warning("download_queue.sonarr_failed", server=srv.get("name"), error=str(e)[:120])
+            finally:
+                if client:
+                    await client.close()
 
-    return {"downloads": downloads, "count": len(downloads)}
+    # --- SABnzbd enrichment ---
+    # Build a lookup of nzo_id → SABnzbd slot data from all configured
+    # SABnzbd instances, then overlay real-time progress onto the
+    # Radarr/Sonarr items matched by downloadId.
+    sab_lookup: dict[str, dict] = {}
+    raw_sab = await r.get("sabnzbd_servers")
+    if raw_sab:
+        from app.utils.sabnzbd_client import SabnzbdClient
+        for srv in _json.loads(raw_sab):
+            client = None
+            try:
+                client = SabnzbdClient(srv["url"], srv["api_key"], name=srv.get("name", "SABnzbd"))
+                slots = await client.get_queue()
+                for slot in slots:
+                    nzo = slot.get("nzo_id")
+                    if nzo:
+                        sab_lookup[nzo] = slot
+            except Exception as e:
+                log.warning("download_queue.sabnzbd_failed", server=srv.get("name"), error=str(e)[:120])
+            finally:
+                if client:
+                    await client.close()
+
+    # Merge: replace Radarr/Sonarr progress with SABnzbd real-time data
+    if sab_lookup:
+        for dl in downloads:
+            did = dl.get("download_id", "")
+            sab = sab_lookup.get(did)
+            if sab:
+                dl["progress"] = sab["progress"]
+                dl["size_mb"] = sab["size_mb"]
+                dl["sizeleft_mb"] = sab["sizeleft_mb"]
+                dl["sab_status"] = sab["status"]
+                dl["sab_eta"] = sab["timeleft"]
+                dl["sab_speed"] = sab["speed"]
+
+    result = {"downloads": downloads, "count": len(downloads)}
+
+    # Cache for 10 seconds
+    try:
+        await r.setex(cache_key, 10, _json.dumps(result))
+    except Exception:
+        pass
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SABnzbd Server Management
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/sabnzbd/servers")
+async def get_sabnzbd_servers():
+    """Read configured SABnzbd servers from Redis."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get("sabnzbd_servers")
+    servers = _json.loads(raw) if raw else []
+    # Mask API keys
+    masked = []
+    for srv in servers:
+        masked.append({
+            **srv,
+            "api_key": srv["api_key"][:4] + "****" if len(srv.get("api_key", "")) > 4 else "****",
+        })
+    return {"servers": masked}
+
+
+@router.put("/api/sabnzbd/servers")
+async def save_sabnzbd_servers(request: Request):
+    """Save SABnzbd server configs (max 2) to Redis."""
+    import json as _json
+    body = await request.json()
+    servers = body.get("servers", [])[:2]
+
+    r = await get_redis()
+
+    # Resolve masked keys — if a key looks masked, keep the existing one
+    raw_existing = await r.get("sabnzbd_servers")
+    existing = _json.loads(raw_existing) if raw_existing else []
+
+    for i, srv in enumerate(servers):
+        key = srv.get("api_key", "")
+        if "****" in key and i < len(existing):
+            srv["api_key"] = existing[i].get("api_key", key)
+
+    await r.set("sabnzbd_servers", _json.dumps(servers))
+    return {"status": "ok", "servers": len(servers)}
+
+
+@router.post("/api/sabnzbd/test")
+async def test_sabnzbd(request: Request):
+    """Test connection to a SABnzbd server."""
+    from app.utils.sabnzbd_client import SabnzbdClient
+    body = await request.json()
+    url = body.get("url", "").strip()
+    api_key = body.get("api_key", "").strip()
+    if not url or not api_key:
+        return {"status": "error", "message": "URL and API key required"}
+    client = None
+    try:
+        client = SabnzbdClient(url, api_key)
+        result = await client.test_connection()
+        return result
+    except Exception as e:
+        return {"status": "error", "message": str(e)[:200]}
+    finally:
+        if client:
+            await client.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

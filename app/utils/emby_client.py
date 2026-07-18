@@ -440,7 +440,7 @@ class EmbyClient:
     ) -> bool:
         """Set Overview on a playlist item.
 
-        1. Wait 2s for Emby to fully index the playlist
+        1. Wait 1s for Emby to fully index the playlist
         2. GET /Users/{uid}/Items/{id} — full response
         3. Set Overview, LockedFields, LockData
         4. POST /Items/{id}
@@ -451,7 +451,7 @@ class EmbyClient:
         try:
             # Step 1: Wait for Emby to fully index the playlist
             import asyncio
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
             # Step 2: GET the full playlist object (user-scoped, no Fields)
             get_url = self._url(f"/Users/{user_id}/Items/{playlist_id}")

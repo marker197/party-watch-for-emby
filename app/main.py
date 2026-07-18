@@ -492,6 +492,28 @@ async def run_heartbeat():
                     "message": str(e)[:200],
                 }), ex=600)
 
+    # --- SABnzbd (0..N servers from Redis config) ---
+    raw_sab = await r.get("sabnzbd_servers")
+    if raw_sab:
+        from app.utils.sabnzbd_client import SabnzbdClient
+        sab_servers = _json.loads(raw_sab)
+        for i, srv in enumerate(sab_servers):
+            try:
+                client = SabnzbdClient(srv["url"], srv["api_key"], name=srv.get("name", f"SABnzbd {i+1}"))
+                result = await client.test_connection()
+                await client.close()
+                await r.set(f"heartbeat:sabnzbd:{i}", _json.dumps({
+                    "status": result.get("status", "error"),
+                    "checked_at": now,
+                    "version": result.get("version", ""),
+                    "message": result.get("message", ""),
+                }), ex=600)
+            except Exception as e:
+                await r.set(f"heartbeat:sabnzbd:{i}", _json.dumps({
+                    "status": "error", "checked_at": now,
+                    "message": str(e)[:200],
+                }), ex=600)
+
 
 def _register_jobs():
     if settings.enable_smart_queue:
