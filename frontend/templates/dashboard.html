@@ -2731,10 +2731,6 @@ async function loadAvailability() {
       });
     }
 
-    const mAvail = (availData.movies || {}).available_count || 0;
-    const sAvail = (availData.shows || {}).available_count || 0;
-    html += '<div style="color:var(--text-dim);font-size:0.75rem;padding:8px 10px;margin-top:4px;">✓ ' + mAvail + ' movies and ' + sAvail + ' shows fully available</div>';
-
     container.innerHTML = html;
   } catch(e) {
     container.innerHTML = '<div style="color:var(--red);padding:8px;">Failed: ' + e.message + '</div>';

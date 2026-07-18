@@ -1765,6 +1765,70 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
                 # Also note: library cache will pick this up on next scheduled rebuild
 
+            # ── Update Recently Arrived from webhook ──────────────────────
+            # Check if this item was in the pending snapshot and surface it
+            # as arrived immediately, rather than waiting for the next poll.
+            try:
+                import json as _json
+                _r = await get_redis()
+                raw_prev = await _r.get("recently_arrived_pending_v1")
+                if raw_prev:
+                    prev = _json.loads(raw_prev)
+                    arrived_item = None
+
+                    if item_type_raw == "Movie" and tmdb_id:
+                        prev_movie_ids = {str(m) for m in prev.get("movies", [])}
+                        if str(tmdb_id) in prev_movie_ids:
+                            arrived_item = {
+                                "title": item_name,
+                                "year": item_data.get("ProductionYear"),
+                                "tmdb_id": tmdb_id,
+                                "type": "movie",
+                                "id": tmdb_id,
+                                "arrived_at": datetime.utcnow().isoformat() + "Z",
+                            }
+                    elif item_type_raw in ("Series", "Episode") and tvdb_id:
+                        series_tvdb = tvdb_id
+                        if item_type_raw == "Episode" and series_provider_ids:
+                            series_tvdb = series_provider_ids.get("Tvdb") or tvdb_id
+                        prev_show_eps = {}
+                        for s in prev.get("shows", []):
+                            if isinstance(s, dict):
+                                prev_show_eps[str(s.get("id", ""))] = s.get("eps", 0)
+                        if str(series_tvdb) in prev_show_eps:
+                            series_name = item_data.get("SeriesName") or item_name
+                            arrived_item = {
+                                "title": series_name,
+                                "year": item_data.get("ProductionYear"),
+                                "tvdb_id": series_tvdb,
+                                "type": "show",
+                                "id": series_tvdb,
+                                "new_episodes": 1,
+                                "arrived_at": datetime.utcnow().isoformat() + "Z",
+                            }
+
+                    if arrived_item:
+                        # Append to arrived items list (dedup by type+id)
+                        arrived_key = "recently_arrived_items_v1"
+                        raw_arr = await _r.get(arrived_key)
+                        existing = _json.loads(raw_arr) if raw_arr else []
+                        existing_ids = {(i.get("type"), str(i.get("id", ""))) for i in existing}
+                        item_key = (arrived_item["type"], str(arrived_item["id"]))
+
+                        if item_key not in existing_ids:
+                            existing.append(arrived_item)
+                            await _r.setex(arrived_key, 86400 * 2, _json.dumps(existing))
+                            log.info("webhook.recently_arrived_added",
+                                     title=arrived_item["title"],
+                                     type=arrived_item["type"])
+
+                        # Clear the result cache so the dashboard picks it up
+                        await _r.delete("recently_arrived_result_v1")
+
+            except Exception as e:
+                log.debug("webhook.recently_arrived_update_failed",
+                          error=str(e)[:120])
+
         except Exception as e:
             log.warning("webhook.item_added_handler_failed", error=str(e)[:120])
 
