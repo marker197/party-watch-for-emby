@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Emby-Trakt Suite — User Guide</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface-hover: #22263a;
+    --border: #2a2e3e;
+    --text: #e0e0e6;
+    --text-dim: #8b8fa3;
+    --accent: #6c5ce7;
+    --accent-light: #a29bfe;
+    --green: #00b894;
+    --orange: #fdcb6e;
+    --red: #e17055;
+    --blue: #74b9ff;
+    --radius: 10px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --sidebar-w: 240px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    line-height: 1.7;
+    min-height: 100vh;
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: var(--sidebar-w);
+    height: 100vh;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 24px 0;
+    z-index: 100;
+  }
+
+  .sidebar-brand {
+    padding: 0 20px 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+
+  .sidebar-brand .title {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  .sidebar-brand .subtitle {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text);
+    margin-top: 4px;
+  }
+
+  .sidebar-section {
+    padding: 8px 20px 4px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+  }
+
+  .sidebar a {
+    display: block;
+    padding: 7px 20px;
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 0.85rem;
+    border-left: 3px solid transparent;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    cursor: pointer;
+  }
+
+  .sidebar a:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+
+  .sidebar a.active {
+    color: var(--accent-light);
+    border-left-color: var(--accent);
+    background: var(--surface-hover);
+    font-weight: 600;
+  }
+
+  .sidebar a .icon {
+    display: inline-block;
+    width: 22px;
+    text-align: center;
+    margin-right: 4px;
+  }
+
+  /* ── Main content ── */
+  .main {
+    margin-left: var(--sidebar-w);
+    padding: 40px 48px 80px;
+    max-width: 860px;
+  }
+
+  /* ── Pages ── */
+  .page { display: none; }
+  .page.active { display: block; }
+
+  .page-title {
+    font-size: 1.6rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 8px;
+  }
+
+  .page-intro {
+    color: var(--text-dim);
+    font-size: 0.92rem;
+    margin-bottom: 36px;
+    max-width: 600px;
+  }
+
+  /* ── Sections ── */
+  .section { margin-bottom: 40px; }
+
+  .section-anchor {
+    display: block;
+    position: relative;
+    top: -24px;
+    visibility: hidden;
+  }
+
+  h2 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    letter-spacing: -0.01em;
+  }
+
+  h3 {
+    font-size: 0.95rem;
+    font-weight: 700;
+    margin: 20px 0 8px;
+    color: var(--accent-light);
+  }
+
+  p { margin-bottom: 12px; font-size: 0.9rem; }
+
+  /* ── Feature cards ── */
+  .feature {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    margin-bottom: 16px;
+  }
+
+  .feature-name {
+    font-size: 0.95rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .feature-name .emoji { font-size: 1.1rem; }
+
+  .feature p {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    margin-bottom: 8px;
+  }
+
+  .feature p:last-child { margin-bottom: 0; }
+
+  .btn-label {
+    display: inline-block;
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    padding: 1px 8px;
+    border-radius: 4px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+
+  .tip {
+    background: rgba(108, 92, 231, 0.08);
+    border-left: 3px solid var(--accent);
+    padding: 10px 14px;
+    border-radius: 0 6px 6px 0;
+    margin: 12px 0;
+    font-size: 0.83rem;
+    color: var(--text-dim);
+  }
+
+  .divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 36px 0;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .sidebar { display: none; }
+    .main { margin-left: 0; padding: 24px 20px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- SIDEBAR -->
+<!-- ═══════════════════════════════════════════════════ -->
+
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <div class="title">Emby-Trakt Suite</div>
+    <div class="subtitle">User Guide</div>
+  </div>
+
+  <div class="sidebar-section">Pages</div>
+  <a class="page-link active" data-page="dashboard"><span class="icon">🖥️</span> Dashboard</a>
+  <a class="page-link" data-page="universes"><span class="icon">🌌</span> Universes</a>
+  <a class="page-link" data-page="predictions"><span class="icon">🤖</span> Predictions</a>
+  <a class="page-link" data-page="taste-profile"><span class="icon">🎓</span> Taste Profile</a>
+  <a class="page-link" data-page="stats"><span class="icon">📊</span> Stats</a>
+  <a class="page-link" data-page="settings"><span class="icon">⚙️</span> Settings</a>
+  <a class="page-link" data-page="watch-party"><span class="icon">👥</span> Watch Party</a>
+
+  <div class="sidebar-section" style="margin-top:16px;" id="sectionLinks">On this page</div>
+  <div id="sectionNav"></div>
+</nav>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- MAIN CONTENT -->
+<!-- ═══════════════════════════════════════════════════ -->
+
+<div class="main">
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: DASHBOARD -->
+<!-- ════════════════════════════════════════════════════════════════════ -->
+
+<div class="page active" id="page-dashboard" data-sections="status-bar,cache,link-trakt,smart-queue,ml-predictor,universes-card,airing-soon,scrobble-audit,taste-drift,continue-watching,new-coming-soon,active-downloads,activity-log,nav-bar">
+
+  <h1 class="page-title">Dashboard</h1>
+  <p class="page-intro">Everything on the main dashboard — what each section does and how to use it.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="status-bar"></span>
+    <h2>User Selector &amp; Status Bar</h2>
+    <p>The dropdown at the top lets you pick which linked Emby user to view the dashboard for. All cards update for the selected user.</p>
+    <div class="feature">
+      <p><strong>API</strong> — whether the suite's backend is reachable.</p>
+      <p><strong>Linked Users</strong> — how many Emby accounts have a Trakt account connected.</p>
+      <p><strong>Active Parties</strong> — Watch Party sessions currently running. Hover to see codes and members.</p>
+      <p><strong>Library Cache</strong> — how many items are indexed. If 0, hit Rebuild Cache below.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="cache"></span>
+    <h2>Cache &amp; Library</h2>
+    <p>Shows cache statistics (total keys, hit rate, last rebuild) and a count of movies and series in your library.</p>
+    <p><span class="btn-label">Rebuild Cache</span> re-indexes your Emby library into Redis. Runs nightly but can be triggered manually.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="link-trakt"></span>
+    <h2>Link Trakt Account</h2>
+    <p>Used during initial setup. Enter your Emby User ID and username, click <span class="btn-label">Get Code</span>, then follow the on-screen instructions to authorise via Trakt. You won't need this again unless you add a new user.</p>
+  </div>
+
+  <hr class="divider">
+
+  <div class="section">
+    <span class="section-anchor" id="smart-queue"></span>
+    <h2>Feature Cards</h2>
+    <p>The feature cards are hidden by default. Click <span class="btn-label">Show</span> on the "FEATURES" bar to reveal them.</p>
+
+    <div class="feature">
+      <div class="feature-name"><span class="emoji">🎯</span> Smart Watch Queue</div>
+      <p>Builds a personalised list of what to watch next. Pulls from your Trakt watchlist, trending content, and calendar data, then cross-references against your Emby library. Items are ranked by weighted score.</p>
+      <p><span class="btn-label">Refresh Now</span> rebuilds the queue immediately (normally runs daily at 2 AM).</p>
+      <p><span class="btn-label">View Queue</span> opens the full queue table. Each row shows title, score, source, and library status.</p>
+      <p><span class="btn-label">Weight History</span> shows how scoring weights have shifted over time.</p>
+      <p>Items not in your library show a Radarr or Sonarr button to send them to download.</p>
+      <div class="tip">Fully watched items are filtered out automatically. Shows disappear once every episode is watched.</div>
+    </div>
+
+    <span class="section-anchor" id="ml-predictor"></span>
+    <div class="feature">
+      <div class="feature-name"><span class="emoji">🤖</span> ML Rating Predictor</div>
+      <p>Trains a model on your Trakt rating history, then predicts what score you'd give every unwatched item.</p>
+      <p><span class="btn-label">Train Model</span> kicks off training (also runs weekly). <span class="btn-label">View Predictions</span> opens the Predictions page.</p>
+    </div>
+
+    <span class="section-anchor" id="universes-card"></span>
+    <div class="feature">
+      <div class="feature-name"><span class="emoji">🌌</span> Universe Discovery</div>
+      <p>Scans your library for shared cinematic universes and creates ordered Emby playlists.</p>
+      <p><span class="btn-label">Scan Library</span> runs matching (also weekly). <span class="btn-label">View Universes</span> opens the Universes page where you can re-order, add items, or create custom universes.</p>
+    </div>
+
+    <span class="section-anchor" id="airing-soon"></span>
+    <div class="feature">
+      <div class="feature-name"><span class="emoji">📅</span> Airing Soon</div>
+      <p>Upcoming episodes and movies for the next 30 days, from Sonarr and Radarr calendars. Premieres and finales are flagged. Binge plans show how many episodes per day to catch up before a finale.</p>
+      <p>Streaming logos appear when a TMDB key is configured. An "Upcoming Digital / Physical Releases" section shows monitored movies with approaching home release dates.</p>
+    </div>
+
+    <span class="section-anchor" id="scrobble-audit"></span>
+    <div class="feature">
+      <div class="feature-name"><span class="emoji">🔍</span> Scrobble Audit</div>
+      <p>Finds items played in Emby but missing from Trakt history. <span class="btn-label">Run Audit</span> compares both and shows gaps. Each item gets a Backfill button; <span class="btn-label">Backfill All</span> fixes everything at once.</p>
+    </div>
+
+    <span class="section-anchor" id="taste-drift"></span>
+    <div class="feature">
+      <div class="feature-name"><span class="emoji">📊</span> Taste Drift</div>
+      <p>Charts how your viewing preferences have shifted over time, built from snapshots taken each time the ML model retrains.</p>
+    </div>
+
+    <span class="section-anchor" id="continue-watching"></span>
+    <div class="feature">
+      <div class="feature-name"><span class="emoji">⏸️</span> Continue Watching</div>
+      <p>Lists partially watched movies and in-progress shows. Each item shows a progress bar, time since last watched, and an IMDb link.</p>
+      <h3>Play button</h3>
+      <p>Starts playback on your Emby device. One device plays immediately; multiple devices show a picker. Shows with multiple in-progress episodes show an episode picker first. Playback resumes from where you left off.</p>
+      <h3>Trakt Sync</h3>
+      <p><span class="btn-label">🔄 Trakt Sync</span> compares Emby resume points with Trakt. Flags out-of-sync items and stale entries (>30 days). Delete stale Trakt entries with the ✕ button.</p>
+    </div>
+
+    <span class="section-anchor" id="new-coming-soon"></span>
+    <div class="feature">
+      <div class="feature-name"><span class="emoji">📥</span> New &amp; Coming Soon</div>
+      <p><strong>Recently Arrived</strong> (green highlight) — items that were pending but have since downloaded. Dismiss with ✕ or wait 24 hours for auto-expiry.</p>
+      <p><strong>Still Pending</strong> — items monitored but not yet available.</p>
+      <div class="tip">First deploy seeds the baseline. Arrivals appear from the second check onwards.</div>
+    </div>
+
+    <span class="section-anchor" id="active-downloads"></span>
+    <div class="feature">
+      <div class="feature-name"><span class="emoji">⬇️</span> Active Downloads</div>
+      <p>Live download progress from Radarr and Sonarr — progress bar, percentage, ETA, and file size. Show downloads are grouped when multiple episodes download at once.</p>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <div class="section">
+    <span class="section-anchor" id="activity-log"></span>
+    <h2>Activity Log</h2>
+    <p>Live feed of suite activity at the bottom of the page. Filter by All, Webhook, Trakt, Playback, or General. Updates every 30 seconds.</p>
+  </div>
+
+  <hr class="divider">
+
+  <div class="section">
+    <span class="section-anchor" id="nav-bar"></span>
+    <h2>Navigation Bar</h2>
+    <p>The dark bar across the top of every page links to Dashboard, Universes, Predictions, Taste Profile, Stats, Settings, and Watch Party. The theme toggle in the top-right switches between dark and light mode.</p>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: UNIVERSES -->
+<!-- ════════════════════════════════════════════════════════════════════ -->
+
+<div class="page" id="page-universes" data-sections="uni-overview,uni-auto-discover,uni-cards,uni-reorder,uni-add,uni-create,uni-playlist,uni-radarr,uni-delete">
+
+  <h1 class="page-title">🌌 Universes</h1>
+  <p class="page-intro">Browse, manage, and build watch-order playlists for shared cinematic universes in your library.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="uni-overview"></span>
+    <h2>Overview</h2>
+    <p>This page shows every shared universe detected in your Emby library — Marvel, Star Wars, DC, Harry Potter, and more. Each universe card shows which items you own, what you've watched, and the recommended watch order. A search bar at the top filters universes by name.</p>
+    <p><span class="btn-label">Scan Now</span> re-runs the universe matching process against your library. This also triggers auto-discovery if enabled, resolves provider IDs, matches items to your library, and rebuilds any enabled Emby playlists. The scan takes a few minutes on larger libraries.</p>
+    <div class="tip">Use Scan Now whenever you want changes to take effect — enabling a playlist toggle, adding items, or picking up newly downloaded movies.</div>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="uni-auto-discover"></span>
+    <h2>Auto-Discovery</h2>
+    <p>The first time you visit this page, a popup asks whether to enable auto-discovery. When enabled, each scan checks your Emby library for movies that belong to TMDB collections (e.g. Shrek, Toy Story, Pirates of the Caribbean). If 3 or more movies from the same collection are in your library, a new universe is created automatically with the full collection lineup and description.</p>
+    <p>Auto-discovery requires a TMDB API key configured in Settings. It only creates universes for collections not already covered by the built-in list. You can change this setting at any time.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="uni-cards"></span>
+    <h2>Universe Cards</h2>
+    <p>Each card shows the universe name, completion percentage (a progress bar of how much you've watched), the total item count, and a "next recommended" item — the first unwatched entry in the watch order.</p>
+    <p>Click the card header to expand and see the full item list. Items you own are shown normally; missing items are dimmed with a checkbox next to them for sending to Radarr.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="uni-reorder"></span>
+    <h2>Drag to Reorder</h2>
+    <p>Inside an expanded card, drag items by the grip handle (⠿) to rearrange the watch order. The new order is saved automatically. Hit <span class="btn-label">Scan Now</span> to rebuild the Emby playlist in the new order.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="uni-add"></span>
+    <h2>Add Items</h2>
+    <p>Click <span class="btn-label">+ Add Item</span> at the bottom of an expanded card. Enter the title (required), year, and optionally an IMDB or TMDB ID for more accurate matching. The item is added to the end of the watch order and matched against your library.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="uni-create"></span>
+    <h2>Create a Universe</h2>
+    <p>Click <span class="btn-label">+ Create Universe</span> at the top of the page. Enter a name and optional description. The new universe starts empty — add items to build it out. Useful for custom franchises or personal viewing orders the auto-scan doesn't cover.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="uni-playlist"></span>
+    <h2>Playlist Toggle</h2>
+    <p>Each universe has a playlist toggle. When enabled, an ordered Emby playlist is created and kept in sync with the watch order shown on this page. You can also set a custom playlist name and description.</p>
+    <div class="tip">After enabling the playlist toggle, hit <span class="btn-label">Scan Now</span> to create the Emby playlist. A page refresh only reloads the data — it doesn't build playlists.</div>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="uni-radarr"></span>
+    <h2>Send Missing to Radarr</h2>
+    <p>Tick the checkboxes next to missing items and click <span class="btn-label">📥 Send to Radarr</span>. If you have two Radarr servers configured, a picker lets you choose which one. Items are added with your configured quality profile.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="uni-delete"></span>
+    <h2>Delete a Universe</h2>
+    <p>The 🗑️ button on a card permanently removes a universe and all its items. You'll be asked to confirm. This also removes the Emby playlist if one existed.</p>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: PREDICTIONS -->
+<!-- ════════════════════════════════════════════════════════════════════ -->
+
+<div class="page" id="page-predictions" data-sections="pred-overview,pred-histogram,pred-cards,pred-model,pred-insights">
+
+  <h1 class="page-title">🤖 Predictions</h1>
+  <p class="page-intro">Browse ML rating predictions for every unwatched item in your library.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="pred-overview"></span>
+    <h2>Overview</h2>
+    <p>This page shows what the ML model thinks you'd rate each unwatched item, sorted from highest to lowest predicted score. The model trains on your Trakt rating history and learns your preferences for genres, directors, actors, eras, and more.</p>
+    <p><span class="btn-label">🔄 Retrain Model</span> kicks off a fresh training run using your latest ratings.</p>
+    <p>Two tabs switch between <strong>Top Predictions</strong> (the item cards) and <strong>Insights</strong> (genre-level analysis).</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="pred-histogram"></span>
+    <h2>Rating Distribution</h2>
+    <p>A histogram at the top groups all predictions into rating bands (5–6, 6–7, 7–8, 8–9, 9–10). Gives a quick picture of how much of your unwatched library the model thinks you'll like.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="pred-cards"></span>
+    <h2>Prediction Cards</h2>
+    <p>Each card shows the title, predicted rating (out of 10), and a confidence badge (high, medium, or low). Click a card to expand it and see the item overview plus the reasons behind the prediction — which genres, actors, or patterns matched your rating history.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="pred-model"></span>
+    <h2>Model Stats</h2>
+    <p>Four stat cards below the histogram show the model's health: typical error (how far off predictions usually are), training data count (how many rated items it learned from), when it was last trained, and how many features it uses.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="pred-insights"></span>
+    <h2>Insights Tab</h2>
+    <p>Switch to the Insights tab to see genre-level cards showing the delta between your average rating and Trakt's community average for each genre. Positive deltas mean you rate that genre higher than most people.</p>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: TASTE PROFILE -->
+<!-- ════════════════════════════════════════════════════════════════════ -->
+
+<div class="page" id="page-taste-profile" data-sections="taste-overview,taste-curve,taste-genres,taste-eras,taste-gems,taste-challenges,taste-against">
+
+  <h1 class="page-title">🎓 Taste Profile</h1>
+  <p class="page-intro">A deep analysis of your rating patterns, biases, and viewing blind spots.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="taste-overview"></span>
+    <h2>Overview</h2>
+    <p>This page analyses your entire Trakt rating history to show how you rate compared to the crowd. It identifies biases, hidden gems, and genres you might be overlooking.</p>
+    <p><span class="btn-label">🔄 Refresh Analysis</span> re-runs the analysis against your latest Trakt data.</p>
+    <p>Summary stats at the top show your total ratings, average score, and which genres and eras you lean toward.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="taste-curve"></span>
+    <h2>Rating Curve</h2>
+    <p>A bar chart showing how many times you've used each rating from 1–10. Most people skew high — this shows your personal distribution and whether you tend to be generous or tough.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="taste-genres"></span>
+    <h2>Genre Breakdown</h2>
+    <p>Two views — a horizontal bar chart of your top 10 genres by average rating, and a scrollable list of every genre with your average score, count, and bias score. The bias score compares your rating to the Trakt community average: positive means you rate that genre higher than most.</p>
+    <p>A search box filters the genre list by name.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="taste-eras"></span>
+    <h2>Era Preferences</h2>
+    <p>A line chart plotting your average rating by decade. Shows whether you prefer classic or modern content. Below it, a card list breaks down each era with count, average, and rating range.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="taste-gems"></span>
+    <h2>Hidden Gems</h2>
+    <p>Items where your rating is significantly higher than the community average. The "gap" badge shows how far apart they are. These are your personal favourites that most people underrate. A search box filters by title.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="taste-challenges"></span>
+    <h2>Challenges</h2>
+    <p>Suggested viewing challenges based on gaps in your rating history. Each has a difficulty level (easy, medium, hard). Challenges push you to explore genres or eras you haven't rated much.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="taste-against"></span>
+    <h2>Against Your Taste</h2>
+    <p>Recommendations for content that sits outside your usual preferences. Each item shows a "diversity gain" score — how much it would broaden your viewing patterns. Good for breaking out of a comfort zone.</p>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: STATS -->
+<!-- ════════════════════════════════════════════════════════════════════ -->
+
+<div class="page" id="page-stats" data-sections="stats-overview,stats-trends,stats-queue-feedback">
+
+  <h1 class="page-title">📊 Stats</h1>
+  <p class="page-intro">Your watching statistics and history at a glance.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="stats-overview"></span>
+    <h2>Overview Tab</h2>
+    <p>A user selector at the top lets you pick which linked account to view. The overview shows summary stats for total hours watched, items completed, average rating, and current streak.</p>
+    <p>Below the stats row, two charts sit side by side — a genre breakdown (pie or bar chart of watch time by genre) and a monthly watch history (bar chart showing hours watched per month).</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="stats-trends"></span>
+    <h2>Trends Tab</h2>
+    <p>Two visualisations for longer-term patterns:</p>
+    <p><strong>Year-over-Year</strong> — a line chart with one line per year, overlaid on the same Jan–Dec axis. Makes it easy to compare whether you're watching more or less than previous years.</p>
+    <p><strong>Activity Heatmap</strong> — a GitHub-style grid showing watch activity by day. Darker cells mean more items watched. Hover over any cell to see the date, item count, and hours. A legend at the bottom shows the intensity scale.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="stats-queue-feedback"></span>
+    <h2>Queue Feedback Tab</h2>
+    <p>Shows how well the Smart Queue's recommendations are working. A table lists recently recommended items with their source, score, and whether you played them or not. "Played" items are marked green; items you ignored stay grey.</p>
+    <p>This data feeds back into the Smart Queue's weight-learning algorithm — over time, it adjusts which sources (watchlist, trending, calendar) it prioritises based on what you actually watch.</p>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: SETTINGS -->
+<!-- ════════════════════════════════════════════════════════════════════ -->
+
+<div class="page" id="page-settings" data-sections="set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-watchlist-sync,set-tmdb,set-trakt-import,set-danger">
+
+  <h1 class="page-title">⚙️ Settings</h1>
+  <p class="page-intro">Configure connections, features, schedules, and integrations.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="set-emby"></span>
+    <h2>Emby Configuration</h2>
+    <p>Enter your Emby server URL and API key. A connection badge shows live status. <span class="btn-label">Test Connection</span> verifies the server is reachable before saving.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-toggles"></span>
+    <h2>Feature Toggles</h2>
+    <p>Toggle switches to enable or disable individual features: Smart Watch Queue, ML Rating Predictor, Universe Discovery, and Watch Party Sync. Disabled features stop their background jobs and hide their dashboard cards.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-queue-opts"></span>
+    <h2>Smart Queue Options</h2>
+    <p><strong>S01E01 only</strong> — when enabled, the Smart Queue playlist adds only Season 1 Episode 1 of each show instead of the full series. Good for discovery.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-blocklist"></span>
+    <h2>Queue Blocklist</h2>
+    <p>Items you've permanently dismissed from the Smart Queue. Click <span class="btn-label">Load Blocklist</span> to see them. Unblock any item to let it appear in future refreshes.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-scheduler"></span>
+    <h2>Scheduler</h2>
+    <p>Set the time and frequency for each background job: Smart Queue refresh (default daily 2 AM), ML model retraining (default weekly Monday 4 AM), and Universe scan (default weekly Sunday 3 AM). All times are UTC.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-backup"></span>
+    <h2>Database Backup</h2>
+    <p><span class="btn-label">Create Backup</span> generates a SQL dump of all data (users, watch parties, ML models, universes, ratings). Download the file to keep it safe. To restore, upload a previously exported .sql file. Restoring overwrites all current data.</p>
+    <p>A separate Universes Export/Import section lets you export all universes as JSON and import them on another instance.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-radarr"></span>
+    <h2>Radarr Integration</h2>
+    <p>Connect up to two Radarr servers (e.g. one for 1080p, one for 4K). Enter a name, URL, and API key for each. <span class="btn-label">Test</span> verifies the connection and loads quality profiles. Choose which profile to use, then save.</p>
+    <p><strong>Auto-send missing movies</strong> — toggle this on to automatically send all missing Smart Queue movies to Radarr when the queue refreshes. Off by default.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-sonarr"></span>
+    <h2>Sonarr Integration</h2>
+    <p>Same setup as Radarr but for TV shows. Up to two servers, test, choose quality profile, save. The auto-send toggle works the same way.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-watchlist-sync"></span>
+    <h2>Watchlist Sync</h2>
+    <p>Bi-directional sync between your download managers and Trakt watchlist. Two independent toggles:</p>
+    <p><strong>Arr → Watchlist</strong> — syncs monitored-but-missing Radarr/Sonarr items to your Trakt watchlist so they appear in Airing Soon.</p>
+    <p><strong>Watchlist → Arr</strong> — auto-adds Trakt watchlist items to Radarr/Sonarr (uses first configured server).</p>
+    <p>Runs at startup, daily at 2:30 AM, and in the background when you open Airing Soon.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-tmdb"></span>
+    <h2>TMDB API</h2>
+    <p>Optional. Enter a free TMDB API key to enable streaming service logos on Airing Soon items. Test the key before saving.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-trakt-import"></span>
+    <h2>Trakt List Import</h2>
+    <p>Displays your personal Trakt lists. Click <span class="btn-label">Import to Emby</span> next to any list to create an Emby playlist from it. Items are matched against your library cache — unmatched items are reported.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-danger"></span>
+    <h2>Danger Zone</h2>
+    <p>Three destructive actions, each requiring confirmation:</p>
+    <div class="feature">
+      <p><strong>Clear Cache</strong> — removes all cached library data. Rebuilt on next sync.</p>
+      <p><strong>Reset OAuth Credentials</strong> — disconnects all Trakt accounts. Must re-authenticate.</p>
+      <p><strong>Factory Reset</strong> — erases all data, settings, and models. Starts from scratch.</p>
+    </div>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: WATCH PARTY -->
+<!-- ════════════════════════════════════════════════════════════════════ -->
+
+<div class="page" id="page-watch-party" data-sections="wp-overview,wp-create,wp-join,wp-playback,wp-chat,wp-end">
+
+  <h1 class="page-title">👥 Watch Party</h1>
+  <p class="page-intro">Watch together with synchronised playback across Emby devices.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="wp-overview"></span>
+    <h2>Overview</h2>
+    <p>A Watch Party lets multiple Emby users watch the same item at the same time with synchronised play, pause, and seek. The host picks the content, everyone joins with a code, and playback is controlled from one place.</p>
+    <p>Select your user from the dropdown at the top before creating or joining.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wp-create"></span>
+    <h2>Create a Party</h2>
+    <p>Search your Emby library by title, select the item, and click <span class="btn-label">🎉 Create Party</span>. You'll get a party code to share with others. Active and past parties appear in a list below.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wp-join"></span>
+    <h2>Join a Party</h2>
+    <p>Everyone joining a party must have an active account on the Emby server and must select their username from the user dropdown at the top of the page before joining.</p>
+    <p>Enter the party code and click <span class="btn-label">Join</span>. You can also join by clicking a party from the active list. The member count updates in real time as people join.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wp-playback"></span>
+    <h2>Playback Controls</h2>
+    <p>Once inside a party, the host clicks <span class="btn-label">▶ Start Playback</span>. Devices are listed with checkboxes — tick the ones to play on, then confirm. Playback starts on all selected devices at the same time.</p>
+    <p><span class="btn-label">⏸ Pause All</span> pauses every device simultaneously. Click again to resume.</p>
+    <p><span class="btn-label">⏩ Seek</span> prompts for a timestamp (e.g. 15:30) and jumps all devices to that position.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wp-chat"></span>
+    <h2>Chat &amp; Reactions</h2>
+    <p>A live chat runs alongside playback. Type a message and press Enter or click Send. Emoji reactions (👍 😂 😮 ❤️ 😢) send a quick one-tap response visible to everyone. System messages announce joins, pauses, and seeks.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wp-end"></span>
+    <h2>End Party</h2>
+    <p>The host can end the party from the header bar. All participants see a "Party ended" message. Past parties remain in the list for reference.</p>
+  </div>
+
+</div>
+
+</div><!-- end .main -->
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SCRIPT -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<script>
+(function() {
+  const pages = document.querySelectorAll('.page');
+  const pageLinks = document.querySelectorAll('.page-link');
+  const sectionNav = document.getElementById('sectionNav');
+
+  // Section label map (anchor id → display name)
+  const labels = {
+    // Dashboard
+    'status-bar':'📡 Status Bar','cache':'🗄️ Cache & Library','link-trakt':'🔗 Link Trakt',
+    'smart-queue':'🎯 Smart Queue','ml-predictor':'🤖 ML Predictor','universes-card':'🌌 Universes',
+    'airing-soon':'📅 Airing Soon','scrobble-audit':'🔍 Scrobble Audit','taste-drift':'📊 Taste Drift',
+    'continue-watching':'⏸️ Continue Watching','new-coming-soon':'📥 New & Coming Soon',
+    'active-downloads':'⬇️ Downloads','activity-log':'📋 Activity Log','nav-bar':'🧭 Nav Bar',
+    // Universes
+    'uni-overview':'Overview','uni-auto-discover':'Auto-Discovery','uni-cards':'Universe Cards',
+    'uni-reorder':'Reorder','uni-add':'Add Items','uni-create':'Create Universe',
+    'uni-playlist':'Playlist Toggle','uni-radarr':'Send to Radarr','uni-delete':'Delete',
+    // Predictions
+    'pred-overview':'Overview','pred-histogram':'Distribution','pred-cards':'Prediction Cards',
+    'pred-model':'Model Stats','pred-insights':'Insights',
+    // Taste Profile
+    'taste-overview':'Overview','taste-curve':'Rating Curve','taste-genres':'Genres',
+    'taste-eras':'Eras','taste-gems':'Hidden Gems','taste-challenges':'Challenges',
+    'taste-against':'Against Your Taste',
+    // Stats
+    'stats-overview':'Overview','stats-trends':'Trends','stats-queue-feedback':'Queue Feedback',
+    // Settings
+    'set-emby':'Emby','set-toggles':'Feature Toggles','set-queue-opts':'Queue Options',
+    'set-blocklist':'Blocklist','set-scheduler':'Scheduler','set-backup':'Backup',
+    'set-radarr':'Radarr','set-sonarr':'Sonarr','set-watchlist-sync':'Watchlist Sync',
+    'set-tmdb':'TMDB','set-trakt-import':'Trakt Import','set-danger':'Danger Zone',
+    // Watch Party
+    'wp-overview':'Overview','wp-create':'Create','wp-join':'Join',
+    'wp-playback':'Playback','wp-chat':'Chat & Reactions','wp-end':'End Party',
+  };
+
+  function showPage(pageId) {
+    pages.forEach(p => p.classList.remove('active'));
+    pageLinks.forEach(l => l.classList.remove('active'));
+
+    const page = document.getElementById('page-' + pageId);
+    if (page) page.classList.add('active');
+
+    pageLinks.forEach(l => { if (l.dataset.page === pageId) l.classList.add('active'); });
+
+    // Build section nav
+    const sectionIds = page ? (page.dataset.sections || '').split(',').filter(Boolean) : [];
+    sectionNav.innerHTML = sectionIds.map(id =>
+      `<a href="#${id}" class="section-link">${labels[id] || id}</a>`
+    ).join('');
+
+    window.scrollTo(0, 0);
+  }
+
+  pageLinks.forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      showPage(link.dataset.page);
+    });
+  });
+
+  // Highlight active section link on scroll
+  function updateSectionHighlight() {
+    const links = document.querySelectorAll('#sectionNav .section-link');
+    if (!links.length) return;
+    const anchors = Array.from(links).map(a => ({
+      el: a,
+      target: document.querySelector(a.getAttribute('href'))
+    })).filter(a => a.target);
+
+    let current = anchors[0];
+    for (const a of anchors) {
+      if (a.target.getBoundingClientRect().top <= 80) current = a;
+    }
+    links.forEach(l => l.classList.remove('active'));
+    if (current) current.el.classList.add('active');
+  }
+
+  window.addEventListener('scroll', updateSectionHighlight, { passive: true });
+
+  // Init
+  showPage('dashboard');
+})();
+</script>
+
+</body>
+</html>

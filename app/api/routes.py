@@ -2929,6 +2929,16 @@ async def get_stats_page():
         return "<h1>Page not found</h1>"
 
 
+@router.get("/guide", response_class=HTMLResponse)
+async def get_guide_page():
+    """Serve the User Guide page."""
+    try:
+        with open("frontend/templates/guide.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Page not found</h1>"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Continue Watching Audit
 # ═══════════════════════════════════════════════════════════════════════════
