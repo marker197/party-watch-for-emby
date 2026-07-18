@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Shared Universes - Emby-Trakt Suite</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
   <style>
     :root {
       --bg: #0f1117;
@@ -95,17 +94,6 @@
     .btn-blue { background: var(--blue); color: var(--bg); }
     .btn:hover { opacity: 0.85; }
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-    /* Timeline chart container */
-    .chart-container {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 24px;
-      margin-bottom: 32px;
-      position: relative;
-      height: 600px;
-    }
 
     /* Universe cards */
     .universes-grid {
@@ -551,10 +539,6 @@
       <button class="filter-badge" data-filter="high">High Progress (80%+)</button>
     </div>
 
-    <div class="chart-container">
-      <canvas id="timelineChart"></canvas>
-    </div>
-
     <div id="universesList" class="universes-grid">
       <div class="loading">
         <div class="spinner"></div>
@@ -565,15 +549,52 @@
 
   <div class="toast" id="toast"></div>
 
+  <!-- Auto-discovery first-run prompt -->
+  <div id="autoDiscoverModal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px 32px;max-width:460px;width:90%;">
+      <h2 style="font-size:1.1rem;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px;">🌌 Auto-Discover Universes</h2>
+      <p style="color:var(--text-dim);font-size:0.88rem;margin-bottom:8px;">The suite can scan your library and automatically create universes for movie collections it finds (e.g. Shrek, Toy Story, Pirates of the Caribbean).</p>
+      <p style="color:var(--text-dim);font-size:0.88rem;margin-bottom:20px;">This uses your TMDB API key and only creates universes when 3 or more movies from the same collection are in your library. You can change this later in Settings.</p>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" onclick="setAutoDiscover(false)">Leave Off</button>
+        <button class="btn" style="background:var(--accent);" onclick="setAutoDiscover(true)">Turn On</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let allUniverses = [];
     let currentFilter = 'all';
-    let timelineChart = null;
-
     // Initialize
     async function init() {
       await loadUniverses();
       setupEventListeners();
+      await checkAutoDiscover();
+    }
+
+    async function checkAutoDiscover() {
+      try {
+        const r = await fetch('/api/universes/auto-discover/setting');
+        const d = await r.json();
+        if (d.status === 'unset') {
+          const modal = document.getElementById('autoDiscoverModal');
+          modal.style.display = 'flex';
+        }
+      } catch(e) {}
+    }
+
+    async function setAutoDiscover(enabled) {
+      try {
+        await fetch('/api/universes/auto-discover/setting', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({enabled})
+        });
+        document.getElementById('autoDiscoverModal').style.display = 'none';
+        showToast(enabled ? 'Auto-discovery enabled — next scan will find new universes' : 'Auto-discovery disabled');
+      } catch(e) {
+        document.getElementById('autoDiscoverModal').style.display = 'none';
+      }
     }
 
     async function loadUniverses() {
@@ -582,7 +603,6 @@
         if (!response.ok) throw new Error('Failed to load universes');
         allUniverses = await response.json();
         renderUniverses();
-        renderTimelineChart();
       } catch (error) {
         console.error('Error loading universes:', error);
         document.getElementById('universesList').innerHTML = 
@@ -896,74 +916,6 @@
       itemsList.classList.toggle('visible');
       btn.classList.toggle('active');
       btn.textContent = isExpanding ? '▼ Hide Details' : '▶ Show Details';
-    }
-
-    function renderTimelineChart() {
-      const ctx = document.getElementById('timelineChart').getContext('2d');
-
-      // Prepare data for horizontal bar chart (top 15 by completion)
-      const sorted = [...allUniverses].sort((a, b) => (b.completion_pct ?? 0) - (a.completion_pct ?? 0)).slice(0, 15);
-      const labels = sorted.map(u => u.name);
-      const data = sorted.map(u => u.completion_pct ?? 0);
-      const backgroundColor = data.map(d => {
-        if (d === 100) return '#00b894'; // Green for complete
-        if (d >= 80) return '#fdcb6e';   // Orange for high progress
-        if (d > 0) return '#6c5ce7';     // Purple for partial
-        return '#2a2e3e';                // Gray for not started
-      });
-
-      // Destroy any chart bound to this canvas (guards against half-initialized state)
-      const existing = Chart.getChart(ctx.canvas);
-      if (existing) existing.destroy();
-      timelineChart = null;
-
-      timelineChart = new Chart(ctx, {
-        type: 'bar',
-        data: {
-          labels: labels,
-          datasets: [{
-            label: 'Completion %',
-            data: data,
-            backgroundColor: backgroundColor,
-            borderRadius: 6,
-            borderSkipped: false,
-            minBarLength: 4,
-          }]
-        },
-        options: {
-          indexAxis: 'y',
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              backgroundColor: '#1a1d27',
-              titleColor: '#e0e0e6',
-              bodyColor: '#8b8fa3',
-              borderColor: '#2a2e3e',
-              borderWidth: 1,
-              padding: 12,
-              cornerRadius: 6,
-              displayColors: false,
-              callbacks: {
-                label: (context) => `${Math.round(context.parsed.x)}% Complete`
-              }
-            }
-          },
-          scales: {
-            x: {
-              max: 100,
-              ticks: { color: '#8b8fa3' },
-              grid: { color: '#2a2e3e', drawBorder: false },
-              title: { display: true, text: 'Completion %', color: '#e0e0e6' }
-            },
-            y: {
-              ticks: { color: '#8b8fa3' },
-              grid: { drawTicks: false, display: false }
-            }
-          }
-        }
-      });
     }
 
     function escapeHtml(text) {

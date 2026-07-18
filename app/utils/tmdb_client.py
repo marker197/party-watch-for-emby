@@ -262,3 +262,121 @@ async def get_movie_release_dates(
               digital=digital, physical=physical)
 
     return theatrical, digital, physical
+
+
+# ---------------------------------------------------------------------------
+# Movie details & collection lookup (for universe auto-discovery)
+# ---------------------------------------------------------------------------
+
+
+async def get_movie_details(tmdb_id: int) -> dict | None:
+    """Return basic movie info including ``belongs_to_collection``.
+
+    Returns ``{id, title, belongs_to_collection: {id, name} | None}``
+    or None on failure.  Cached 7 days.
+    """
+    api_key = await _get_api_key()
+    if not api_key or not tmdb_id:
+        return None
+
+    import json
+
+    cache_key = f"tmdb_movie:{tmdb_id}"
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{TMDB_BASE}/movie/{tmdb_id}",
+                params={"api_key": api_key},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        result = {
+            "id": data.get("id"),
+            "title": data.get("title"),
+            "release_date": data.get("release_date"),
+            "belongs_to_collection": data.get("belongs_to_collection"),
+        }
+
+        try:
+            r = await get_redis()
+            await r.setex(cache_key, 604800, json.dumps(result))  # 7 days
+        except Exception:
+            pass
+
+        return result
+
+    except Exception as e:
+        log.debug("tmdb.movie_details_failed", tmdb_id=tmdb_id,
+                  error=str(e)[:120])
+        return None
+
+
+async def get_collection(collection_id: int) -> dict | None:
+    """Return full TMDB collection with all member movies.
+
+    Returns ``{id, name, parts: [{id, title, release_date}, ...]}``
+    sorted by release date.  Cached 7 days.
+    """
+    api_key = await _get_api_key()
+    if not api_key or not collection_id:
+        return None
+
+    import json
+
+    cache_key = f"tmdb_collection:{collection_id}"
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{TMDB_BASE}/collection/{collection_id}",
+                params={"api_key": api_key},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        parts = []
+        for p in data.get("parts", []):
+            parts.append({
+                "id": p.get("id"),
+                "title": p.get("title"),
+                "release_date": p.get("release_date", ""),
+            })
+
+        # Sort by release date
+        parts.sort(key=lambda x: x.get("release_date") or "9999")
+
+        result = {
+            "id": data.get("id"),
+            "name": data.get("name"),
+            "overview": data.get("overview", ""),
+            "parts": parts,
+        }
+
+        try:
+            r = await get_redis()
+            await r.setex(cache_key, 604800, json.dumps(result))  # 7 days
+        except Exception:
+            pass
+
+        return result
+
+    except Exception as e:
+        log.debug("tmdb.collection_failed", collection_id=collection_id,
+                  error=str(e)[:120])
+        return None

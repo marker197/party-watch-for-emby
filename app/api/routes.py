@@ -1070,6 +1070,28 @@ async def remove_universe_item(universe_id: int, item_id: int):
     return {"status": "ok", "removed": title}
 
 
+@router.get("/api/universes/auto-discover/setting")
+async def get_auto_discover_setting(db: AsyncSession = Depends(get_db)):
+    """Return auto-discovery setting: enabled | disabled | unset (never configured)."""
+    val = await _get_setting(db, "universe_auto_discover", "")
+    if val == "":
+        return {"status": "unset"}
+    return {"status": val}
+
+
+@router.put("/api/universes/auto-discover/setting")
+async def set_auto_discover_setting(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Set auto-discovery to 'enabled' or 'disabled'."""
+    enabled = payload.get("enabled", False)
+    val = "enabled" if enabled else "disabled"
+    await _put_setting(db, "universe_auto_discover", val)
+    await db.commit()
+    return {"status": val}
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Feature #4 — Watch Party
 # ═══════════════════════════════════════════════════════════════════════════

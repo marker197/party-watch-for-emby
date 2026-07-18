@@ -322,6 +322,8 @@ KNOWN_UNIVERSES: list[dict] = [
 
 
 class UniverseDiscoveryService:
+    _scan_running = False
+
     def __init__(self):
         self.emby = EmbyClient()
 
@@ -331,12 +333,20 @@ class UniverseDiscoveryService:
 
     async def run_scan(self):
         """Scheduler entry point — seed universes, resolve IDs, match library, create collections."""
-        log.info("universe_discovery.scan_start")
-        await self._seed_universes()
-        await self._resolve_provider_ids()
-        await self._match_library()
-        await self._create_collections()
-        log.info("universe_discovery.scan_complete")
+        if UniverseDiscoveryService._scan_running:
+            log.warning("universe_discovery.scan_skip", reason="already_running")
+            return
+        UniverseDiscoveryService._scan_running = True
+        try:
+            log.info("universe_discovery.scan_start")
+            await self._seed_universes()
+            await self._auto_discover()
+            await self._resolve_provider_ids()
+            await self._match_library()
+            await self._create_collections()
+            log.info("universe_discovery.scan_complete")
+        finally:
+            UniverseDiscoveryService._scan_running = False
 
     async def get_universes(self) -> list[dict]:
         """Return all universes with item counts + library match stats."""
@@ -410,6 +420,226 @@ class UniverseDiscoveryService:
                     ],
                 })
             return result
+
+    # -----------------------------------------------------------------------
+    # Auto-discover universes via TMDB collections
+    # -----------------------------------------------------------------------
+
+    async def _auto_discover(self):
+        """Scan Emby library for movies belonging to TMDB collections.
+
+        Groups movies by TMDB collection ID.  Creates a new universe for any
+        collection with 3+ movies already in the library, skipping collections
+        that overlap with existing universes or previously dismissed ones.
+
+        Requires a TMDB API key configured in settings.  Degrades silently if
+        no key is set or the feature is disabled/unset.
+        """
+        import asyncio
+        from app.utils.tmdb_client import get_movie_details, get_collection, _get_api_key
+        from app.models.schema import AppSetting
+
+        # Check if auto-discovery is enabled (skip if disabled or never configured)
+        async with async_session() as db:
+            row = (await db.execute(
+                select(AppSetting).where(AppSetting.key == "universe_auto_discover")
+            )).scalar_one_or_none()
+            setting = row.value if row else ""
+
+        if setting != "enabled":
+            log.info("universe_discovery.auto_discover_skip",
+                     reason="not_enabled", setting=setting or "unset")
+            return
+
+        api_key = await _get_api_key()
+        if not api_key:
+            log.info("universe_discovery.auto_discover_skip", reason="no_tmdb_key")
+            return
+
+        # Get all movies from library
+        async with async_session() as db:
+            first_user = (await db.execute(
+                select(User).order_by(User.id)
+            )).scalars().first()
+        emby_user_id = first_user.emby_user_id if first_user else None
+
+        movies = await self.emby.get_all_movies(user_id=emby_user_id)
+        if not movies:
+            return
+
+        # Build set of TMDB IDs already in any universe
+        async with async_session() as db:
+            existing_tmdb_ids: set[str] = set()
+            all_ui = (await db.execute(
+                select(UniverseItem.tmdb_id).where(UniverseItem.tmdb_id.isnot(None))
+            )).scalars().all()
+            existing_tmdb_ids = {t for t in all_ui if t}
+
+            # Build set of existing universe slugs to avoid duplicates
+            existing_slugs: set[str] = set()
+            all_u = (await db.execute(select(Universe.slug))).scalars().all()
+            existing_slugs = {s for s in all_u if s}
+
+            # Load dismissed collection IDs from Redis
+            dismissed: set[str] = set()
+            try:
+                from app.utils.redis_cache import get_redis
+                import json
+                r = await get_redis()
+                raw = await r.get("universe_auto_dismissed")
+                if raw:
+                    dismissed = set(json.loads(raw))
+            except Exception:
+                pass
+
+        # Collect TMDB IDs from library movies (skip those already in a universe)
+        tmdb_to_emby: dict[str, dict] = {}  # tmdb_id → emby item
+        for item in movies:
+            provider_ids = item.get("ProviderIds", {})
+            tmdb_id = provider_ids.get("Tmdb") or provider_ids.get("tmdb")
+            if tmdb_id and str(tmdb_id) not in existing_tmdb_ids:
+                tmdb_to_emby[str(tmdb_id)] = item
+
+        if not tmdb_to_emby:
+            log.info("universe_discovery.auto_discover_skip",
+                     reason="no_unmatched_movies")
+            return
+
+        log.info("universe_discovery.auto_discover_start",
+                 unmatched_movies=len(tmdb_to_emby))
+
+        # Look up each movie on TMDB to find belongs_to_collection
+        # Group by collection_id → list of (tmdb_id, emby_item)
+        collection_groups: dict[int, list[tuple[str, dict]]] = {}
+        collection_names: dict[int, str] = {}
+        looked_up = 0
+        tmdb_errors = 0
+
+        for tmdb_id, emby_item in tmdb_to_emby.items():
+            try:
+                details = await get_movie_details(int(tmdb_id))
+            except Exception as e:
+                tmdb_errors += 1
+                log.debug("universe_discovery.auto_discover_tmdb_error",
+                          tmdb_id=tmdb_id, error=str(e)[:120])
+                continue
+
+            looked_up += 1
+            if looked_up % 100 == 0:
+                log.info("universe_discovery.auto_discover_progress",
+                         looked_up=looked_up, total=len(tmdb_to_emby),
+                         collections_found=len(collection_groups),
+                         errors=tmdb_errors)
+
+            if not details:
+                continue
+
+            col = details.get("belongs_to_collection")
+            if not col or not col.get("id"):
+                continue
+
+            col_id = col["id"]
+
+            # Skip dismissed collections
+            if str(col_id) in dismissed:
+                continue
+
+            if col_id not in collection_groups:
+                collection_groups[col_id] = []
+                collection_names[col_id] = col.get("name", f"Collection {col_id}")
+
+            collection_groups[col_id].append((tmdb_id, emby_item))
+
+            # Respect TMDB rate limits (40 req / 10s)
+            await asyncio.sleep(0.25)
+
+        # Filter to collections with 3+ movies in library
+        viable = {
+            col_id: members
+            for col_id, members in collection_groups.items()
+            if len(members) >= 3
+        }
+
+        if not viable:
+            log.info("universe_discovery.auto_discover_done",
+                     collections_found=len(collection_groups),
+                     viable=0, created=0)
+            return
+
+        log.info("universe_discovery.auto_discover_viable",
+                 total_collections=len(collection_groups),
+                 viable=len(viable))
+
+        # For each viable collection, fetch full member list and create universe
+        created = 0
+        async with async_session() as db:
+            for col_id, library_members in viable.items():
+                slug = f"tmdb-col-{col_id}"
+
+                # Skip if universe already exists with this slug
+                if slug in existing_slugs:
+                    continue
+
+                # Fetch full collection from TMDB
+                col_data = await get_collection(col_id)
+                if not col_data or not col_data.get("parts"):
+                    continue
+
+                col_name = col_data.get("name", collection_names.get(col_id, ""))
+
+                # Skip if name clashes with an existing universe
+                name_exists = (await db.execute(
+                    select(Universe).where(Universe.name == col_name)
+                )).scalar_one_or_none()
+                if name_exists:
+                    log.info("universe_discovery.auto_discover_skip_dup",
+                             name=col_name)
+                    continue
+
+                # Create universe
+                universe = Universe(
+                    name=col_name,
+                    slug=slug,
+                    description=col_data.get("overview", ""),
+                    is_custom=False,
+                    total_items=len(col_data["parts"]),
+                )
+                db.add(universe)
+                await db.flush()
+
+                # Add items in release order
+                for order, part in enumerate(col_data["parts"], 1):
+                    year = None
+                    rd = part.get("release_date", "")
+                    if rd and len(rd) >= 4:
+                        try:
+                            year = int(rd[:4])
+                        except ValueError:
+                            pass
+
+                    db.add(UniverseItem(
+                        universe_id=universe.id,
+                        tmdb_id=str(part["id"]),
+                        title=part.get("title", ""),
+                        item_type="movie",
+                        year=year,
+                        release_order=order,
+                        chronological_order=order,
+                    ))
+
+                created += 1
+                existing_slugs.add(slug)
+                log.info("universe_discovery.auto_discover_created",
+                         name=col_name, items=len(col_data["parts"]),
+                         in_library=len(library_members))
+
+                await asyncio.sleep(0.25)
+
+            await db.commit()
+
+        log.info("universe_discovery.auto_discover_done",
+                 collections_found=len(collection_groups),
+                 viable=len(viable), created=created)
 
     # -----------------------------------------------------------------------
     # Seed known universes into DB
