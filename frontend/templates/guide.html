@@ -360,7 +360,9 @@
     <span class="section-anchor" id="active-downloads"></span>
     <div class="feature">
       <div class="feature-name"><span class="emoji">⬇️</span> Active Downloads</div>
-      <p>Live download progress from Radarr and Sonarr — progress bar, percentage, ETA, and file size. Show downloads are grouped when multiple episodes download at once.</p>
+      <p>Live download progress for everything currently being grabbed by Radarr and Sonarr. Each item shows a progress bar, percentage, ETA, and file size. Show downloads are grouped when multiple episodes download at once.</p>
+      <p>When SABnzbd is configured in Settings, progress data comes directly from SABnzbd instead of Radarr/Sonarr, giving smoother real-time updates. A status label shows the current SABnzbd stage — Downloading, Repairing, Verifying, Extracting, or Moving. Download speed is shown alongside the ETA. Items disappear from the card once SABnzbd finishes processing them.</p>
+      <div class="tip">Without SABnzbd configured, the card still works — it uses the progress numbers from Radarr/Sonarr, which update less frequently.</div>
     </div>
   </div>
 
@@ -588,7 +590,7 @@
 <!-- PAGE: SETTINGS -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page" id="page-settings" data-sections="set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-watchlist-sync,set-tmdb,set-trakt-import,set-danger">
+<div class="page" id="page-settings" data-sections="set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-trakt-import,set-danger">
 
   <h1 class="page-title">⚙️ Settings</h1>
   <p class="page-intro">Configure connections, features, schedules, and integrations.</p>
@@ -641,6 +643,15 @@
     <span class="section-anchor" id="set-sonarr"></span>
     <h2>Sonarr Integration</h2>
     <p>Same setup as Radarr but for TV shows. Up to two servers, test, choose quality profile, save. The auto-send toggle works the same way.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-sabnzbd"></span>
+    <h2>SABnzbd Integration</h2>
+    <p>Connect up to two SABnzbd servers for real-time download progress on the Active Downloads card. When configured, SABnzbd replaces the stale progress numbers from Radarr/Sonarr with live data straight from the download client.</p>
+    <p>Enter the SABnzbd URL and API key for each server. The API key is found in SABnzbd's web UI under Config → General → API Key. Click <span class="btn-label">Test</span> to verify the connection, then save.</p>
+    <p>The connection badge next to the section header shows live status. SABnzbd is checked every 5 minutes alongside Emby, Trakt, Radarr, and Sonarr.</p>
+    <div class="tip">SABnzbd is optional. Without it, the Active Downloads card still works using progress data from Radarr/Sonarr — it just updates less frequently.</div>
   </div>
 
   <div class="section">
@@ -764,7 +775,7 @@
     // Settings
     'set-emby':'Emby','set-toggles':'Feature Toggles','set-queue-opts':'Queue Options',
     'set-blocklist':'Blocklist','set-scheduler':'Scheduler','set-backup':'Backup',
-    'set-radarr':'Radarr','set-sonarr':'Sonarr','set-watchlist-sync':'Watchlist Sync',
+    'set-radarr':'Radarr','set-sonarr':'Sonarr','set-sabnzbd':'SABnzbd','set-watchlist-sync':'Watchlist Sync',
     'set-tmdb':'TMDB','set-trakt-import':'Trakt Import','set-danger':'Danger Zone',
     // Watch Party
     'wp-overview':'Overview','wp-create':'Create','wp-join':'Join',
