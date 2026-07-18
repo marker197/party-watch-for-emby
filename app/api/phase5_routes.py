@@ -1,10 +1,9 @@
 """
-API Routes — Social Watching Graph, Library Health Monitor, Metadata Enrichment, Bulk Actions.
+API Routes — Social Watching Graph, Library Health Monitor, Bulk Actions.
 
-Total: 18 new endpoints
+Total: 14 endpoints
 - Social Watching: 5 endpoints
 - Library Health: 6 endpoints
-- Metadata Enrichment: 4 endpoints
 - Bulk Actions: 3 endpoints
 """
 
@@ -16,11 +15,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import (
-    SocialWatching, LibraryGap, LibraryHealthReport, EnrichedMetadata, BulkAction, User
+    SocialWatching, LibraryGap, LibraryHealthReport, BulkAction, User
 )
 from app.services.social_watching import SocialWatchingService
 from app.services.library_health import LibraryHealthMonitor
-from app.services.metadata_enrichment import MetadataEnrichmentService
 from app.utils.database import get_db, async_session
 from app.utils.trakt_client import TraktClient
 from app.utils.library_cache import LibraryCache
@@ -454,128 +452,6 @@ async def analyze_library_health(
         }
     except Exception as e:
         logger.error(f"Error in analyze_library_health: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ============================================================================
-# METADATA ENRICHMENT (#12) - 4 Endpoints
-# ============================================================================
-
-@router.get("/metadata/enriched/{emby_item_id}")
-async def get_enriched_metadata(
-    emby_item_id: str,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Get enriched metadata for a single item (taglines, themes, quotes, social score).
-    
-    Returns:
-        {
-            'emby_item_id': str,
-            'title': str,
-            'tagline': str,
-            'themes': [str],
-            'quotes': [str],
-            'social_score': float,
-            'trakt_rating': float,
-            'trakt_votes': int,
-            'enriched': bool
-        } or null if not enriched
-    """
-    try:
-        trakt_client = await _get_user_trakt(user_id, db)
-        service = MetadataEnrichmentService(db, trakt_client, cache)
-        metadata = await service.get_enriched_metadata(emby_item_id)
-
-        if not metadata:
-            return {"success": True, "data": None}
-
-        return {"success": True, "data": metadata}
-    except Exception as e:
-        logger.error(f"Error in get_enriched_metadata: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/metadata/enrich-library/{user_id}")
-async def batch_enrich_library(
-    user_id: int,
-    force: bool = Query(False),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Enrich all items in user's library with Trakt metadata.
-    
-    Query params:
-        - force: Force refresh even if already enriched
-    
-    Returns:
-        {
-            'total': int,
-            'enriched': int,
-            'errors': int,
-            'skipped': int,
-            'results': [...]
-        }
-    """
-    try:
-        trakt_client = await _get_user_trakt(user_id, db)
-        service = MetadataEnrichmentService(db, trakt_client, cache)
-        result = await service.batch_enrich_library(user_id)
-
-        return {"success": True, "data": result}
-    except Exception as e:
-        logger.error(f"Error in batch_enrich_library: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/metadata/social-scores")
-async def get_trending_by_social_score(
-    limit: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Get items ranked by social score (trending/popular).
-    
-    Returns:
-        [{
-            'title': str,
-            'emby_item_id': str,
-            'social_score': float,
-            'trakt_rating': float,
-            'themes': [str],
-            'trakt_votes': int
-        }, ...]
-    """
-    try:
-        trakt_client = await _get_user_trakt(user_id, db)
-        service = MetadataEnrichmentService(db, trakt_client, cache)
-        trending = await service.get_social_scores(limit)
-
-        return {"success": True, "trending": trending}
-    except Exception as e:
-        logger.error(f"Error in get_trending_by_social_score: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/metadata/refresh-expired")
-async def refresh_expired_metadata(
-    days_old: int = Query(30, ge=1, le=365),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Refresh metadata older than days_old.
-    
-    Returns:
-        {'refreshed': int, 'errors': int}
-    """
-    try:
-        trakt_client = await _get_user_trakt(user_id, db)
-        service = MetadataEnrichmentService(db, trakt_client, cache)
-        result = await service.refresh_expired_metadata(days_old)
-
-        return {"success": True, "data": result}
-    except Exception as e:
-        logger.error(f"Error in refresh_expired_metadata: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

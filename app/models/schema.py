@@ -326,31 +326,6 @@ class LibraryHealthReport(Base):
 
 
 # ---------------------------------------------------------------------------
-# Metadata Enrichment  (#12)
-# ---------------------------------------------------------------------------
-
-class EnrichedMetadata(Base):
-    """Enriched metadata from Trakt for Emby items."""
-    __tablename__ = "enriched_metadata"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    emby_item_id = Column(String(64), unique=True, nullable=False, index=True)
-    trakt_id = Column(String(64))
-    trakt_slug = Column(String(256))
-    title = Column(String(512))
-    tagline = Column(String(512))
-    themes = Column(JSON)  # ["sci-fi", "dystopian", "adventure"]
-    quotes = Column(JSON)  # ["Quote 1", "Quote 2", ...]
-    social_score = Column(Float)  # 0-1 trending score
-    trakt_rating = Column(Float)  # community rating
-    trakt_votes = Column(Integer)
-    themes_from_trakt = Column(Boolean, default=False)
-    enriched_at = Column(DateTime, default=datetime.utcnow)
-    expires_at = Column(DateTime)  # refresh every 30 days
-    metadata_json = Column(JSON)  # full enriched metadata blob
-
-
-# ---------------------------------------------------------------------------
 # Bulk Actions  (UI Feature)
 # ---------------------------------------------------------------------------
 
