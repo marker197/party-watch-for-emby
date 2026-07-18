@@ -1292,6 +1292,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         if item_type_raw == "Movie":
             return {"movie": {"ids": trakt_ids}}
         elif item_type_raw == "Episode":
+            # Try to get series-level provider IDs from the webhook payload
             series_ids = {}
             series_provider = item_data.get("SeriesProviderIds", {})
             if series_provider.get("Imdb"):
@@ -1300,13 +1301,20 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 series_ids["tmdb"] = int(series_provider["Tmdb"])
             if series_provider.get("Tvdb"):
                 series_ids["tvdb"] = int(series_provider["Tvdb"])
-            return {
-                "show": {"ids": series_ids or trakt_ids},
-                "episode": {
-                    "season": item_data.get("ParentIndexNumber", 1),
-                    "number": item_data.get("IndexNumber", 1),
-                },
+
+            episode_obj = {
+                "season": item_data.get("ParentIndexNumber", 1),
+                "number": item_data.get("IndexNumber", 1),
             }
+
+            if series_ids:
+                # Best case: we have show-level IDs + season/episode numbers
+                return {"show": {"ids": series_ids}, "episode": episode_obj}
+            else:
+                # Fallback: put episode's own IDs on the episode object directly.
+                # Trakt accepts episode.ids as an alternative to show.ids + season/number.
+                episode_obj["ids"] = trakt_ids
+                return {"episode": episode_obj}
         return None
 
     # -- Helper: extract playback position ticks from webhook payload ---------
@@ -1621,10 +1629,11 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             if trakt_synced:
                 await scrobble_audit_svc.invalidate_cache(user.id)
         else:
-            await _activity_log(
-                f"Skipped Trakt sync: {item_name} — user has no Trakt token",
-                category="trakt",
-            )
+            if not scrobble_already_added:
+                await _activity_log(
+                    f"Skipped Trakt sync: {item_name} — user has no Trakt token",
+                    category="trakt",
+                )
 
     # ── library.new / item.added → check smart queue for missing items ─────
     if is_library_event and item_type_raw in ("Movie", "Episode", "Series"):
@@ -2983,6 +2992,7 @@ async def get_continue_watching(
                 "year": item.get("ProductionYear"),
                 "type": "movie",
                 "progress_pct": progress_pct,
+                "position_ticks": position_ticks,
                 "last_played": last_played,
                 "days_ago": days_ago,
                 "imdb_id": item.get("ProviderIds", {}).get("Imdb"),
@@ -3006,10 +3016,12 @@ async def get_continue_watching(
                 }
 
             series_map[series_id]["episodes"].append({
+                "emby_id": item.get("Id", ""),
                 "season": s_num,
                 "episode": e_num,
                 "title": ep_name,
                 "progress_pct": progress_pct,
+                "position_ticks": position_ticks,
                 "last_played": last_played,
             })
 
@@ -3023,6 +3035,11 @@ async def get_continue_watching(
     for show in shows:
         show["episode_count"] = len(show["episodes"])
         show["episodes"].sort(key=lambda e: (e["season"], e["episode"]))
+        # Set resume target to the most recently played episode
+        most_recent = max(show["episodes"], key=lambda e: e.get("last_played") or "", default=None)
+        if most_recent:
+            show["resume_emby_id"] = most_recent["emby_id"]
+            show["resume_ticks"] = most_recent.get("position_ticks", 0)
 
     # Combine and sort: oldest first (most abandoned)
     all_items = movies + shows
@@ -4218,3 +4235,462 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         log.warning("remote_play.play_failed", error=str(e)[:200])
         return {"status": "error", "message": f"Play command failed: {str(e)[:100]}"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Recently Arrived — items that moved from monitored/downloading → available
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/recently-arrived")
+async def get_recently_arrived():
+    """Surface items that recently became available in the library.
+
+    Compares current Radarr/Sonarr available items against a previously
+    stored snapshot of pending items.  Items that were pending last check
+    but are now available (have files) are returned as "recently arrived".
+    The snapshot is updated each call so the next call shows only new arrivals.
+    """
+    import json as _json
+    from app.utils.radarr_client import RadarrClient
+    from app.utils.sonarr_client import SonarrClient
+
+    r = await get_redis()
+
+    # Check short-lived result cache (5 min)
+    result_cache_key = "recently_arrived_result_v1"
+    try:
+        cached = await r.get(result_cache_key)
+        if cached:
+            return _json.loads(cached)
+    except Exception:
+        pass
+
+    # Load previously-pending snapshot
+    prev_key = "recently_arrived_pending_v1"
+    try:
+        raw_prev = await r.get(prev_key)
+        prev_pending = _json.loads(raw_prev) if raw_prev else {"movies": [], "shows": []}
+    except Exception:
+        prev_pending = {"movies": [], "shows": []}
+
+    prev_movie_ids = {str(m) for m in prev_pending.get("movies", [])}
+    # Shows: track {tvdb_id: ep_file_count} to detect new episodes
+    prev_show_eps = {}
+    for s in prev_pending.get("shows", []):
+        if isinstance(s, dict):
+            prev_show_eps[str(s.get("id", ""))] = s.get("eps", 0)
+        else:
+            # Legacy format: just a tvdb_id string
+            prev_show_eps[str(s)] = 0
+
+    current_pending_movies: list[str] = []
+    current_pending_shows: list[dict] = []
+    arrived_movies: list[dict] = []
+    arrived_shows: list[dict] = []
+
+    # --- Radarr ---
+    raw_radarr = await r.get("radarr_servers")
+    if raw_radarr:
+        for srv in _json.loads(raw_radarr):
+            try:
+                client = RadarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Radarr"))
+                all_movies = await client.get_all_movies()
+                await client.close()
+                for movie in all_movies:
+                    if not movie.get("monitored", False):
+                        continue
+                    tmdb_id = str(movie.get("tmdbId", ""))
+                    if not tmdb_id:
+                        continue
+                    has_file = movie.get("hasFile", False)
+                    if has_file:
+                        # Was it pending last time?
+                        if tmdb_id in prev_movie_ids:
+                            arrived_movies.append({
+                                "title": movie.get("title", ""),
+                                "year": movie.get("year"),
+                                "tmdb_id": movie.get("tmdbId"),
+                                "type": "movie",
+                            })
+                    else:
+                        current_pending_movies.append(tmdb_id)
+            except Exception as e:
+                log.warning("recently_arrived.radarr_failed", error=str(e)[:120])
+
+    # --- Sonarr ---
+    raw_sonarr = await r.get("sonarr_servers")
+    if raw_sonarr:
+        for srv in _json.loads(raw_sonarr):
+            try:
+                client = SonarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Sonarr"))
+                all_series = await client.get_all_series()
+                await client.close()
+                for series in all_series:
+                    if not series.get("monitored", False):
+                        continue
+                    tvdb_id = str(series.get("tvdbId", ""))
+                    if not tvdb_id:
+                        continue
+                    ep_file_count = series.get("episodeFileCount", 0)
+                    ep_count = series.get("episodeCount", 0)
+                    if ep_count == 0:
+                        continue
+                    fully_available = ep_file_count >= ep_count
+
+                    # Check if new episodes arrived since last snapshot
+                    prev_eps = prev_show_eps.get(tvdb_id)
+                    if prev_eps is not None and ep_file_count > prev_eps:
+                        arrived_shows.append({
+                            "title": series.get("title", ""),
+                            "year": series.get("year"),
+                            "tvdb_id": series.get("tvdbId"),
+                            "type": "show",
+                            "episodes_on_disk": ep_file_count,
+                            "episodes_total": ep_count,
+                            "new_episodes": ep_file_count - prev_eps,
+                        })
+
+                    # Track shows that still need episodes
+                    if not fully_available:
+                        current_pending_shows.append({"id": tvdb_id, "eps": ep_file_count})
+            except Exception as e:
+                log.warning("recently_arrived.sonarr_failed", error=str(e)[:120])
+
+    # Save current pending as the new snapshot (30 day TTL)
+    try:
+        await r.setex(prev_key, 86400 * 30, _json.dumps({
+            "movies": current_pending_movies,
+            "shows": current_pending_shows,
+        }))
+    except Exception:
+        pass
+
+    # ── Merge with existing arrived items (for 24hr window) ──
+    arrived_key = "recently_arrived_items_v1"
+    now_ts = datetime.utcnow().isoformat() + "Z"
+    try:
+        raw_existing = await r.get(arrived_key)
+        existing_items = _json.loads(raw_existing) if raw_existing else []
+    except Exception:
+        existing_items = []
+
+    # Filter out items older than 24 hours
+    cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat() + "Z"
+    existing_items = [i for i in existing_items if i.get("arrived_at", "") > cutoff]
+
+    # Add new arrivals with timestamp (dedup by id)
+    existing_ids = {(i.get("type"), str(i.get("id", ""))) for i in existing_items}
+    for m in arrived_movies:
+        key = ("movie", str(m.get("tmdb_id", "")))
+        if key not in existing_ids:
+            existing_items.append({**m, "id": m.get("tmdb_id"), "arrived_at": now_ts})
+    for s in arrived_shows:
+        key = ("show", str(s.get("tvdb_id", "")))
+        if key not in existing_ids:
+            existing_items.append({**s, "id": s.get("tvdb_id"), "arrived_at": now_ts})
+
+    # Persist with 48hr TTL (items self-expire at 24hr via filter above)
+    try:
+        await r.setex(arrived_key, 86400 * 2, _json.dumps(existing_items))
+    except Exception:
+        pass
+
+    result = {
+        "arrived_movies": [i for i in existing_items if i.get("type") == "movie"],
+        "arrived_shows": [i for i in existing_items if i.get("type") == "show"],
+        "total": len(existing_items),
+    }
+
+    # Cache result for 5 min
+    try:
+        await r.setex(result_cache_key, 300, _json.dumps(result))
+    except Exception:
+        pass
+
+    return result
+
+
+@router.post("/api/recently-arrived/dismiss")
+async def dismiss_recently_arrived():
+    """Clear the recently arrived list by resetting the pending snapshot."""
+    r = await get_redis()
+    await r.delete("recently_arrived_result_v1")
+    await r.delete("recently_arrived_pending_v1")
+    await r.delete("recently_arrived_items_v1")
+    return {"status": "cleared"}
+
+
+@router.post("/api/recently-arrived/dismiss-item")
+async def dismiss_arrived_item(request: Request):
+    """Remove a single item from the recently arrived list."""
+    import json as _json
+    body = await request.json()
+    item_type = body.get("type")  # "movie" or "show"
+    item_id = str(body.get("id", ""))
+
+    r = await get_redis()
+    arrived_key = "recently_arrived_items_v1"
+    try:
+        raw = await r.get(arrived_key)
+        items = _json.loads(raw) if raw else []
+        items = [i for i in items if not (i.get("type") == item_type and str(i.get("id", "")) == item_id)]
+        await r.setex(arrived_key, 86400 * 2, _json.dumps(items))
+        # Invalidate result cache
+        await r.delete("recently_arrived_result_v1")
+    except Exception:
+        pass
+
+    return {"status": "dismissed"}
+
+
+@router.post("/api/play-on-session")
+async def play_on_session(request: Request, db: AsyncSession = Depends(get_db)):
+    """Start playing an Emby item by its ID on a specific session.
+
+    Unlike /api/remote-play (which resolves from provider IDs), this
+    takes a direct emby_item_id and session_id for the continue watching
+    play button.
+    """
+    body = await request.json()
+    user_id = body.get("user_id")
+    emby_item_id = body.get("emby_item_id")
+    session_id = body.get("session_id")
+    start_position_ticks = body.get("start_position_ticks", 0)
+
+    if not all([user_id, emby_item_id, session_id]):
+        raise HTTPException(400, "user_id, emby_item_id, and session_id required")
+
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user or not user.emby_user_id:
+        raise HTTPException(404, "user not found")
+
+    try:
+        emby = EmbyClient()
+        await emby.play_item_on_session(
+            session_id=session_id,
+            item_id=emby_item_id,
+            start_position_ticks=start_position_ticks,
+            controlling_user_id=user.emby_user_id,
+        )
+        return {"status": "playing", "emby_id": emby_item_id}
+    except Exception as e:
+        log.warning("play_on_session.failed", error=str(e)[:200])
+        return {"status": "error", "message": f"Play failed: {str(e)[:100]}"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Trakt Playback Sync — compare Trakt resume points with Emby
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/playback-sync/{user_id}")
+async def get_playback_sync(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compare Trakt in-progress playback items with Emby resume points.
+
+    Returns items that exist on Trakt's playback list, enriched with
+    Emby resume data if available.  Surfaces mismatches (Trakt has a
+    resume point but Emby doesn't, or vice versa) and stale entries
+    (paused > 30 days ago).
+    """
+    import json as _json
+
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user or not user.trakt_access_token:
+        raise HTTPException(404, "User not found or no Trakt account linked")
+    require_user_ownership(current_user.id, user_id, "playback_sync")
+
+    # Cache for 10 min
+    cache_key = f"playback_sync_v1:{user.id}"
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return _json.loads(cached)
+    except Exception:
+        pass
+
+    # Fetch Trakt playback progress
+    async def _on_refresh(access, refresh, expires):
+        async with async_session() as _db:
+            u = await _db.get(User, user.id)
+            u.trakt_access_token = access
+            u.trakt_refresh_token = refresh
+            u.trakt_token_expires = expires
+            await _db.commit()
+
+    trakt = TraktClient(
+        access_token=user.trakt_access_token,
+        refresh_token=user.trakt_refresh_token,
+        token_expires=user.trakt_token_expires,
+        token_refresh_callback=_on_refresh,
+    )
+
+    try:
+        trakt_playback = await trakt.get_playback()
+    except Exception as e:
+        log.warning("playback_sync.trakt_fetch_failed", error=str(e)[:120])
+        raise HTTPException(502, f"Failed to fetch Trakt playback: {str(e)[:100]}")
+
+    if not trakt_playback:
+        result = {"items": [], "total": 0}
+        try:
+            r = await get_redis()
+            await r.setex(cache_key, 600, _json.dumps(result))
+        except Exception:
+            pass
+        return result
+
+    # Fetch Emby resumable items for cross-reference
+    emby = EmbyClient()
+    emby_resume: dict[str, dict] = {}  # provider_id → emby data
+    try:
+        resp = await emby.get_items(
+            user_id=user.emby_user_id,
+            fields="ProviderIds,UserData,RunTimeTicks",
+            filters="IsResumable",
+            limit=500,
+        )
+        for item in resp.get("Items", []):
+            pids = item.get("ProviderIds", {})
+            ud = item.get("UserData", {})
+            runtime = item.get("RunTimeTicks", 0) or 0
+            pos = ud.get("PlaybackPositionTicks", 0) or 0
+            progress = round(pos / runtime * 100, 1) if runtime > 0 else 0
+
+            entry = {
+                "emby_id": item.get("Id"),
+                "emby_progress": progress,
+                "emby_title": item.get("Name", ""),
+            }
+            for key in ("Imdb", "Tmdb", "Tvdb"):
+                if pids.get(key):
+                    emby_resume[f"{key.lower()}:{pids[key]}"] = entry
+    except Exception as e:
+        log.warning("playback_sync.emby_fetch_failed", error=str(e)[:120])
+
+    # Build comparison items
+    items: list[dict] = []
+    now = datetime.utcnow()
+
+    for pb in trakt_playback:
+        pb_id = pb.get("id")
+        pb_type = pb.get("type", "")
+        progress = pb.get("progress", 0)
+        paused_at = pb.get("paused_at", "")
+
+        # Extract title and IDs
+        media = pb.get(pb_type, {})
+        title = media.get("title", "")
+        ids = media.get("ids", {})
+
+        # For episodes, include show + episode info
+        ep_label = ""
+        if pb_type == "episode":
+            show = pb.get("show", {})
+            title = show.get("title", title)
+            ep_title = media.get("title", "")
+            season = media.get("season", 0)
+            number = media.get("number", 0)
+            ep_label = f"S{season:02d}E{number:02d}" + (f" — {ep_title}" if ep_title else "")
+            # Use show IDs for matching
+            ids = show.get("ids", ids)
+
+        # Calculate days since paused
+        days_stale = None
+        if paused_at:
+            try:
+                pa_dt = datetime.fromisoformat(paused_at.replace("Z", "+00:00"))
+                days_stale = (now.astimezone() - pa_dt).days if pa_dt.tzinfo else (now - pa_dt.replace(tzinfo=None)).days
+            except Exception:
+                pass
+
+        # Try to match with Emby resume
+        emby_match = None
+        for id_type in ("imdb", "tmdb", "tvdb"):
+            id_val = ids.get(id_type)
+            if id_val:
+                key = f"{id_type}:{id_val}"
+                if key in emby_resume:
+                    emby_match = emby_resume[key]
+                    break
+
+        item_entry = {
+            "trakt_playback_id": pb_id,
+            "type": pb_type,
+            "title": title,
+            "episode": ep_label,
+            "trakt_progress": round(progress, 1),
+            "paused_at": paused_at,
+            "days_stale": days_stale,
+            "trakt_ids": {k: v for k, v in ids.items() if v},
+        }
+
+        if emby_match:
+            item_entry["emby_id"] = emby_match["emby_id"]
+            item_entry["emby_progress"] = emby_match["emby_progress"]
+            diff = abs(progress - emby_match["emby_progress"])
+            item_entry["progress_diff"] = round(diff, 1)
+            item_entry["synced"] = diff < 5  # within 5% = synced
+        else:
+            item_entry["emby_id"] = None
+            item_entry["emby_progress"] = None
+            item_entry["progress_diff"] = None
+            item_entry["synced"] = False
+
+        items.append(item_entry)
+
+    # Sort: unsynced first, then by staleness
+    items.sort(key=lambda x: (x["synced"], -(x["days_stale"] or 0)))
+
+    result = {"items": items, "total": len(items)}
+
+    try:
+        r = await get_redis()
+        await r.setex(cache_key, 600, _json.dumps(result))
+    except Exception:
+        pass
+
+    return result
+
+
+@router.delete("/api/playback-sync/{user_id}/{playback_id}")
+async def delete_trakt_playback(
+    user_id: int,
+    playback_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a stale playback entry from Trakt."""
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user or not user.trakt_access_token:
+        raise HTTPException(404, "User not found or no Trakt account linked")
+    require_user_ownership(current_user.id, user_id, "playback_sync")
+
+    async def _on_refresh(access, refresh, expires):
+        async with async_session() as _db:
+            u = await _db.get(User, user.id)
+            u.trakt_access_token = access
+            u.trakt_refresh_token = refresh
+            u.trakt_token_expires = expires
+            await _db.commit()
+
+    trakt = TraktClient(
+        access_token=user.trakt_access_token,
+        refresh_token=user.trakt_refresh_token,
+        token_expires=user.trakt_token_expires,
+        token_refresh_callback=_on_refresh,
+    )
+
+    await trakt.delete_playback(playback_id)
+
+    # Invalidate cache
+    try:
+        r = await get_redis()
+        await r.delete(f"playback_sync_v1:{user.id}")
+    except Exception:
+        pass
+
+    return {"status": "deleted", "playback_id": playback_id}

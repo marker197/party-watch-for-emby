@@ -530,6 +530,15 @@ class TraktClient:
     async def scrobble_stop(self, item_payload: dict, progress: float) -> dict:
         return await self._post("/scrobble/stop", {**item_payload, "progress": progress})
 
+    async def get_playback(self, kind: str = "all") -> list[dict]:
+        """GET /sync/playback/{type} — items with saved resume progress."""
+        path = "/sync/playback" if kind == "all" else f"/sync/playback/{kind}"
+        return await self._get(path, params={"extended": "full"})
+
+    async def delete_playback(self, playback_id: int) -> None:
+        """DELETE /sync/playback/{id} — remove a stale playback entry."""
+        await self._delete(f"/sync/playback/{playback_id}")
+
     async def add_to_history(self, items: list[dict]) -> dict:
         """Add items to Trakt watch history via POST /sync/history.
 
