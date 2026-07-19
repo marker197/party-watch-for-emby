@@ -11,7 +11,7 @@ Feature #6: Trakt Social Watching Graph
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_, func, desc
@@ -89,8 +89,8 @@ class SocialWatchingService:
                         social_record.current_item_title = watching.get('item', {}).get('title')
                         social_record.current_item_trakt_id = str(watching.get('item', {}).get('ids', {}).get('trakt'))
                         social_record.item_type = watching.get('type')  # 'movie' or 'episode'
-                        social_record.started_at = datetime.utcnow()
-                        social_record.last_seen_at = datetime.utcnow()
+                        social_record.started_at = datetime.now(timezone.utc)
+                        social_record.last_seen_at = datetime.now(timezone.utc)
                         social_record.friend_rating = watching.get('rating')
 
                         # Check if item is in user's library
@@ -104,9 +104,9 @@ class SocialWatchingService:
                     else:
                         # Friend not currently watching
                         social_record.is_watching = False
-                        social_record.last_seen_at = datetime.utcnow()
+                        social_record.last_seen_at = datetime.now(timezone.utc)
 
-                    social_record.updated_at = datetime.utcnow()
+                    social_record.updated_at = datetime.now(timezone.utc)
                     self.db.add(social_record)
                     synced_friends.append({
                         "username": friend_username,

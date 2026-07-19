@@ -8,7 +8,7 @@ Total: 14 endpoints
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -168,7 +168,7 @@ async def enable_social_sync_mode(
     try:
         # In production, would create a WebSocket connection
         # For now, return sync room info
-        sync_room_code = f"sync_{user_id}_{friend_username}_{int(datetime.utcnow().timestamp())}"
+        sync_room_code = f"sync_{user_id}_{friend_username}_{int(datetime.now(timezone.utc).timestamp())}"
         
         return {
             "success": True,

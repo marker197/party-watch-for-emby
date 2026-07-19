@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import random
 import string
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import socketio
@@ -110,7 +110,7 @@ class WatchPartyService:
             "title": title,
             "status": "waiting",
             "position": "0",
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         })
         await r.expire(f"party:{code}", 86400)
         
@@ -231,7 +231,7 @@ class WatchPartyService:
             # Update database
             await db.execute(
                 update(WatchParty).where(WatchParty.id == party_id).values(
-                    status="ended", ended_at=datetime.utcnow()
+                    status="ended", ended_at=datetime.now(timezone.utc)
                 )
             )
             await db.commit()

@@ -28,6 +28,15 @@ class EmbyClient:
         self._key = settings.emby_api_key
         self._client = httpx.AsyncClient(timeout=30.0)
 
+    # -- async context manager -----------------------------------------------
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+        return False
+
     # -- helpers -------------------------------------------------------------
 
     def _url(self, path: str) -> str:

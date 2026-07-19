@@ -3,7 +3,7 @@
 from typing import Optional, List
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import datetime
+from datetime import datetime, timezone
 import structlog
 
 from app.models.rate_limit import RateLimitConfig
@@ -97,7 +97,7 @@ class RateLimitService:
         config.period_seconds = period_seconds
         config.limit_value = limit_value
         config.modified_by = modified_by
-        config.modified_at = datetime.utcnow()
+        config.modified_at = datetime.now(timezone.utc)
         
         await db.commit()
         await db.refresh(config)
@@ -125,7 +125,7 @@ class RateLimitService:
         
         config.enabled = enabled
         config.modified_by = modified_by
-        config.modified_at = datetime.utcnow()
+        config.modified_at = datetime.now(timezone.utc)
         
         await db.commit()
         await db.refresh(config)
@@ -150,7 +150,7 @@ class RateLimitService:
                 existing.limit_value = config["value"]
                 existing.enabled = True
                 existing.modified_by = modified_by
-                existing.modified_at = datetime.utcnow()
+                existing.modified_at = datetime.now(timezone.utc)
         
         await db.commit()
         log.info("rate_limits.reset_to_defaults", modified_by=modified_by)

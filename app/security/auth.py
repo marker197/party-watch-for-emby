@@ -1,6 +1,6 @@
 """Authentication and Authorization Module (JWT-based)."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import jwt
@@ -47,7 +47,7 @@ class TokenResponse(BaseModel):
 
 def create_access_token(user_id: int) -> str:
     """Create a JWT access token for a user."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     exp = now + timedelta(hours=JWT_EXPIRY_HOURS)
     
     payload = {
@@ -63,7 +63,7 @@ def create_access_token(user_id: int) -> str:
 
 def create_refresh_token(user_id: int) -> str:
     """Create a JWT refresh token (longer expiry)."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     exp = now + timedelta(days=JWT_REFRESH_EXPIRY_DAYS)
     
     payload = {

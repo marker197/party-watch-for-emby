@@ -12,7 +12,7 @@ Feature #9: Library Health Monitor
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_, func, desc
@@ -355,7 +355,7 @@ class LibraryHealthMonitor:
                 "series_completion_pct": round(series_completion_pct, 1),
                 "health_score": round(health_score, 1),
                 "major_gaps": (incomplete_series + orphaned_episodes + missing_sequels)[:10],
-                "generated_at": datetime.utcnow().isoformat(),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
                 "recommendations": self._generate_recommendations(
                     incomplete_count, orphaned_count, missing_count, total_items
                 )

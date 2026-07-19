@@ -14,7 +14,7 @@ import json as _json
 import time
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 import socketio
 import structlog
@@ -375,7 +375,7 @@ async def _tracked_job(job_id: str, func):
     try:
         r = await get_redis()
         run_data = {
-            "last_run": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "last_run": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "status": status,
             "duration_s": elapsed,
             "error": error_msg,
@@ -419,7 +419,7 @@ async def run_heartbeat():
     """Ping Emby, Trakt, and Radarr — store results in Redis."""
     from app.utils.redis_cache import get_redis
     r = await get_redis()
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     # --- Emby ---
     from app.utils.emby_client import EmbyClient

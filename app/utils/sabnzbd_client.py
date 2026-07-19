@@ -24,6 +24,13 @@ class SabnzbdClient:
         self._name = name
         self._client = httpx.AsyncClient(timeout=15.0)
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+        return False
+
     async def _api(self, mode: str, **params: Any) -> dict:
         params.update({"mode": mode, "apikey": self._key, "output": "json"})
         resp = await self._client.get(f"{self._base}/api", params=params)

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Awaitable
 
 import httpx
@@ -86,8 +86,12 @@ class TraktClient:
         if not self._refresh_token or not self._token_expires:
             return  # No refresh token, can't refresh
         
-        now = datetime.utcnow()
-        time_until_expiry = (self._token_expires - now).total_seconds()
+        now = datetime.now(timezone.utc)
+        # DB-stored token_expires may be naive (written before timezone-aware migration)
+        expires = self._token_expires
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        time_until_expiry = (expires - now).total_seconds()
         
         # Refresh if expiry is within 5 minutes
         if time_until_expiry < 300:
@@ -98,7 +102,7 @@ class TraktClient:
                 # Update local state
                 self._token = token_data["access_token"]
                 self._refresh_token = token_data["refresh_token"]
-                self._token_expires = datetime.utcnow() + timedelta(
+                self._token_expires = datetime.now(timezone.utc) + timedelta(
                     seconds=token_data.get("expires_in", 7776000)
                 )
                 
@@ -135,7 +139,7 @@ class TraktClient:
             token_data = await self.refresh_token(self._refresh_token)
             self._token = token_data["access_token"]
             self._refresh_token = token_data["refresh_token"]
-            self._token_expires = datetime.utcnow() + timedelta(
+            self._token_expires = datetime.now(timezone.utc) + timedelta(
                 seconds=token_data.get("expires_in", 7776000)
             )
             if self._token_refresh_callback:

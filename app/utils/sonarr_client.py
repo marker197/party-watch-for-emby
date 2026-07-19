@@ -24,6 +24,13 @@ class SonarrClient:
         self._name = name
         self._client = httpx.AsyncClient(timeout=15.0)
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+        return False
+
     def _headers(self) -> dict:
         return {"X-Api-Key": self._key}
 

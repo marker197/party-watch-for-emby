@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import structlog
@@ -154,7 +154,7 @@ class SmartQueueService:
 
             # Snapshot weights for history chart (daily cadence)
             try:
-                cutoff = datetime.utcnow() - timedelta(days=90)
+                cutoff = datetime.now(timezone.utc) - timedelta(days=90)
                 async with async_session() as snap_db:
                     snap_rows = (await snap_db.execute(
                         select(
@@ -248,7 +248,7 @@ class SmartQueueService:
 
         # 4. Calendar (upcoming episodes for shows user follows)
         try:
-            today = datetime.utcnow().strftime("%Y-%m-%d")
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             calendar = await trakt.get_my_shows(start_date=today, days=14)
             for entry in calendar:
                 show = entry.get("show", {})
@@ -347,7 +347,6 @@ class SmartQueueService:
             if c.get("air_date"):
                 try:
                     air = datetime.fromisoformat(c["air_date"].replace("Z", "+00:00"))
-                    from datetime import timezone
                     days_away = (air - datetime.now(timezone.utc)).days
                     if 0 <= days_away <= 3:
                         score += 4.0
@@ -609,7 +608,7 @@ class SmartQueueService:
             await db.commit()
 
             # Prune played history older than 90 days to keep the table bounded
-            history_cutoff = datetime.utcnow() - timedelta(days=90)
+            history_cutoff = datetime.now(timezone.utc) - timedelta(days=90)
             await db.execute(
                 delete(QueueItem).where(
                     QueueItem.user_id == user.id,
@@ -847,7 +846,7 @@ class SmartQueueService:
                 return  # not a queue recommendation
 
             item.played = True
-            item.played_at = datetime.utcnow()
+            item.played_at = datetime.now(timezone.utc)
             item.played_duration_ticks = duration_ticks
             await db.commit()
 
@@ -874,7 +873,7 @@ class SmartQueueService:
         """
         async with async_session() as db:
             # Get play counts per source (last 90 days of queue items)
-            cutoff = datetime.utcnow() - timedelta(days=90)
+            cutoff = datetime.now(timezone.utc) - timedelta(days=90)
             rows = (await db.execute(
                 select(
                     QueueItem.source,

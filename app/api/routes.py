@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
@@ -143,7 +143,7 @@ async def trakt_poll(request: Request, body: LinkPollRequest, db: AsyncSession =
 
     user.trakt_access_token = token_data["access_token"]
     user.trakt_refresh_token = token_data["refresh_token"]
-    user.trakt_token_expires = datetime.utcnow() + timedelta(seconds=token_data.get("expires_in", 7776000))
+    user.trakt_token_expires = datetime.now(timezone.utc) + timedelta(seconds=token_data.get("expires_in", 7776000))
 
     # fetch trakt username
     authed = TraktClient(access_token=token_data["access_token"])
@@ -171,12 +171,15 @@ async def trakt_poll(request: Request, body: LinkPollRequest, db: AsyncSession =
 @router.get("/auth/users")
 async def list_users(db: AsyncSession = Depends(get_db)):
     users = (await db.execute(select(User))).scalars().all()
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     result = []
     for u in users:
         expires = u.trakt_token_expires
         token_info = {}
         if expires:
+            # DB-stored expires may be naive (pre-timezone-aware migration)
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
             delta = expires - now
             total_secs = int(delta.total_seconds())
             if total_secs > 0:
@@ -214,7 +217,9 @@ async def list_all_emby_users(db: AsyncSession = Depends(get_db)):
     try:
         emby_users = await emby.get_users()
     except Exception as e:
+        await emby.close()
         raise HTTPException(502, f"Could not reach Emby server: {e}")
+    await emby.close()
 
     # Load existing DB users keyed by emby_user_id
     existing = (await db.execute(select(User))).scalars().all()
@@ -246,12 +251,15 @@ async def list_all_emby_users(db: AsyncSession = Depends(get_db)):
         for u in by_emby_id.values():
             await db.refresh(u)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     result = []
     for u in by_emby_id.values():
         token_info = {}
         if u.trakt_token_expires:
-            delta = u.trakt_token_expires - now
+            _exp = u.trakt_token_expires
+            if _exp.tzinfo is None:
+                _exp = _exp.replace(tzinfo=timezone.utc)
+            delta = _exp - now
             days = max(0, int(delta.total_seconds()) // 86400)
             token_info = {
                 "token_status": "ok" if days > 7 else "expiring_soon" if days > 0 else "expired",
@@ -301,8 +309,8 @@ async def get_queue(
     )).scalars().all()
 
     ratings: dict[str, dict] = {}
+    emby = EmbyClient()
     try:
-        emby = EmbyClient()
         lib_ids = [i.emby_item_id for i in items if i.emby_item_id]
         if lib_ids:
             for it in await emby.get_items_by_ids(lib_ids):
@@ -312,6 +320,8 @@ async def get_queue(
                 }
     except Exception:
         pass
+    finally:
+        await emby.close()
 
     return [
         {
@@ -1616,7 +1626,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     trakt_ids["tvdb"] = int(provider_ids["Tvdb"])
 
                 if trakt_ids:
-                    watched_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                    watched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
                     if item_type_raw in ("Movie",):
                         history_item = {
@@ -1720,6 +1730,11 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         series_provider_ids = series_item[0].get("ProviderIds", {})
                 except Exception:
                     log.debug("webhook.series_lookup_failed", series_id=series_emby_id)
+                finally:
+                    try:
+                        await emby.close()
+                    except Exception:
+                        pass
 
             # Determine which IDs and queue item_type to match
             if item_type_raw == "Movie":
@@ -1826,7 +1841,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                                 "tmdb_id": tmdb_id,
                                 "type": "movie",
                                 "id": tmdb_id,
-                                "arrived_at": datetime.utcnow().isoformat() + "Z",
+                                "arrived_at": datetime.now(timezone.utc).isoformat() + "Z",
                             }
                     elif item_type_raw in ("Series", "Episode") and tvdb_id:
                         series_tvdb = tvdb_id
@@ -1845,7 +1860,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                                 "type": "show",
                                 "id": series_tvdb,
                                 "new_episodes": 1,
-                                "arrived_at": datetime.utcnow().isoformat() + "Z",
+                                "arrived_at": datetime.now(timezone.utc).isoformat() + "Z",
                             }
 
                     if arrived_item:
@@ -1893,7 +1908,7 @@ async def _activity_log(message: str, category: str = "general"):
     try:
         r = await get_redis()
         entry = _json.dumps({
-            "ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "cat": category,
             "msg": message,
         })
@@ -2039,7 +2054,7 @@ async def _check_ssl_cert(domain: str) -> dict:
         from datetime import datetime as _dt
         not_after = _dt.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z")
         not_before = _dt.strptime(not_before_str, "%b %d %H:%M:%S %Y %Z")
-        days_left = (not_after - _dt.utcnow()).days
+        days_left = (not_after - _dt.now(timezone.utc).replace(tzinfo=None)).days
 
         issuer_parts = dict(x[0] for x in cert.get("issuer", ()))
         issuer = issuer_parts.get("organizationName", issuer_parts.get("commonName", "Unknown"))
@@ -2060,7 +2075,7 @@ async def _check_ssl_cert(domain: str) -> dict:
             "days_left": days_left,
             "status": status,
             "san": san,
-            "checked_at": _dt.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "checked_at": _dt.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "error": None,
         }
 
@@ -2070,7 +2085,7 @@ async def _check_ssl_cert(domain: str) -> dict:
             "status": "error",
             "days_left": None,
             "error": str(e)[:200],
-            "checked_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         }
 
 
@@ -2081,9 +2096,9 @@ async def _check_ssl_cert(domain: str) -> dict:
 @router.post("/cache/rebuild")
 async def rebuild_cache():
     """Manually trigger library cache rebuild."""
-    emby = EmbyClient()
-    uid = await _first_emby_user_id()
-    summary = await LibraryCache.index_library(emby, user_id=uid)
+    async with EmbyClient() as emby:
+        uid = await _first_emby_user_id()
+        summary = await LibraryCache.index_library(emby, user_id=uid)
     return {"status": "rebuilt", **summary}
 
 
@@ -2100,41 +2115,41 @@ async def clear_cache():
 @router.get("/api/libraries")
 async def list_libraries():
     """Return Emby library folders (virtual folders)."""
-    emby = EmbyClient()
-    return await emby.get_virtual_folders()
+    async with EmbyClient() as emby:
+        return await emby.get_virtual_folders()
 
 
 @router.get("/api/libraries/stats")
 async def library_stats():
     """Return media libraries (no collections/playlists) with item counts."""
-    emby = EmbyClient()
-    uid = await _first_emby_user_id()
-    folders = await emby.get_virtual_folders()
-    # Only media libraries — filter out boxsets, playlists, music, etc.
-    media_types = {"movies", "tvshows"}
-    results = []
-    for f in folders:
-        ct = f.get("collection_type", "")
-        if ct not in media_types:
-            continue
-        # Count items — Movie for movies, Series for tvshows (not seasons/episodes)
-        item_type = "Movie" if ct == "movies" else "Series"
-        try:
-            resp = await emby.get_items(
-                user_id=uid,
-                parent_id=f.get("item_id"),
-                item_type=item_type,
-                fields="",
-                limit=0,
-            )
-            count = resp.get("TotalRecordCount", 0)
-        except Exception:
-            count = 0
-        results.append({
-            "name": f.get("name", ""),
-            "collection_type": ct,
-            "item_count": count,
-        })
+    async with EmbyClient() as emby:
+        uid = await _first_emby_user_id()
+        folders = await emby.get_virtual_folders()
+        # Only media libraries — filter out boxsets, playlists, music, etc.
+        media_types = {"movies", "tvshows"}
+        results = []
+        for f in folders:
+            ct = f.get("collection_type", "")
+            if ct not in media_types:
+                continue
+            # Count items — Movie for movies, Series for tvshows (not seasons/episodes)
+            item_type = "Movie" if ct == "movies" else "Series"
+            try:
+                resp = await emby.get_items(
+                    user_id=uid,
+                    parent_id=f.get("item_id"),
+                    item_type=item_type,
+                    fields="",
+                    limit=0,
+                )
+                count = resp.get("TotalRecordCount", 0)
+            except Exception:
+                count = 0
+            results.append({
+                "name": f.get("name", ""),
+                "collection_type": ct,
+                "item_count": count,
+            })
     return results
 
 
@@ -2145,15 +2160,15 @@ async def library_search(q: str = Query(..., min_length=2, max_length=100)):
     Returns resolution/quality info so users can distinguish 1080p from 4K
     when duplicates exist.
     """
-    emby = EmbyClient()
-    uid = await _first_emby_user_id()
-    resp = await emby.get_items(
-        user_id=uid,
-        search_term=q,
-        item_type=None,
-        fields="ProviderIds,Genres,Overview,People,Studios,RunTimeTicks,MediaSources",
-        limit=20,
-    )
+    async with EmbyClient() as emby:
+        uid = await _first_emby_user_id()
+        resp = await emby.get_items(
+            user_id=uid,
+            search_term=q,
+            item_type=None,
+            fields="ProviderIds,Genres,Overview,People,Studios,RunTimeTicks,MediaSources",
+            limit=20,
+        )
     results = []
     for it in resp.get("Items", []):
         if it.get("Type") not in ("Movie", "Series", "Episode"):
@@ -2846,9 +2861,9 @@ async def _put_setting(db: AsyncSession, key: str, value: str):
     row = (await db.execute(select(AppSetting).where(AppSetting.key == key))).scalar_one_or_none()
     if row:
         row.value = value
-        row.updated_at = datetime.utcnow()
+        row.updated_at = datetime.now(timezone.utc)
     else:
-        db.add(AppSetting(key=key, value=value, updated_at=datetime.utcnow()))
+        db.add(AppSetting(key=key, value=value, updated_at=datetime.now(timezone.utc)))
 
 
 @router.get("/api/settings")
@@ -2914,23 +2929,25 @@ async def test_connection(body: TestConnectionRequest):
     service = body.service
     if service == "trakt":
         # Test Trakt API
+        trakt = TraktClient()
         try:
-            trakt = TraktClient()
-            # Simple test: try to get trending shows
             result = await trakt.get_trending(kind="shows")
-            await trakt.close()
             return {"status": "ok"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+        finally:
+            await trakt.close()
     
     elif service == "emby":
         # Test Emby API
+        emby = EmbyClient()
         try:
-            emby = EmbyClient()
             info = await emby.get_system_info()
             return {"status": "ok"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+        finally:
+            await emby.close()
 
     return {"status": "error", "message": f"Unknown service: {service}"}
 
@@ -3100,25 +3117,27 @@ async def get_continue_watching(
         pass
 
     emby = EmbyClient()
-
-    # Fetch all resumable items (movies + episodes with a resume point)
-    start = 0
-    batch = 500
-    all_resumable: list[dict] = []
-    while True:
-        resp = await emby.get_items(
-            user_id=user.emby_user_id,
-            fields="ProviderIds,UserData,UserDataLastPlayedDate,RunTimeTicks",
-            filters="IsResumable",
-            sort_by="DatePlayed",
-            sort_order="Descending",
-            limit=batch,
-            start_index=start,
-        )
-        all_resumable.extend(resp.get("Items", []))
-        if start + batch >= resp.get("TotalRecordCount", 0):
-            break
-        start += batch
+    try:
+        # Fetch all resumable items (movies + episodes with a resume point)
+        start = 0
+        batch = 500
+        all_resumable: list[dict] = []
+        while True:
+            resp = await emby.get_items(
+                user_id=user.emby_user_id,
+                fields="ProviderIds,UserData,UserDataLastPlayedDate,RunTimeTicks",
+                filters="IsResumable",
+                sort_by="DatePlayed",
+                sort_order="Descending",
+                limit=batch,
+                start_index=start,
+            )
+            all_resumable.extend(resp.get("Items", []))
+            if start + batch >= resp.get("TotalRecordCount", 0):
+                break
+            start += batch
+    finally:
+        await emby.close()
 
     log.info("continue_watching.fetched", resumable_count=len(all_resumable))
 
@@ -3140,9 +3159,8 @@ async def get_continue_watching(
         days_ago = None
         if last_played:
             try:
-                from datetime import timezone as _tz
                 lp_dt = datetime.fromisoformat(last_played.replace("Z", "+00:00"))
-                days_ago = (datetime.now(_tz.utc) - lp_dt).days
+                days_ago = (datetime.now(timezone.utc) - lp_dt).days
             except (ValueError, AttributeError):
                 pass
 
@@ -3866,7 +3884,7 @@ async def get_queue_history(
     """
     from app.utils.redis_cache import cache_get
 
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     # Per-source stats
     rows = (await db.execute(
@@ -3968,7 +3986,7 @@ async def get_queue_weight_history(
     Each snapshot has the source weights and play-rate stats at the
     time _update_weights ran.
     """
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     rows = (await db.execute(
         select(QueueWeightSnapshot)
@@ -4112,8 +4130,8 @@ async def remote_play_libraries(db: AsyncSession = Depends(get_db)):
 
     Lists movies/tvshows libraries so the user can set priority order.
     """
+    emby = EmbyClient()
     try:
-        emby = EmbyClient()
         folders = await emby.get_virtual_folders()
         media_folders = [
             f for f in folders
@@ -4123,6 +4141,8 @@ async def remote_play_libraries(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         log.warning("remote_play.libraries_failed", error=str(e)[:200])
         raise HTTPException(502, "failed to fetch Emby libraries")
+    finally:
+        await emby.close()
 
 
 @router.get("/api/remote-play/sessions/{user_id}")
@@ -4132,8 +4152,8 @@ async def remote_play_sessions(user_id: int, db: AsyncSession = Depends(get_db))
     if not user or not user.emby_user_id:
         raise HTTPException(404, "user not found or no Emby account linked")
 
+    emby = EmbyClient()
     try:
-        emby = EmbyClient()
         all_sessions = await emby.get_sessions()
         user_sessions = []
         for s in all_sessions:
@@ -4151,6 +4171,8 @@ async def remote_play_sessions(user_id: int, db: AsyncSession = Depends(get_db))
     except Exception as e:
         log.warning("remote_play.sessions_failed", error=str(e)[:200])
         raise HTTPException(502, "failed to fetch Emby sessions")
+    finally:
+        await emby.close()
 
 
 @router.post("/api/remote-play")
@@ -4234,13 +4256,15 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db)):
             unique_matches.append(m)
 
     if len(unique_matches) > 1 and library_priority:
+        emby = EmbyClient()
         try:
-            emby = EmbyClient()
             for m in unique_matches:
                 item_detail = await emby.get_item(m["emby_id"], user_id=user.emby_user_id)
                 m["_parent_id"] = item_detail.get("ParentId", "")
         except Exception:
             pass
+        finally:
+            await emby.close()
 
         def priority_key(m):
             pid = m.get("_parent_id", "")
@@ -4258,8 +4282,8 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db)):
     play_item_id = emby_item["emby_id"]
 
     if media_type == "show" and season is not None and episode is not None:
+        emby = EmbyClient()
         try:
-            emby = EmbyClient()
             episodes = await emby.get_items(
                 user_id=user.emby_user_id,
                 item_type="Episode",
@@ -4281,10 +4305,12 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db)):
         except Exception as e:
             log.warning("remote_play.episode_resolve_failed", error=str(e)[:200])
             return {"status": "error", "message": "Failed to resolve episode"}
+        finally:
+            await emby.close()
     elif media_type == "show" and season is None:
         # No specific episode — play next unwatched
+        emby = EmbyClient()
         try:
-            emby = EmbyClient()
             next_up = await emby.get_items(
                 user_id=user.emby_user_id,
                 item_type="Episode",
@@ -4298,13 +4324,16 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db)):
                 play_item_id = next_items[0]["Id"]
         except Exception:
             pass
+        finally:
+            await emby.close()
 
     # ── Step 3: Find active session ──
 
+    emby = EmbyClient()
     try:
-        emby = EmbyClient()
         all_sessions = await emby.get_sessions()
     except Exception as e:
+        await emby.close()
         log.warning("remote_play.sessions_failed", error=str(e)[:200])
         return {"status": "error", "message": "Failed to connect to Emby"}
 
@@ -4315,6 +4344,7 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db)):
     ]
 
     if not user_sessions:
+        await emby.close()
         return {
             "status": "no_active_session",
             "message": "No controllable Emby session found — open Emby on a device first",
@@ -4324,6 +4354,7 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db)):
     if session_id:
         target_session = next((s for s in user_sessions if s.get("Id") == session_id), None)
         if not target_session:
+            await emby.close()
             return {"status": "session_not_found", "message": "Requested session no longer active"}
     elif len(user_sessions) == 1:
         target_session = user_sessions[0]
@@ -4332,6 +4363,7 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db)):
         if len(playing) == 1:
             target_session = playing[0]
         else:
+            await emby.close()
             return {
                 "status": "multiple_sessions",
                 "message": "Multiple Emby sessions found — pick one",
@@ -4349,7 +4381,6 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db)):
     # ── Step 4: Send play command ──
 
     try:
-        emby = EmbyClient()
         await emby.play_item_on_session(
             session_id=target_session["Id"],
             item_id=play_item_id,
@@ -4364,6 +4395,8 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         log.warning("remote_play.play_failed", error=str(e)[:200])
         return {"status": "error", "message": f"Play command failed: {str(e)[:100]}"}
+    finally:
+        await emby.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -4496,7 +4529,7 @@ async def get_recently_arrived():
 
     # ── Merge with existing arrived items (for 24hr window) ──
     arrived_key = "recently_arrived_items_v1"
-    now_ts = datetime.utcnow().isoformat() + "Z"
+    now_ts = datetime.now(timezone.utc).isoformat() + "Z"
     try:
         raw_existing = await r.get(arrived_key)
         existing_items = _json.loads(raw_existing) if raw_existing else []
@@ -4504,7 +4537,7 @@ async def get_recently_arrived():
         existing_items = []
 
     # Filter out items older than 24 hours
-    cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat() + "Z"
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat() + "Z"
     existing_items = [i for i in existing_items if i.get("arrived_at", "") > cutoff]
 
     # Add new arrivals with timestamp (dedup by id)
@@ -4593,8 +4626,8 @@ async def play_on_session(request: Request, db: AsyncSession = Depends(get_db)):
     if not user or not user.emby_user_id:
         raise HTTPException(404, "user not found")
 
+    emby = EmbyClient()
     try:
-        emby = EmbyClient()
         await emby.play_item_on_session(
             session_id=session_id,
             item_id=emby_item_id,
@@ -4605,6 +4638,8 @@ async def play_on_session(request: Request, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         log.warning("play_on_session.failed", error=str(e)[:200])
         return {"status": "error", "message": f"Play failed: {str(e)[:100]}"}
+    finally:
+        await emby.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -4699,10 +4734,12 @@ async def get_playback_sync(
                     emby_resume[f"{key.lower()}:{pids[key]}"] = entry
     except Exception as e:
         log.warning("playback_sync.emby_fetch_failed", error=str(e)[:120])
+    finally:
+        await emby.close()
 
     # Build comparison items
     items: list[dict] = []
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     for pb in trakt_playback:
         pb_id = pb.get("id")

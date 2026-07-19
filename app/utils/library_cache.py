@@ -9,7 +9,7 @@ Cache is rebuilt once daily via scheduled task.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import structlog
@@ -82,7 +82,7 @@ class LibraryCache:
 
         try:
             log.info("library_cache.indexing_start", user_id=user_id or "server-scope")
-            start_time = datetime.utcnow()
+            start_time = datetime.now(timezone.utc)
 
             for item_type_label, item_type_query in [("movies", "Movie"), ("series", "Series")]:
                 skip = 0
@@ -105,7 +105,7 @@ class LibraryCache:
                         break
 
             summary["cached_entries"] = cache_entries
-            elapsed = (datetime.utcnow() - start_time).total_seconds()
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
             log.info(
                 "library_cache.indexing_complete",
                 elapsed_seconds=elapsed,
@@ -125,7 +125,7 @@ class LibraryCache:
                 r = await get_redis()
                 await r.set(
                     f"{CACHE_KEY_PREFIX}:stat:last_rebuild",
-                    datetime.utcnow().isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
                 )
                 await r.set(f"{CACHE_KEY_PREFIX}:stat:movies", str(summary["movies"]))
                 await r.set(f"{CACHE_KEY_PREFIX}:stat:series", str(summary["series"]))
