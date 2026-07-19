@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.models.schema import User, QueueItem, QueueWeightSnapshot, Prediction, MLModel, Universe, UniverseItem, AppSetting
+from app.models.schema import User, QueueItem, Prediction, MLModel, Universe, UniverseItem, AppSetting
 from app.utils.database import get_db
 from app.utils.trakt_client import TraktClient
 from app.utils.library_cache import LibraryCache
@@ -3970,56 +3970,6 @@ async def get_queue_history(
         "period_days": days,
     }
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Queue Weight Evolution History
-# ═══════════════════════════════════════════════════════════════════════════
-
-@router.get("/api/queue-weight-history/{user_id}")
-async def get_queue_weight_history(
-    user_id: int,
-    days: int = Query(90, ge=7, le=365),
-    db: AsyncSession = Depends(get_db),
-):
-    """Return weight snapshots over time for the Chart.js timeline.
-
-    Each snapshot has the source weights and play-rate stats at the
-    time _update_weights ran.
-    """
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-
-    rows = (await db.execute(
-        select(QueueWeightSnapshot)
-        .where(
-            QueueWeightSnapshot.user_id == user_id,
-            QueueWeightSnapshot.snapshot_at >= cutoff,
-        )
-        .order_by(QueueWeightSnapshot.snapshot_at.asc())
-    )).scalars().all()
-
-    snapshots = []
-    for s in rows:
-        snapshots.append({
-            "snapshot_at": s.snapshot_at.isoformat() if s.snapshot_at else None,
-            "weights": s.weights_json or {},
-            "stats": s.stats_json or [],
-        })
-
-    # Also return current weights for the "now" marker
-    current_weights = {}
-    try:
-        from app.utils.redis_cache import cache_get
-        raw = await cache_get(f"queue_weights:{user_id}")
-        if raw:
-            current_weights = raw if isinstance(raw, dict) else {}
-    except Exception:
-        pass
-
-    return {
-        "snapshots": snapshots,
-        "current_weights": current_weights,
-        "period_days": days,
-    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
