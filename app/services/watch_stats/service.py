@@ -41,7 +41,7 @@ class WatchStatsService:
         if not user.trakt_access_token:
             return {"error": "No Trakt token"}
 
-        cache_key = f"watch_stats_v3:{user.id}"
+        cache_key = f"watch_stats_v4:{user.id}"
         try:
             r = await get_redis()
             cached = await r.get(cache_key)
@@ -168,6 +168,7 @@ class WatchStatsService:
         movie_titles: list[dict] = []                             # for longest movie etc
         day_of_week_counts = [0] * 7                              # Mon=0 .. Sun=6
         daily_item_counts: dict[str, int] = defaultdict(int)      # date → count (all time)
+        daily_item_titles: dict[str, list] = defaultdict(list)    # date → list of titles
         first_watched_at = None
         latest_watched_at = None
 
@@ -243,6 +244,18 @@ class WatchStatsService:
             day_key = watched_at.strftime("%Y-%m-%d")
             watching_days.add(day_key)
             daily_item_counts[day_key] += 1
+            # Track title for binge detail
+            if item_type == "movie":
+                _title = (entry.get("movie") or {}).get("title", "Unknown")
+            elif item_type == "episode":
+                _show = (entry.get("show") or {}).get("title", "Unknown")
+                _ep = entry.get("episode") or {}
+                _sn = _ep.get("season", 0)
+                _en = _ep.get("number", 0)
+                _title = f"{_show} S{_sn:02d}E{_en:02d}"
+            else:
+                _title = "Unknown"
+            daily_item_titles[day_key].append(_title)
             if day_key in daily_buckets:
                 daily_buckets[day_key]["minutes"] += runtime_min
                 daily_buckets[day_key]["count"] += 1
@@ -302,18 +315,32 @@ class WatchStatsService:
         # Biggest binge day
         biggest_binge_date = None
         biggest_binge_count = 0
+        biggest_binge_items: list[str] = []
         for d, c in daily_item_counts.items():
             if c > biggest_binge_count:
                 biggest_binge_count = c
                 biggest_binge_date = d
+                biggest_binge_items = daily_item_titles.get(d, [])
+
+        # Deduplicate binge items (keep order)
+        seen: set[str] = set()
+        binge_deduped: list[str] = []
+        for t in biggest_binge_items:
+            if t not in seen:
+                seen.add(t)
+                binge_deduped.append(t)
 
         # Watch streak (consecutive days)
         sorted_days = sorted(watching_days)
         current_streak = 0
         longest_streak = 0
+        streak_start = None
+        streak_end = None
+        cur_start = None
         for i, day_str in enumerate(sorted_days):
             if i == 0:
                 current_streak = 1
+                cur_start = day_str
             else:
                 prev = datetime.strptime(sorted_days[i - 1], "%Y-%m-%d")
                 curr = datetime.strptime(day_str, "%Y-%m-%d")
@@ -321,7 +348,11 @@ class WatchStatsService:
                     current_streak += 1
                 else:
                     current_streak = 1
-            longest_streak = max(longest_streak, current_streak)
+                    cur_start = day_str
+            if current_streak > longest_streak:
+                longest_streak = current_streak
+                streak_start = cur_start
+                streak_end = day_str
 
         # Longest movie
         longest_movie = None
@@ -341,8 +372,10 @@ class WatchStatsService:
         fun_stats = {
             "favourite_day": day_names[fav_day_idx],
             "day_of_week_counts": {day_names[i]: day_of_week_counts[i] for i in range(7)},
-            "biggest_binge": {"date": biggest_binge_date, "count": biggest_binge_count},
+            "biggest_binge": {"date": biggest_binge_date, "count": biggest_binge_count, "items": binge_deduped},
             "longest_streak_days": longest_streak,
+            "longest_streak_start": streak_start,
+            "longest_streak_end": streak_end,
             "unique_movies": unique_movies,
             "unique_shows": unique_shows,
             "longest_movie": longest_movie,
@@ -372,8 +405,8 @@ class WatchStatsService:
 
     async def _fetch_emby_people(self, user: User) -> dict:
         """Query Emby for played items' People and Studios metadata."""
-        actor_counts: dict[str, int] = defaultdict(int)
-        director_counts: dict[str, int] = defaultdict(int)
+        actor_titles: dict[str, set] = defaultdict(set)
+        director_titles: dict[str, set] = defaultdict(set)
         studio_counts: dict[str, int] = defaultdict(int)
 
         if not user.emby_user_id:
@@ -395,15 +428,18 @@ class WatchStatsService:
                 )
                 items = resp.get("Items", [])
                 for item in items:
+                    title = item.get("Name", "Unknown")
+                    year = item.get("ProductionYear")
+                    display = f"{title} ({year})" if year else title
                     for person in item.get("People", []):
                         name = person.get("Name")
                         if not name:
                             continue
                         role = person.get("Type", "")
                         if role == "Actor":
-                            actor_counts[name] += 1
+                            actor_titles[name].add(display)
                         elif role == "Director":
-                            director_counts[name] += 1
+                            director_titles[name].add(display)
                     for studio in item.get("Studios", []):
                         sname = studio.get("Name") if isinstance(studio, dict) else studio
                         if sname:
@@ -417,12 +453,12 @@ class WatchStatsService:
             await emby.close()
 
         top_actors = [
-            {"name": n, "count": c}
-            for n, c in sorted(actor_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+            {"name": n, "count": len(t), "titles": sorted(t)}
+            for n, t in sorted(actor_titles.items(), key=lambda x: len(x[1]), reverse=True)[:15]
         ]
         top_directors = [
-            {"name": n, "count": c}
-            for n, c in sorted(director_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+            {"name": n, "count": len(t), "titles": sorted(t)}
+            for n, t in sorted(director_titles.items(), key=lambda x: len(x[1]), reverse=True)[:15]
         ]
         top_studios = [
             {"name": n, "count": c}

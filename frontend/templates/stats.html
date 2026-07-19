@@ -157,6 +157,33 @@
     }
     .fun-stat .fun-value { font-size: 1.2rem; font-weight: 700; }
 
+    .hover-modal {
+      display: none;
+      position: fixed;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 18px;
+      max-width: 320px;
+      max-height: 360px;
+      overflow-y: auto;
+      z-index: 1000;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      pointer-events: none;
+    }
+    .hover-modal h4 {
+      font-size: 0.82rem; font-weight: 700; margin-bottom: 8px;
+      color: var(--accent-light); border-bottom: 1px solid var(--border);
+      padding-bottom: 6px;
+    }
+    .hover-modal ul { list-style: none; }
+    .hover-modal li {
+      font-size: 0.8rem; padding: 3px 0;
+      color: var(--text-dim); border-bottom: 1px solid rgba(42,46,62,0.3);
+    }
+    .hover-modal li:last-child { border-bottom: none; }
+    .hover-trigger { cursor: default; }
+
     /* Heatmap calendar */
     .heatmap-wrap { overflow-x: auto; }
     .heatmap-grid {
@@ -361,6 +388,8 @@
 
 </div>
 
+<div id="hoverModal" class="hover-modal"></div>
+
 <script>
 let currentUserId = null;
 let charts = {};
@@ -522,19 +551,33 @@ function renderStats(d) {
   const fun = d.fun_stats || {};
   const funItems = [];
   if (fun.favourite_day) funItems.push({label: 'Favourite Day', value: fun.favourite_day, color: 'var(--green)'});
-  if (fun.longest_streak_days) funItems.push({label: 'Longest Streak', value: fun.longest_streak_days + ' days', color: 'var(--orange)'});
+  if (fun.longest_streak_days) {
+    const streakSub = [];
+    if (fun.longest_streak_start) streakSub.push(new Date(fun.longest_streak_start + 'T00:00:00').toLocaleDateString([], {month:'short',day:'numeric',year:'numeric'}));
+    if (fun.longest_streak_end) streakSub.push(new Date(fun.longest_streak_end + 'T00:00:00').toLocaleDateString([], {month:'short',day:'numeric',year:'numeric'}));
+    const streakDateRange = streakSub.length === 2 ? streakSub[0] + ' → ' + streakSub[1] : '';
+    funItems.push({label: 'Longest Streak', value: fun.longest_streak_days + ' days', color: 'var(--orange)',
+      hover: streakDateRange ? {title: 'Longest Streak', items: [streakDateRange]} : null});
+  }
   if (fun.biggest_binge && fun.biggest_binge.count > 0) {
     const bd = fun.biggest_binge.date ? new Date(fun.biggest_binge.date + 'T00:00:00').toLocaleDateString([], {month:'short',day:'numeric',year:'numeric'}) : '';
-    funItems.push({label: 'Biggest Binge', value: fun.biggest_binge.count + ' items', color: 'var(--red)', sub: bd});
+    funItems.push({label: 'Biggest Binge', value: fun.biggest_binge.count + ' items', color: 'var(--red)', sub: bd,
+      hover: (fun.biggest_binge.items && fun.biggest_binge.items.length) ? {title: 'Binge Day: ' + bd, items: fun.biggest_binge.items} : null});
   }
   if (fun.unique_movies) funItems.push({label: 'Unique Movies', value: fun.unique_movies.toLocaleString(), color: 'var(--blue)'});
   if (fun.unique_shows) funItems.push({label: 'Unique Shows', value: fun.unique_shows.toLocaleString(), color: 'var(--accent-light)'});
   if (fun.longest_movie) funItems.push({label: 'Longest Movie', value: fun.longest_movie.title, color: 'var(--orange)', sub: fun.longest_movie.runtime_min + ' min'});
   if (fun.days_tracked) funItems.push({label: 'Tracking Since', value: fun.days_tracked.toLocaleString() + ' days', color: 'var(--text-dim)'});
 
+  // Store hover data for fun stat cards
+  window._funHoverData = {};
   document.getElementById('funStatsPanel').innerHTML = funItems.length
     ? '<h3 style="margin-bottom:12px;">🏆 Fun Stats</h3><div class="fun-stats-grid">' +
-      funItems.map(f => `<div class="fun-stat"><div class="fun-label">${f.label}</div><div class="fun-value" style="color:${f.color};">${f.value}</div>${f.sub ? '<div style="font-size:0.72rem;color:var(--text-dim);margin-top:2px;">'+f.sub+'</div>' : ''}</div>`).join('') +
+      funItems.map((f, idx) => {
+        const hovAttr = f.hover ? ` class="hover-trigger" onmouseenter="showHoverModal(event, 'fun_${idx}')" onmouseleave="hideHoverModal()"` : '';
+        if (f.hover) window._funHoverData['fun_' + idx] = f.hover;
+        return `<div class="fun-stat"${hovAttr}><div class="fun-label">${f.label}</div><div class="fun-value" style="color:${f.color};">${f.value}</div>${f.sub ? '<div style="font-size:0.72rem;color:var(--text-dim);margin-top:2px;">'+f.sub+'</div>' : ''}</div>`;
+      }).join('') +
       '</div>'
     : '';
 
@@ -575,15 +618,52 @@ function renderRankedList(containerId, items, nameField, valueFn) {
     el.innerHTML = '<p style="color:var(--text-dim);font-size:0.82rem;padding:8px 0;">No data yet.</p>';
     return;
   }
+  // Store hover data keyed by container + index
+  if (!window._rankedHoverData) window._rankedHoverData = {};
   const medals = ['gold', 'silver', 'bronze'];
   el.innerHTML = '<ul class="ranked-list">' + items.slice(0, 10).map((r, i) => {
     const posClass = i < 3 ? medals[i] : '';
-    return `<li class="ranked-item">
+    const hoverKey = containerId + '_' + i;
+    const hasTitles = r.titles && r.titles.length > 0;
+    if (hasTitles) {
+      window._rankedHoverData[hoverKey] = {title: r[nameField], items: r.titles};
+    }
+    const hoverAttr = hasTitles ? ` class="ranked-item hover-trigger" onmouseenter="showHoverModal(event, '${hoverKey}', true)" onmouseleave="hideHoverModal()"` : ' class="ranked-item"';
+    return `<li${hoverAttr}>
       <span class="ranked-pos ${posClass}">${i + 1}</span>
       <span class="ranked-name">${r[nameField]}</span>
       <span class="ranked-value">${valueFn(r)}</span>
     </li>`;
   }).join('') + '</ul>';
+}
+
+function showHoverModal(event, key, isRanked) {
+  const data = isRanked ? (window._rankedHoverData || {})[key] : (window._funHoverData || {})[key];
+  if (!data) return;
+  const modal = document.getElementById('hoverModal');
+  let html = '<h4>' + data.title + '</h4>';
+  if (data.items && data.items.length) {
+    html += '<ul>' + data.items.map(t => '<li>' + t + '</li>').join('') + '</ul>';
+  }
+  modal.innerHTML = html;
+  modal.style.display = 'block';
+  positionHoverModal(event);
+}
+
+function positionHoverModal(event) {
+  const modal = document.getElementById('hoverModal');
+  const rect = modal.getBoundingClientRect();
+  let x = event.clientX + 12;
+  let y = event.clientY + 12;
+  if (x + 320 > window.innerWidth) x = event.clientX - 320 - 12;
+  if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 12;
+  if (y < 8) y = 8;
+  modal.style.left = x + 'px';
+  modal.style.top = y + 'px';
+}
+
+function hideHoverModal() {
+  document.getElementById('hoverModal').style.display = 'none';
 }
 
 async function loadQueueHistory() {
