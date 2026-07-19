@@ -1368,6 +1368,10 @@ async function _pollForQueueDone() {
 }
 
 let _dlPollTimer = null;
+let _realtimeTimer = null;
+let _dlMode = 'idle'; // idle | normal | realtime
+// Map of download_id (nzo_id) → {tmdb_id?, tvdb_id?} built during full render
+let _activeNzoMap = {};
 
 function toggleQueue() {
   const panel = document.getElementById('queuePanel');
@@ -1376,31 +1380,79 @@ function toggleQueue() {
     panel.style.display = 'block';
     btn.textContent = 'Hide Queue ▴';
     viewQueue();
-    // Start polling download progress every 30s while panel is open
-    _startDlPoll();
+    _startNormalPoll();
   } else {
     panel.style.display = 'none';
     btn.textContent = 'View Queue ▾';
-    _stopDlPoll();
+    _stopAllPolling();
   }
 }
 
-function _startDlPoll() {
-  _stopDlPoll();
+function _startNormalPoll() {
+  _stopAllPolling();
+  _dlMode = 'normal';
   _dlPollTimer = setInterval(() => {
     if (document.getElementById('queuePanel').style.display === 'none') {
-      _stopDlPoll();
+      _stopAllPolling();
       return;
     }
     viewQueue();
   }, 5000);
 }
 
-function _stopDlPoll() {
-  if (_dlPollTimer) {
-    clearInterval(_dlPollTimer);
-    _dlPollTimer = null;
-  }
+function _startRealtimePoll() {
+  if (_dlMode === 'realtime') return;
+  // Stop normal poll, start 500ms SAB-only poll
+  if (_dlPollTimer) { clearInterval(_dlPollTimer); _dlPollTimer = null; }
+  _dlMode = 'realtime';
+  _realtimeTimer = setInterval(_patchProgress, 500);
+}
+
+function _stopAllPolling() {
+  if (_dlPollTimer) { clearInterval(_dlPollTimer); _dlPollTimer = null; }
+  if (_realtimeTimer) { clearInterval(_realtimeTimer); _realtimeTimer = null; }
+  _dlMode = 'idle';
+  _activeNzoMap = {};
+}
+
+async function _patchProgress() {
+  try {
+    const r = await fetch(API + '/api/download-progress');
+    if (!r.ok) return;
+    const d = await r.json();
+
+    if (d.count === 0) {
+      // Downloads finished — do one full refresh, resume normal polling
+      _dlMode = 'idle';
+      if (_realtimeTimer) { clearInterval(_realtimeTimer); _realtimeTimer = null; }
+      await viewQueue();
+      refreshDownloadsCard();
+      if (document.getElementById('queuePanel').style.display !== 'none') {
+        _startNormalPoll();
+      }
+      return;
+    }
+
+    const slots = d.slots || {};
+    // Patch queue panel progress bars by data-nzo
+    document.querySelectorAll('[data-nzo]').forEach(el => {
+      const nzo = el.getAttribute('data-nzo');
+      const sab = slots[nzo];
+      if (!sab) return;
+      const fill = el.querySelector('.dl-progress-fill');
+      const text = el.querySelector('.dl-progress-text');
+      const meta = el.querySelector('.dl-meta');
+      if (fill) fill.style.width = sab.progress + '%';
+      if (text) text.textContent = sab.progress.toFixed(0) + '%';
+      if (meta) {
+        const parts = [];
+        if (sab.eta) parts.push(sab.eta);
+        if (sab.speed) parts.push(sab.speed + 'B/s');
+        if (sab.status && sab.status !== 'Downloading') parts.push(sab.status);
+        meta.textContent = parts.join(' · ');
+      }
+    });
+  } catch { /* silent */ }
 }
 
 async function viewQueue() {
@@ -1465,22 +1517,24 @@ async function viewQueue() {
           const barColor = dl.tracked_status === 'warning' ? 'var(--orange)' : 'var(--blue)';
           const etaStr = _formatEta(dl.eta);
           const sizeStr = dl.size_mb ? `${dl.size_mb.toFixed(0)} MB` : '';
-          statusBadge = `<div class="dl-progress-wrap">
+          const nzoAttr = dl.download_id ? ` data-nzo="${dl.download_id}"` : '';
+          statusBadge = `<div class="dl-progress-wrap"${nzoAttr}>
             <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${pct}%;background:${barColor};"></div></div>
             <span class="dl-progress-text">${pct.toFixed(0)}%</span>
           </div>
-          <div style="font-size:0.6rem;color:var(--text-dim);margin-top:1px;">${etaStr}${sizeStr ? ' · ' + sizeStr : ''}</div>`;
+          <div class="dl-meta" style="font-size:0.6rem;color:var(--text-dim);margin-top:1px;">${etaStr}${sizeStr ? ' · ' + sizeStr : ''}</div>`;
         } else if (dlEps && dlEps.length > 0) {
           // Show downloading — aggregate or show per-episode
           const totalPct = dlEps.reduce((s, d) => s + (d.progress || 0), 0) / dlEps.length;
           const anyWarning = dlEps.some(d => d.tracked_status === 'warning');
           const barColor = anyWarning ? 'var(--orange)' : 'var(--blue)';
           const epLabels = dlEps.map(d => d.episode_label).filter(Boolean).join(', ');
-          statusBadge = `<div class="dl-progress-wrap">
+          const nzoAttr = dlEps[0].download_id ? ` data-nzo="${dlEps[0].download_id}"` : '';
+          statusBadge = `<div class="dl-progress-wrap"${nzoAttr}>
             <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${totalPct}%;background:${barColor};"></div></div>
             <span class="dl-progress-text">${totalPct.toFixed(0)}%</span>
           </div>
-          <div style="font-size:0.6rem;color:var(--text-dim);margin-top:1px;">${dlEps.length} ep${dlEps.length > 1 ? 's' : ''}${epLabels ? ': ' + epLabels : ''}</div>`;
+          <div class="dl-meta" style="font-size:0.6rem;color:var(--text-dim);margin-top:1px;">${dlEps.length} ep${dlEps.length > 1 ? 's' : ''}${epLabels ? ': ' + epLabels : ''}</div>`;
         } else if (!inLib) {
           statusBadge = '<span class="queue-badge missing">not in library</span>';
         } else if (i.played) {
@@ -1546,6 +1600,19 @@ async function viewQueue() {
         </tr>`;
       }).join('') +
       '</tbody></table>';
+
+    // Transition to realtime mode if any downloads are active
+    const hasDownloads = document.querySelectorAll('[data-nzo]').length > 0;
+    if (hasDownloads && _dlMode !== 'realtime') {
+      _startRealtimePoll();
+    } else if (!hasDownloads && _dlMode === 'realtime') {
+      // No downloads left — realtime poll will catch this too,
+      // but handle the edge case where full render shows 0 downloads
+      if (_realtimeTimer) { clearInterval(_realtimeTimer); _realtimeTimer = null; }
+      if (document.getElementById('queuePanel').style.display !== 'none') {
+        _startNormalPoll();
+      }
+    }
   } catch(e) {
     document.getElementById('queueTable').innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
   }
@@ -2807,16 +2874,17 @@ async function refreshDownloadsCard() {
         const sizeStr = dl.size_mb ? `${dl.size_mb.toFixed(0)} MB` : '';
         const speedStr = dl.sab_speed ? `${dl.sab_speed}B/s` : '';
         const statusLabel = sabStatus && sabStatus !== 'Downloading' ? `<span style="font-size:0.6rem;color:var(--accent-light);margin-left:4px;">${sabStatus}</span>` : '';
+        const nzoAttr = dl.download_id ? ` data-nzo="${dl.download_id}"` : '';
         return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <span style="font-size:0.78rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;">${dl.title}</span>
             <span style="font-size:0.68rem;color:var(--text-dim);">${g.server}</span>
           </div>
-          <div class="dl-progress-wrap" style="margin-top:2px;">
+          <div class="dl-progress-wrap" style="margin-top:2px;"${nzoAttr}>
             <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${pct}%;background:${barColor};"></div></div>
             <span class="dl-progress-text">${pct.toFixed(0)}%${statusLabel}</span>
           </div>
-          <div style="font-size:0.6rem;color:var(--text-dim);">${etaStr}${sizeStr ? ' · ' + sizeStr : ''}${speedStr ? ' · ' + speedStr : ''}</div>
+          <div class="dl-meta" style="font-size:0.6rem;color:var(--text-dim);">${etaStr}${sizeStr ? ' · ' + sizeStr : ''}${speedStr ? ' · ' + speedStr : ''}</div>
         </div>`;
       } else {
         // Show — aggregate episodes
@@ -2827,16 +2895,17 @@ async function refreshDownloadsCard() {
         const sabStatus = g.items[0].sab_status || '';
         const speedStr = g.items[0].sab_speed ? `${g.items[0].sab_speed}B/s` : '';
         const statusLabel = sabStatus && sabStatus !== 'Downloading' ? ` · ${sabStatus}` : '';
+        const nzoAttr = g.items[0].download_id ? ` data-nzo="${g.items[0].download_id}"` : '';
         return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <span style="font-size:0.78rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;">${g.title}</span>
             <span style="font-size:0.68rem;color:var(--text-dim);">${g.server}</span>
           </div>
-          <div class="dl-progress-wrap" style="margin-top:2px;">
+          <div class="dl-progress-wrap" style="margin-top:2px;"${nzoAttr}>
             <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${avgPct}%;background:${barColor};"></div></div>
             <span class="dl-progress-text">${avgPct.toFixed(0)}%</span>
           </div>
-          <div style="font-size:0.6rem;color:var(--text-dim);">${g.items.length} ep${g.items.length > 1 ? 's' : ''}${epLabels ? ': ' + epLabels : ''}${moreCount}${statusLabel}${speedStr ? ' · ' + speedStr : ''}</div>
+          <div class="dl-meta" style="font-size:0.6rem;color:var(--text-dim);">${g.items.length} ep${g.items.length > 1 ? 's' : ''}${epLabels ? ': ' + epLabels : ''}${moreCount}${statusLabel}${speedStr ? ' · ' + speedStr : ''}</div>
         </div>`;
       }
     }).join('') + (entries.length > 5 ? `<div style="font-size:0.7rem;color:var(--text-dim);padding:4px 0;">+${entries.length - 5} more</div>` : '');
@@ -2862,10 +2931,10 @@ function init() {
   setInterval(loadParties, 60000);
   setInterval(loadSchedulerStatus, 60000);
   setInterval(loadSSLStatus, 300000);
-  // Downloads card: poll every 5s only when features panel is expanded
+  // Downloads card: poll every 5s only when features panel is expanded AND not in realtime mode
   setInterval(() => {
     const grid = document.getElementById('featureCardsGrid');
-    if (grid && grid.style.maxHeight !== '0px') refreshDownloadsCard();
+    if (grid && grid.style.maxHeight !== '0px' && _dlMode !== 'realtime') refreshDownloadsCard();
   }, 5000);
 }
 

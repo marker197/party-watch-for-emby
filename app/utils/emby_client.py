@@ -129,6 +129,7 @@ class EmbyClient:
         filters: str | None = None,
         sort_by: str | None = None,
         sort_order: str | None = None,
+        extra_params: dict[str, str] | None = None,
     ) -> dict:
         """Flexible item query.  Returns {Items: [...], TotalRecordCount: int}."""
         params: dict[str, Any] = {
@@ -149,6 +150,8 @@ class EmbyClient:
             params["SortBy"] = sort_by
         if sort_order:
             params["SortOrder"] = sort_order
+        if extra_params:
+            params.update(extra_params)
 
         path = f"/Users/{user_id}/Items" if user_id else "/Items"
         return await self._get(path, params)

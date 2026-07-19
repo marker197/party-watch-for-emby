@@ -585,8 +585,8 @@ function renderStats(d) {
   // ── Ranked lists ──
   renderRankedList('topShowsList', d.top_shows || [], 'title', r => r.episodes + ' eps · ' + r.hours + 'h');
   renderRankedList('topNetworksList', d.top_networks || [], 'name', r => r.count + ' items');
-  renderRankedList('topActorsList', d.top_actors || [], 'name', r => r.count + ' films');
-  renderRankedList('topDirectorsList', d.top_directors || [], 'name', r => r.count + ' films');
+  renderRankedList('topActorsList', d.top_actors || [], 'name', r => r.count + ' films', true);
+  renderRankedList('topDirectorsList', d.top_directors || [], 'name', r => r.count + ' films', true);
   renderRankedList('topStudiosList', d.top_studios || [], 'name', r => r.count + ' films');
 
   // ── Day of week chart ──
@@ -613,7 +613,7 @@ function renderStats(d) {
   });
 }
 
-function renderRankedList(containerId, items, nameField, valueFn) {
+function renderRankedList(containerId, items, nameField, valueFn, fetchPerson) {
   const el = document.getElementById(containerId);
   if (!items.length) {
     el.innerHTML = '<p style="color:var(--text-dim);font-size:0.82rem;padding:8px 0;">No data yet.</p>';
@@ -625,17 +625,39 @@ function renderRankedList(containerId, items, nameField, valueFn) {
   el.innerHTML = '<ul class="ranked-list">' + items.slice(0, 10).map((r, i) => {
     const posClass = i < 3 ? medals[i] : '';
     const hoverKey = containerId + '_' + i;
-    const hasTitles = r.titles && r.titles.length > 0;
-    if (hasTitles) {
-      window._rankedHoverData[hoverKey] = {title: r[nameField], items: r.titles};
+    if (fetchPerson) {
+      // Mark for API fetch on hover — store the person name
+      window._rankedHoverData[hoverKey] = {title: r[nameField], personName: r[nameField], items: null};
+    } else {
+      const hasTitles = r.titles && r.titles.length > 0;
+      if (hasTitles) {
+        window._rankedHoverData[hoverKey] = {title: r[nameField], items: r.titles};
+      }
     }
-    const hoverAttr = hasTitles ? ` class="ranked-item hover-trigger" onmouseenter="showHoverModal(event, '${hoverKey}', true)" onmouseleave="hideHoverModal()"` : ' class="ranked-item"';
+    const hasHover = fetchPerson || (r.titles && r.titles.length > 0);
+    const hoverAttr = hasHover ? ` class="ranked-item hover-trigger" onmouseenter="showHoverModal(event, '${hoverKey}', true)" onmouseleave="hideHoverModal()"` : ' class="ranked-item"';
     return `<li${hoverAttr}>
       <span class="ranked-pos ${posClass}">${i + 1}</span>
       <span class="ranked-name">${r[nameField]}</span>
       <span class="ranked-value">${valueFn(r)}</span>
     </li>`;
   }).join('') + '</ul>';
+}
+
+// Cache for person-items API calls (5-minute TTL)
+const _personCache = new Map();
+const _PERSON_CACHE_TTL = 5 * 60 * 1000;
+
+async function _fetchPersonItems(name) {
+  const cached = _personCache.get(name);
+  if (cached && Date.now() - cached.ts < _PERSON_CACHE_TTL) return cached.titles;
+  try {
+    const r = await fetch(`/api/stats/person-items?name=${encodeURIComponent(name)}&user_id=${currentUserId}`);
+    if (!r.ok) return null;
+    const d = await r.json();
+    _personCache.set(name, {titles: d.titles || [], ts: Date.now()});
+    return d.titles || [];
+  } catch { return null; }
 }
 
 let _hoverTimeout = null;
@@ -645,6 +667,25 @@ function showHoverModal(event, key, isRanked) {
   if (!data) return;
   if (_hoverTimeout) { clearTimeout(_hoverTimeout); _hoverTimeout = null; }
   const modal = document.getElementById('hoverModal');
+
+  // If this is a person with API fetch, load async
+  if (data.personName) {
+    modal.innerHTML = '<h4>' + data.title + '</h4><p style="color:var(--text-dim);font-size:0.8rem;">Loading...</p>';
+    modal.style.display = 'block';
+    positionHoverModal(event);
+    _fetchPersonItems(data.personName).then(titles => {
+      if (modal.style.display !== 'block') return;
+      let html = '<h4>' + data.title + '</h4>';
+      if (titles && titles.length) {
+        html += '<ul>' + titles.map(t => '<li>' + t + '</li>').join('') + '</ul>';
+      } else {
+        html += '<p style="color:var(--text-dim);font-size:0.8rem;">No items found in library.</p>';
+      }
+      modal.innerHTML = html;
+    });
+    return;
+  }
+
   let html = '<h4>' + data.title + '</h4>';
   if (data.items && data.items.length) {
     html += '<ul>' + data.items.map(t => '<li>' + t + '</li>').join('') + '</ul>';
