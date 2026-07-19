@@ -164,22 +164,23 @@
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 14px 18px;
-      max-width: 320px;
+      max-width: 520px;
+      min-width: 360px;
       max-height: 360px;
       overflow-y: auto;
       z-index: 1000;
       box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-      pointer-events: none;
     }
     .hover-modal h4 {
       font-size: 0.82rem; font-weight: 700; margin-bottom: 8px;
       color: var(--accent-light); border-bottom: 1px solid var(--border);
       padding-bottom: 6px;
     }
-    .hover-modal ul { list-style: none; }
+    .hover-modal ul { list-style: none; columns: 2; column-gap: 16px; }
     .hover-modal li {
       font-size: 0.8rem; padding: 3px 0;
       color: var(--text-dim); border-bottom: 1px solid rgba(42,46,62,0.3);
+      break-inside: avoid;
     }
     .hover-modal li:last-child { border-bottom: none; }
     .hover-trigger { cursor: default; }
@@ -564,8 +565,8 @@ function renderStats(d) {
     funItems.push({label: 'Biggest Binge', value: fun.biggest_binge.count + ' items', color: 'var(--red)', sub: bd,
       hover: (fun.biggest_binge.items && fun.biggest_binge.items.length) ? {title: 'Binge Day: ' + bd, items: fun.biggest_binge.items} : null});
   }
-  if (fun.unique_movies) funItems.push({label: 'Unique Movies', value: fun.unique_movies.toLocaleString(), color: 'var(--blue)'});
-  if (fun.unique_shows) funItems.push({label: 'Unique Shows', value: fun.unique_shows.toLocaleString(), color: 'var(--accent-light)'});
+  if (fun.unique_movies) funItems.push({label: 'Movies Watched', value: fun.unique_movies.toLocaleString(), color: 'var(--blue)'});
+  if (fun.unique_shows) funItems.push({label: 'Shows Watched', value: fun.unique_shows.toLocaleString(), color: 'var(--accent-light)'});
   if (fun.longest_movie) funItems.push({label: 'Longest Movie', value: fun.longest_movie.title, color: 'var(--orange)', sub: fun.longest_movie.runtime_min + ' min'});
   if (fun.days_tracked) funItems.push({label: 'Tracking Since', value: fun.days_tracked.toLocaleString() + ' days', color: 'var(--text-dim)'});
 
@@ -637,9 +638,12 @@ function renderRankedList(containerId, items, nameField, valueFn) {
   }).join('') + '</ul>';
 }
 
+let _hoverTimeout = null;
+
 function showHoverModal(event, key, isRanked) {
   const data = isRanked ? (window._rankedHoverData || {})[key] : (window._funHoverData || {})[key];
   if (!data) return;
+  if (_hoverTimeout) { clearTimeout(_hoverTimeout); _hoverTimeout = null; }
   const modal = document.getElementById('hoverModal');
   let html = '<h4>' + data.title + '</h4>';
   if (data.items && data.items.length) {
@@ -655,7 +659,7 @@ function positionHoverModal(event) {
   const rect = modal.getBoundingClientRect();
   let x = event.clientX + 12;
   let y = event.clientY + 12;
-  if (x + 320 > window.innerWidth) x = event.clientX - 320 - 12;
+  if (x + 520 > window.innerWidth) x = event.clientX - 520 - 12;
   if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 12;
   if (y < 8) y = 8;
   modal.style.left = x + 'px';
@@ -663,8 +667,23 @@ function positionHoverModal(event) {
 }
 
 function hideHoverModal() {
-  document.getElementById('hoverModal').style.display = 'none';
+  if (_hoverTimeout) clearTimeout(_hoverTimeout);
+  _hoverTimeout = setTimeout(() => {
+    document.getElementById('hoverModal').style.display = 'none';
+    _hoverTimeout = null;
+  }, 2000);
 }
+
+// Keep modal open while hovering over it, hide when leaving
+document.addEventListener('DOMContentLoaded', () => {
+  const modal = document.getElementById('hoverModal');
+  modal.addEventListener('mouseenter', () => {
+    if (_hoverTimeout) { clearTimeout(_hoverTimeout); _hoverTimeout = null; }
+  });
+  modal.addEventListener('mouseleave', () => {
+    hideHoverModal();
+  });
+});
 
 async function loadQueueHistory() {
   if (!currentUserId) return;
