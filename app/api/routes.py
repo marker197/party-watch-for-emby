@@ -3884,7 +3884,7 @@ async def get_queue_history(
     """
     from app.utils.redis_cache import cache_get
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
 
     # Per-source stats
     rows = (await db.execute(

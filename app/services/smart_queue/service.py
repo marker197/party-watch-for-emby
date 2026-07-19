@@ -152,26 +152,6 @@ class SmartQueueService:
             # Auto-send missing items to Radarr/Sonarr if enabled
             await self._auto_send_missing(top, resolved_ids)
 
-            # Snapshot weights for history chart (daily cadence)
-            try:
-                cutoff = datetime.now(timezone.utc) - timedelta(days=90)
-                async with async_session() as snap_db:
-                    snap_rows = (await snap_db.execute(
-                        select(
-                            QueueItem.source,
-                            func.count(QueueItem.id).label("total"),
-                            func.count(QueueItem.played_at).label("played"),
-                        )
-                        .where(
-                            QueueItem.user_id == user.id,
-                            QueueItem.created_at >= cutoff,
-                        )
-                        .group_by(QueueItem.source)
-                    )).all()
-                if snap_rows:
-                    await self._save_weight_snapshot(user.id, weights, snap_rows)
-            except Exception:
-                log.warning("smart_queue.daily_snapshot_failed", user_id=user.id)
 
             log.info("smart_queue.user_done", user=user.emby_username,
                      items=len(top), overflow=len(overflow))
@@ -608,7 +588,7 @@ class SmartQueueService:
             await db.commit()
 
             # Prune played history older than 90 days to keep the table bounded
-            history_cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+            history_cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).replace(tzinfo=None)
             await db.execute(
                 delete(QueueItem).where(
                     QueueItem.user_id == user.id,
@@ -873,7 +853,7 @@ class SmartQueueService:
         """
         async with async_session() as db:
             # Get play counts per source (last 90 days of queue items)
-            cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).replace(tzinfo=None)
             rows = (await db.execute(
                 select(
                     QueueItem.source,

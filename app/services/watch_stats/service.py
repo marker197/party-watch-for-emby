@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from app.models.schema import User
 from app.utils.trakt_client import TraktClient
+from app.utils.emby_client import EmbyClient
 from app.utils.redis_cache import get_redis
 from app.utils.database import async_session
 
@@ -40,7 +41,7 @@ class WatchStatsService:
         if not user.trakt_access_token:
             return {"error": "No Trakt token"}
 
-        cache_key = f"watch_stats_v2:{user.id}"
+        cache_key = f"watch_stats_v3:{user.id}"
         try:
             r = await get_redis()
             cached = await r.get(cache_key)
@@ -64,9 +65,21 @@ class WatchStatsService:
                 "recent_daily": [],
                 "avg_per_session": 0,
                 "total_items": 0,
+                "top_shows": [],
+                "top_networks": [],
+                "fun_stats": {},
+                "top_actors": [],
+                "top_directors": [],
+                "top_studios": [],
             }
 
         result = self._aggregate(history)
+
+        # Fetch people/studio data from Emby (single paginated call)
+        people_data = await self._fetch_emby_people(user)
+        result["top_actors"] = people_data.get("actors", [])
+        result["top_directors"] = people_data.get("directors", [])
+        result["top_studios"] = people_data.get("studios", [])
 
         try:
             r = await get_redis()
@@ -148,6 +161,16 @@ class WatchStatsService:
             d = (heatmap_start + timedelta(days=i)).strftime("%Y-%m-%d")
             heatmap_buckets[d] = {"date": d, "count": 0, "minutes": 0.0}
 
+        # New collectors
+        show_episodes: dict[str, int] = defaultdict(int)          # show title → ep count
+        show_hours: dict[str, float] = defaultdict(float)         # show title → hours
+        network_counts: dict[str, int] = defaultdict(int)         # network → count
+        movie_titles: list[dict] = []                             # for longest movie etc
+        day_of_week_counts = [0] * 7                              # Mon=0 .. Sun=6
+        daily_item_counts: dict[str, int] = defaultdict(int)      # date → count (all time)
+        first_watched_at = None
+        latest_watched_at = None
+
         for entry in history:
             watched_at_str = entry.get("watched_at", "")
             try:
@@ -157,17 +180,38 @@ class WatchStatsService:
             except (ValueError, AttributeError):
                 continue
 
+            # Track first/latest
+            if first_watched_at is None or watched_at < first_watched_at:
+                first_watched_at = watched_at
+            if latest_watched_at is None or watched_at > latest_watched_at:
+                latest_watched_at = watched_at
+
             # Determine runtime
             item_type = entry.get("type", "")
             runtime_min = 0
             if item_type == "movie":
-                runtime_min = (entry.get("movie") or {}).get("runtime", 0) or 0
+                movie_data = entry.get("movie") or {}
+                runtime_min = movie_data.get("runtime", 0) or 0
                 type_split["movies"] += 1
+                if movie_data.get("title"):
+                    movie_titles.append({
+                        "title": movie_data["title"],
+                        "year": movie_data.get("year"),
+                        "runtime": runtime_min,
+                    })
             elif item_type == "episode":
-                runtime_min = (entry.get("episode") or {}).get("runtime", 0) or 0
+                ep_data = entry.get("episode") or {}
+                show_data = entry.get("show") or {}
+                runtime_min = ep_data.get("runtime", 0) or 0
                 if not runtime_min:
-                    runtime_min = (entry.get("show") or {}).get("runtime", 0) or 0
+                    runtime_min = show_data.get("runtime", 0) or 0
                 type_split["episodes"] += 1
+                show_name = show_data.get("title", "Unknown")
+                show_episodes[show_name] += 1
+                show_hours[show_name] += runtime_min / 60.0
+                network = show_data.get("network")
+                if network:
+                    network_counts[network] += 1
 
             runtime_hrs = runtime_min / 60.0
 
@@ -183,6 +227,9 @@ class WatchStatsService:
             # Peak hours
             peak_hours[watched_at.hour] += 1
 
+            # Day of week (Monday=0)
+            day_of_week_counts[watched_at.weekday()] += 1
+
             # Genre counts
             genres = []
             if item_type == "movie":
@@ -195,6 +242,7 @@ class WatchStatsService:
             # Daily buckets (last 30 days)
             day_key = watched_at.strftime("%Y-%m-%d")
             watching_days.add(day_key)
+            daily_item_counts[day_key] += 1
             if day_key in daily_buckets:
                 daily_buckets[day_key]["minutes"] += runtime_min
                 daily_buckets[day_key]["count"] += 1
@@ -235,6 +283,73 @@ class WatchStatsService:
             d["hours"] = round(d["minutes"] / 60, 1)
             del d["minutes"]
 
+        # ── New: Top Shows (by episode count) ──
+        top_shows = [
+            {"title": t, "episodes": c, "hours": round(show_hours[t], 1)}
+            for t, c in sorted(show_episodes.items(), key=lambda x: x[1], reverse=True)[:15]
+        ]
+
+        # ── New: Top Networks ──
+        top_networks = [
+            {"name": n, "count": c}
+            for n, c in sorted(network_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        ]
+
+        # ── New: Fun stats ──
+        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        fav_day_idx = max(range(7), key=lambda i: day_of_week_counts[i]) if any(day_of_week_counts) else 0
+
+        # Biggest binge day
+        biggest_binge_date = None
+        biggest_binge_count = 0
+        for d, c in daily_item_counts.items():
+            if c > biggest_binge_count:
+                biggest_binge_count = c
+                biggest_binge_date = d
+
+        # Watch streak (consecutive days)
+        sorted_days = sorted(watching_days)
+        current_streak = 0
+        longest_streak = 0
+        for i, day_str in enumerate(sorted_days):
+            if i == 0:
+                current_streak = 1
+            else:
+                prev = datetime.strptime(sorted_days[i - 1], "%Y-%m-%d")
+                curr = datetime.strptime(day_str, "%Y-%m-%d")
+                if (curr - prev).days == 1:
+                    current_streak += 1
+                else:
+                    current_streak = 1
+            longest_streak = max(longest_streak, current_streak)
+
+        # Longest movie
+        longest_movie = None
+        if movie_titles:
+            lm = max(movie_titles, key=lambda m: m["runtime"])
+            if lm["runtime"] > 0:
+                longest_movie = {
+                    "title": lm["title"],
+                    "year": lm.get("year"),
+                    "runtime_min": lm["runtime"],
+                }
+
+        # Unique movies / unique shows
+        unique_movies = len({m["title"] for m in movie_titles})
+        unique_shows = len(show_episodes)
+
+        fun_stats = {
+            "favourite_day": day_names[fav_day_idx],
+            "day_of_week_counts": {day_names[i]: day_of_week_counts[i] for i in range(7)},
+            "biggest_binge": {"date": biggest_binge_date, "count": biggest_binge_count},
+            "longest_streak_days": longest_streak,
+            "unique_movies": unique_movies,
+            "unique_shows": unique_shows,
+            "longest_movie": longest_movie,
+            "first_watched": first_watched_at.isoformat() if first_watched_at else None,
+            "days_tracked": (now - first_watched_at).days if first_watched_at else 0,
+        }
+
         return {
             "hours_by_period": {
                 "week": round(hours_week, 1),
@@ -250,7 +365,71 @@ class WatchStatsService:
             "total_items": len(history),
             "monthly_by_year": yoy_data,
             "daily_heatmap": heatmap_data,
+            "top_shows": top_shows,
+            "top_networks": top_networks,
+            "fun_stats": fun_stats,
         }
+
+    async def _fetch_emby_people(self, user: User) -> dict:
+        """Query Emby for played items' People and Studios metadata."""
+        actor_counts: dict[str, int] = defaultdict(int)
+        director_counts: dict[str, int] = defaultdict(int)
+        studio_counts: dict[str, int] = defaultdict(int)
+
+        if not user.emby_user_id:
+            return {"actors": [], "directors": [], "studios": []}
+
+        emby = EmbyClient()
+        try:
+            start = 0
+            batch = 500
+            while True:
+                resp = await emby.get_items(
+                    user_id=user.emby_user_id,
+                    fields="People,Studios",
+                    filters="IsPlayed",
+                    item_type="Movie",
+                    recursive=True,
+                    limit=batch,
+                    start_index=start,
+                )
+                items = resp.get("Items", [])
+                for item in items:
+                    for person in item.get("People", []):
+                        name = person.get("Name")
+                        if not name:
+                            continue
+                        role = person.get("Type", "")
+                        if role == "Actor":
+                            actor_counts[name] += 1
+                        elif role == "Director":
+                            director_counts[name] += 1
+                    for studio in item.get("Studios", []):
+                        sname = studio.get("Name") if isinstance(studio, dict) else studio
+                        if sname:
+                            studio_counts[sname] += 1
+                if start + batch >= resp.get("TotalRecordCount", 0):
+                    break
+                start += batch
+        except Exception:
+            log.warning("watch_stats.emby_people_failed", user_id=user.id)
+        finally:
+            await emby.close()
+
+        top_actors = [
+            {"name": n, "count": c}
+            for n, c in sorted(actor_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+        ]
+        top_directors = [
+            {"name": n, "count": c}
+            for n, c in sorted(director_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+        ]
+        top_studios = [
+            {"name": n, "count": c}
+            for n, c in sorted(studio_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        ]
+
+        return {"actors": top_actors, "directors": top_directors, "studios": top_studios}
 
     @staticmethod
     async def _make_trakt(user: User) -> TraktClient:

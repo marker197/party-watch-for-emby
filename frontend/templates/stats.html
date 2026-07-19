@@ -122,6 +122,41 @@
 
     .loading { text-align: center; padding: 40px; color: var(--text-dim); }
 
+    .ranked-list { list-style: none; }
+    .ranked-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 0; border-bottom: 1px solid var(--border);
+      font-size: 0.85rem;
+    }
+    .ranked-item:last-child { border-bottom: none; }
+    .ranked-pos {
+      width: 22px; text-align: center; font-weight: 700;
+      color: var(--text-dim); font-size: 0.78rem; flex-shrink: 0;
+    }
+    .ranked-pos.gold { color: #fdcb6e; }
+    .ranked-pos.silver { color: #b2bec3; }
+    .ranked-pos.bronze { color: #e17055; }
+    .ranked-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ranked-value {
+      flex-shrink: 0; font-size: 0.78rem; font-weight: 600;
+      color: var(--accent-light); background: rgba(108,92,231,0.1);
+      padding: 2px 8px; border-radius: 4px;
+    }
+
+    .fun-stats-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .fun-stat {
+      background: var(--surface-hover); border-radius: 8px; padding: 14px;
+      text-align: center;
+    }
+    .fun-stat .fun-label {
+      font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase;
+      letter-spacing: 0.4px; margin-bottom: 4px;
+    }
+    .fun-stat .fun-value { font-size: 1.2rem; font-weight: 700; }
+
     /* Heatmap calendar */
     .heatmap-wrap { overflow-x: auto; }
     .heatmap-grid {
@@ -217,6 +252,9 @@
       <!-- Summary cards -->
       <div class="stats-grid" id="summaryCards"></div>
 
+      <!-- Fun stats banner -->
+      <div id="funStatsPanel" class="chart-card" style="margin-bottom:20px;"></div>
+
       <!-- Charts -->
       <div class="chart-row">
         <div class="chart-card">
@@ -237,6 +275,40 @@
         <div class="chart-card">
           <h3>🎬 Movies vs TV</h3>
           <canvas id="splitChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Ranked lists -->
+      <div class="chart-row">
+        <div class="chart-card" id="topShowsPanel">
+          <h3>📺 Most Watched Shows</h3>
+          <div id="topShowsList"></div>
+        </div>
+        <div class="chart-card" id="topNetworksPanel">
+          <h3>📡 Top Networks</h3>
+          <div id="topNetworksList"></div>
+        </div>
+      </div>
+
+      <div class="chart-row">
+        <div class="chart-card" id="topActorsPanel">
+          <h3>🎭 Favourite Actors</h3>
+          <div id="topActorsList"></div>
+        </div>
+        <div class="chart-card" id="topDirectorsPanel">
+          <h3>🎬 Top Directors</h3>
+          <div id="topDirectorsList"></div>
+        </div>
+      </div>
+
+      <div class="chart-row">
+        <div class="chart-card" id="topStudiosPanel">
+          <h3>🏢 Top Studios</h3>
+          <div id="topStudiosList"></div>
+        </div>
+        <div class="chart-card">
+          <h3>📆 Watch Day Breakdown</h3>
+          <canvas id="dayOfWeekChart"></canvas>
         </div>
       </div>
     </div>
@@ -445,6 +517,73 @@ function renderStats(d) {
       }
     }
   });
+
+  // ── Fun stats ──
+  const fun = d.fun_stats || {};
+  const funItems = [];
+  if (fun.favourite_day) funItems.push({label: 'Favourite Day', value: fun.favourite_day, color: 'var(--green)'});
+  if (fun.longest_streak_days) funItems.push({label: 'Longest Streak', value: fun.longest_streak_days + ' days', color: 'var(--orange)'});
+  if (fun.biggest_binge && fun.biggest_binge.count > 0) {
+    const bd = fun.biggest_binge.date ? new Date(fun.biggest_binge.date + 'T00:00:00').toLocaleDateString([], {month:'short',day:'numeric',year:'numeric'}) : '';
+    funItems.push({label: 'Biggest Binge', value: fun.biggest_binge.count + ' items', color: 'var(--red)', sub: bd});
+  }
+  if (fun.unique_movies) funItems.push({label: 'Unique Movies', value: fun.unique_movies.toLocaleString(), color: 'var(--blue)'});
+  if (fun.unique_shows) funItems.push({label: 'Unique Shows', value: fun.unique_shows.toLocaleString(), color: 'var(--accent-light)'});
+  if (fun.longest_movie) funItems.push({label: 'Longest Movie', value: fun.longest_movie.title, color: 'var(--orange)', sub: fun.longest_movie.runtime_min + ' min'});
+  if (fun.days_tracked) funItems.push({label: 'Tracking Since', value: fun.days_tracked.toLocaleString() + ' days', color: 'var(--text-dim)'});
+
+  document.getElementById('funStatsPanel').innerHTML = funItems.length
+    ? '<h3 style="margin-bottom:12px;">🏆 Fun Stats</h3><div class="fun-stats-grid">' +
+      funItems.map(f => `<div class="fun-stat"><div class="fun-label">${f.label}</div><div class="fun-value" style="color:${f.color};">${f.value}</div>${f.sub ? '<div style="font-size:0.72rem;color:var(--text-dim);margin-top:2px;">'+f.sub+'</div>' : ''}</div>`).join('') +
+      '</div>'
+    : '';
+
+  // ── Ranked lists ──
+  renderRankedList('topShowsList', d.top_shows || [], 'title', r => r.episodes + ' eps · ' + r.hours + 'h');
+  renderRankedList('topNetworksList', d.top_networks || [], 'name', r => r.count + ' items');
+  renderRankedList('topActorsList', d.top_actors || [], 'name', r => r.count + ' films');
+  renderRankedList('topDirectorsList', d.top_directors || [], 'name', r => r.count + ' films');
+  renderRankedList('topStudiosList', d.top_studios || [], 'name', r => r.count + ' films');
+
+  // ── Day of week chart ──
+  destroyChart('dayOfWeekChart');
+  const dow = fun.day_of_week_counts || {};
+  const dowLabels = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+  const dowData = dowLabels.map(d => dow[d] || 0);
+  charts.dayOfWeekChart = new Chart(document.getElementById('dayOfWeekChart'), {
+    type: 'bar',
+    data: {
+      labels: dowLabels.map(d => d.slice(0,3)),
+      datasets: [{
+        label: 'Items Watched',
+        data: dowData,
+        backgroundColor: dowLabels.map((_, i) => {
+          const max = Math.max(...dowData);
+          const intensity = max > 0 ? dowData[i] / max : 0;
+          return `rgba(108, 92, 231, ${0.25 + intensity * 0.65})`;
+        }),
+        borderRadius: 4,
+      }]
+    },
+    options: chartOpts('Items')
+  });
+}
+
+function renderRankedList(containerId, items, nameField, valueFn) {
+  const el = document.getElementById(containerId);
+  if (!items.length) {
+    el.innerHTML = '<p style="color:var(--text-dim);font-size:0.82rem;padding:8px 0;">No data yet.</p>';
+    return;
+  }
+  const medals = ['gold', 'silver', 'bronze'];
+  el.innerHTML = '<ul class="ranked-list">' + items.slice(0, 10).map((r, i) => {
+    const posClass = i < 3 ? medals[i] : '';
+    return `<li class="ranked-item">
+      <span class="ranked-pos ${posClass}">${i + 1}</span>
+      <span class="ranked-name">${r[nameField]}</span>
+      <span class="ranked-value">${valueFn(r)}</span>
+    </li>`;
+  }).join('') + '</ul>';
 }
 
 async function loadQueueHistory() {
