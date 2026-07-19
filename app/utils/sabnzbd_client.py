@@ -73,6 +73,11 @@ class SabnzbdClient:
                 size_mb = _parse_size_mb(slot.get("mb", "0"))
                 left_mb = _parse_size_mb(slot.get("mbleft", "0"))
 
+                # SABnzbd queue.speed is global (e.g. "12.5 M"),
+                # queue.kbpersec is the raw numeric KB/s value.
+                raw_speed = queue.get("speed", "")
+                raw_kbps = queue.get("kbpersec", "")
+
                 result.append({
                     "nzo_id": slot.get("nzo_id", ""),
                     "filename": slot.get("filename", ""),
@@ -82,8 +87,8 @@ class SabnzbdClient:
                     "sizeleft_mb": round(left_mb, 1),
                     "eta": slot.get("eta", "unknown"),
                     "timeleft": slot.get("timeleft", ""),
-                    "speed": queue.get("speed", ""),
-                    "speed_unit": queue.get("speedlimit_abs", ""),
+                    "speed": raw_speed,
+                    "speed_kbps": _parse_size_mb(raw_kbps),
                     "server": self._name,
                 })
             return result

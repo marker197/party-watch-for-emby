@@ -347,7 +347,8 @@ class SmartQueueService:
             if c.get("air_date"):
                 try:
                     air = datetime.fromisoformat(c["air_date"].replace("Z", "+00:00"))
-                    days_away = (air - datetime.utcnow().astimezone()).days
+                    from datetime import timezone
+                    days_away = (air - datetime.now(timezone.utc)).days
                     if 0 <= days_away <= 3:
                         score += 4.0
                     elif days_away <= 7:
@@ -377,7 +378,7 @@ class SmartQueueService:
     def _stratified_select(self, candidates: list[dict]) -> list[dict]:
         """Select top items per source quota, then fill any shortfalls.
 
-        Quotas: 10 watchlist, 5 trending, 5 recommended = 20 items.
+        Quotas: 7 watchlist, 7 trending, 6 recommended = 20 items.
         Calendar, friend, and affinity items count toward their closest
         quota bucket (calendar/friend fill watchlist slots, etc.).
         If a source doesn't have enough candidates, remaining slots
@@ -758,20 +759,22 @@ class SmartQueueService:
                         srv = servers[0]
                         client = RadarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Radarr"))
                         sent = 0
-                        for movie in missing_movies:
-                            try:
-                                result = await client.add_movie(
-                                    tmdb_id=movie.get("tmdb_id"),
-                                    imdb_id=movie.get("imdb_id"),
-                                    title=movie.get("title", ""),
-                                    year=movie.get("year"),
-                                )
-                                if result.get("status") == "ok":
-                                    sent += 1
-                            except Exception:
-                                log.debug("auto_send.radarr_item_failed",
-                                          title=movie.get("title"))
-                        await client.close()
+                        try:
+                            for movie in missing_movies:
+                                try:
+                                    result = await client.add_movie(
+                                        tmdb_id=movie.get("tmdb_id"),
+                                        imdb_id=movie.get("imdb_id"),
+                                        title=movie.get("title", ""),
+                                        year=movie.get("year"),
+                                    )
+                                    if result.get("status") == "ok":
+                                        sent += 1
+                                except Exception:
+                                    log.debug("auto_send.radarr_item_failed",
+                                              title=movie.get("title"))
+                        finally:
+                            await client.close()
                         log.info("auto_send.radarr_done",
                                  sent=sent, total=len(missing_movies))
             except Exception:
@@ -790,20 +793,22 @@ class SmartQueueService:
                         srv = servers[0]
                         client = SonarrClient(srv["url"], srv["api_key"], name=srv.get("name", "Sonarr"))
                         sent = 0
-                        for show in missing_shows:
-                            try:
-                                result = await client.add_series(
-                                    tvdb_id=show.get("tvdb_id"),
-                                    imdb_id=show.get("imdb_id"),
-                                    title=show.get("title", ""),
-                                    year=show.get("year"),
-                                )
-                                if result.get("status") == "ok":
-                                    sent += 1
-                            except Exception:
-                                log.debug("auto_send.sonarr_item_failed",
-                                          title=show.get("title"))
-                        await client.close()
+                        try:
+                            for show in missing_shows:
+                                try:
+                                    result = await client.add_series(
+                                        tvdb_id=show.get("tvdb_id"),
+                                        imdb_id=show.get("imdb_id"),
+                                        title=show.get("title", ""),
+                                        year=show.get("year"),
+                                    )
+                                    if result.get("status") == "ok":
+                                        sent += 1
+                                except Exception:
+                                    log.debug("auto_send.sonarr_item_failed",
+                                              title=show.get("title"))
+                        finally:
+                            await client.close()
                         log.info("auto_send.sonarr_done",
                                  sent=sent, total=len(missing_shows))
             except Exception:

@@ -2983,7 +2983,7 @@ async function refreshDownloadsCard() {
         const sabStatus = dl.sab_status || '';
         const etaStr = dl.sab_eta || _formatEta(dl.eta);
         const sizeStr = dl.size_mb ? `${dl.size_mb.toFixed(0)} MB` : '';
-        const speedStr = dl.sab_speed ? `${dl.sab_speed}/s` : '';
+        const speedStr = dl.sab_speed ? `${dl.sab_speed}B/s` : '';
         const statusLabel = sabStatus && sabStatus !== 'Downloading' ? `<span style="font-size:0.6rem;color:var(--accent-light);margin-left:4px;">${sabStatus}</span>` : '';
         return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
           <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -3003,7 +3003,7 @@ async function refreshDownloadsCard() {
         const moreCount = g.items.length > 4 ? ` +${g.items.length - 4}` : '';
         // Use first item's SABnzbd status as representative for the group
         const sabStatus = g.items[0].sab_status || '';
-        const speedStr = g.items[0].sab_speed ? `${g.items[0].sab_speed}/s` : '';
+        const speedStr = g.items[0].sab_speed ? `${g.items[0].sab_speed}B/s` : '';
         const statusLabel = sabStatus && sabStatus !== 'Downloading' ? ` · ${sabStatus}` : '';
         return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
           <div style="display:flex;justify-content:space-between;align-items:center;">

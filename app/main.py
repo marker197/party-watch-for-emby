@@ -24,6 +24,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from fastapi.templating import Jinja2Templates
@@ -162,7 +163,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Emby-Trakt Suite",
-    version="0.4.0",
+    version="1.0.0",
     description="Smart Queue · ML Predictor · Universe Discovery · Watch Party · Monitoring",
     lifespan=lifespan,
 )
@@ -219,7 +220,10 @@ app.add_middleware(SecurityAuditMiddleware)
 
 # 5. Rate limiting middleware (slowapi)
 app.state.limiter = limiter
-app.add_exception_handler(429, lambda r, e: {"error": "Rate limit exceeded", "retry_after": "60"})
+app.add_exception_handler(429, lambda r, e: JSONResponse(
+    status_code=429,
+    content={"error": "Rate limit exceeded", "retry_after": "60"},
+))
 
 # REST routes
 app.include_router(router)
@@ -322,7 +326,7 @@ async def _seed_redis_from_db():
     """
     from app.models.schema import AppSetting
     from app.utils.redis_cache import get_redis
-    _KEYS = ("radarr_servers", "sonarr_servers", "auto_send_settings")
+    _KEYS = ("radarr_servers", "sonarr_servers", "sabnzbd_servers", "auto_send_settings")
     try:
         r = await get_redis()
         async with async_session() as db:
@@ -418,9 +422,9 @@ async def run_heartbeat():
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     # --- Emby ---
+    from app.utils.emby_client import EmbyClient
+    emby = EmbyClient()
     try:
-        from app.utils.emby_client import EmbyClient
-        emby = EmbyClient()
         info = await emby.get_system_info()
         await r.set("heartbeat:emby", _json.dumps({
             "status": "ok", "checked_at": now,
@@ -432,13 +436,14 @@ async def run_heartbeat():
             "status": "error", "checked_at": now,
             "message": str(e)[:200],
         }), ex=600)
+    finally:
+        await emby.close()
 
     # --- Trakt ---
+    from app.utils.trakt_client import TraktClient
+    trakt = TraktClient()
     try:
-        from app.utils.trakt_client import TraktClient
-        trakt = TraktClient()
         await trakt.get_trending(kind="shows")
-        await trakt.close()
         await r.set("heartbeat:trakt", _json.dumps({
             "status": "ok", "checked_at": now,
         }), ex=600)
@@ -447,6 +452,8 @@ async def run_heartbeat():
             "status": "error", "checked_at": now,
             "message": str(e)[:200],
         }), ex=600)
+    finally:
+        await trakt.close()
 
     # --- Radarr (0..N servers from Redis config) ---
     raw_servers = await r.get("radarr_servers")

@@ -33,7 +33,7 @@ RUN chown -R embytrakt:embytrakt /app
 # Switch to non-root user
 USER embytrakt
 
-EXPOSE 8000 8001
+EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1

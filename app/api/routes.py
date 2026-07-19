@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.models.schema import User, QueueItem, QueueWeightSnapshot, Prediction, MLModel, Universe, UniverseItem, AppSetting
@@ -850,6 +851,43 @@ async def export_universes():
     return {"universes": result, "count": len(result)}
 
 
+@router.get("/api/universes/export")
+async def export_universes():
+    """Export all universes and their items as JSON for backup/transfer."""
+    async with async_session_ctx() as db:
+        result = await db.execute(
+            select(Universe).options(selectinload(Universe.items)).order_by(Universe.name)
+        )
+        universes = result.scalars().all()
+
+        export = []
+        for u in universes:
+            items = sorted(u.items, key=lambda i: (i.release_order or 0))
+            export.append({
+                "name": u.name,
+                "slug": u.slug,
+                "description": u.description,
+                "is_custom": u.is_custom,
+                "playlist_enabled": u.playlist_enabled,
+                "custom_name": u.custom_name,
+                "items": [
+                    {
+                        "title": item.title,
+                        "year": item.year,
+                        "item_type": item.item_type,
+                        "release_order": item.release_order,
+                        "chronological_order": item.chronological_order,
+                        "trakt_id": item.trakt_id,
+                        "imdb_id": item.imdb_id,
+                        "tmdb_id": item.tmdb_id,
+                    }
+                    for item in items
+                ],
+            })
+
+    return {"universes": export, "count": len(export)}
+
+
 @router.post("/api/universes/import")
 async def import_universes(request: Request):
     """Import universes from JSON. Skips universes that already exist (by slug).
@@ -899,6 +937,9 @@ async def import_universes(request: Request):
                 slug=slug,
                 description=u_data.get("description"),
                 total_items=len(u_data.get("items", [])),
+                is_custom=u_data.get("is_custom", False),
+                playlist_enabled=u_data.get("playlist_enabled", False),
+                custom_name=u_data.get("custom_name"),
             )
             db.add(universe)
             await db.flush()
@@ -2428,6 +2469,11 @@ async def save_radarr_servers(payload: dict, db: AsyncSession = Depends(get_db))
     await r.set("radarr_servers", encoded)
     await _put_setting(db, "radarr_servers", encoded)
     await db.commit()
+    # Invalidate download-queue cache so the next poll picks up changes
+    try:
+        await r.delete("download_queue_cache_v1")
+    except Exception:
+        pass
     return {"status": "ok", "servers": len(clean)}
 
 
@@ -2562,6 +2608,11 @@ async def save_sonarr_servers(payload: dict, db: AsyncSession = Depends(get_db))
     await r.set("sonarr_servers", encoded)
     await _put_setting(db, "sonarr_servers", encoded)
     await db.commit()
+    # Invalidate download-queue cache so the next poll picks up changes
+    try:
+        await r.delete("download_queue_cache_v1")
+    except Exception:
+        pass
     return {"status": "ok", "servers": len(clean)}
 
 
@@ -3453,7 +3504,7 @@ async def get_sabnzbd_servers():
 
 @router.put("/api/sabnzbd/servers")
 async def save_sabnzbd_servers(request: Request):
-    """Save SABnzbd server configs (max 2) to Redis."""
+    """Save SABnzbd server configs (max 2) to Redis + DB."""
     import json as _json
     body = await request.json()
     servers = body.get("servers", [])[:2]
@@ -3469,19 +3520,44 @@ async def save_sabnzbd_servers(request: Request):
         if "****" in key and i < len(existing):
             srv["api_key"] = existing[i].get("api_key", key)
 
-    await r.set("sabnzbd_servers", _json.dumps(servers))
+    encoded = _json.dumps(servers)
+    await r.set("sabnzbd_servers", encoded)
+
+    # Persist to DB (survives Redis restarts)
+    async with async_session_ctx() as db:
+        await _put_setting(db, "sabnzbd_servers", encoded)
+
+    # Invalidate download-queue cache so the next poll picks up the new server
+    try:
+        await r.delete("download_queue_cache_v1")
+    except Exception:
+        pass
+
     return {"status": "ok", "servers": len(servers)}
 
 
 @router.post("/api/sabnzbd/test")
 async def test_sabnzbd(request: Request):
     """Test connection to a SABnzbd server."""
+    import json as _json
     from app.utils.sabnzbd_client import SabnzbdClient
     body = await request.json()
     url = body.get("url", "").strip()
     api_key = body.get("api_key", "").strip()
     if not url or not api_key:
         return {"status": "error", "message": "URL and API key required"}
+
+    # Resolve masked key — if the frontend sent a masked value,
+    # find the real key from the saved server config by matching URL
+    if "****" in api_key:
+        r = await get_redis()
+        raw_existing = await r.get("sabnzbd_servers")
+        if raw_existing:
+            for srv in _json.loads(raw_existing):
+                if srv.get("url", "").rstrip("/") == url.rstrip("/"):
+                    api_key = srv.get("api_key", api_key)
+                    break
+
     client = None
     try:
         client = SabnzbdClient(url, api_key)

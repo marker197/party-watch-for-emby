@@ -30,9 +30,20 @@ from app.utils.database import async_session
 log = structlog.get_logger()
 
 # Socket.IO server — attached to the main ASGI app later
+# CORS: python-socketio doesn't support regex origins, and browser
+# extensions use random UUIDs that can't be enumerated.  Use the
+# ALLOWED_ORIGINS env var when set (LAN IPs), otherwise allow all.
+# Party codes + auth provide the real access control layer.
+def _sio_allowed_origins():
+    import os
+    raw = os.environ.get("ALLOWED_ORIGINS", "")
+    if not raw or raw.strip() == "*":
+        return "*"
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins="*",
+    cors_allowed_origins=_sio_allowed_origins(),
     logger=False,
     engineio_logger=False,
 )
