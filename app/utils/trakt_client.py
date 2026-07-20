@@ -407,6 +407,26 @@ class TraktClient:
             return {"added": {"movies": 0, "shows": 0}}
         return await self._post("/sync/watchlist", body)
 
+    async def remove_from_watchlist(
+        self,
+        movies: list[dict] | None = None,
+        shows: list[dict] | None = None,
+    ) -> dict:
+        """Remove items from the user's Trakt watchlist.
+
+        movies: list of {"ids": {"tmdb": int}} or {"ids": {"imdb": "ttXXX"}}
+        shows:  list of {"ids": {"tvdb": int}} or {"ids": {"imdb": "ttXXX"}}
+        Returns the Trakt sync response with deleted/not_found counts.
+        """
+        body: dict = {}
+        if movies:
+            body["movies"] = movies
+        if shows:
+            body["shows"] = shows
+        if not body:
+            return {"deleted": {"movies": 0, "shows": 0}}
+        return await self._post("/sync/watchlist/remove", body)
+
     # -- Watch history -------------------------------------------------------
 
     async def get_history(self, kind: str = "all", limit: int = 100) -> list[dict]:

@@ -1312,12 +1312,14 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     if not emby_item_id:
         return {"status": "ok", "event": event_type, "note": "no item data"}
 
-    # Library-level events (library.new, item.added) don't require a user
+    # Library-level events (library.new, item.added, item.removed) don't require a user
     event_lower = event_type.lower()
     is_library_event = event_lower in ("library.new", "librarynew",
                                         "item.added", "itemadded")
+    is_library_removed = event_lower in ("library.deleted", "librarydeleted",
+                                          "item.removed", "itemremoved")
 
-    if not emby_user_id and not is_library_event:
+    if not emby_user_id and not is_library_event and not is_library_removed:
         return {"status": "ok", "event": event_type, "note": "no user data"}
 
     # Find our user (may be None for library events)
@@ -1327,7 +1329,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             select(User).where(User.emby_user_id == emby_user_id)
         )).scalar_one_or_none()
 
-    if not user and not is_library_event:
+    if not user and not is_library_event and not is_library_removed:
         await _activity_log(
             f"Webhook ignored: unknown Emby user {emby_username} ({emby_user_id})",
             category="webhook",
@@ -1894,7 +1896,93 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
         return {"status": "received", "event": event_type}
 
-    if not is_watched:
+    # ── library.deleted / item.removed → remove from Trakt watchlist ─────
+    if is_library_removed and item_type_raw in ("Movie", "Series"):
+        try:
+            provider_ids = item_data.get("ProviderIds", {})
+            tmdb_id = provider_ids.get("Tmdb")
+            imdb_id = provider_ids.get("Imdb")
+            tvdb_id = provider_ids.get("Tvdb")
+
+            if tmdb_id or imdb_id or tvdb_id:
+                # Remove from Trakt watchlist for all linked users
+                async with async_session() as _db:
+                    linked_users = (await _db.execute(
+                        select(User).where(User.trakt_access_token.isnot(None))
+                    )).scalars().all()
+
+                removed_for: list[str] = []
+                for lu in linked_users:
+                    trakt = None
+                    try:
+                        async def _on_refresh_rm(access, refresh, expires, _uid=lu.id):
+                            async with async_session() as __db:
+                                u = await __db.get(User, _uid)
+                                u.trakt_access_token = access
+                                u.trakt_refresh_token = refresh
+                                u.trakt_token_expires = expires
+                                await __db.commit()
+
+                        trakt = TraktClient(
+                            access_token=lu.trakt_access_token,
+                            refresh_token=lu.trakt_refresh_token,
+                            token_expires=lu.trakt_token_expires,
+                            token_refresh_callback=_on_refresh_rm,
+                        )
+
+                        if item_type_raw == "Movie":
+                            ids = {}
+                            if tmdb_id:
+                                ids["tmdb"] = int(tmdb_id)
+                            if imdb_id:
+                                ids["imdb"] = imdb_id
+                            result = await trakt.remove_from_watchlist(
+                                movies=[{"ids": ids}]
+                            )
+                            deleted = (result.get("deleted") or {}).get("movies", 0)
+                        else:
+                            ids = {}
+                            if tvdb_id:
+                                ids["tvdb"] = int(tvdb_id)
+                            if imdb_id:
+                                ids["imdb"] = imdb_id
+                            result = await trakt.remove_from_watchlist(
+                                shows=[{"ids": ids}]
+                            )
+                            deleted = (result.get("deleted") or {}).get("shows", 0)
+
+                        if deleted:
+                            removed_for.append(lu.emby_username or str(lu.id))
+                            log.info("webhook.trakt_watchlist_removed",
+                                     title=item_name, user=lu.id, deleted=deleted)
+                    except Exception as e:
+                        log.debug("webhook.trakt_watchlist_remove_failed",
+                                  user=lu.id, error=str(e)[:120])
+                    finally:
+                        if trakt:
+                            await trakt.close()
+
+                if removed_for:
+                    await _activity_log(
+                        f"🗑️ Library removed: {item_name} — removed from Trakt watchlist for {', '.join(removed_for)}",
+                        category="trakt",
+                    )
+                else:
+                    await _activity_log(
+                        f"🗑️ Library removed: {item_name} — not on any user's Trakt watchlist",
+                        category="library",
+                    )
+            else:
+                await _activity_log(
+                    f"🗑️ Library removed: {item_name} ({item_type_raw}) — no provider IDs",
+                    category="library",
+                )
+        except Exception as e:
+            log.warning("webhook.item_removed_handler_failed", error=str(e)[:120])
+
+        return {"status": "received", "event": event_type}
+
+    if not is_watched and not is_library_removed:
         # Unmatched event — log for debugging
         await _activity_log(
             f"📡 Unhandled webhook: {event_type} — {item_name}",

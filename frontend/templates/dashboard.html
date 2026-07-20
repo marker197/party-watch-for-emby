@@ -724,7 +724,10 @@
   <!-- Feature cards -->
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
     <span style="color:var(--text-dim);font-size:0.82rem;font-weight:600;letter-spacing:0.3px;">FEATURES</span>
-    <button onclick="this.textContent=this.textContent==='Show'?'Hide':'Show';var g=document.getElementById('featureCardsGrid');if(g.style.maxHeight==='0px'){g.style.maxHeight=g.scrollHeight+'px';g.style.opacity='1';g.style.marginBottom='20px';var _t=function(){g.style.maxHeight='none';g.removeEventListener('transitionend',_t)};g.addEventListener('transitionend',_t)}else{g.style.maxHeight=g.scrollHeight+'px';requestAnimationFrame(function(){g.style.maxHeight='0px';g.style.opacity='0';g.style.marginBottom='0'})}" style="background:var(--accent);color:#fff;border:none;padding:5px 18px;border-radius:5px;font-size:0.8rem;font-weight:600;cursor:pointer;letter-spacing:0.3px;">Show</button>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button id="btnWlSync" onclick="runWatchlistSync()" style="background:none;border:1px solid var(--accent);color:var(--accent);padding:5px 14px;border-radius:5px;font-size:0.8rem;font-weight:600;cursor:pointer;letter-spacing:0.3px;">Watchlist Sync</button>
+      <button onclick="this.textContent=this.textContent==='Show'?'Hide':'Show';var g=document.getElementById('featureCardsGrid');if(g.style.maxHeight==='0px'){g.style.maxHeight=g.scrollHeight+'px';g.style.opacity='1';g.style.marginBottom='20px';var _t=function(){g.style.maxHeight='none';g.removeEventListener('transitionend',_t)};g.addEventListener('transitionend',_t)}else{g.style.maxHeight=g.scrollHeight+'px';requestAnimationFrame(function(){g.style.maxHeight='0px';g.style.opacity='0';g.style.marginBottom='0'})}" style="background:var(--accent);color:#fff;border:none;padding:5px 18px;border-radius:5px;font-size:0.8rem;font-weight:600;cursor:pointer;letter-spacing:0.3px;">Show</button>
+    </div>
   </div>
   <div class="grid" id="featureCardsGrid" style="max-height:0px;opacity:0;overflow:hidden;transition:max-height 0.4s ease,opacity 0.3s ease,margin-bottom 0.3s ease;margin-bottom:0;">
 
@@ -935,7 +938,7 @@ let currentUserId = null;
 let allUsers = [];
 let _radarrServers = [];
 let _sonarrServers = [];
-
+const WATCH_PARTY_ENABLED = {{ 'true' if features.watch_party else 'false' }};
 function toggleSuiteTheme() {
   const isLight = document.body.classList.toggle('light-mode');
   localStorage.setItem('suite-theme', isLight ? 'light' : 'dark');
@@ -1992,6 +1995,34 @@ async function viewUniverses() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Watchlist Sync
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function runWatchlistSync() {
+  const btn = document.getElementById('btnWlSync');
+  btn.disabled = true;
+  btn.textContent = 'Syncing…';
+  btn.style.color = 'var(--text-dim)';
+  try {
+    const r = await fetch(API + '/api/watchlist-sync/run', {method: 'POST'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    btn.textContent = '✓ Synced';
+    btn.style.color = 'var(--green)';
+    glog('Watchlist sync completed', 'ok');
+  } catch(e) {
+    btn.textContent = '✗ Failed';
+    btn.style.color = 'var(--red)';
+    glog('Watchlist sync failed: ' + e.message, 'err');
+  } finally {
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = 'Watchlist Sync';
+      btn.style.color = 'var(--accent)';
+    }, 3000);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Scrobble Audit
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2520,7 +2551,9 @@ async function loadContinueWatching() {
           ? ((item.episodes || []).find(e => e.emby_id === item.resume_emby_id) || {}).progress_pct || pct
           : pct;
         const partyDataAttr = encodeURIComponent(JSON.stringify({id: partyItemId, title: partyTitle, ticks: partyTicks, pct: partyPct}));
-        const partyBtn = '<button onclick="quickStartPartyFromBtn(this)" data-party="' + partyDataAttr + '" style="background:none;border:1px solid var(--accent);color:var(--accent);padding:2px 7px;border-radius:4px;cursor:pointer;font-size:0.72rem;white-space:nowrap;" title="Start Watch Party">🎉 Party</button>';
+        const partyBtn = WATCH_PARTY_ENABLED
+          ? '<button onclick="quickStartPartyFromBtn(this)" data-party="' + partyDataAttr + '" style="background:none;border:1px solid var(--accent);color:var(--accent);padding:2px 7px;border-radius:4px;cursor:pointer;font-size:0.72rem;white-space:nowrap;" title="Start Watch Party">🎉 Party</button>'
+          : '';
 
         return '<div style="display:flex;align-items:center;gap:12px;padding:8px 10px;border-bottom:1px solid var(--border);">'
           + '<div style="flex:1;min-width:0;">'
