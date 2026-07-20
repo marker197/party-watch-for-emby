@@ -226,6 +226,27 @@
       transition: background 0.15s;
     }
     .quick-reactions button:hover { background: var(--accent); }
+
+    .trakt-comment-box { margin-top: 16px; }
+    .trakt-comment-box textarea {
+      width: 100%; padding: 8px 10px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--bg); color: var(--text);
+      font-size: 0.82rem; font-family: inherit; resize: none; min-height: 52px;
+    }
+    .trakt-comment-box textarea:focus { outline: none; border-color: var(--accent); }
+    .trakt-comment-box button {
+      margin-top: 6px; width: 100%; padding: 6px; border: none; border-radius: 6px;
+      background: var(--accent); color: #fff; font-size: 0.8rem; font-weight: 600;
+      cursor: pointer; transition: opacity 0.15s;
+    }
+    .trakt-comment-box button:hover { opacity: 0.85; }
+    .trakt-comment-box button:disabled { opacity: 0.5; cursor: default; }
+    .trakt-comment-box .comment-note {
+      font-size: 0.7rem; color: var(--text-dim); margin-top: 4px; line-height: 1.3;
+    }
+    .trakt-comment-box .comment-status {
+      font-size: 0.75rem; margin-top: 4px; font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -368,6 +389,13 @@
           <button onclick="sendReaction('👏')">👏</button>
           <button onclick="sendReaction('😴')">😴</button>
         </div>
+      </div>
+      <div class="trakt-comment-box">
+        <div class="sidebar-title">Trakt Comment</div>
+        <textarea id="traktCommentInput" placeholder="Leave a comment for the Trakt summary…" rows="2" maxlength="1000"></textarea>
+        <button id="traktCommentBtn" onclick="submitTraktComment()">💬 Post Comment</button>
+        <div id="traktCommentStatus" class="comment-status"></div>
+        <div class="comment-note">Posted to Trakt under the host's account when the party ends. Visible publicly on the item's Trakt page.</div>
       </div>
       <div style="margin-top:20px;">
         <button class="btn btn-sm" style="background:var(--surface-hover);width:100%;" onclick="leaveParty()">← Back to Lobby</button>
@@ -816,6 +844,21 @@ function sendReaction(emoji) {
   if (!socket) return;
   socket.emit('reaction', {code: partyCode, user_id: currentUserId, emoji});
   addSystemMsg(emoji);
+}
+
+function submitTraktComment() {
+  const el = document.getElementById('traktCommentInput');
+  const text = el.value.trim();
+  if (!text || !socket) return;
+  const user = allUsers.find(u => u.id === currentUserId);
+  const username = user?.emby_username || user?.trakt_username || 'You';
+  socket.emit('party_comment', {code: partyCode, user_id: currentUserId, text, username});
+  addChatMsg({user_id: currentUserId, username, text, own: true});
+  el.value = '';
+  const status = document.getElementById('traktCommentStatus');
+  status.style.color = 'var(--green)';
+  status.textContent = '✓ Comment saved for Trakt';
+  setTimeout(() => { status.textContent = ''; }, 3000);
 }
 
 function addChatMsg(m) {

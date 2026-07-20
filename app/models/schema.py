@@ -1,6 +1,6 @@
 """Database models shared across all services."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, JSON,
     UniqueConstraint,
@@ -24,8 +24,8 @@ class User(Base):
     trakt_access_token = Column(Text)
     trakt_refresh_token = Column(Text)
     trakt_token_expires = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     # relationships
     ratings = relationship("UserRating", back_populates="user", cascade="all, delete-orphan")
@@ -54,24 +54,9 @@ class QueueItem(Base):
     played = Column(Boolean, default=False)
     played_at = Column(DateTime)
     played_duration_ticks = Column(Integer)  # how long they watched
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     user = relationship("User", back_populates="queue_items")
-
-
-class QueueWeightSnapshot(Base):
-    """Point-in-time snapshot of source weights and play-rate stats.
-
-    One row per _update_weights call so the dashboard can chart
-    how the scoring engine evolves over time.
-    """
-    __tablename__ = "queue_weight_snapshots"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    weights_json = Column(JSON, nullable=False)    # {"watchlist": 10.0, "trending": 6.5, ...}
-    stats_json = Column(JSON)                       # [{source, total, played, play_rate}, ...]
-    snapshot_at = Column(DateTime, default=datetime.utcnow)
 
 
 class QueueBlocklist(Base):
@@ -83,7 +68,7 @@ class QueueBlocklist(Base):
     trakt_id = Column(String(64), nullable=False)
     title = Column(String(512))
     item_type = Column(String(32))
-    blocked_at = Column(DateTime, default=datetime.utcnow)
+    blocked_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     __table_args__ = (
         UniqueConstraint("user_id", "trakt_id", name="uq_blocklist_user_trakt"),
@@ -127,7 +112,7 @@ class Prediction(Base):
     explanation = Column(Text)       # human-readable reason
     overview = Column(Text)          # Emby item description / plot
     features_json = Column(JSON)     # raw feature vector for debugging
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     user = relationship("User", back_populates="predictions")
 
@@ -144,7 +129,7 @@ class MLModel(Base):
     r2 = Column(Float)
     feature_count = Column(Integer)   # number of features model was trained with
     model_path = Column(String(512)) # /app/models/{user_id}_v{version}.pkl
-    trained_at = Column(DateTime, default=datetime.utcnow)
+    trained_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     is_active = Column(Boolean, default=True)
 
 
@@ -163,8 +148,8 @@ class Universe(Base):
     is_custom = Column(Boolean, default=False)
     playlist_enabled = Column(Boolean, default=False)
     custom_name = Column(String(256), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     items = relationship("UniverseItem", back_populates="universe", cascade="all, delete-orphan")
 
@@ -203,7 +188,7 @@ class WatchParty(Base):
     title = Column(String(512))
     status = Column(String(32), default="waiting")  # waiting | playing | paused | ended
     playback_position_ticks = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     ended_at = Column(DateTime)
 
     participants = relationship("WatchPartyParticipant", back_populates="party", cascade="all, delete-orphan")
@@ -215,7 +200,7 @@ class WatchPartyParticipant(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     party_id = Column(Integer, ForeignKey("watch_parties.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    joined_at = Column(DateTime, default=datetime.utcnow)
+    joined_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     is_active = Column(Boolean, default=True)
 
     party = relationship("WatchParty", back_populates="participants")
@@ -234,7 +219,23 @@ class WatchPartyReaction(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     emoji = Column(String(16), nullable=False)
     position_ticks = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+class WatchPartyComment(Base):
+    """User comment submitted during a watch party.
+
+    Aggregated into the end-of-party Trakt comment alongside emoji
+    reactions (see WatchPartyService._post_party_summary_to_trakt).
+    """
+    __tablename__ = "watch_party_comments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    party_id = Column(Integer, ForeignKey("watch_parties.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    username = Column(String(128))
+    comment_text = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +250,7 @@ class RatingBias(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
     total_ratings = Column(Integer)
     analysis_json = Column(JSON)  # full bias report
-    analyzed_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    analyzed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +274,8 @@ class SocialWatching(Base):
     in_library = Column(Boolean, default=False)
     friend_rating = Column(Float)
     influence_score = Column(Float, default=0.0)  # 0-100, % of overlap
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     user = relationship("User", foreign_keys=[user_id])
 
@@ -299,7 +300,7 @@ class LibraryGap(Base):
     priority = Column(String(32), default='medium')  # low | medium | high | critical
     status = Column(String(32), default='open')  # open | dismissed | acquired
     user_rating = Column(Float)
-    detected_at = Column(DateTime, default=datetime.utcnow)
+    detected_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     dismissed_at = Column(DateTime)
 
     user = relationship("User", foreign_keys=[user_id])
@@ -320,7 +321,7 @@ class LibraryHealthReport(Base):
     series_completion_pct = Column(Float)
     acquisition_cost_estimate = Column(Integer)
     report_json = Column(JSON)  # full analysis blob
-    generated_at = Column(DateTime, default=datetime.utcnow)
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     user = relationship("User", foreign_keys=[user_id])
 
@@ -338,7 +339,7 @@ class AppSetting(Base):
 
     key = Column(String(128), primary_key=True)
     value = Column(Text, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class BulkAction(Base):
@@ -351,7 +352,7 @@ class BulkAction(Base):
     item_ids = Column(JSON)  # array of emby IDs
     status = Column(String(32), default='pending')  # pending | in_progress | completed | failed
     result_json = Column(JSON)  # results/errors
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     completed_at = Column(DateTime)
 
     user = relationship("User", foreign_keys=[user_id])

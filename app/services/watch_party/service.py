@@ -21,7 +21,7 @@ from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.schema import WatchParty, WatchPartyParticipant, WatchPartyReaction, User
+from app.models.schema import WatchParty, WatchPartyParticipant, WatchPartyReaction, WatchPartyComment, User
 from app.utils.trakt_client import TraktClient
 from app.utils.emby_client import EmbyClient
 from app.utils.redis_cache import get_redis
@@ -485,13 +485,38 @@ class WatchPartyService:
         except Exception as e:
             log.warning("watch_party.reaction_persist_failed", code=code, error=str(e))
 
+    async def record_comment(self, code: str, user_id: int | None, username: str, comment_text: str) -> None:
+        """Persist a user comment submitted during a watch party so it can
+        be included in the end-of-party Trakt comment. Best-effort."""
+        if not comment_text or not comment_text.strip():
+            return
+        try:
+            r = await get_redis()
+            state = await r.hgetall(f"party:{code}")
+            if not state:
+                return
+            party_id = int(state.get("id", 0))
+            if not party_id:
+                return
+
+            async with async_session() as db:
+                db.add(WatchPartyComment(
+                    party_id=party_id,
+                    user_id=user_id,
+                    username=str(username or "")[:128],
+                    comment_text=str(comment_text).strip()[:1000],
+                ))
+                await db.commit()
+        except Exception as e:
+            log.warning("watch_party.comment_persist_failed", code=code, error=str(e))
+
     async def _post_party_summary_to_trakt(self, party: WatchParty, participant_count: int) -> None:
-        """Aggregate this party's reactions and post a one-line summary
-        comment to Trakt (via the host's account) when the party ends.
+        """Aggregate this party's reactions and user comments, then post a
+        summary comment to Trakt (via the host's account) when the party ends.
 
         Skipped entirely if the host never linked Trakt, if the item can't
         be resolved to a Trakt-recognised ID, or if the party had no
-        reactions and only one participant (nothing worth commenting on).
+        reactions, no comments, and only one participant.
         """
         try:
             async with async_session() as db:
@@ -505,6 +530,12 @@ class WatchPartyService:
                     select(WatchPartyReaction).where(WatchPartyReaction.party_id == party.id)
                 )).scalars().all()
 
+                comments = (await db.execute(
+                    select(WatchPartyComment)
+                    .where(WatchPartyComment.party_id == party.id)
+                    .order_by(WatchPartyComment.created_at)
+                )).scalars().all()
+
                 # Collect participant usernames for the comment
                 participants = (await db.execute(
                     select(WatchPartyParticipant).where(WatchPartyParticipant.party_id == party.id)
@@ -515,11 +546,10 @@ class WatchPartyService:
                         select(User).where(User.id == p.user_id)
                     )).scalar_one_or_none()
                     if u:
-                        # Prefer Emby username, fall back to Trakt username or user ID
                         name = u.emby_username or u.trakt_username or f"User {u.id}"
                         participant_names.append(name)
 
-            if not reactions and participant_count < 2:
+            if not reactions and not comments and participant_count < 2:
                 return
 
             item = await self.emby.get_item_safe(party.emby_item_id, user_id=host.emby_user_id)
@@ -541,6 +571,7 @@ class WatchPartyService:
                 log.warning("watch_party.comment_skip_no_id", party_id=party.id, item_type=item_type)
                 return
 
+            # Build emoji reaction summary
             counts: dict[str, int] = {}
             for r in reactions:
                 counts[r.emoji] = counts.get(r.emoji, 0) + 1
@@ -548,14 +579,24 @@ class WatchPartyService:
                 f"{emoji} x{n}" for emoji, n in sorted(counts.items(), key=lambda kv: -kv[1])
             )
 
+            # Build user comments section
+            # Format: "Name - Their comment." for each user comment
+            comment_lines: list[str] = []
+            for c in comments:
+                name = c.username or f"User {c.user_id or '?'}"
+                comment_lines.append(f"{name} - {c.comment_text}")
+
+            # Assemble full Trakt comment
             if participant_names:
                 names_str = ", ".join(participant_names)
-                comment_parts = [f"Watched with {names_str} in a watch party."]
+                parts = [f"Watched with {names_str} in a watch party."]
             else:
-                comment_parts = [f"Watched with {participant_count} people in a watch party."]
+                parts = [f"Watched with {participant_count} people in a watch party."]
+            if comment_lines:
+                parts.append(" ".join(comment_lines))
             if reaction_summary:
-                comment_parts.append(f"Reactions: {reaction_summary}.")
-            comment = " ".join(comment_parts)
+                parts.append(f"Reactions: {reaction_summary}.")
+            comment = " ".join(parts)
 
             trakt = TraktClient(
                 access_token=host.trakt_access_token,
@@ -565,7 +606,8 @@ class WatchPartyService:
             )
             try:
                 await trakt.post_comment(payload, comment, spoiler=False)
-                log.info("watch_party.trakt_comment_posted", party_id=party.id, reactions=len(reactions))
+                log.info("watch_party.trakt_comment_posted", party_id=party.id,
+                         reactions=len(reactions), comments=len(comments))
             finally:
                 await trakt.close()
         except Exception as e:
@@ -1028,4 +1070,18 @@ async def reaction(sid, data):
     await sio.emit("reaction", data, room=code, skip_sid=sid)
     asyncio.create_task(_sio_watch_party_svc.record_reaction(
         code, data.get("user_id"), data.get("emoji", ""), data.get("position_ticks", 0),
+    ))
+
+
+@sio.event
+async def party_comment(sid, data):
+    """User comment for the Trakt summary: {code, user_id, username, text}.
+
+    Broadcasts to the room as a chat message (so everyone sees it) and
+    persists to DB so it gets included in the end-of-party Trakt comment.
+    """
+    code = data.get("code", "")
+    await sio.emit("chat_message", data, room=code, skip_sid=sid)
+    asyncio.create_task(_sio_watch_party_svc.record_comment(
+        code, data.get("user_id"), data.get("username", ""), data.get("text", ""),
     ))

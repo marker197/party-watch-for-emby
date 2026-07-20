@@ -929,10 +929,10 @@ class SmartQueueService:
 
     async def _cache_overflow(self, user_id: int, items: list[dict]):
         """Cache overflow candidates (ranked 31-60) for real-time backfill."""
-        # Pre-resolve Emby IDs so backfill doesn't need to search later
+        # Reuse Emby IDs already resolved by _resolve_and_filter_played
         resolved = []
         for item in items:
-            emby_id = await self._find_in_emby(item)
+            emby_id = item.get("_resolved_emby_id")
             if emby_id:
                 item["_emby_id"] = emby_id
                 resolved.append(item)
