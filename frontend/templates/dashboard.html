@@ -647,7 +647,7 @@
 
 <div class="header">
   <h1>Emby-Trakt Suite</h1>
-  <span class="version">v1.0.0</span>
+  <span class="version">v2.0.0</span>
   <div class="spacer"></div>
   <button class="theme-toggle" id="themeToggle" onclick="toggleSuiteTheme()">☀️ Light</button>
 </div>
@@ -2512,6 +2512,16 @@ async function loadContinueWatching() {
             : '';
         }
 
+        // Watch Party quick-start button — uses the series emby_id for shows
+        const partyItemId = item.emby_id;
+        const partyTitle = item.title + (item.year ? ' (' + item.year + ')' : '');
+        const partyTicks = item.type === 'show' ? (item.resume_ticks || 0) : (item.position_ticks || 0);
+        const partyPct = item.type === 'show'
+          ? ((item.episodes || []).find(e => e.emby_id === item.resume_emby_id) || {}).progress_pct || pct
+          : pct;
+        const partyDataAttr = encodeURIComponent(JSON.stringify({id: partyItemId, title: partyTitle, ticks: partyTicks, pct: partyPct}));
+        const partyBtn = '<button onclick="quickStartPartyFromBtn(this)" data-party="' + partyDataAttr + '" style="background:none;border:1px solid var(--accent);color:var(--accent);padding:2px 7px;border-radius:4px;cursor:pointer;font-size:0.72rem;white-space:nowrap;" title="Start Watch Party">🎉 Party</button>';
+
         return '<div style="display:flex;align-items:center;gap:12px;padding:8px 10px;border-bottom:1px solid var(--border);">'
           + '<div style="flex:1;min-width:0;">'
           + '<div style="font-weight:600;font-size:0.88rem;">' + item.title + (item.year ? ' <span style="color:var(--text-dim);font-weight:400;">(' + item.year + ')</span>' : '') + imdbLink + '</div>'
@@ -2522,6 +2532,7 @@ async function loadContinueWatching() {
           + '<div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden;"><div style="background:' + barColor + ';height:100%;width:' + Math.min(pct, 100) + '%;border-radius:4px;"></div></div>'
           + '<div style="font-size:0.7rem;color:var(--text-dim);margin-top:2px;">' + pct + '%</div>'
           + '</div>'
+          + partyBtn
           + playBtn
           + '</div>'
           + '</div>';
@@ -2674,6 +2685,148 @@ async function removeTraktPb(playbackId) {
       await syncTraktPlayback();
     }
   } catch(e) { /* ignore */ }
+}
+
+
+// ── Watch Party Quick-Start ──
+
+function quickStartPartyFromBtn(btnEl) {
+  const data = JSON.parse(decodeURIComponent(btnEl.getAttribute('data-party')));
+  quickStartParty(data.id, data.title, data.ticks || 0, data.pct || 0);
+}
+
+async function quickStartParty(embyItemId, itemTitle, resumeTicks, resumePct) {
+  if (!currentUserId) { showToast('Party', 'error', null, 'Select a user first'); return; }
+
+  // Fetch all active server sessions grouped by user
+  let users;
+  try {
+    const r = await fetch(API + '/api/watch-party/server-sessions');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    users = d.users || [];
+  } catch(e) {
+    showToast('Party', 'error', null, 'Failed to fetch sessions: ' + e.message);
+    return;
+  }
+
+  if (!users.length) {
+    showToast('Party', 'error', null, 'No active Emby devices found on the server');
+    return;
+  }
+
+  // Build the multi-user device picker modal
+  let html = '<div id="partyPicker" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;" onclick="if(event.target===this)this.remove()">';
+  html += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px;min-width:320px;max-width:480px;max-height:80vh;overflow-y:auto;">';
+  html += '<div style="font-weight:700;font-size:1rem;margin-bottom:4px;">🎉 Quick Watch Party</div>';
+  html += '<div style="font-size:0.82rem;color:var(--text-dim);margin-bottom:16px;">' + itemTitle + '</div>';
+
+  // Resume vs start-from-beginning toggle
+  const hasResume = resumeTicks > 0;
+  html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:14px;">';
+  html += '<div style="font-size:0.78rem;color:var(--text-dim);margin-bottom:8px;">Start position</div>';
+  html += '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.83rem;margin-bottom:6px;" for="ppResume">';
+  html += '<input type="radio" name="ppStartPos" id="ppResume" value="resume" ' + (hasResume ? 'checked' : '') + ' style="accent-color:var(--accent);" />';
+  html += 'Resume from ' + Math.round(resumePct) + '%';
+  if (!hasResume) html += ' <span style="color:var(--text-dim);font-size:0.72rem;">(no position saved)</span>';
+  html += '</label>';
+  html += '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.83rem;" for="ppBeginning">';
+  html += '<input type="radio" name="ppStartPos" id="ppBeginning" value="beginning" ' + (!hasResume ? 'checked' : '') + ' style="accent-color:var(--accent);" />';
+  html += 'Start from beginning';
+  html += '</label>';
+  html += '</div>';
+
+  html += '<div style="font-size:0.78rem;color:var(--text-dim);margin-bottom:12px;">Select devices to include in the party.</div>';
+
+  users.forEach((u, ui) => {
+    const isCurrentUser = u.db_user_id === currentUserId;
+    html += '<div style="margin-bottom:14px;">';
+    html += '<div style="font-weight:600;font-size:0.88rem;margin-bottom:6px;display:flex;align-items:center;gap:6px;">';
+    html += '<span style="color:var(--accent);">👤</span> ' + u.username;
+    if (isCurrentUser) html += ' <span style="font-size:0.68rem;color:var(--green);font-weight:400;">(you)</span>';
+    html += '</div>';
+
+    u.devices.forEach((d, di) => {
+      const checkId = 'pp_' + ui + '_' + di;
+      const checked = isCurrentUser ? 'checked' : '';
+      const label = d.device_name + (d.client ? ' (' + d.client + ')' : '') + (d.now_playing ? ' — ' + d.now_playing : '');
+      html += '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;cursor:pointer;font-size:0.83rem;" for="' + checkId + '">';
+      html += '<input type="checkbox" id="' + checkId + '" ' + checked + ' data-session-id="' + d.session_id + '" data-db-user-id="' + (u.db_user_id || '') + '" style="accent-color:var(--accent);" />';
+      html += label;
+      html += '</label>';
+    });
+    html += '</div>';
+  });
+
+  html += '<div style="display:flex;gap:8px;margin-top:16px;">';
+  html += '<button onclick="launchQuickParty(\'' + embyItemId + '\',' + resumeTicks + ')" style="flex:1;padding:10px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:0.88rem;">Create &amp; Play</button>';
+  html += '<button onclick="document.getElementById(\'partyPicker\').remove()" style="padding:10px 16px;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;cursor:pointer;font-size:0.85rem;">Cancel</button>';
+  html += '</div>';
+  html += '</div></div>';
+
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+async function launchQuickParty(embyItemId, resumeTicks) {
+  const picker = document.getElementById('partyPicker');
+  const checks = picker.querySelectorAll('input[type="checkbox"]:checked');
+  if (!checks.length) {
+    showToast('Party', 'error', null, 'Select at least one device');
+    return;
+  }
+
+  // Determine start position from radio selection
+  const resumeRadio = picker.querySelector('input[name="ppStartPos"]:checked');
+  const startTicks = (resumeRadio && resumeRadio.value === 'resume') ? resumeTicks : 0;
+
+  // Collect selected session IDs and the set of unique DB user IDs
+  const sessionIds = [];
+  const userIds = new Set();
+  checks.forEach(cb => {
+    sessionIds.push(cb.dataset.sessionId);
+    if (cb.dataset.dbUserId) userIds.add(parseInt(cb.dataset.dbUserId));
+  });
+
+  // Disable button while working
+  const btn = picker.querySelector('button');
+  btn.disabled = true;
+  btn.textContent = 'Creating…';
+
+  try {
+    // 1. Create the party as the current user
+    const createR = await fetch(API + '/party/create', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({host_user_id: currentUserId, emby_item_id: embyItemId}),
+    });
+    if (!createR.ok) { const d = await createR.json(); throw new Error(d.detail || 'Create failed'); }
+    const party = await createR.json();
+    const code = party.code;
+
+    // 2. Join other users to the party
+    for (const uid of userIds) {
+      if (uid === currentUserId) continue;
+      try {
+        await fetch(API + '/party/join', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({code, user_id: uid}),
+        });
+      } catch(e) { /* best-effort join */ }
+    }
+
+    // 3. Start playback on selected sessions
+    const startR = await fetch(API + `/party/${code}/start-selected`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({session_ids: sessionIds, emby_item_id: embyItemId, start_position_ticks: startTicks}),
+    });
+    if (!startR.ok) { const d = await startR.json(); throw new Error(d.detail || 'Start failed'); }
+
+    picker.remove();
+    showToast('🎉 Party ' + code, 'ok', null, 'Playback started on ' + sessionIds.length + ' device' + (sessionIds.length !== 1 ? 's' : ''));
+  } catch(e) {
+    showToast('Party', 'error', null, e.message);
+    btn.disabled = false;
+    btn.textContent = 'Create & Play';
+  }
 }
 
 

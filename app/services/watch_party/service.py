@@ -630,6 +630,7 @@ class WatchPartyService:
 
     async def start_playback_on_sessions(
         self, code: str, session_ids: list[str], emby_item_id: str | None = None,
+        start_position_ticks: int = 0,
     ) -> dict:
         """Start playback on specific sessions only (user-selected devices).
 
@@ -684,7 +685,7 @@ class WatchPartyService:
             controlling_uid = session_map[sid]
             try:
                 await self.emby.play_item_on_session(
-                    sid, item_id, start_position_ticks=0,
+                    sid, item_id, start_position_ticks=start_position_ticks,
                     controlling_user_id=controlling_uid,
                 )
                 started.append(sid)

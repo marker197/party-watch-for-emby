@@ -1195,13 +1195,17 @@ async def list_party_sessions(code: str):
 async def start_selected_playback(code: str, payload: dict):
     """Start playback on specific devices only.
 
-    Payload: {"session_ids": ["sid1", "sid2"], "emby_item_id": "optional_override"}
+    Payload: {"session_ids": ["sid1", "sid2"], "emby_item_id": "optional_override",
+              "start_position_ticks": 0}
     """
     session_ids = payload.get("session_ids", [])
     item_id = payload.get("emby_item_id")
+    start_ticks = int(payload.get("start_position_ticks", 0))
     if not session_ids:
         raise HTTPException(400, "No sessions selected")
-    return await watch_party_svc.start_playback_on_sessions(code, session_ids, item_id)
+    return await watch_party_svc.start_playback_on_sessions(
+        code, session_ids, item_id, start_position_ticks=start_ticks,
+    )
 
 
 @router.post("/party/{code}/pause")
@@ -4674,6 +4678,59 @@ async def play_on_session(request: Request, db: AsyncSession = Depends(get_db)):
         return {"status": "error", "message": f"Play failed: {str(e)[:100]}"}
     finally:
         await emby.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Watch Party Quick-Start — server-wide session enumeration
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/watch-party/server-sessions")
+async def watch_party_server_sessions(db: AsyncSession = Depends(get_db)):
+    """Return all active controllable Emby sessions grouped by server user.
+
+    Used by the one-click Watch Party launcher on the Continue Watching
+    panel.  Returns every user who has at least one remote-controllable
+    device online, with their devices listed underneath.
+    """
+    emby = EmbyClient()
+    try:
+        all_sessions = await emby.get_sessions()
+    except Exception as e:
+        log.warning("watch_party.server_sessions_failed", error=str(e)[:200])
+        raise HTTPException(502, "Failed to fetch Emby sessions")
+    finally:
+        await emby.close()
+
+    # Build a mapping of emby_user_id → DB user for display names + DB IDs
+    db_users = (await db.execute(select(User))).scalars().all()
+    by_emby_id = {u.emby_user_id: u for u in db_users}
+
+    # Group sessions by UserId
+    user_sessions: dict[str, dict] = {}  # emby_user_id → {info + devices}
+    for s in all_sessions:
+        uid = s.get("UserId")
+        if not uid:
+            continue
+        if not s.get("SupportsRemoteControl", False):
+            continue
+
+        if uid not in user_sessions:
+            db_user = by_emby_id.get(uid)
+            user_sessions[uid] = {
+                "emby_user_id": uid,
+                "db_user_id": db_user.id if db_user else None,
+                "username": s.get("UserName") or (db_user.emby_username if db_user else "Unknown"),
+                "devices": [],
+            }
+
+        user_sessions[uid]["devices"].append({
+            "session_id": s.get("Id"),
+            "device_name": s.get("DeviceName", "Unknown"),
+            "client": s.get("Client", ""),
+            "now_playing": s.get("NowPlayingItem", {}).get("Name"),
+        })
+
+    return {"users": list(user_sessions.values())}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
