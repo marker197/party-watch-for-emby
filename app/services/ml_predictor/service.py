@@ -90,7 +90,7 @@ def normalize_genres(genres: list) -> list[str]:
 
 class MLPredictorService:
     def __init__(self):
-        self.emby = EmbyClient()
+        self.emby = None
         self._genre_binarizer = MultiLabelBinarizer(classes=ALL_GENRES)
         self._genre_binarizer.fit([ALL_GENRES])
         # These get populated per-user during training
@@ -105,21 +105,39 @@ class MLPredictorService:
     async def train_for_all_users(self):
         """Scheduler entry point — retrain models for every linked user."""
         log.info("ml_predictor.train_start")
-        async with async_session() as db:
-            users = (await db.execute(
-                select(User).where(User.trakt_access_token.isnot(None))
-            )).scalars().all()
+        self.emby = EmbyClient()
+        try:
+            async with async_session() as db:
+                users = (await db.execute(
+                    select(User).where(User.trakt_access_token.isnot(None))
+                )).scalars().all()
 
-        for user in users:
-            try:
-                await self.train_for_user(user)
-            except Exception:
-                log.exception("ml_predictor.train_error", user_id=user.id)
+            for user in users:
+                try:
+                    await self.train_for_user(user)
+                except Exception:
+                    log.exception("ml_predictor.train_error", user_id=user.id)
 
-        log.info("ml_predictor.train_complete", users=len(users))
+            log.info("ml_predictor.train_complete", users=len(users))
+        finally:
+            if self.emby:
+                await self.emby.close()
+                self.emby = None
 
     async def train_for_user(self, user: User) -> dict:
         """Full pipeline: fetch → cache → featurize → train → predict → persist."""
+        owned = self.emby is None
+        if owned:
+            self.emby = EmbyClient()
+        try:
+            return await self._train_for_user_inner(user)
+        finally:
+            if owned and self.emby:
+                await self.emby.close()
+                self.emby = None
+
+    async def _train_for_user_inner(self, user: User) -> dict:
+        """Internal training pipeline."""
         # Token refresh callback
         async def on_token_refresh(access, refresh, expires):
             async with async_session() as db:

@@ -33,8 +33,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["Extended Features"])
 
 # Stateless singletons (no per-user auth needed)
-emby_client = EmbyClient()
 cache = LibraryCache()
+
+
+def _get_emby_client() -> EmbyClient:
+    """Create a fresh EmbyClient per-request — avoids stale connections."""
+    return EmbyClient()
 
 
 async def _get_user_trakt(user_id: int, db: AsyncSession) -> TraktClient:
@@ -85,13 +89,17 @@ async def get_friends_watching_now(
         }, ...]
     """
     try:
+        _emby = _get_emby_client()
         trakt_client = await _get_user_trakt(user_id, db)
-        service = SocialWatchingService(db, trakt_client, emby_client)
+        service = SocialWatchingService(db, trakt_client, _emby)
         result = await service.get_friends_watching_now(user_id, limit)
         return {"success": True, "data": result}
     except Exception as e:
         logger.error(f"Error in get_friends_watching_now: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 @router.get("/social/influence-leaderboard/{user_id}")
@@ -115,13 +123,17 @@ async def get_influence_leaderboard(
         }, ...]
     """
     try:
+        _emby = _get_emby_client()
         trakt_client = await _get_user_trakt(user_id, db)
-        service = SocialWatchingService(db, trakt_client, emby_client)
+        service = SocialWatchingService(db, trakt_client, _emby)
         leaderboard = await service.create_social_leaderboard(user_id, limit)
         return {"success": True, "leaderboard": leaderboard}
     except Exception as e:
         logger.error(f"Error in get_influence_leaderboard: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 @router.get("/social/overlap/{user_id}/{friend_username}")
@@ -143,13 +155,17 @@ async def get_library_overlap(
         }
     """
     try:
+        _emby = _get_emby_client()
         trakt_client = await _get_user_trakt(user_id, db)
-        service = SocialWatchingService(db, trakt_client, emby_client)
+        service = SocialWatchingService(db, trakt_client, _emby)
         overlap = await service.get_library_overlap(user_id, friend_username)
         return {"success": True, "overlap": overlap}
     except Exception as e:
         logger.error(f"Error in get_library_overlap: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 @router.post("/social/sync-mode/{user_id}/{friend_username}")
@@ -180,6 +196,9 @@ async def enable_social_sync_mode(
     except Exception as e:
         logger.error(f"Error in enable_social_sync_mode: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 @router.post("/social/refresh/{user_id}")
@@ -198,13 +217,17 @@ async def refresh_social_graph(
         }
     """
     try:
+        _emby = _get_emby_client()
         trakt_client = await _get_user_trakt(user_id, db)
-        service = SocialWatchingService(db, trakt_client, emby_client)
+        service = SocialWatchingService(db, trakt_client, _emby)
         result = await service.sync_friend_activity(user_id)
         return {"success": True, "data": result}
     except Exception as e:
         logger.error(f"Error in refresh_social_graph: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 # ============================================================================
@@ -248,6 +271,9 @@ async def get_health_report(
     except Exception as e:
         logger.error(f"Error in get_health_report: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 @router.get("/health/gaps/{user_id}")
@@ -307,6 +333,9 @@ async def get_library_gaps(
     except Exception as e:
         logger.error(f"Error in get_library_gaps: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 @router.get("/health/incomplete-series/{user_id}")
@@ -334,8 +363,9 @@ async def get_incomplete_series(
         }, ...]
     """
     try:
+        _emby = _get_emby_client()
         trakt_client = await _get_user_trakt(user_id, db)
-        monitor = LibraryHealthMonitor(db, trakt_client, emby_client, cache)
+        monitor = LibraryHealthMonitor(db, trakt_client, _emby, cache)
         series = await monitor.detect_incomplete_series(user_id)
 
         # Filter by completion
@@ -349,6 +379,9 @@ async def get_incomplete_series(
     except Exception as e:
         logger.error(f"Error in get_incomplete_series: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 @router.get("/health/orphaned-episodes/{user_id}")
@@ -372,8 +405,9 @@ async def get_orphaned_episodes(
         }, ...]
     """
     try:
+        _emby = _get_emby_client()
         trakt_client = await _get_user_trakt(user_id, db)
-        monitor = LibraryHealthMonitor(db, trakt_client, emby_client, cache)
+        monitor = LibraryHealthMonitor(db, trakt_client, _emby, cache)
         orphaned = await monitor.find_orphaned_episodes(user_id)
 
         return {
@@ -384,6 +418,9 @@ async def get_orphaned_episodes(
     except Exception as e:
         logger.error(f"Error in get_orphaned_episodes: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 @router.get("/health/acquisitions/{user_id}")
@@ -407,8 +444,9 @@ async def get_acquisition_recommendations(
         }, ...]
     """
     try:
+        _emby = _get_emby_client()
         trakt_client = await _get_user_trakt(user_id, db)
-        monitor = LibraryHealthMonitor(db, trakt_client, emby_client, cache)
+        monitor = LibraryHealthMonitor(db, trakt_client, _emby, cache)
         recommendations = await monitor.acquisition_recommendations(user_id, limit)
 
         if priority:
@@ -422,6 +460,9 @@ async def get_acquisition_recommendations(
     except Exception as e:
         logger.error(f"Error in get_acquisition_recommendations: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 @router.post("/health/analyze/{user_id}")
@@ -441,8 +482,9 @@ async def analyze_library_health(
         }
     """
     try:
+        _emby = _get_emby_client()
         trakt_client = await _get_user_trakt(user_id, db)
-        monitor = LibraryHealthMonitor(db, trakt_client, emby_client, cache)
+        monitor = LibraryHealthMonitor(db, trakt_client, _emby, cache)
         report = await monitor.generate_health_report(user_id)
 
         return {
@@ -453,6 +495,9 @@ async def analyze_library_health(
     except Exception as e:
         logger.error(f"Error in analyze_library_health: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 # ============================================================================
@@ -560,6 +605,9 @@ async def get_bulk_action_status(
     except Exception as e:
         logger.error(f"Error in get_bulk_action_status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 @router.get("/bulk/history/{user_id}")
@@ -613,6 +661,9 @@ async def get_bulk_action_history(
     except Exception as e:
         logger.error(f"Error in get_bulk_action_history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if "_emby" in dir():
+            await _emby.close()
 
 
 # ============================================================================

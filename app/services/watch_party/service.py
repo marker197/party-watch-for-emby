@@ -30,20 +30,15 @@ from app.utils.database import async_session
 log = structlog.get_logger()
 
 # Socket.IO server — attached to the main ASGI app later
-# CORS: python-socketio doesn't support regex origins, and browser
-# extensions use random UUIDs that can't be enumerated.  Use the
-# ALLOWED_ORIGINS env var when set (LAN IPs), otherwise allow all.
-# Party codes + auth provide the real access control layer.
-def _sio_allowed_origins():
-    import os
-    raw = os.environ.get("ALLOWED_ORIGINS", "")
-    if not raw or raw.strip() == "*":
-        return "*"
-    return [o.strip() for o in raw.split(",") if o.strip()]
+# CORS: Always allow all origins for Socket.IO connections.
+# Party codes + auth provide the real access control layer, and
+# restricting origins here causes 403 on WebSocket upgrades when
+# the browser's Origin header doesn't exactly match the allowed
+# list (common with LAN IPs, proxies, and mixed http/https).
 
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins=_sio_allowed_origins(),
+    cors_allowed_origins="*",
     logger=False,
     engineio_logger=False,
 )
@@ -231,7 +226,7 @@ class WatchPartyService:
             # Update database
             await db.execute(
                 update(WatchParty).where(WatchParty.id == party_id).values(
-                    status="ended", ended_at=datetime.now(timezone.utc)
+                    status="ended", ended_at=datetime.now(timezone.utc).replace(tzinfo=None)
                 )
             )
             await db.commit()
@@ -247,13 +242,16 @@ class WatchPartyService:
             try:
                 sessions = await self.emby.get_sessions()
                 for session in sessions:
-                    if session.get("UserId", "") not in participant_emby_ids:
+                    session_user = session.get("UserId", "")
+                    if session_user not in participant_emby_ids:
                         continue
                     sid = session.get("Id", "")
                     if not sid or not session.get("NowPlayingItem"):
                         continue
                     try:
-                        await self.emby.send_play_command(sid, "Stop")
+                        await self.emby.send_play_command(
+                            sid, "Stop", controlling_user_id=session_user,
+                        )
                         stopped += 1
                     except Exception:
                         pass

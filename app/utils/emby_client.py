@@ -402,10 +402,22 @@ class EmbyClient:
 
     # -- Playback control (for watch-party sync) -----------------------------
 
-    async def send_play_command(self, session_id: str, command: str) -> None:
-        """command: PlayPause | Stop | Seek | etc."""
+    async def send_play_command(
+        self, session_id: str, command: str,
+        controlling_user_id: str | None = None,
+    ) -> None:
+        """command: PlayPause | Stop | Seek | etc.
+
+        ControllingUserId tells Emby who is issuing the remote command.
+        Without it, some Emby clients silently ignore the command even
+        though the server returns 204.
+        """
+        params: dict[str, Any] = {}
+        if controlling_user_id:
+            params["ControllingUserId"] = controlling_user_id
         await self._post(
             f"/Sessions/{session_id}/Playing/{command}",
+            params=params if params else None,
         )
 
     async def play_item_on_session(

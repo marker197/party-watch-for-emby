@@ -325,7 +325,7 @@ class UniverseDiscoveryService:
     _scan_running = False
 
     def __init__(self):
-        self.emby = EmbyClient()
+        self.emby = None
 
     # -----------------------------------------------------------------------
     # Public entry points
@@ -337,6 +337,7 @@ class UniverseDiscoveryService:
             log.warning("universe_discovery.scan_skip", reason="already_running")
             return
         UniverseDiscoveryService._scan_running = True
+        self.emby = EmbyClient()
         try:
             log.info("universe_discovery.scan_start")
             await self._seed_universes()
@@ -347,6 +348,9 @@ class UniverseDiscoveryService:
             log.info("universe_discovery.scan_complete")
         finally:
             UniverseDiscoveryService._scan_running = False
+            if self.emby:
+                await self.emby.close()
+                self.emby = None
 
     async def get_universes(self) -> list[dict]:
         """Return all universes with item counts + library match stats."""

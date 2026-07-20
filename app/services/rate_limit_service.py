@@ -97,7 +97,7 @@ class RateLimitService:
         config.period_seconds = period_seconds
         config.limit_value = limit_value
         config.modified_by = modified_by
-        config.modified_at = datetime.now(timezone.utc)
+        config.modified_at = datetime.now(timezone.utc).replace(tzinfo=None)
         
         await db.commit()
         await db.refresh(config)
@@ -125,7 +125,7 @@ class RateLimitService:
         
         config.enabled = enabled
         config.modified_by = modified_by
-        config.modified_at = datetime.now(timezone.utc)
+        config.modified_at = datetime.now(timezone.utc).replace(tzinfo=None)
         
         await db.commit()
         await db.refresh(config)
@@ -150,7 +150,7 @@ class RateLimitService:
                 existing.limit_value = config["value"]
                 existing.enabled = True
                 existing.modified_by = modified_by
-                existing.modified_at = datetime.now(timezone.utc)
+                existing.modified_at = datetime.now(timezone.utc).replace(tzinfo=None)
         
         await db.commit()
         log.info("rate_limits.reset_to_defaults", modified_by=modified_by)

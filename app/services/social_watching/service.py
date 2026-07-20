@@ -89,8 +89,8 @@ class SocialWatchingService:
                         social_record.current_item_title = watching.get('item', {}).get('title')
                         social_record.current_item_trakt_id = str(watching.get('item', {}).get('ids', {}).get('trakt'))
                         social_record.item_type = watching.get('type')  # 'movie' or 'episode'
-                        social_record.started_at = datetime.now(timezone.utc)
-                        social_record.last_seen_at = datetime.now(timezone.utc)
+                        social_record.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                        social_record.last_seen_at = datetime.now(timezone.utc).replace(tzinfo=None)
                         social_record.friend_rating = watching.get('rating')
 
                         # Check if item is in user's library
@@ -104,9 +104,9 @@ class SocialWatchingService:
                     else:
                         # Friend not currently watching
                         social_record.is_watching = False
-                        social_record.last_seen_at = datetime.now(timezone.utc)
+                        social_record.last_seen_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
-                    social_record.updated_at = datetime.now(timezone.utc)
+                    social_record.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
                     self.db.add(social_record)
                     synced_friends.append({
                         "username": friend_username,

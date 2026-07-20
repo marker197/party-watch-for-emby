@@ -1370,8 +1370,7 @@ async function _pollForQueueDone() {
 let _dlPollTimer = null;
 let _realtimeTimer = null;
 let _dlMode = 'idle'; // idle | normal | realtime
-// Map of download_id (nzo_id) → {tmdb_id?, tvdb_id?} built during full render
-let _activeNzoMap = {};
+let _patchInFlight = false; // guard against overlapping 500ms fetches
 
 function toggleQueue() {
   const panel = document.getElementById('queuePanel');
@@ -1405,6 +1404,7 @@ function _startRealtimePoll() {
   // Stop normal poll, start 500ms SAB-only poll
   if (_dlPollTimer) { clearInterval(_dlPollTimer); _dlPollTimer = null; }
   _dlMode = 'realtime';
+  _patchInFlight = false;
   _realtimeTimer = setInterval(_patchProgress, 500);
 }
 
@@ -1412,10 +1412,12 @@ function _stopAllPolling() {
   if (_dlPollTimer) { clearInterval(_dlPollTimer); _dlPollTimer = null; }
   if (_realtimeTimer) { clearInterval(_realtimeTimer); _realtimeTimer = null; }
   _dlMode = 'idle';
-  _activeNzoMap = {};
+  _patchInFlight = false;
 }
 
 async function _patchProgress() {
+  if (_patchInFlight) return; // skip if previous fetch still running
+  _patchInFlight = true;
   try {
     const r = await fetch(API + '/api/download-progress');
     if (!r.ok) return;
@@ -1423,9 +1425,9 @@ async function _patchProgress() {
 
     if (d.count === 0) {
       // Downloads finished — do one full refresh, resume normal polling
-      _dlMode = 'idle';
       if (_realtimeTimer) { clearInterval(_realtimeTimer); _realtimeTimer = null; }
-      await viewQueue();
+      _dlMode = 'idle';
+      await viewQueue(true); // skipTransition — don't re-enter realtime
       refreshDownloadsCard();
       if (document.getElementById('queuePanel').style.display !== 'none') {
         _startNormalPoll();
@@ -1434,14 +1436,15 @@ async function _patchProgress() {
     }
 
     const slots = d.slots || {};
-    // Patch queue panel progress bars by data-nzo
+    // Patch queue panel + downloads card progress bars by data-nzo
     document.querySelectorAll('[data-nzo]').forEach(el => {
       const nzo = el.getAttribute('data-nzo');
       const sab = slots[nzo];
       if (!sab) return;
       const fill = el.querySelector('.dl-progress-fill');
       const text = el.querySelector('.dl-progress-text');
-      const meta = el.querySelector('.dl-meta');
+      // dl-meta is a sibling, not a child — walk up to parent then find it
+      const meta = el.parentElement ? el.parentElement.querySelector('.dl-meta') : null;
       if (fill) fill.style.width = sab.progress + '%';
       if (text) text.textContent = sab.progress.toFixed(0) + '%';
       if (meta) {
@@ -1453,9 +1456,10 @@ async function _patchProgress() {
       }
     });
   } catch { /* silent */ }
+  finally { _patchInFlight = false; }
 }
 
-async function viewQueue() {
+async function viewQueue(skipTransition) {
   if (!currentUserId) return alert('Select a user first');
   try {
     const [qr, dlr, arrr] = await Promise.all([
@@ -1602,15 +1606,16 @@ async function viewQueue() {
       '</tbody></table>';
 
     // Transition to realtime mode if any downloads are active
-    const hasDownloads = document.querySelectorAll('[data-nzo]').length > 0;
-    if (hasDownloads && _dlMode !== 'realtime') {
-      _startRealtimePoll();
-    } else if (!hasDownloads && _dlMode === 'realtime') {
-      // No downloads left — realtime poll will catch this too,
-      // but handle the edge case where full render shows 0 downloads
-      if (_realtimeTimer) { clearInterval(_realtimeTimer); _realtimeTimer = null; }
-      if (document.getElementById('queuePanel').style.display !== 'none') {
-        _startNormalPoll();
+    // (skip when called from _patchProgress to prevent re-entry loop)
+    if (!skipTransition) {
+      const hasDownloads = document.querySelectorAll('[data-nzo]').length > 0;
+      if (hasDownloads && _dlMode !== 'realtime') {
+        _startRealtimePoll();
+      } else if (!hasDownloads && _dlMode === 'realtime') {
+        if (_realtimeTimer) { clearInterval(_realtimeTimer); _realtimeTimer = null; }
+        if (document.getElementById('queuePanel').style.display !== 'none') {
+          _startNormalPoll();
+        }
       }
     }
   } catch(e) {

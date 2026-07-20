@@ -143,7 +143,7 @@ async def trakt_poll(request: Request, body: LinkPollRequest, db: AsyncSession =
 
     user.trakt_access_token = token_data["access_token"]
     user.trakt_refresh_token = token_data["refresh_token"]
-    user.trakt_token_expires = datetime.now(timezone.utc) + timedelta(seconds=token_data.get("expires_in", 7776000))
+    user.trakt_token_expires = (datetime.now(timezone.utc) + timedelta(seconds=token_data.get("expires_in", 7776000))).replace(tzinfo=None)
 
     # fetch trakt username
     authed = TraktClient(access_token=token_data["access_token"])
@@ -2861,9 +2861,9 @@ async def _put_setting(db: AsyncSession, key: str, value: str):
     row = (await db.execute(select(AppSetting).where(AppSetting.key == key))).scalar_one_or_none()
     if row:
         row.value = value
-        row.updated_at = datetime.now(timezone.utc)
+        row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     else:
-        db.add(AppSetting(key=key, value=value, updated_at=datetime.now(timezone.utc)))
+        db.add(AppSetting(key=key, value=value, updated_at=datetime.now(timezone.utc).replace(tzinfo=None)))
 
 
 @router.get("/api/settings")

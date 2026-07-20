@@ -502,14 +502,16 @@ class AiringAlertsService:
                     if info.get("emby_item_id")]
         emby_data: dict[str, dict] = {}
         if emby_ids:
+            emby = EmbyClient()
             try:
-                emby = EmbyClient()
                 items = await emby.get_user_items_by_ids(emby_user_id, emby_ids)
                 for item in items:
                     emby_data[str(item.get("Id", ""))] = item
             except Exception:
                 log.warning("binge_planner.emby_fetch_failed")
                 return plans
+            finally:
+                await emby.close()
 
         for trakt_id, info in finale_shows.items():
             eid = info["emby_item_id"]
@@ -786,7 +788,10 @@ class AiringAlertsService:
 
         try:
             emby = EmbyClient()
-            country = await emby.get_metadata_country()
+            try:
+                country = await emby.get_metadata_country()
+            finally:
+                await emby.close()
         except Exception:
             log.warning("airing_alerts.server_country_failed")
             country = "us"

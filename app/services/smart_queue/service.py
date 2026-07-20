@@ -51,23 +51,41 @@ SOURCE_QUOTAS = {
 
 class SmartQueueService:
     def __init__(self):
-        self.emby = EmbyClient()
+        self.emby = None
+
+    async def _ensure_emby(self):
+        """Create a fresh EmbyClient if not already open."""
+        if self.emby is None:
+            self.emby = EmbyClient()
+
+    async def _close_emby(self):
+        """Close the EmbyClient if open."""
+        if self.emby is not None:
+            try:
+                await self.emby.close()
+            except Exception:
+                pass
+            self.emby = None
 
     async def run_for_all_users(self):
         """Main entry point called by scheduler."""
         log.info("smart_queue.run_start")
-        async with async_session() as db:
-            users = (await db.execute(
-                select(User).where(User.trakt_access_token.isnot(None))
-            )).scalars().all()
+        await self._ensure_emby()
+        try:
+            async with async_session() as db:
+                users = (await db.execute(
+                    select(User).where(User.trakt_access_token.isnot(None))
+                )).scalars().all()
 
-        for user in users:
-            try:
-                await self._update_user_queue(user)
-            except Exception:
-                log.exception("smart_queue.user_error", user_id=user.id)
+            for user in users:
+                try:
+                    await self._update_user_queue(user)
+                except Exception:
+                    log.exception("smart_queue.user_error", user_id=user.id)
 
-        log.info("smart_queue.run_complete", users_processed=len(users))
+            log.info("smart_queue.run_complete", users_processed=len(users))
+        finally:
+            await self._close_emby()
 
     async def _update_user_queue(self, user: User):
         # Token refresh callback
@@ -296,9 +314,9 @@ class SmartQueueService:
     async def _load_staleness(self, user_id: int) -> dict[str, int]:
         """Load per-item staleness counters (trakt_id → consecutive refresh count)."""
         try:
-            raw = await cache_get(f"queue_staleness:{user_id}")
-            if raw:
-                return json.loads(raw) if isinstance(raw, str) else raw
+            data = await cache_get(f"queue_staleness:{user_id}")
+            if data and isinstance(data, dict):
+                return data
         except Exception:
             pass
         return {}
@@ -314,7 +332,7 @@ class SmartQueueService:
 
     async def _save_staleness(self, user_id: int, staleness: dict[str, int]):
         """Persist staleness counters to Redis."""
-        await cache_set(f"queue_staleness:{user_id}", json.dumps(staleness), ttl=86400 * 30)
+        await cache_set(f"queue_staleness:{user_id}", staleness, ttl=86400 * 30)
 
     def _score_candidates(self, candidates: list[dict], weights: dict,
                           staleness: dict[str, int] | None = None) -> list[dict]:
@@ -419,12 +437,15 @@ class SmartQueueService:
         ROTATE_COUNT = 3
 
         try:
-            raw = await cache_get(f"queue_overflow:{user_id}")
-            if not raw:
-                return top
-            overflow = json.loads(raw) if isinstance(raw, str) else raw
+            overflow = await cache_get(f"queue_overflow:{user_id}")
             if not overflow:
                 return top
+            # Safety: stale Redis entries from before the double-encoding fix
+            # may still be strings — decode them once, then they'll be
+            # overwritten with correct format on next _cache_overflow call
+            if isinstance(overflow, str):
+                import json
+                overflow = json.loads(overflow)
         except Exception:
             return top
 
@@ -464,7 +485,7 @@ class SmartQueueService:
         new_top.sort(key=lambda c: c.get("score", 0), reverse=True)
 
         # Update overflow cache (items removed)
-        await cache_set(f"queue_overflow:{user_id}", json.dumps(overflow), ttl=86400)
+        await cache_set(f"queue_overflow:{user_id}", overflow, ttl=86400)
 
         log.info("smart_queue.overflow_rotation",
                  user_id=user_id,
@@ -642,9 +663,8 @@ class SmartQueueService:
     async def _get_s01e01_setting(self) -> bool:
         """Read the S01E01 toggle from Redis (queue_settings key)."""
         try:
-            raw = await cache_get("queue_settings")
-            if raw:
-                data = json.loads(raw) if isinstance(raw, str) else raw
+            data = await cache_get("queue_settings")
+            if data and isinstance(data, dict):
                 return bool(data.get("s01e01_only", False))
         except Exception:
             pass
@@ -691,10 +711,13 @@ class SmartQueueService:
         Failures are logged but never block the queue refresh.
         """
         try:
-            raw = await cache_get("auto_send_settings")
-            if not raw:
+            send_settings = await cache_get("auto_send_settings")
+            if not send_settings:
                 return
-            send_settings = json.loads(raw) if isinstance(raw, str) else raw
+            # Safety: stale double-encoded entries are strings
+            if isinstance(send_settings, str):
+                import json
+                send_settings = json.loads(send_settings)
         except Exception:
             return
 
@@ -800,9 +823,9 @@ class SmartQueueService:
     async def _load_weights(self, user_id: int) -> dict:
         """Load per-user learned weights from Redis, or return defaults."""
         try:
-            raw = await cache_get(f"queue_weights:{user_id}")
-            if raw:
-                return json.loads(raw) if isinstance(raw, str) else raw
+            data = await cache_get(f"queue_weights:{user_id}")
+            if data and isinstance(data, dict):
+                return data
         except Exception:
             pass
         return dict(DEFAULT_WEIGHTS)
@@ -826,7 +849,7 @@ class SmartQueueService:
                 return  # not a queue recommendation
 
             item.played = True
-            item.played_at = datetime.now(timezone.utc)
+            item.played_at = datetime.now(timezone.utc).replace(tzinfo=None)
             item.played_duration_ticks = duration_ticks
             await db.commit()
 
@@ -914,24 +937,25 @@ class SmartQueueService:
                 item["_emby_id"] = emby_id
                 resolved.append(item)
         if resolved:
-            await cache_set(f"queue_overflow:{user_id}", json.dumps(resolved), ttl=86400)
+            await cache_set(f"queue_overflow:{user_id}", resolved, ttl=86400)
             log.info("smart_queue.overflow_cached", user_id=user_id, count=len(resolved))
 
     async def _pop_best_overflow(self, user_id: int, min_score: float) -> dict | None:
         """Pop the highest-scoring overflow item that beats min_score."""
-        raw = await cache_get(f"queue_overflow:{user_id}")
-        if not raw:
-            return None
-        items = json.loads(raw) if isinstance(raw, str) else raw
+        items = await cache_get(f"queue_overflow:{user_id}")
         if not items:
             return None
+        # Safety: stale double-encoded entries are strings
+        if isinstance(items, str):
+            import json
+            items = json.loads(items)
 
         # Already sorted by score descending from the full run
         best = items[0]
         if best.get("score", 0) >= min_score:
             # Remove it from overflow
             items.pop(0)
-            await cache_set(f"queue_overflow:{user_id}", json.dumps(items), ttl=86400)
+            await cache_set(f"queue_overflow:{user_id}", items, ttl=86400)
             return best
         return None
 
@@ -951,6 +975,13 @@ class SmartQueueService:
           3. If overflow is empty or too low-scoring, pull fresh trending
           4. Re-sync the Emby playlist (excludes played items)
         """
+        await self._ensure_emby()
+        try:
+            await self._remove_and_backfill_inner(user_id, emby_item_id)
+        finally:
+            await self._close_emby()
+
+    async def _remove_and_backfill_inner(self, user_id: int, emby_item_id: str):
         async with async_session() as db:
             # Confirm the item exists and is played — we keep it for history
             watched = (await db.execute(
@@ -1064,29 +1095,35 @@ class SmartQueueService:
 
     async def _resync_playlist_from_db(self, user_id: int):
         """Rebuild the Emby playlist from current DB queue state."""
-        async with async_session() as db:
-            user = (await db.execute(
-                select(User).where(User.id == user_id)
-            )).scalar_one_or_none()
-            if not user:
-                return
+        owned = self.emby is None
+        await self._ensure_emby()
+        try:
+            async with async_session() as db:
+                user = (await db.execute(
+                    select(User).where(User.id == user_id)
+                )).scalar_one_or_none()
+                if not user:
+                    return
 
-            items = (await db.execute(
-                select(QueueItem)
-                .where(
-                    QueueItem.user_id == user_id,
-                    QueueItem.played == False,
+                items = (await db.execute(
+                    select(QueueItem)
+                    .where(
+                        QueueItem.user_id == user_id,
+                        QueueItem.played == False,
+                    )
+                    .order_by(QueueItem.score.desc())
+                )).scalars().all()
+
+            emby_ids = [item.emby_item_id for item in items
+                        if item.emby_item_id and item.in_library is not False]
+            if emby_ids:
+                await self.emby.recreate_playlist(
+                    "🎯 Smart Up Next", emby_ids, user_id=user.emby_user_id,
                 )
-                .order_by(QueueItem.score.desc())
-            )).scalars().all()
-
-        emby_ids = [item.emby_item_id for item in items
-                    if item.emby_item_id and item.in_library is not False]
-        if emby_ids:
-            await self.emby.recreate_playlist(
-                "🎯 Smart Up Next", emby_ids, user_id=user.emby_user_id,
-            )
-            log.info("smart_queue.playlist_resynced", user_id=user_id, count=len(emby_ids))
+                log.info("smart_queue.playlist_resynced", user_id=user_id, count=len(emby_ids))
+        finally:
+            if owned:
+                await self._close_emby()
 
     # ===================================================================
     # Watched history filter

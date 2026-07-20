@@ -54,6 +54,7 @@ class ScrobbleAuditService:
             result = await self._compare(trakt, emby, user)
         finally:
             await trakt.close()
+            await emby.close()
 
         # Cache result
         try:
