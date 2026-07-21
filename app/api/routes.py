@@ -4360,6 +4360,134 @@ async def import_mdblist_list(payload: dict, db: AsyncSession = Depends(get_db))
     }
 
 
+# -- Trakt synced list tracking (mirrors MDBList pattern) ------------------
+
+@router.get("/api/trakt-lists/synced")
+async def get_trakt_synced(db: AsyncSession = Depends(get_db)):
+    """Return Trakt lists that have been imported and are tracked for sync."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get("trakt_synced_lists")
+    if not raw:
+        raw = await _get_setting(db, "trakt_synced_lists", "[]")
+        if raw and raw != "[]":
+            await r.set("trakt_synced_lists", raw)
+    synced = _json.loads(raw) if raw else []
+    return {"synced": synced}
+
+
+@router.post("/api/trakt-lists/track")
+async def track_trakt_list(payload: dict, db: AsyncSession = Depends(get_db)):
+    """Add or update a Trakt list in synced tracking after import."""
+    import json as _json
+    slug = (payload.get("list_slug") or "").strip()
+    if not slug:
+        raise HTTPException(400, "list_slug required")
+
+    playlist_name = (payload.get("playlist_name") or "").strip()
+    description = (payload.get("description") or "").strip()
+    username = (payload.get("username") or "").strip() or "me"
+    matched = payload.get("matched", 0)
+
+    r = await get_redis()
+    raw = await r.get("trakt_synced_lists")
+    synced = _json.loads(raw) if raw else []
+
+    entry_found = False
+    for entry in synced:
+        if entry.get("slug") == slug:
+            entry["playlist_name"] = playlist_name or entry.get("playlist_name", "")
+            entry["description"] = description or entry.get("description", "")
+            entry["username"] = username
+            entry["last_synced"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            entry["matched"] = matched
+            entry_found = True
+            break
+
+    if not entry_found:
+        synced.append({
+            "slug": slug,
+            "playlist_name": playlist_name or f"📋 {slug}",
+            "description": description,
+            "username": username,
+            "last_synced": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "matched": matched,
+            "auto_sync": True,
+        })
+
+    await r.set("trakt_synced_lists", _json.dumps(synced))
+    await _put_setting(db, "trakt_synced_lists", _json.dumps(synced))
+    await db.commit()
+    return {"status": "ok", "slug": slug}
+
+
+@router.put("/api/trakt-lists/synced/{slug}/auto-sync")
+async def toggle_trakt_auto_sync(slug: str, payload: dict, db: AsyncSession = Depends(get_db)):
+    """Toggle auto-sync for a tracked Trakt list."""
+    import json as _json
+    enabled = payload.get("enabled", True)
+    r = await get_redis()
+    raw = await r.get("trakt_synced_lists")
+    synced = _json.loads(raw) if raw else []
+
+    for entry in synced:
+        if entry.get("slug") == slug:
+            entry["auto_sync"] = enabled
+            break
+    else:
+        raise HTTPException(404, "List not tracked")
+
+    await r.set("trakt_synced_lists", _json.dumps(synced))
+    await _put_setting(db, "trakt_synced_lists", _json.dumps(synced))
+    await db.commit()
+    return {"status": "ok", "slug": slug, "auto_sync": enabled}
+
+
+@router.delete("/api/trakt-lists/synced/{slug}")
+async def remove_trakt_synced(slug: str, db: AsyncSession = Depends(get_db)):
+    """Remove a Trakt list from sync tracking (does NOT delete the Emby playlist)."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get("trakt_synced_lists")
+    synced = _json.loads(raw) if raw else []
+
+    synced = [e for e in synced if e.get("slug") != slug]
+
+    await r.set("trakt_synced_lists", _json.dumps(synced))
+    await _put_setting(db, "trakt_synced_lists", _json.dumps(synced))
+    await db.commit()
+    return {"status": "ok", "slug": slug}
+
+
+@router.post("/api/trakt-lists/sync-all")
+async def sync_all_trakt_lists(db: AsyncSession = Depends(get_db)):
+    """Re-import all auto-synced Trakt lists."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get("trakt_synced_lists")
+    if not raw:
+        raw = await _get_setting(db, "trakt_synced_lists", "[]")
+    synced = _json.loads(raw) if raw else []
+
+    results = []
+    for entry in synced:
+        if not entry.get("auto_sync", True):
+            results.append({"slug": entry["slug"], "status": "skipped", "reason": "auto_sync_off"})
+            continue
+        try:
+            result = await import_trakt_list({
+                "list_slug": entry["slug"],
+                "playlist_name": entry.get("playlist_name", ""),
+                "description": entry.get("description", ""),
+                "username": entry.get("username", "me"),
+            })
+            results.append({"slug": entry["slug"], "status": "ok", "matched": result.get("matched", 0)})
+        except Exception as e:
+            results.append({"slug": entry["slug"], "status": "error", "message": str(e)[:200]})
+
+    return {"status": "ok", "results": results}
+
+
 @router.get("/api/mdblist/synced")
 async def get_mdblist_synced(db: AsyncSession = Depends(get_db)):
     """Return the list of MDBList lists that have been imported and are tracked for auto-sync."""

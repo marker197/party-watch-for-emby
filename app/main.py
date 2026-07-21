@@ -655,6 +655,26 @@ def _register_jobs():
     )
     log.info("scheduler.job_added", job="mdblist_sync", cron=mdblist_cron)
 
+    # Trakt List Sync — daily at 3:20 AM (right after MDBList sync)
+    trakt_list_cron = "20 3 * * *"
+    _job_crons["trakt_list_sync"] = trakt_list_cron
+
+    async def _run_trakt_list_sync():
+        async def _do():
+            from app.api.routes import sync_all_trakt_lists
+            from app.utils.database import async_session as _async_session
+            async with _async_session() as db:
+                await sync_all_trakt_lists(db)
+        await _tracked_job("trakt_list_sync", _do)
+
+    scheduler.add_job(
+        _run_trakt_list_sync,
+        CronTrigger(**_parse_cron(trakt_list_cron)),
+        id="trakt_list_sync",
+        replace_existing=True,
+    )
+    log.info("scheduler.job_added", job="trakt_list_sync", cron=trakt_list_cron)
+
     # Library cache rebuild — daily at 1:30 AM (before smart queue at 2 AM)
     async def rebuild_library_cache():
         from app.utils.library_cache import LibraryCache

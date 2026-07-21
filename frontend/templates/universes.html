@@ -519,8 +519,9 @@
       <button class="btn btn-blue" id="refreshBtn">
         ↻ Refresh
       </button>
-      <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" onclick="toggleAllPlaylists(true)" title="Enable playlist sync for all universes">☑ Select All</button>
-      <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" onclick="toggleAllPlaylists(false)" title="Disable playlist sync for all universes">☐ Select None</button>
+      <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" onclick="toggleAllPlaylists()" title="Toggle playlist sync for all universes" id="toggleAllBtn">☑ Toggle All</button>
+      <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" onclick="runAutoDiscover()" title="Scan Emby library via TMDB to auto-create universes from collections" id="autoDiscoverBtn">🎬 TMDB Auto-Discover</button>
+      <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.82rem;" onclick="toggleImportLists()" id="importListsToggle">📋 Import Lists ▾</button>
     </div>
 
     <!-- Create universe inline form -->
@@ -543,13 +544,19 @@
 
       <!-- Tabs -->
       <div id="importTabs" style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--border);">
-        <button id="tabTrakt" class="import-tab active" onclick="switchImportTab('trakt')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent-light);cursor:pointer;">Trakt</button>
-        <button id="tabMdblist" class="import-tab" onclick="switchImportTab('mdblist')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim);cursor:pointer;">MDBList</button>
+        <button id="tabTrakt" class="import-tab active" onclick="switchImportTab('trakt')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent-light);cursor:pointer;">Trakt <span id="traktBadge" style="font-size:0.72rem;padding:1px 6px;border-radius:10px;background:var(--surface-hover);color:var(--text-dim);font-weight:600;margin-left:4px;">—</span></button>
+        <button id="tabMdblist" class="import-tab" onclick="switchImportTab('mdblist')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim);cursor:pointer;">MDBList <span id="mdblistBadge" style="font-size:0.72rem;padding:1px 6px;border-radius:10px;background:var(--surface-hover);color:var(--text-dim);font-weight:600;margin-left:4px;">—</span></button>
       </div>
 
       <!-- ── Trakt Tab ── -->
       <div id="panelTrakt" style="display:block;">
-        <p style="color:var(--text-dim);font-size:0.82rem;margin-bottom:12px;">Import your personal and liked Trakt lists as Emby playlists. Items are matched against your library cache.</p>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <p style="color:var(--text-dim);font-size:0.82rem;margin:0;">Import your personal and liked Trakt lists as Emby playlists. Items are matched against your library cache.</p>
+          <div style="display:flex;gap:6px;flex-shrink:0;margin-left:12px;">
+            <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="refreshTraktLists()" title="Refresh list of available lists">🔄</button>
+            <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="syncAllTraktNow()" title="Re-import all previously imported Trakt lists">⟳ Sync All</button>
+          </div>
+        </div>
 
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
           <div style="flex:2;min-width:200px;">
@@ -567,6 +574,12 @@
 
         <div id="traktListDesc" style="font-size:0.78rem;color:var(--text-dim);margin-top:8px;display:none;"></div>
         <div id="traktImportStatus" style="font-size:0.82rem;margin-top:8px;"></div>
+
+        <!-- Synced lists table -->
+        <div id="traktSyncedContainer" style="margin-top:16px;display:none;">
+          <h4 style="font-size:0.85rem;font-weight:600;margin-bottom:8px;color:var(--text-dim);">Synced Lists</h4>
+          <div id="traktSyncedTable"></div>
+        </div>
       </div>
 
       <!-- ── MDBList Tab ── -->
@@ -574,7 +587,6 @@
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
           <p style="color:var(--text-dim);font-size:0.82rem;margin:0;">Import MDBList lists as Emby playlists. Dynamic lists auto-update daily at 3:15 AM.</p>
           <div style="display:flex;gap:6px;flex-shrink:0;margin-left:12px;">
-            <span id="mdblistBadge" style="font-size:0.72rem;padding:2px 8px;border-radius:10px;background:var(--surface-hover);color:var(--text-dim);font-weight:600;white-space:nowrap;">loading…</span>
             <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="refreshMdblistLists()" title="Refresh list of available lists">🔄</button>
             <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="syncAllMdblistNow()" title="Re-import all synced lists now">⟳ Sync All</button>
           </div>
@@ -1023,17 +1035,18 @@
       checks.forEach(c => c.checked = !allChecked);
     }
 
-    async function toggleAllPlaylists(enabled) {
+    async function toggleAllPlaylists() {
       if (!allUniverses.length) return;
-      const already = enabled
-        ? allUniverses.every(u => u.playlist_enabled)
-        : allUniverses.every(u => !u.playlist_enabled);
-      if (already) {
+      // Determine direction: if any are disabled, enable all; otherwise disable all
+      const anyDisabled = allUniverses.some(u => !u.playlist_enabled);
+      const enabled = anyDisabled;
+
+      const targets = allUniverses.filter(u => u.playlist_enabled !== enabled);
+      if (!targets.length) {
         showToast(enabled ? 'All playlists already enabled' : 'All playlists already disabled');
         return;
       }
 
-      const targets = allUniverses.filter(u => u.playlist_enabled !== enabled);
       showToast(`${enabled ? 'Enabling' : 'Disabling'} ${targets.length} playlist${targets.length > 1 ? 's' : ''}…`);
 
       let ok = 0;
@@ -1332,11 +1345,20 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // Import Lists — Tab Switching
+    // Import Lists — Show/Hide & Tab Switching
     // ═══════════════════════════════════════════════════════════════════
 
     let hasTrakt = false;
     let hasMdblist = false;
+    let importListsVisible = false;
+
+    function toggleImportLists() {
+      const section = document.getElementById('importListsSection');
+      const btn = document.getElementById('importListsToggle');
+      importListsVisible = !importListsVisible;
+      section.style.display = importListsVisible ? 'block' : 'none';
+      btn.textContent = importListsVisible ? '📋 Import Lists ▴' : '📋 Import Lists ▾';
+    }
 
     function switchImportTab(tab) {
       const tabs = document.querySelectorAll('.import-tab');
@@ -1357,6 +1379,7 @@
       const section = document.getElementById('importListsSection');
       const tabTrakt = document.getElementById('tabTrakt');
       const tabMdblist = document.getElementById('tabMdblist');
+      const toggleBtn = document.getElementById('importListsToggle');
 
       // Check Trakt — try fetching lists to see if user is linked
       try {
@@ -1376,34 +1399,36 @@
         }
       } catch(e) {}
 
-      // Neither available — keep hidden
-      if (!hasTrakt && !hasMdblist) return;
+      // Neither available — hide toggle button entirely
+      if (!hasTrakt && !hasMdblist) {
+        toggleBtn.style.display = 'none';
+        return;
+      }
 
-      section.style.display = 'block';
+      // Show toggle button, card stays hidden until clicked
+      toggleBtn.style.display = '';
 
       // Configure tabs visibility
       if (hasTrakt && hasMdblist) {
-        // Both available — show both tabs, default to Trakt
         tabTrakt.style.display = '';
         tabMdblist.style.display = '';
         switchImportTab('trakt');
         loadTraktLists();
+        loadTraktSynced();
         loadMdblistLists();
         loadMdblistSynced();
       } else if (hasTrakt) {
-        // Trakt only — show Trakt tab active, MDBList tab shows "not configured"
         tabTrakt.style.display = '';
         tabMdblist.style.display = '';
         switchImportTab('trakt');
         loadTraktLists();
-        // MDBList tab shows message
+        loadTraktSynced();
         tabMdblist.onclick = function() {
           switchImportTab('mdblist');
           document.getElementById('mdblistContent').style.display = 'none';
           document.getElementById('mdblistNotConfigured').style.display = 'block';
         };
       } else {
-        // MDBList only — hide Trakt tab, show MDBList directly
         tabTrakt.style.display = 'none';
         tabMdblist.style.display = '';
         switchImportTab('mdblist');
@@ -1413,23 +1438,59 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════
+    // TMDB Auto-Discover
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function runAutoDiscover() {
+      const btn = document.getElementById('autoDiscoverBtn');
+      btn.disabled = true;
+      btn.textContent = '🎬 Scanning…';
+      try {
+        // Enable auto-discover setting
+        await fetch('/api/universes/auto-discover/setting', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ enabled: true }),
+        });
+        // Trigger the scan
+        const r = await fetch('/universes/scan', { method: 'POST' });
+        if (r.ok) {
+          showToast('TMDB auto-discover started — scanning library for collections…');
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          await loadUniverses();
+        }
+      } catch(e) {
+        showToast('Error: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🎬 TMDB Auto-Discover';
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     // Trakt List Import
     // ═══════════════════════════════════════════════════════════════════
 
     async function loadTraktLists() {
       const select = document.getElementById('traktListSelect');
+      const badge = document.getElementById('traktBadge');
       try {
         const resp = await fetch('/api/trakt-lists');
         if (!resp.ok) {
           select.innerHTML = '<option value="">Could not load lists — is Trakt linked?</option>';
+          badge.textContent = 'error';
           return;
         }
         const data = await resp.json();
         const lists = data.lists || [];
         if (!lists.length) {
           select.innerHTML = '<option value="">No lists found on your Trakt account</option>';
+          badge.textContent = '0';
           return;
         }
+
+        badge.textContent = lists.length;
+        badge.style.color = 'var(--green)';
 
         const own = lists.filter(l => l.owner === 'self');
         const liked = lists.filter(l => l.owner === 'liked');
@@ -1523,11 +1584,147 @@
           status.innerHTML = `<span style="color:var(--green);">${msg}</span>`;
           document.getElementById('traktPlaylistName').value = '';
           showToast(msg);
+          setTimeout(() => { status.innerHTML = ''; }, 4000);
+
+          // Track for auto-sync
+          await fetch('/api/trakt-lists/track', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              list_slug: slug,
+              playlist_name: customName || listName || slug,
+              description: listDesc || '',
+              username: listUser || 'me',
+              matched: data.matched,
+            }),
+          });
+          await loadTraktSynced();
         } else {
           status.innerHTML = `<span style="color:var(--red);">✗ ${data.message || data.reason || 'Import failed'}</span>`;
         }
       } catch (err) {
         status.innerHTML = `<span style="color:var(--red);">✗ ${err.message}</span>`;
+      }
+    }
+
+    async function loadTraktSynced() {
+      const container = document.getElementById('traktSyncedContainer');
+      const table = document.getElementById('traktSyncedTable');
+      try {
+        const r = await fetch('/api/trakt-lists/synced');
+        const d = await r.json();
+        const synced = d.synced || [];
+
+        if (!synced.length) {
+          container.style.display = 'none';
+          return;
+        }
+
+        container.style.display = 'block';
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">';
+        html += '<thead><tr style="border-bottom:1px solid var(--border);">';
+        html += '<th style="text-align:left;padding:6px 8px;color:var(--text-dim);">Playlist</th>';
+        html += '<th style="text-align:center;padding:6px 8px;color:var(--text-dim);">Matched</th>';
+        html += '<th style="text-align:center;padding:6px 8px;color:var(--text-dim);">Last Synced</th>';
+        html += '<th style="text-align:center;padding:6px 8px;color:var(--text-dim);">Auto-Sync</th>';
+        html += '<th style="text-align:center;padding:6px 8px;color:var(--text-dim);">Actions</th>';
+        html += '</tr></thead><tbody>';
+
+        for (const s of synced) {
+          const autoOn = s.auto_sync !== false;
+          html += '<tr style="border-bottom:1px solid var(--border);">';
+          html += `<td style="padding:6px 8px;">${escapeHtml(s.playlist_name || s.slug)}</td>`;
+          html += `<td style="padding:6px 8px;text-align:center;">${s.matched || '—'}</td>`;
+          html += `<td style="padding:6px 8px;text-align:center;color:var(--text-dim);">${s.last_synced || 'never'}</td>`;
+          html += '<td style="padding:6px 8px;text-align:center;">';
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:${autoOn ? 'var(--green)' : 'var(--surface-hover)'};color:${autoOn ? '#fff' : 'var(--text-dim)'};border:1px solid var(--border);" onclick="toggleTraktAutoSync('${escapeHtml(s.slug)}', ${!autoOn})">${autoOn ? '✓ On' : '✗ Off'}</button>`;
+          html += '</td>';
+          html += '<td style="padding:6px 8px;text-align:center;display:flex;gap:4px;justify-content:center;">';
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--blue);color:#fff;" onclick="refreshSingleTrakt('${escapeHtml(s.slug)}', '${escapeHtml(s.playlist_name || '')}', '${escapeHtml(s.description || '')}', '${escapeHtml(s.username || 'me')}')">🔄</button>`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--red);color:#fff;" onclick="removeTraktSync('${escapeHtml(s.slug)}')">✕</button>`;
+          html += '</td></tr>';
+        }
+
+        html += '</tbody></table>';
+        table.innerHTML = html;
+      } catch(e) {
+        container.style.display = 'none';
+      }
+    }
+
+    async function toggleTraktAutoSync(slug, enabled) {
+      try {
+        await fetch(`/api/trakt-lists/synced/${encodeURIComponent(slug)}/auto-sync`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ enabled }),
+        });
+        showToast(`Auto-sync ${enabled ? 'enabled' : 'disabled'}`);
+        await loadTraktSynced();
+      } catch(e) {
+        showToast('Error: ' + e.message);
+      }
+    }
+
+    async function removeTraktSync(slug) {
+      try {
+        await fetch(`/api/trakt-lists/synced/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+        showToast('Removed from auto-sync');
+        await loadTraktSynced();
+      } catch(e) {
+        showToast('Error: ' + e.message);
+      }
+    }
+
+    async function refreshSingleTrakt(slug, name, desc, username) {
+      showToast('Refreshing…');
+      try {
+        const r = await fetch('/api/trakt-lists/import', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ list_slug: slug, playlist_name: name, description: desc, username: username }),
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          // Update tracking
+          await fetch('/api/trakt-lists/track', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ list_slug: slug, playlist_name: name, description: desc, username: username, matched: d.matched }),
+          });
+          showToast(`✓ Refreshed — ${d.matched} items matched`);
+          await loadTraktSynced();
+        } else {
+          showToast('Refresh failed');
+        }
+      } catch(e) {
+        showToast('Error: ' + e.message);
+      }
+    }
+
+    async function refreshTraktLists() {
+      const badge = document.getElementById('traktBadge');
+      badge.textContent = '…';
+      badge.style.color = 'var(--text-dim)';
+      await loadTraktLists();
+      showToast('Trakt lists refreshed');
+    }
+
+    async function syncAllTraktNow() {
+      showToast('Syncing all Trakt lists…');
+      try {
+        const r = await fetch('/api/trakt-lists/sync-all', { method: 'POST' });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          const results = d.results || [];
+          const okCount = results.filter(r => r.status === 'ok').length;
+          showToast(`✓ Synced ${okCount}/${results.length} Trakt lists`);
+          await loadTraktSynced();
+        } else {
+          showToast('Sync failed');
+        }
+      } catch(e) {
+        showToast('Error: ' + e.message);
       }
     }
 
@@ -1645,6 +1842,7 @@
           status.innerHTML = `<span style="color:var(--green);">${msg}</span>`;
           document.getElementById('mdblistPlaylistName').value = '';
           showToast(msg);
+          setTimeout(() => { status.innerHTML = ''; }, 4000);
           await loadMdblistSynced();
         } else {
           status.innerHTML = `<span style="color:var(--red);">✗ ${d.message || 'Import failed'}</span>`;
