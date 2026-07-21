@@ -231,6 +231,7 @@ class AiringAlertsService:
                             "episode": ep.get("episode"),
                             "air_date_utc": ep.get("air_date_utc"),
                             "episode_title": ep.get("episode_title", ""),
+                            "series_title": ep.get("series_title", ""),
                         })
                     log.debug("arr_release_index.sonarr_calendar_loaded",
                               server=srv.get("name"),
@@ -452,6 +453,10 @@ class AiringAlertsService:
                 match = await LibraryCache.find_by_provider_id("Tvdb", tvdb_id_str)
                 in_library = match is not None
                 emby_item_id = match.get("emby_id") if match else None
+
+                # Fallback: use library cache title if Sonarr didn't provide one
+                if not series_title and match:
+                    series_title = match.get("title", "")
 
                 is_premiere = ep.get("season") == 1 and ep.get("episode") == 1
                 if ep.get("episode") == 1:

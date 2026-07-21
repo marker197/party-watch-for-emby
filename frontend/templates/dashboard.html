@@ -431,6 +431,23 @@
     border-left: 3px solid var(--accent);
   }
 
+  .airing-filter-btn {
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .airing-filter-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  .airing-filter-btn:hover:not(.active) {
+    background: var(--surface);
+    color: var(--text);
+  }
+
   .queue-title.missing {
     color: var(--red);
     font-style: italic;
@@ -848,7 +865,12 @@
   <div id="airingPanel" class="card" style="display:none; margin-bottom:20px;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
       <h3 style="font-size:0.95rem;">📅 Airing Soon</h3>
-      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleAiring()">✕ Close</button>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <button class="btn btn-sm airing-filter-btn active" id="airingFilterAll" onclick="filterAiring('all')" style="font-size:0.72rem;padding:3px 8px;">All</button>
+        <button class="btn btn-sm airing-filter-btn" id="airingFilterTV" onclick="filterAiring('show')" style="font-size:0.72rem;padding:3px 8px;">📺 TV</button>
+        <button class="btn btn-sm airing-filter-btn" id="airingFilterMovie" onclick="filterAiring('movie')" style="font-size:0.72rem;padding:3px 8px;">🎬 Movies</button>
+        <button class="btn btn-sm" style="background:var(--surface-hover);margin-left:8px;" onclick="toggleAiring()">✕ Close</button>
+      </div>
     </div>
     <div id="airingTable"></div>
   </div>
@@ -1588,7 +1610,7 @@ async function viewQueue(skipTransition) {
             actionBtn = `<button class="queue-sonarr-btn" id="sonarr-btn-${n}-0" onclick="sendToSonarr(${n}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Sonarr</button>`;
           }
         } else if (inLib && i.emby_item_id) {
-          actionBtn = `<button class="btn btn-sm" style="background:var(--accent);padding:2px 7px;font-size:0.7rem;" onclick="createPartyFromQueue('${i.emby_item_id}', '${safeTitle}')">🎉 Party</button>`;
+          actionBtn = `<span style="display:inline-flex;gap:4px;"><button class="btn btn-sm" style="background:var(--green);padding:2px 7px;font-size:0.7rem;" onclick="pickDeviceAndPlay('${i.emby_item_id}', 0)">▶ Play</button><button class="btn btn-sm" style="background:var(--accent);padding:2px 7px;font-size:0.7rem;" onclick="createPartyFromQueue('${i.emby_item_id}', '${safeTitle}')">🎉</button></span>`;
         }
 
         // Block button
@@ -1711,34 +1733,35 @@ async function viewAiring() {
 
     // ── Main airing table ──
     if (items.length > 0) {
-    html += '<table class="queue-table"><thead><tr>' +
-      '<th>Title</th><th style="width:70px;">S/E</th><th style="width:90px;">Airs</th><th style="width:110px;">Flag</th><th style="width:70px;"></th>' +
+    html += '<table class="queue-table" id="airingMainTable"><thead><tr>' +
+      '<th>Title</th><th style="width:70px;">S/E</th><th style="width:70px;">Airs</th><th style="width:90px;">Status</th><th style="width:70px;"></th>' +
       '</tr></thead><tbody>' +
       items.map((i, idx) => {
         const epNum = (i.season != null && i.episode != null) ? `S${String(i.season).padStart(2,'0')}E${String(i.episode).padStart(2,'0')}` : '—';
         let se = i.media_type === 'movie'
           ? '<span style="color:var(--text-dim);">movie</span>'
           : epNum;
-        // Premiere star inline with episode number
         let rowClass = '';
         if (i.is_premiere && i.media_type !== 'movie') {
           rowClass = 'airing-premiere-row';
         }
         const days = i.days_until_air;
         const inStr = days == null ? '—' : (days === 0 ? 'today' : days === 1 ? 'tomorrow' : `${days}d`);
-        let flag = '';
-        if (i.media_type === 'movie') {
-          flag = i.in_library
-            ? '<span class="queue-badge unwatched">release · in library</span>'
-            : '<span class="queue-badge missing">release · not in library</span>';
-        }
-        else if (i.is_premiere && !i.in_library) flag = '<span class="queue-badge missing">not in library</span>';
-        else if (i.is_finale) flag = '<span class="queue-badge missing">🏁 finale</span>';
 
-        // Build title cell with inline premiere label
+        // Format air date as DD Mon for premiere display
+        const fmtAirDD = (d) => { if (!d) return ''; try { const dt = new Date(d.length === 10 ? d + 'T00:00:00' : d); return dt.toLocaleDateString('en-GB', {day:'numeric',month:'short'}); } catch(e) { return ''; } };
+
+        // Build title cell with inline premiere label + air date
         let titleCell = (i.title || '').replace(/</g,'&lt;');
         if (i.is_premiere && i.media_type !== 'movie') {
           titleCell += ` — <span style="color:var(--orange);font-weight:700;">Premiere</span>`;
+          const airDD = fmtAirDD(i.air_date);
+          if (airDD) titleCell += ` <span style="color:var(--text-dim);font-size:0.72rem;">${airDD}</span>`;
+          if (i.episode_title) {
+            titleCell += ` : <span style="color:var(--text-dim);font-size:0.78rem;">${i.episode_title.replace(/</g,'&lt;')}</span>`;
+          }
+        } else if (i.is_finale) {
+          titleCell += ` — <span style="color:var(--red);font-weight:700;">🏁 Finale</span>`;
           if (i.episode_title) {
             titleCell += ` : <span style="color:var(--text-dim);font-size:0.78rem;">${i.episode_title.replace(/</g,'&lt;')}</span>`;
           }
@@ -1776,28 +1799,41 @@ async function viewAiring() {
           }).join(' ');
           streamBadges = `<span style="margin-left:8px;display:inline-flex;gap:4px;align-items:center;vertical-align:middle;">${badges}</span>`;
         }
-        // Arr badges / send buttons
+        // Status column: In Radarr / In Sonarr badge
+        // For shows, "In Sonarr" takes priority — the series may be in the
+        // library but these are future episodes Sonarr will grab on air date.
+        let statusBadge = '';
+        if (i.media_type === 'movie') {
+          if (i.in_library) {
+            statusBadge = '<span class="queue-badge unwatched">in library</span>';
+          } else if (i.tmdb_id && arrRadarr[i.tmdb_id]) {
+            statusBadge = `<span class="arr-in-badge">In ${arrRadarr[i.tmdb_id]}</span>`;
+          }
+        } else {
+          if (i.tvdb_id && arrSonarr[i.tvdb_id]) {
+            statusBadge = `<span class="arr-in-badge">In ${arrSonarr[i.tvdb_id]}</span>`;
+          } else if (i.in_library) {
+            statusBadge = '<span class="queue-badge unwatched">in library</span>';
+          }
+        }
+        // Action column: send to arr buttons (only for items not already in arr)
         let actionBtn = '';
-        if (i.media_type === 'movie' && !i.in_library) {
-          if (i.tmdb_id && arrRadarr[i.tmdb_id]) {
-            actionBtn = `<span class="arr-in-badge">In ${arrRadarr[i.tmdb_id]}</span>`;
-          } else if (i.tmdb_id) {
+        if (i.media_type === 'movie' && !i.in_library && !(i.tmdb_id && arrRadarr[i.tmdb_id])) {
+          if (i.tmdb_id) {
             const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
             actionBtn = `<button class="queue-radarr-btn" id="radarr-btn-${2000 + idx}-0" onclick="sendToRadarr(${2000 + idx}, ${i.tmdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Radarr</button>`;
           }
-        } else if (i.media_type === 'show' && !i.in_library) {
-          if (i.tvdb_id && arrSonarr[i.tvdb_id]) {
-            actionBtn = `<span class="arr-in-badge">In ${arrSonarr[i.tvdb_id]}</span>`;
-          } else if (i.is_premiere) {
+        } else if (i.media_type === 'show' && !i.in_library && !(i.tvdb_id && arrSonarr[i.tvdb_id])) {
+          if (i.is_premiere) {
             const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
             actionBtn = `<button class="queue-sonarr-btn" id="sonarr-btn-${1000 + idx}-0" onclick="sendToSonarr(${1000 + idx}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Sonarr</button>`;
           }
         }
-        return `<tr class="${rowClass}">
+        return `<tr class="${rowClass}" data-media-type="${i.media_type}">
           <td>${titleCell}${streamBadges}${binge}${releaseDates}</td>
           <td class="queue-source">${se}</td>
           <td>${inStr}</td>
-          <td>${flag}</td>
+          <td>${statusBadge}</td>
           <td>${actionBtn}</td>
         </tr>`;
       }).join('') +
@@ -1847,6 +1883,17 @@ async function viewAiring() {
   } catch(e) {
     el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
   }
+}
+
+function filterAiring(type) {
+  document.querySelectorAll('.airing-filter-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(type === 'show' ? 'airingFilterTV' : type === 'movie' ? 'airingFilterMovie' : 'airingFilterAll').classList.add('active');
+  const table = document.getElementById('airingMainTable');
+  if (!table) return;
+  table.querySelectorAll('tbody tr').forEach(row => {
+    if (type === 'all') { row.style.display = ''; return; }
+    row.style.display = row.getAttribute('data-media-type') === type ? '' : 'none';
+  });
 }
 
 async function sendToRadarr(rowIdx, tmdbId, imdbId, title, year, serverIdx) {
