@@ -313,6 +313,13 @@ class WatchlistSyncService:
                  shows_failed=shows_failed,
                  shows_skipped=len(wl_show_map) - len(shows_to_add))
 
+        # Invalidate Coming Soon cache so new items appear immediately
+        if movies_added or shows_added:
+            try:
+                await r.delete("availability_monitor_v2")
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------

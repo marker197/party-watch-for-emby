@@ -104,6 +104,55 @@ class SabnzbdClient:
                         server=self._name, error=str(e)[:120])
             return []
 
+    # -- History (post-processing + completed) --------------------------------
+
+    async def get_history(self, limit: int = 20) -> list[dict]:
+        """Fetch recent history items (post-processing and completed).
+
+        SABnzbd moves items from queue to history once downloading finishes.
+        History items have statuses like: Repairing, Verifying, Extracting,
+        Moving, Running, Completed, Failed.
+        """
+        try:
+            data = await self._api("history", limit=limit)
+            history = data.get("history", {})
+            slots = history.get("slots", [])
+            result = []
+            for slot in slots:
+                status = slot.get("status", "")
+                # Only include items still processing or recently completed
+                # Skip old completed/failed items
+                if status in ("Completed", "Failed"):
+                    # Include completed items from last 5 minutes only
+                    try:
+                        completed_ts = slot.get("completed", 0)
+                        import time
+                        if time.time() - completed_ts > 300:
+                            continue
+                    except (ValueError, TypeError):
+                        continue
+
+                size_mb = _parse_size_mb(slot.get("bytes", 0)) / (1024 * 1024) if slot.get("bytes") else 0
+
+                result.append({
+                    "nzo_id": slot.get("nzo_id", ""),
+                    "filename": slot.get("name", ""),
+                    "status": status,
+                    "progress": 100.0 if status == "Completed" else 99.0,
+                    "size_mb": round(size_mb, 1),
+                    "sizeleft_mb": 0.0,
+                    "eta": "",
+                    "timeleft": "",
+                    "speed": "",
+                    "speed_kbps": 0,
+                    "server": self._name,
+                })
+            return result
+        except Exception as e:
+            log.warning("sabnzbd.history_fetch_failed",
+                        server=self._name, error=str(e)[:120])
+            return []
+
 
 def _parse_size_mb(val: str | float | int) -> float:
     """Parse SABnzbd's size strings (e.g. '1234.56') to float MB."""

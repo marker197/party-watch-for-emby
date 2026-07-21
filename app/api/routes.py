@@ -3564,27 +3564,13 @@ async def get_download_queue():
     size info.  Keyed by tmdb_id (movies) and tvdb_id (shows) so the
     frontend can match them to smart queue cards.
 
-    Cached for 5 seconds to avoid creating fresh httpx clients on
-    every poll cycle (the dashboard and queue panel both poll at 5s
-    intervals, so without caching this endpoint gets hit twice per
-    cycle, each creating and tearing down connections — the root
-    cause of intermittent 'client closed' errors).
+    No caching — SABnzbd/Radarr/Sonarr on LAN respond in <100ms.
     """
     import json as _json
     from app.utils.radarr_client import RadarrClient
     from app.utils.sonarr_client import SonarrClient
 
     r = await get_redis()
-
-    # Short-lived cache — prevents overlapping polls from creating
-    # duplicate httpx clients that get GC'd mid-request.
-    cache_key = "download_queue_cache_v1"
-    try:
-        cached = await r.get(cache_key)
-        if cached:
-            return _json.loads(cached)
-    except Exception:
-        pass
 
     downloads: list[dict] = []
 
@@ -3635,6 +3621,12 @@ async def get_download_queue():
                     nzo = slot.get("nzo_id")
                     if nzo:
                         sab_lookup[nzo] = slot
+                # Also fetch history for post-processing states
+                history = await client.get_history(limit=10)
+                for slot in history:
+                    nzo = slot.get("nzo_id")
+                    if nzo and nzo not in sab_lookup:
+                        sab_lookup[nzo] = slot
             except Exception as e:
                 log.warning("download_queue.sabnzbd_failed", server=srv.get("name"), error=str(e)[:120])
             finally:
@@ -3655,12 +3647,6 @@ async def get_download_queue():
                 dl["sab_speed"] = sab["speed"]
 
     result = {"downloads": downloads, "count": len(downloads)}
-
-    # Cache for 5 seconds
-    try:
-        await r.setex(cache_key, 5, _json.dumps(result))
-    except Exception:
-        pass
 
     return result
 
@@ -3699,6 +3685,17 @@ async def get_download_progress():
                         "eta": slot["timeleft"],
                         "status": slot["status"],
                         "sizeleft_mb": slot["sizeleft_mb"],
+                    }
+            # Also fetch history for post-processing states
+            for slot in await client.get_history(limit=10):
+                nzo = slot.get("nzo_id")
+                if nzo and nzo not in slots:
+                    slots[nzo] = {
+                        "progress": slot["progress"],
+                        "speed": "",
+                        "eta": "",
+                        "status": slot["status"],
+                        "sizeleft_mb": 0,
                     }
         except Exception as e:
             log.warning("download_progress.sabnzbd_failed",

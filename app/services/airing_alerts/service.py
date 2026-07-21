@@ -354,11 +354,17 @@ class AiringAlertsService:
         # Track shows with finales for binge planner
         finale_shows: dict[str, dict] = {}  # trakt_id → {days_until, season, emby_item_id}
 
+        # Track which (tvdb, season, episode) combos Trakt already covered
+        trakt_covered: set[tuple] = set()
+
         for key, entry in merged.items():
             show = entry["show"]
             episode = entry["episode"]
             show_trakt_id = str(show.get("ids", {}).get("trakt", ""))
             show_tvdb_id = show.get("ids", {}).get("tvdb")
+
+            if show_tvdb_id:
+                trakt_covered.add((str(show_tvdb_id), episode.get("season"), episode.get("number")))
 
             days_until = self._days_until(entry.get("first_aired"))
             air_date = entry.get("first_aired")
@@ -425,6 +431,52 @@ class AiringAlertsService:
                     "emby_item_id": emby_item_id,
                     "title": show.get("title", ""),
                 }
+
+        # ── Sonarr-only episodes: add episodes from Sonarr calendar ──
+        # that Trakt didn't return (e.g. shows in Sonarr but not followed
+        # on Trakt, or episodes Trakt's calendar missed).
+        for tvdb_id_str, episodes in sonarr_cal.items():
+            for ep in episodes:
+                ep_key = (tvdb_id_str, ep.get("season"), ep.get("episode"))
+                if ep_key in trakt_covered:
+                    continue  # Already handled via Trakt
+
+                air_date = ep.get("air_date_utc")
+                days_until = self._days_until(air_date)
+                if days_until is None:
+                    continue
+
+                series_title = ep.get("series_title", "")
+
+                # Try to find in library by TVDB ID
+                match = await LibraryCache.find_by_provider_id("Tvdb", tvdb_id_str)
+                in_library = match is not None
+                emby_item_id = match.get("emby_id") if match else None
+
+                is_premiere = ep.get("season") == 1 and ep.get("episode") == 1
+                if ep.get("episode") == 1:
+                    is_premiere = True
+
+                results.append({
+                    "media_type": "show",
+                    "title": series_title,
+                    "trakt_id": None,
+                    "tvdb_id": int(tvdb_id_str) if tvdb_id_str.isdigit() else None,
+                    "tmdb_id": None,
+                    "imdb_id": None,
+                    "season": ep.get("season"),
+                    "episode": ep.get("episode"),
+                    "episode_title": ep.get("episode_title", ""),
+                    "air_date": air_date,
+                    "days_until_air": days_until,
+                    "is_premiere": is_premiere,
+                    "is_finale": False,
+                    "in_library": in_library,
+                    "emby_item_id": emby_item_id,
+                    "year": None,
+                    "binge_plan": None,
+                    "release_source": "sonarr",
+                })
 
         # ── Binge planner: compute catch-up info for shows with finales ──
         if finale_shows and user and user.emby_user_id:
