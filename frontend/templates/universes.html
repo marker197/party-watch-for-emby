@@ -535,6 +535,44 @@
       </div>
     </div>
 
+    <!-- MDBList Import Section -->
+    <div id="mdblistSection" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px 24px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h3 style="font-size:0.95rem;font-weight:700;color:var(--accent-light);margin:0;display:flex;align-items:center;gap:8px;">
+          📋 MDBList Import
+          <span id="mdblistBadge" style="font-size:0.72rem;padding:2px 8px;border-radius:10px;background:var(--surface-hover);color:var(--text-dim);font-weight:600;">loading…</span>
+        </h3>
+        <div style="display:flex;gap:6px;">
+          <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.78rem;padding:6px 10px;" onclick="refreshMdblistLists()" title="Refresh list of available lists">🔄 Refresh Lists</button>
+          <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.78rem;padding:6px 10px;" onclick="syncAllMdblistNow()" title="Re-import all synced lists now">⟳ Sync All Now</button>
+        </div>
+      </div>
+      <p style="color:var(--text-dim);font-size:0.82rem;margin-bottom:12px;">Select a list from your MDBList account to import as an Emby playlist. Dynamic lists auto-update daily at 3:15 AM.</p>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <div style="flex:2;min-width:200px;">
+          <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:4px;">Available Lists</label>
+          <select id="mdblistSelect" style="width:100%;padding:8px 10px;font-size:0.85rem;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;">
+            <option value="">Loading lists…</option>
+          </select>
+        </div>
+        <div style="flex:1;min-width:140px;">
+          <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:4px;">Playlist Name (optional)</label>
+          <input type="text" id="mdblistPlaylistName" placeholder="Auto from list name" style="width:100%;padding:8px 10px;font-size:0.85rem;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;">
+        </div>
+        <button class="btn" style="background:var(--green);color:#fff;padding:8px 16px;font-size:0.82rem;" onclick="importMdblist()">📥 Import</button>
+      </div>
+
+      <div id="mdblistDesc" style="font-size:0.78rem;color:var(--text-dim);margin-top:8px;display:none;"></div>
+      <div id="mdblistImportStatus" style="font-size:0.82rem;margin-top:8px;"></div>
+
+      <!-- Synced lists table -->
+      <div id="mdblistSyncedContainer" style="margin-top:16px;display:none;">
+        <h4 style="font-size:0.85rem;font-weight:600;margin-bottom:8px;color:var(--text-dim);">Synced Lists</h4>
+        <div id="mdblistSyncedTable"></div>
+      </div>
+    </div>
+
     <div class="filter-group">
       <button class="filter-badge active" data-filter="all">All (21)</button>
       <button class="filter-badge" data-filter="complete">Complete</button>
@@ -573,6 +611,7 @@
       await loadUniverses();
       setupEventListeners();
       await checkAutoDiscover();
+      initMdblistSection();
     }
 
     async function checkAutoDiscover() {
@@ -1251,6 +1290,260 @@
         }
       } catch (err) {
         showToast('Error: ' + err.message);
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // MDBList Import
+    // ═══════════════════════════════════════════════════════════════════
+
+    let mdblistListsCache = [];
+
+    async function initMdblistSection() {
+      try {
+        const r = await fetch('/api/mdblist/key');
+        const d = await r.json();
+        if (!d.configured) {
+          // No API key — keep section hidden
+          return;
+        }
+        document.getElementById('mdblistSection').style.display = 'block';
+        await loadMdblistLists();
+        await loadMdblistSynced();
+      } catch(e) {
+        // MDBList not configured — that's fine
+      }
+    }
+
+    async function loadMdblistLists() {
+      const select = document.getElementById('mdblistSelect');
+      const badge = document.getElementById('mdblistBadge');
+      try {
+        const r = await fetch('/api/mdblist/lists');
+        if (!r.ok) {
+          select.innerHTML = '<option value="">Failed to load lists</option>';
+          badge.textContent = 'error';
+          badge.style.color = 'var(--red)';
+          return;
+        }
+        const data = await r.json();
+        mdblistListsCache = data.lists || [];
+
+        if (!mdblistListsCache.length) {
+          select.innerHTML = '<option value="">No lists found</option>';
+          badge.textContent = '0 lists';
+          return;
+        }
+
+        // Group: own lists first, then liked
+        const own = mdblistListsCache.filter(l => l.owner === 'self');
+        const liked = mdblistListsCache.filter(l => l.owner === 'liked');
+
+        let html = '<option value="">— Select a list —</option>';
+
+        if (own.length) {
+          html += '<optgroup label="My Lists">';
+          for (const l of own) {
+            const typeTag = l.dynamic ? '⚡' : '📌';
+            const privTag = l.private ? ' 🔒' : '';
+            const mediaTag = l.mediatype === 'movie' ? '🎬' : l.mediatype === 'show' ? '📺' : '🎬📺';
+            html += `<option value="${l.id}" data-desc="${escapeHtml(l.description || '')}" data-name="${escapeHtml(l.name)}">${typeTag} ${escapeHtml(l.name)} ${mediaTag}${privTag} (${l.items} items)</option>`;
+          }
+          html += '</optgroup>';
+        }
+
+        if (liked.length) {
+          html += '<optgroup label="Liked Lists">';
+          for (const l of liked) {
+            const typeTag = l.dynamic ? '⚡' : '📌';
+            const mediaTag = l.mediatype === 'movie' ? '🎬' : l.mediatype === 'show' ? '📺' : '🎬📺';
+            html += `<option value="${l.id}" data-desc="${escapeHtml(l.description || '')}" data-name="${escapeHtml(l.name)}">❤️ ${typeTag} ${escapeHtml(l.name)} ${mediaTag} by ${escapeHtml(l.user_name)} (${l.items} items)</option>`;
+          }
+          html += '</optgroup>';
+        }
+
+        select.innerHTML = html;
+        badge.textContent = `${mdblistListsCache.length} lists`;
+        badge.style.color = 'var(--green)';
+
+        // Description preview on change
+        select.onchange = function() {
+          const descEl = document.getElementById('mdblistDesc');
+          const opt = this.options[this.selectedIndex];
+          const desc = opt ? opt.getAttribute('data-desc') : '';
+          const name = opt ? opt.getAttribute('data-name') : '';
+          if (desc) {
+            descEl.textContent = desc;
+            descEl.style.display = 'block';
+          } else {
+            descEl.style.display = 'none';
+          }
+          // Auto-fill playlist name
+          const nameInput = document.getElementById('mdblistPlaylistName');
+          if (name && !nameInput.value.trim()) {
+            nameInput.placeholder = `📋 ${name}`;
+          }
+        };
+
+      } catch(e) {
+        select.innerHTML = '<option value="">Error loading lists</option>';
+        badge.textContent = 'error';
+      }
+    }
+
+    async function importMdblist() {
+      const select = document.getElementById('mdblistSelect');
+      const listId = select.value;
+      if (!listId) { showToast('Select a list first'); return; }
+
+      const opt = select.options[select.selectedIndex];
+      const listName = opt ? opt.getAttribute('data-name') : '';
+      const listDesc = opt ? opt.getAttribute('data-desc') : '';
+      const customName = document.getElementById('mdblistPlaylistName').value.trim();
+      const status = document.getElementById('mdblistImportStatus');
+
+      status.innerHTML = '<span style="color:var(--text-dim);">Importing… matching items against library…</span>';
+
+      try {
+        const r = await fetch('/api/mdblist/import', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            list_id: parseInt(listId),
+            playlist_name: customName || `📋 ${listName}`,
+            description: listDesc || '',
+          }),
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          let msg = `✓ Imported — ${d.matched} items matched`;
+          if (d.unmatched > 0) {
+            msg += `, ${d.unmatched} not in library`;
+          }
+          status.innerHTML = `<span style="color:var(--green);">${msg}</span>`;
+          document.getElementById('mdblistPlaylistName').value = '';
+          showToast(msg);
+          await loadMdblistSynced();
+        } else {
+          status.innerHTML = `<span style="color:var(--red);">✗ ${d.message || 'Import failed'}</span>`;
+        }
+      } catch(e) {
+        status.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
+      }
+    }
+
+    async function loadMdblistSynced() {
+      const container = document.getElementById('mdblistSyncedContainer');
+      const table = document.getElementById('mdblistSyncedTable');
+      try {
+        const r = await fetch('/api/mdblist/synced');
+        const d = await r.json();
+        const synced = d.synced || [];
+
+        if (!synced.length) {
+          container.style.display = 'none';
+          return;
+        }
+
+        container.style.display = 'block';
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">';
+        html += '<thead><tr style="border-bottom:1px solid var(--border);">';
+        html += '<th style="text-align:left;padding:6px 8px;color:var(--text-dim);">Playlist</th>';
+        html += '<th style="text-align:center;padding:6px 8px;color:var(--text-dim);">Matched</th>';
+        html += '<th style="text-align:center;padding:6px 8px;color:var(--text-dim);">Last Synced</th>';
+        html += '<th style="text-align:center;padding:6px 8px;color:var(--text-dim);">Auto-Sync</th>';
+        html += '<th style="text-align:center;padding:6px 8px;color:var(--text-dim);">Actions</th>';
+        html += '</tr></thead><tbody>';
+
+        for (const s of synced) {
+          const autoOn = s.auto_sync !== false;
+          html += `<tr style="border-bottom:1px solid var(--border);">`;
+          html += `<td style="padding:6px 8px;">${escapeHtml(s.playlist_name || 'List #' + s.list_id)}</td>`;
+          html += `<td style="padding:6px 8px;text-align:center;">${s.matched || '—'}</td>`;
+          html += `<td style="padding:6px 8px;text-align:center;color:var(--text-dim);">${s.last_synced || 'never'}</td>`;
+          html += `<td style="padding:6px 8px;text-align:center;">`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:${autoOn ? 'var(--green)' : 'var(--surface-hover)'};color:${autoOn ? '#fff' : 'var(--text-dim)'};border:1px solid var(--border);" onclick="toggleMdblistAutoSync(${s.list_id}, ${!autoOn})">${autoOn ? '✓ On' : '✗ Off'}</button>`;
+          html += `</td>`;
+          html += `<td style="padding:6px 8px;text-align:center;display:flex;gap:4px;justify-content:center;">`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--blue);color:#fff;" onclick="refreshSingleMdblist(${s.list_id}, '${escapeHtml(s.playlist_name || '')}', '${escapeHtml(s.description || '')}')">🔄</button>`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--red);color:#fff;" onclick="removeMdblistSync(${s.list_id})">✕</button>`;
+          html += `</td></tr>`;
+        }
+
+        html += '</tbody></table>';
+        table.innerHTML = html;
+      } catch(e) {
+        container.style.display = 'none';
+      }
+    }
+
+    async function toggleMdblistAutoSync(listId, enabled) {
+      try {
+        await fetch(`/api/mdblist/synced/${listId}/auto-sync`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ enabled }),
+        });
+        showToast(`Auto-sync ${enabled ? 'enabled' : 'disabled'}`);
+        await loadMdblistSynced();
+      } catch(e) {
+        showToast('Error: ' + e.message);
+      }
+    }
+
+    async function removeMdblistSync(listId) {
+      try {
+        await fetch(`/api/mdblist/synced/${listId}`, { method: 'DELETE' });
+        showToast('Removed from auto-sync');
+        await loadMdblistSynced();
+      } catch(e) {
+        showToast('Error: ' + e.message);
+      }
+    }
+
+    async function refreshSingleMdblist(listId, name, desc) {
+      showToast('Refreshing…');
+      try {
+        const r = await fetch('/api/mdblist/import', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ list_id: listId, playlist_name: name, description: desc }),
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          showToast(`✓ Refreshed — ${d.matched} items matched`);
+          await loadMdblistSynced();
+        } else {
+          showToast('Refresh failed');
+        }
+      } catch(e) {
+        showToast('Error: ' + e.message);
+      }
+    }
+
+    async function refreshMdblistLists() {
+      const badge = document.getElementById('mdblistBadge');
+      badge.textContent = 'refreshing…';
+      badge.style.color = 'var(--text-dim)';
+      await loadMdblistLists();
+      showToast('Lists refreshed');
+    }
+
+    async function syncAllMdblistNow() {
+      showToast('Syncing all lists…');
+      try {
+        const r = await fetch('/api/mdblist/sync-all', { method: 'POST' });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          const results = d.results || [];
+          const okCount = results.filter(r => r.status === 'ok').length;
+          showToast(`✓ Synced ${okCount}/${results.length} lists`);
+          await loadMdblistSynced();
+        } else {
+          showToast(d.reason === 'no_api_key' ? 'MDBList API key not configured' : 'Sync failed');
+        }
+      } catch(e) {
+        showToast('Error: ' + e.message);
       }
     }
   </script>

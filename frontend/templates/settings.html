@@ -726,6 +726,24 @@
       </div>
     </div>
 
+    <!-- MDBList Integration -->
+    <div class="section">
+      <h2>📋 MDBList <span id="badgeMdblist" class="conn-badge unknown" onclick="refreshStatus()" title="Click to refresh"><span class="dot"></span> —</span></h2>
+      <p style="color: var(--text-dim); font-size: 0.82rem; margin-bottom: 12px;">
+        Optional. Import MDBList lists as Emby playlists with auto-sync. Dynamic lists update automatically every morning.
+        Get a free API key at <a href="https://mdblist.com/preferences/#api" target="_blank" style="color:var(--blue);">mdblist.com/preferences</a>.
+      </p>
+      <div class="form-group">
+        <label>API Key</label>
+        <div style="display:flex;gap:8px;">
+          <input type="password" id="mdblistApiKey" placeholder="Enter MDBList API key" style="flex:1;">
+          <button class="btn btn-blue" onclick="testMdblist()">Test</button>
+          <button class="btn btn-green" onclick="saveMdblist()">Save</button>
+        </div>
+        <div id="mdblistStatus" style="font-size:0.78rem;margin-top:6px;"></div>
+      </div>
+    </div>
+
     <!-- Trakt List Import -->
     <div class="section">
       <h2>📋 Trakt List Import</h2>
@@ -797,6 +815,7 @@
       loadWatchlistSyncSettings();
       loadQueueSettings();
       loadTmdbSettings();
+      loadMdblistSettings();
       loadConnectionStatus();
       setupEventListeners();
     }
@@ -900,8 +919,18 @@
             setBadge('badgeSabnzbd', 'unknown', 'Checking…');
           }
         }
+        // MDBList (optional, single key)
+        if (data.mdblist) {
+          if (data.mdblist.status === 'ok') {
+            const label = data.mdblist.username ? `Connected — ${data.mdblist.username}` : 'Connected';
+            setBadge('badgeMdblist', 'ok', label);
+          } else if (data.mdblist.status === 'error') {
+            setBadge('badgeMdblist', 'error', data.mdblist.message || 'Error');
+          } else {
+            setBadge('badgeMdblist', 'unknown', 'Checking…');
+          }
+        }
       } catch (e) {
-        console.warn('Failed to load connection status:', e);
       }
     }
 
@@ -911,6 +940,7 @@
       setBadge('badgeRadarr', 'checking', 'Checking…');
       setBadge('badgeSonarr', 'checking', 'Checking…');
       setBadge('badgeSabnzbd', 'checking', 'Checking…');
+      setBadge('badgeMdblist', 'checking', 'Checking…');
       try {
         await fetch('/api/connection-status/refresh', { method: 'POST' });
         await loadConnectionStatus();
@@ -2041,6 +2071,70 @@
         status.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
       }
     });
+
+    // ═══════════════════════════════════════════════════════════════════
+    // MDBList Settings
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function loadMdblistSettings() {
+      try {
+        const r = await fetch('/api/mdblist/key');
+        if (!r.ok) return;
+        const data = await r.json();
+        const status = document.getElementById('mdblistStatus');
+        if (data.configured) {
+          document.getElementById('mdblistApiKey').placeholder = '••••••••  (key saved)';
+          status.innerHTML = '<span style="color:var(--green);">✓ API key configured</span>';
+        }
+      } catch(e) {}
+    }
+
+    async function testMdblist() {
+      const key = document.getElementById('mdblistApiKey').value.trim();
+      const status = document.getElementById('mdblistStatus');
+      if (!key) { status.innerHTML = '<span style="color:var(--red);">Enter an API key first</span>'; return; }
+      status.innerHTML = '<span style="color:var(--text-dim);">Testing…</span>';
+      try {
+        const r = await fetch('/api/mdblist/test', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ api_key: key }),
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          status.innerHTML = `<span style="color:var(--green);">✓ ${d.message}</span>`;
+        } else {
+          status.innerHTML = `<span style="color:var(--red);">✗ ${d.message}</span>`;
+        }
+      } catch(e) {
+        status.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
+      }
+    }
+
+    async function saveMdblist() {
+      const key = document.getElementById('mdblistApiKey').value.trim();
+      const status = document.getElementById('mdblistStatus');
+      try {
+        const r = await fetch('/api/mdblist/key', {
+          method: 'PUT',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ api_key: key }),
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          if (d.configured) {
+            document.getElementById('mdblistApiKey').value = '';
+            document.getElementById('mdblistApiKey').placeholder = '••••••••  (key saved)';
+            status.innerHTML = '<span style="color:var(--green);">✓ Saved</span>';
+          } else {
+            document.getElementById('mdblistApiKey').placeholder = 'Enter MDBList API key';
+            status.innerHTML = '<span style="color:var(--text-dim);">Key cleared</span>';
+          }
+        }
+      } catch(e) {
+        status.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
+      }
+    }
 
     // ── Trakt List Import ──
     async function loadTraktLists() {

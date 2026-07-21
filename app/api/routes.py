@@ -3156,6 +3156,15 @@ async def connection_status():
                 hb = {"status": "unknown", "checked_at": None, "name": _srv.get("name", f"SABnzbd {i+1}")}
             sab_list.append(hb)
     result["sabnzbd"] = sab_list
+    # MDBList (optional — only present if API key is configured)
+    raw_mdb = await r.get("heartbeat:mdblist")
+    if raw_mdb:
+        result["mdblist"] = _json.loads(raw_mdb)
+    else:
+        # Check if key is configured at all
+        mdb_key = await r.get("mdblist_api_key")
+        if mdb_key:
+            result["mdblist"] = {"status": "unknown", "checked_at": None}
     return result
 
 
@@ -4067,6 +4076,350 @@ async def import_trakt_list(payload: dict):
         "unmatched_items": unmatched[:20],  # cap to avoid huge responses
         "playlist_id": playlist_id,
     }
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MDBList Integration
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _get_mdblist_key(db: AsyncSession | None = None) -> str:
+    """Return the configured MDBList API key from Redis (fast) or DB fallback."""
+    r = await get_redis()
+    raw = await r.get("mdblist_api_key")
+    if raw:
+        return raw if isinstance(raw, str) else raw.decode()
+    if db:
+        raw = await _get_setting(db, "mdblist_api_key", "")
+        if raw:
+            await r.set("mdblist_api_key", raw)
+        return raw or ""
+    return ""
+
+
+@router.get("/api/mdblist/key")
+async def get_mdblist_key(db: AsyncSession = Depends(get_db)):
+    """Return whether an MDBList API key is configured."""
+    key = await _get_mdblist_key(db)
+    return {"configured": bool(key)}
+
+
+@router.put("/api/mdblist/key")
+async def save_mdblist_key(payload: dict, db: AsyncSession = Depends(get_db)):
+    """Save or clear the MDBList API key."""
+    key = (payload.get("api_key") or "").strip()
+    r = await get_redis()
+    if key:
+        await r.set("mdblist_api_key", key)
+        await _put_setting(db, "mdblist_api_key", key)
+        await db.commit()
+        return {"status": "ok", "configured": True}
+    else:
+        await r.delete("mdblist_api_key")
+        await _put_setting(db, "mdblist_api_key", "")
+        await db.commit()
+        return {"status": "ok", "configured": False}
+
+
+@router.post("/api/mdblist/test")
+async def test_mdblist_key(payload: dict):
+    """Test an MDBList API key."""
+    from app.utils.mdblist_client import MDBListClient
+    key = (payload.get("api_key") or "").strip()
+    if not key:
+        raise HTTPException(400, "api_key required")
+    client = MDBListClient(key)
+    try:
+        result = await client.test_connection()
+        if result["status"] == "ok":
+            return {
+                "status": "ok",
+                "message": (
+                    f"Connected — {result['username']} "
+                    f"({result['plan']}, "
+                    f"{result['requests_remaining']}/{result['requests_limit']} requests left)"
+                ),
+            }
+        return {"status": "error", "message": result.get("message", "Unknown error")}
+    finally:
+        await client.close()
+
+
+@router.get("/api/mdblist/lists")
+async def get_mdblist_lists(db: AsyncSession = Depends(get_db)):
+    """Fetch all lists available to the MDBList user.
+    Returns own lists (dynamic, static, private) and liked lists.
+    """
+    from app.utils.mdblist_client import MDBListClient
+    key = await _get_mdblist_key(db)
+    if not key:
+        raise HTTPException(400, "MDBList API key not configured")
+
+    client = MDBListClient(key)
+    try:
+        my_lists = await client.get_my_lists()
+        liked_lists = await client.get_liked_lists()
+    finally:
+        await client.close()
+
+    # Normalise into a unified format
+    results = []
+    seen_ids = set()
+
+    for lst in (my_lists or []):
+        lid = lst.get("id")
+        if lid in seen_ids:
+            continue
+        seen_ids.add(lid)
+        results.append({
+            "id": lid,
+            "name": lst.get("name", ""),
+            "slug": lst.get("slug", ""),
+            "description": lst.get("description") or "",
+            "mediatype": lst.get("mediatype", ""),
+            "items": lst.get("items", 0),
+            "likes": lst.get("likes", 0),
+            "type": lst.get("type", "static"),
+            "dynamic": lst.get("dynamic", False),
+            "private": lst.get("private", False),
+            "owner": "self",
+            "user_name": lst.get("user_name", ""),
+        })
+
+    for lst in (liked_lists or []):
+        lid = lst.get("id")
+        if lid in seen_ids:
+            continue
+        seen_ids.add(lid)
+        results.append({
+            "id": lid,
+            "name": lst.get("name", ""),
+            "slug": lst.get("slug", ""),
+            "description": lst.get("description") or "",
+            "mediatype": lst.get("mediatype", ""),
+            "items": lst.get("items", 0),
+            "likes": lst.get("likes", 0),
+            "type": lst.get("type", "static"),
+            "dynamic": lst.get("dynamic", False),
+            "private": lst.get("private", False),
+            "owner": "liked",
+            "user_name": lst.get("user_name", ""),
+        })
+
+    return {"lists": results}
+
+
+@router.post("/api/mdblist/import")
+async def import_mdblist_list(payload: dict, db: AsyncSession = Depends(get_db)):
+    """Import an MDBList list into an Emby playlist.
+
+    Payload: {"list_id": 123, "playlist_name": "...", "description": "..."}
+    Resolves list items against LibraryCache, creates an Emby playlist
+    with matched items in list order.
+    """
+    from app.utils.mdblist_client import MDBListClient
+
+    list_id = payload.get("list_id")
+    if not list_id:
+        raise HTTPException(400, "list_id required")
+    playlist_name = (payload.get("playlist_name") or "").strip()
+    description = (payload.get("description") or "").strip()
+
+    key = await _get_mdblist_key(db)
+    if not key:
+        raise HTTPException(400, "MDBList API key not configured")
+
+    client = MDBListClient(key)
+    try:
+        items = await client.get_all_list_items(int(list_id))
+    finally:
+        await client.close()
+
+    if not items:
+        return {"status": "ok", "matched": 0, "unmatched": 0, "message": "List is empty"}
+
+    emby = EmbyClient()
+    emby_ids = []
+    unmatched = []
+
+    try:
+        for entry in items:
+            ids = entry.get("ids") or {}
+            imdb_id = entry.get("imdb_id") or ids.get("imdb")
+            tmdb_id = ids.get("tmdb") or entry.get("id")
+            tvdb_id = entry.get("tvdb_id") or ids.get("tvdb")
+            title = entry.get("title", "Unknown")
+            mediatype = entry.get("mediatype", "movie")
+
+            match = None
+
+            # Try IMDB
+            if imdb_id:
+                match = await LibraryCache.find_by_provider_id("Imdb", str(imdb_id))
+
+            # Try TMDB
+            if not match and tmdb_id:
+                match = await LibraryCache.find_by_provider_id("Tmdb", str(tmdb_id))
+
+            # Try TVDB (shows)
+            if not match and tvdb_id:
+                match = await LibraryCache.find_by_provider_id("Tvdb", str(tvdb_id))
+
+            if match and match.get("emby_id"):
+                emby_ids.append(match["emby_id"])
+            else:
+                unmatched.append({
+                    "title": title,
+                    "year": entry.get("release_year"),
+                    "type": mediatype,
+                })
+
+        # Create Emby playlist
+        playlist_id = None
+        if emby_ids:
+            emby_user_id = (await _first_emby_user_id()) or None
+            final_name = playlist_name or f"📋 MDB: {list_id}"
+            playlist_id = await emby.recreate_playlist(
+                final_name, emby_ids, user_id=emby_user_id,
+            )
+            if playlist_id and description:
+                await emby.set_playlist_overview(
+                    playlist_id, description,
+                    user_id=emby_user_id,
+                )
+            log.info("mdblist.imported", list_id=list_id, name=final_name,
+                     matched=len(emby_ids), unmatched=len(unmatched))
+    finally:
+        await emby.close()
+
+    # Track the import for auto-sync
+    import json as _json
+    r = await get_redis()
+    synced_key = "mdblist_synced_lists"
+    raw = await r.get(synced_key)
+    synced = _json.loads(raw) if raw else []
+
+    # Update or add entry
+    entry_found = False
+    for entry in synced:
+        if entry.get("list_id") == int(list_id):
+            entry["playlist_name"] = playlist_name or entry.get("playlist_name", "")
+            entry["description"] = description or entry.get("description", "")
+            entry["last_synced"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            entry["matched"] = len(emby_ids)
+            entry_found = True
+            break
+
+    if not entry_found:
+        synced.append({
+            "list_id": int(list_id),
+            "playlist_name": playlist_name or f"📋 MDB: {list_id}",
+            "description": description,
+            "last_synced": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "matched": len(emby_ids),
+            "auto_sync": True,
+        })
+
+    await r.set(synced_key, _json.dumps(synced))
+    # Also persist to DB so it survives Redis restart
+    await _put_setting(db, "mdblist_synced_lists", _json.dumps(synced))
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "matched": len(emby_ids),
+        "unmatched": len(unmatched),
+        "unmatched_items": unmatched[:20],
+        "playlist_id": playlist_id,
+    }
+
+
+@router.get("/api/mdblist/synced")
+async def get_mdblist_synced(db: AsyncSession = Depends(get_db)):
+    """Return the list of MDBList lists that have been imported and are tracked for auto-sync."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get("mdblist_synced_lists")
+    if not raw:
+        raw = await _get_setting(db, "mdblist_synced_lists", "[]")
+        if raw and raw != "[]":
+            await r.set("mdblist_synced_lists", raw)
+    synced = _json.loads(raw) if raw else []
+    return {"synced": synced}
+
+
+@router.put("/api/mdblist/synced/{list_id}/auto-sync")
+async def toggle_mdblist_auto_sync(list_id: int, payload: dict, db: AsyncSession = Depends(get_db)):
+    """Toggle auto-sync on/off for a synced MDBList list."""
+    import json as _json
+    enabled = payload.get("enabled", True)
+    r = await get_redis()
+    raw = await r.get("mdblist_synced_lists")
+    synced = _json.loads(raw) if raw else []
+
+    for entry in synced:
+        if entry.get("list_id") == list_id:
+            entry["auto_sync"] = enabled
+            break
+    else:
+        raise HTTPException(404, "List not tracked")
+
+    await r.set("mdblist_synced_lists", _json.dumps(synced))
+    await _put_setting(db, "mdblist_synced_lists", _json.dumps(synced))
+    await db.commit()
+    return {"status": "ok", "list_id": list_id, "auto_sync": enabled}
+
+
+@router.delete("/api/mdblist/synced/{list_id}")
+async def remove_mdblist_synced(list_id: int, db: AsyncSession = Depends(get_db)):
+    """Remove a list from auto-sync tracking (does NOT delete the Emby playlist)."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get("mdblist_synced_lists")
+    synced = _json.loads(raw) if raw else []
+
+    synced = [e for e in synced if e.get("list_id") != list_id]
+
+    await r.set("mdblist_synced_lists", _json.dumps(synced))
+    await _put_setting(db, "mdblist_synced_lists", _json.dumps(synced))
+    await db.commit()
+    return {"status": "ok", "list_id": list_id}
+
+
+@router.post("/api/mdblist/sync-all")
+async def sync_all_mdblist_lists(db: AsyncSession = Depends(get_db)):
+    """Re-import all auto-synced MDBList lists (used by the daily cron and manual refresh)."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get("mdblist_synced_lists")
+    if not raw:
+        raw = await _get_setting(db, "mdblist_synced_lists", "[]")
+    synced = _json.loads(raw) if raw else []
+
+    key = await _get_mdblist_key(db)
+    if not key:
+        return {"status": "skipped", "reason": "no_api_key"}
+
+    results = []
+    for entry in synced:
+        if not entry.get("auto_sync", True):
+            results.append({"list_id": entry["list_id"], "status": "skipped", "reason": "auto_sync_off"})
+            continue
+        try:
+            result = await import_mdblist_list(
+                {
+                    "list_id": entry["list_id"],
+                    "playlist_name": entry.get("playlist_name", ""),
+                    "description": entry.get("description", ""),
+                },
+                db,
+            )
+            results.append({"list_id": entry["list_id"], "status": "ok", "matched": result.get("matched", 0)})
+        except Exception as e:
+            results.append({"list_id": entry["list_id"], "status": "error", "message": str(e)[:200]})
+
+    return {"status": "ok", "results": results}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

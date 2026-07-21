@@ -521,6 +521,29 @@ async def run_heartbeat():
                     "message": str(e)[:200],
                 }), ex=600)
 
+    # --- MDBList (optional, only if API key configured) ---
+    mdb_key = await r.get("mdblist_api_key")
+    if mdb_key:
+        from app.utils.mdblist_client import MDBListClient
+        mdb_key_str = mdb_key if isinstance(mdb_key, str) else mdb_key.decode()
+        client = MDBListClient(mdb_key_str)
+        try:
+            result = await client.test_connection()
+            await r.set("heartbeat:mdblist", _json.dumps({
+                "status": result.get("status", "error"),
+                "checked_at": now,
+                "username": result.get("username", ""),
+                "plan": result.get("plan", ""),
+                "message": result.get("message", ""),
+            }), ex=600)
+        except Exception as e:
+            await r.set("heartbeat:mdblist", _json.dumps({
+                "status": "error", "checked_at": now,
+                "message": str(e)[:200],
+            }), ex=600)
+        finally:
+            await client.close()
+
 
 def _register_jobs():
     if settings.enable_smart_queue:
@@ -610,6 +633,27 @@ def _register_jobs():
         replace_existing=True,
     )
     log.info("scheduler.job_added", job="watchlist_sync", cron=wls_cron)
+
+    # MDBList Sync — daily at 3:15 AM (after watchlist sync at 2:30 AM)
+    # Re-imports all auto-synced MDBList lists into Emby playlists.
+    mdblist_cron = "15 3 * * *"
+    _job_crons["mdblist_sync"] = mdblist_cron
+
+    async def _run_mdblist_sync():
+        async def _do():
+            from app.api.routes import sync_all_mdblist_lists
+            from app.utils.database import async_session as _async_session
+            async with _async_session() as db:
+                await sync_all_mdblist_lists(db)
+        await _tracked_job("mdblist_sync", _do)
+
+    scheduler.add_job(
+        _run_mdblist_sync,
+        CronTrigger(**_parse_cron(mdblist_cron)),
+        id="mdblist_sync",
+        replace_existing=True,
+    )
+    log.info("scheduler.job_added", job="mdblist_sync", cron=mdblist_cron)
 
     # Library cache rebuild — daily at 1:30 AM (before smart queue at 2 AM)
     async def rebuild_library_cache():
