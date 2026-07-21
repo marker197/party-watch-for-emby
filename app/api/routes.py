@@ -3931,7 +3931,7 @@ async def test_tmdb_key(payload: dict):
 
 @router.get("/api/trakt-lists")
 async def get_trakt_lists():
-    """Fetch the authenticated user's personal Trakt lists with library match counts."""
+    """Fetch all Trakt lists available to the user: personal, liked, and collaborations."""
     async with async_session_ctx() as db:
         user = (await db.execute(
             select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
@@ -3955,29 +3955,53 @@ async def get_trakt_lists():
         )
 
     try:
-        lists_data = await trakt.get_my_lists()
+        my_lists = await trakt.get_my_lists()
+        liked_lists = await trakt.get_liked_lists()
+        collab_lists = await trakt.get_collaborations()
     finally:
         await trakt.close()
 
     results = []
-    for lst in lists_data or []:
+    seen_slugs = set()
+
+    def _add(lst, owner):
         ids = lst.get("ids", {})
+        slug = ids.get("slug", "")
+        if slug in seen_slugs:
+            return
+        seen_slugs.add(slug)
+        u = lst.get("user", {})
         results.append({
             "name": lst.get("name", ""),
-            "slug": ids.get("slug", ""),
+            "slug": slug,
             "item_count": lst.get("item_count", 0),
             "description": lst.get("description") or "",
             "privacy": lst.get("privacy", "private"),
             "likes": lst.get("likes", 0),
+            "owner": owner,
+            "user_name": u.get("username", ""),
         })
+
+    for lst in (my_lists or []):
+        _add(lst, "self")
+
+    for entry in (liked_lists or []):
+        # Liked lists response wraps list in a "list" key
+        lst = entry.get("list", entry)
+        _add(lst, "liked")
+
+    for lst in (collab_lists or []):
+        _add(lst, "collaboration")
+
     return {"lists": results}
 
 
 @router.post("/api/trakt-lists/import")
 async def import_trakt_list(payload: dict):
-    """Import a personal Trakt list into an Emby playlist.
+    """Import a Trakt list into an Emby playlist.
 
-    Payload: {"list_slug": "...", "playlist_name": "..."}
+    Payload: {"list_slug": "...", "playlist_name": "...", "username": "..."}
+    username defaults to "me" for the user's own lists.
     Resolves list items against LibraryCache, creates an Emby playlist
     with matched items in list order.
     """
@@ -3986,6 +4010,7 @@ async def import_trakt_list(payload: dict):
         raise HTTPException(400, "list_slug required")
     playlist_name = (payload.get("playlist_name") or "").strip()
     description = (payload.get("description") or "").strip()
+    username = (payload.get("username") or "").strip() or "me"
 
     async with async_session_ctx() as db:
         user = (await db.execute(
@@ -4010,8 +4035,8 @@ async def import_trakt_list(payload: dict):
         )
 
     try:
-        # Fetch items — the endpoint returns items under /users/me/lists/{slug}/items
-        items = await trakt.get_list_items("me", list_slug)
+        # Fetch items — the endpoint returns items under /users/{username}/lists/{slug}/items
+        items = await trakt.get_list_items(username, list_slug)
     finally:
         await trakt.close()
 

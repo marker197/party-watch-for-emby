@@ -657,6 +657,20 @@ class TraktClient:
         """Fetch the authenticated user's personal lists."""
         return await self._get("/users/me/lists", params={"extended": "full"})
 
+    async def get_liked_lists(self) -> list[dict]:
+        """Fetch lists the authenticated user has liked."""
+        try:
+            return await self._get("/users/likes/lists")
+        except Exception:
+            return []
+
+    async def get_collaborations(self) -> list[dict]:
+        """Fetch lists the user collaborates on."""
+        try:
+            return await self._get("/users/me/lists/collaborations")
+        except Exception:
+            return []
+
     async def get_popular_lists(self, limit: int = 20) -> list[dict]:
         return await self._get("/lists/popular", params={"limit": limit})
 

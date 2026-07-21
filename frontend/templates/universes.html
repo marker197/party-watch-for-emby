@@ -535,41 +535,79 @@
       </div>
     </div>
 
-    <!-- MDBList Import Section -->
-    <div id="mdblistSection" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px 24px;margin-bottom:16px;">
+    <!-- Import Lists Section -->
+    <div id="importListsSection" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px 24px;margin-bottom:16px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-        <h3 style="font-size:0.95rem;font-weight:700;color:var(--accent-light);margin:0;display:flex;align-items:center;gap:8px;">
-          📋 MDBList Import
-          <span id="mdblistBadge" style="font-size:0.72rem;padding:2px 8px;border-radius:10px;background:var(--surface-hover);color:var(--text-dim);font-weight:600;">loading…</span>
-        </h3>
-        <div style="display:flex;gap:6px;">
-          <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.78rem;padding:6px 10px;" onclick="refreshMdblistLists()" title="Refresh list of available lists">🔄 Refresh Lists</button>
-          <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.78rem;padding:6px 10px;" onclick="syncAllMdblistNow()" title="Re-import all synced lists now">⟳ Sync All Now</button>
-        </div>
-      </div>
-      <p style="color:var(--text-dim);font-size:0.82rem;margin-bottom:12px;">Select a list from your MDBList account to import as an Emby playlist. Dynamic lists auto-update daily at 3:15 AM.</p>
-
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <div style="flex:2;min-width:200px;">
-          <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:4px;">Available Lists</label>
-          <select id="mdblistSelect" style="width:100%;padding:8px 10px;font-size:0.85rem;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;">
-            <option value="">Loading lists…</option>
-          </select>
-        </div>
-        <div style="flex:1;min-width:140px;">
-          <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:4px;">Playlist Name (optional)</label>
-          <input type="text" id="mdblistPlaylistName" placeholder="Auto from list name" style="width:100%;padding:8px 10px;font-size:0.85rem;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;">
-        </div>
-        <button class="btn" style="background:var(--green);color:#fff;padding:8px 16px;font-size:0.82rem;" onclick="importMdblist()">📥 Import</button>
+        <h3 style="font-size:0.95rem;font-weight:700;color:var(--accent-light);margin:0;">📋 Import Lists</h3>
       </div>
 
-      <div id="mdblistDesc" style="font-size:0.78rem;color:var(--text-dim);margin-top:8px;display:none;"></div>
-      <div id="mdblistImportStatus" style="font-size:0.82rem;margin-top:8px;"></div>
+      <!-- Tabs -->
+      <div id="importTabs" style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--border);">
+        <button id="tabTrakt" class="import-tab active" onclick="switchImportTab('trakt')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent-light);cursor:pointer;">Trakt</button>
+        <button id="tabMdblist" class="import-tab" onclick="switchImportTab('mdblist')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim);cursor:pointer;">MDBList</button>
+      </div>
 
-      <!-- Synced lists table -->
-      <div id="mdblistSyncedContainer" style="margin-top:16px;display:none;">
-        <h4 style="font-size:0.85rem;font-weight:600;margin-bottom:8px;color:var(--text-dim);">Synced Lists</h4>
-        <div id="mdblistSyncedTable"></div>
+      <!-- ── Trakt Tab ── -->
+      <div id="panelTrakt" style="display:block;">
+        <p style="color:var(--text-dim);font-size:0.82rem;margin-bottom:12px;">Import your personal and liked Trakt lists as Emby playlists. Items are matched against your library cache.</p>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+          <div style="flex:2;min-width:200px;">
+            <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:4px;">Available Lists</label>
+            <select id="traktListSelect" style="width:100%;padding:8px 10px;font-size:0.85rem;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;">
+              <option value="">Loading lists…</option>
+            </select>
+          </div>
+          <div style="flex:1;min-width:140px;">
+            <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:4px;">Playlist Name (optional)</label>
+            <input type="text" id="traktPlaylistName" placeholder="Auto from list name" style="width:100%;padding:8px 10px;font-size:0.85rem;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <button class="btn" style="background:var(--green);color:#fff;padding:8px 16px;font-size:0.82rem;" onclick="importTraktList()">📥 Import</button>
+        </div>
+
+        <div id="traktListDesc" style="font-size:0.78rem;color:var(--text-dim);margin-top:8px;display:none;"></div>
+        <div id="traktImportStatus" style="font-size:0.82rem;margin-top:8px;"></div>
+      </div>
+
+      <!-- ── MDBList Tab ── -->
+      <div id="panelMdblist" style="display:none;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <p style="color:var(--text-dim);font-size:0.82rem;margin:0;">Import MDBList lists as Emby playlists. Dynamic lists auto-update daily at 3:15 AM.</p>
+          <div style="display:flex;gap:6px;flex-shrink:0;margin-left:12px;">
+            <span id="mdblistBadge" style="font-size:0.72rem;padding:2px 8px;border-radius:10px;background:var(--surface-hover);color:var(--text-dim);font-weight:600;white-space:nowrap;">loading…</span>
+            <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="refreshMdblistLists()" title="Refresh list of available lists">🔄</button>
+            <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="syncAllMdblistNow()" title="Re-import all synced lists now">⟳ Sync All</button>
+          </div>
+        </div>
+
+        <div id="mdblistContent">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+            <div style="flex:2;min-width:200px;">
+              <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:4px;">Available Lists</label>
+              <select id="mdblistSelect" style="width:100%;padding:8px 10px;font-size:0.85rem;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;">
+                <option value="">Loading lists…</option>
+              </select>
+            </div>
+            <div style="flex:1;min-width:140px;">
+              <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:4px;">Playlist Name (optional)</label>
+              <input type="text" id="mdblistPlaylistName" placeholder="Auto from list name" style="width:100%;padding:8px 10px;font-size:0.85rem;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;">
+            </div>
+            <button class="btn" style="background:var(--green);color:#fff;padding:8px 16px;font-size:0.82rem;" onclick="importMdblist()">📥 Import</button>
+          </div>
+
+          <div id="mdblistDesc" style="font-size:0.78rem;color:var(--text-dim);margin-top:8px;display:none;"></div>
+          <div id="mdblistImportStatus" style="font-size:0.82rem;margin-top:8px;"></div>
+
+          <!-- Synced lists table -->
+          <div id="mdblistSyncedContainer" style="margin-top:16px;display:none;">
+            <h4 style="font-size:0.85rem;font-weight:600;margin-bottom:8px;color:var(--text-dim);">Synced Lists</h4>
+            <div id="mdblistSyncedTable"></div>
+          </div>
+        </div>
+
+        <div id="mdblistNotConfigured" style="display:none;color:var(--text-dim);font-size:0.85rem;padding:12px 0;">
+          MDBList API key not configured. <a href="/settings" style="color:var(--blue);">Add one in Settings</a> to import MDBList lists.
+        </div>
       </div>
     </div>
 
@@ -611,7 +649,7 @@
       await loadUniverses();
       setupEventListeners();
       await checkAutoDiscover();
-      initMdblistSection();
+      initImportListsSection();
     }
 
     async function checkAutoDiscover() {
@@ -1294,26 +1332,210 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════
+    // Import Lists — Tab Switching
+    // ═══════════════════════════════════════════════════════════════════
+
+    let hasTrakt = false;
+    let hasMdblist = false;
+
+    function switchImportTab(tab) {
+      const tabs = document.querySelectorAll('.import-tab');
+      tabs.forEach(t => {
+        t.style.borderBottomColor = 'transparent';
+        t.style.color = 'var(--text-dim)';
+      });
+      const active = document.getElementById(tab === 'trakt' ? 'tabTrakt' : 'tabMdblist');
+      if (active) {
+        active.style.borderBottomColor = 'var(--accent)';
+        active.style.color = 'var(--accent-light)';
+      }
+      document.getElementById('panelTrakt').style.display = tab === 'trakt' ? 'block' : 'none';
+      document.getElementById('panelMdblist').style.display = tab === 'mdblist' ? 'block' : 'none';
+    }
+
+    async function initImportListsSection() {
+      const section = document.getElementById('importListsSection');
+      const tabTrakt = document.getElementById('tabTrakt');
+      const tabMdblist = document.getElementById('tabMdblist');
+
+      // Check Trakt — try fetching lists to see if user is linked
+      try {
+        const r = await fetch('/api/trakt-lists');
+        if (r.ok) {
+          const d = await r.json();
+          if (d.lists) { hasTrakt = true; }
+        }
+      } catch(e) {}
+
+      // Check MDBList — see if API key is configured
+      try {
+        const r = await fetch('/api/mdblist/key');
+        if (r.ok) {
+          const d = await r.json();
+          if (d.configured) { hasMdblist = true; }
+        }
+      } catch(e) {}
+
+      // Neither available — keep hidden
+      if (!hasTrakt && !hasMdblist) return;
+
+      section.style.display = 'block';
+
+      // Configure tabs visibility
+      if (hasTrakt && hasMdblist) {
+        // Both available — show both tabs, default to Trakt
+        tabTrakt.style.display = '';
+        tabMdblist.style.display = '';
+        switchImportTab('trakt');
+        loadTraktLists();
+        loadMdblistLists();
+        loadMdblistSynced();
+      } else if (hasTrakt) {
+        // Trakt only — show Trakt tab active, MDBList tab shows "not configured"
+        tabTrakt.style.display = '';
+        tabMdblist.style.display = '';
+        switchImportTab('trakt');
+        loadTraktLists();
+        // MDBList tab shows message
+        tabMdblist.onclick = function() {
+          switchImportTab('mdblist');
+          document.getElementById('mdblistContent').style.display = 'none';
+          document.getElementById('mdblistNotConfigured').style.display = 'block';
+        };
+      } else {
+        // MDBList only — hide Trakt tab, show MDBList directly
+        tabTrakt.style.display = 'none';
+        tabMdblist.style.display = '';
+        switchImportTab('mdblist');
+        loadMdblistLists();
+        loadMdblistSynced();
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Trakt List Import
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function loadTraktLists() {
+      const select = document.getElementById('traktListSelect');
+      try {
+        const resp = await fetch('/api/trakt-lists');
+        if (!resp.ok) {
+          select.innerHTML = '<option value="">Could not load lists — is Trakt linked?</option>';
+          return;
+        }
+        const data = await resp.json();
+        const lists = data.lists || [];
+        if (!lists.length) {
+          select.innerHTML = '<option value="">No lists found on your Trakt account</option>';
+          return;
+        }
+
+        const own = lists.filter(l => l.owner === 'self');
+        const liked = lists.filter(l => l.owner === 'liked');
+        const collab = lists.filter(l => l.owner === 'collaboration');
+
+        let html = '<option value="">— Select a list —</option>';
+
+        if (own.length) {
+          html += '<optgroup label="My Lists">';
+          for (const l of own) {
+            const privTag = l.privacy === 'private' ? ' 🔒' : '';
+            html += `<option value="${escapeHtml(l.slug)}" data-desc="${escapeHtml(l.description || '')}" data-name="${escapeHtml(l.name)}" data-user="${escapeHtml(l.user_name || '')}">📌 ${escapeHtml(l.name)}${privTag} (${l.item_count} items)</option>`;
+          }
+          html += '</optgroup>';
+        }
+
+        if (liked.length) {
+          html += '<optgroup label="Liked Lists">';
+          for (const l of liked) {
+            html += `<option value="${escapeHtml(l.slug)}" data-desc="${escapeHtml(l.description || '')}" data-name="${escapeHtml(l.name)}" data-user="${escapeHtml(l.user_name || '')}">❤️ ${escapeHtml(l.name)} by ${escapeHtml(l.user_name)} (${l.item_count} items)</option>`;
+          }
+          html += '</optgroup>';
+        }
+
+        if (collab.length) {
+          html += '<optgroup label="Collaborations">';
+          for (const l of collab) {
+            html += `<option value="${escapeHtml(l.slug)}" data-desc="${escapeHtml(l.description || '')}" data-name="${escapeHtml(l.name)}" data-user="${escapeHtml(l.user_name || '')}">🤝 ${escapeHtml(l.name)} by ${escapeHtml(l.user_name)} (${l.item_count} items)</option>`;
+          }
+          html += '</optgroup>';
+        }
+
+        select.innerHTML = html;
+
+        // Description preview on change
+        select.onchange = function() {
+          const descEl = document.getElementById('traktListDesc');
+          const opt = this.options[this.selectedIndex];
+          const desc = opt ? opt.getAttribute('data-desc') : '';
+          const name = opt ? opt.getAttribute('data-name') : '';
+          if (desc) {
+            descEl.textContent = desc;
+            descEl.style.display = 'block';
+          } else {
+            descEl.style.display = 'none';
+          }
+          const nameInput = document.getElementById('traktPlaylistName');
+          if (name && !nameInput.value.trim()) {
+            nameInput.placeholder = `📋 ${name}`;
+          }
+        };
+
+      } catch (err) {
+        select.innerHTML = `<option value="">Error: ${err.message}</option>`;
+      }
+    }
+
+    async function importTraktList() {
+      const select = document.getElementById('traktListSelect');
+      const slug = select.value;
+      if (!slug) { showToast('Select a list first'); return; }
+
+      const opt = select.options[select.selectedIndex];
+      const listName = opt ? opt.getAttribute('data-name') : '';
+      const listDesc = opt ? opt.getAttribute('data-desc') : '';
+      const listUser = opt ? opt.getAttribute('data-user') : '';
+      const customName = document.getElementById('traktPlaylistName').value.trim();
+      const status = document.getElementById('traktImportStatus');
+
+      status.innerHTML = '<span style="color:var(--text-dim);">Importing… matching items against library…</span>';
+
+      try {
+        const resp = await fetch('/api/trakt-lists/import', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            list_slug: slug,
+            playlist_name: customName || null,
+            description: listDesc || null,
+            username: listUser || null,
+          }),
+        });
+        const data = await resp.json();
+        if (data.status === 'ok') {
+          let msg = `✓ Imported ${data.matched} items as Emby playlist`;
+          if (data.unmatched > 0) {
+            const names = (data.unmatched_items || []).map(i => i.title).slice(0, 5).join(', ');
+            msg += ` · ${data.unmatched} not in library`;
+            if (names) msg += ` (${names}${data.unmatched > 5 ? '…' : ''})`;
+          }
+          status.innerHTML = `<span style="color:var(--green);">${msg}</span>`;
+          document.getElementById('traktPlaylistName').value = '';
+          showToast(msg);
+        } else {
+          status.innerHTML = `<span style="color:var(--red);">✗ ${data.message || data.reason || 'Import failed'}</span>`;
+        }
+      } catch (err) {
+        status.innerHTML = `<span style="color:var(--red);">✗ ${err.message}</span>`;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     // MDBList Import
     // ═══════════════════════════════════════════════════════════════════
 
     let mdblistListsCache = [];
-
-    async function initMdblistSection() {
-      try {
-        const r = await fetch('/api/mdblist/key');
-        const d = await r.json();
-        if (!d.configured) {
-          // No API key — keep section hidden
-          return;
-        }
-        document.getElementById('mdblistSection').style.display = 'block';
-        await loadMdblistLists();
-        await loadMdblistSynced();
-      } catch(e) {
-        // MDBList not configured — that's fine
-      }
-    }
 
     async function loadMdblistLists() {
       const select = document.getElementById('mdblistSelect');
