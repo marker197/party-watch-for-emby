@@ -1433,19 +1433,32 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                                       "itemmarkplayed", "itemmarkedplayed")
     is_watched = is_play_stop or is_mark_played
 
-    # ── Watch party seek suppression ────────────────────────────────────────
-    # When seek_all() fires, Emby pauses → seeks → resumes each session,
-    # generating spurious playback.pause and playback.unpause webhooks.
-    # A short-lived Redis flag per session suppresses these.
+    # ── Pause/unpause suppression ───────────────────────────────────────────
+    # Three layers of dedup for pause/unpause events:
+    #   1. Watch party seek: seek_all() fires pause→seek→resume per session
+    #   2. Init burst: Emby fires rapid pause/unpause during playback start
+    #      (buffering, player initialisation). Suppressed for 10s after start.
+    #   3. Same-event debounce: duplicate pause or unpause for the same
+    #      user+item within 5s is suppressed.
     if is_play_pause or is_play_unpause:
         session_id = session_data.get("Id", "")
-        if session_id:
-            try:
-                r = await get_redis()
-                if await r.get(f"party_seek_suppress:{session_id}"):
-                    return {"status": "suppressed", "reason": "party_seek_in_progress"}
-            except Exception:
-                pass
+        try:
+            r = await get_redis()
+            # Layer 1: watch party seek
+            if session_id and await r.get(f"party_seek_suppress:{session_id}"):
+                return {"status": "suppressed", "reason": "party_seek_in_progress"}
+            # Layer 2: init burst (set by playback.start above)
+            if user and await r.get(f"scrobble_init_suppress:{user.id}:{emby_item_id}"):
+                return {"status": "suppressed", "reason": "init_burst"}
+            # Layer 3: same-event debounce (5s window)
+            if user:
+                evt_key = "pause" if is_play_pause else "unpause"
+                dedup_key = f"scrobble_dedup:{user.id}:{emby_item_id}:{evt_key}"
+                if await r.get(dedup_key):
+                    return {"status": "suppressed", "reason": "debounce"}
+                await r.set(dedup_key, "1", ex=5)
+        except Exception:
+            pass
 
     # ── Helper: invalidate Continue Watching cache ─────────────────────────
     async def _invalidate_continue_watching():
@@ -1464,6 +1477,19 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     if is_play_start:
         # Invalidate continue watching cache — a new resume point is being created
         await _invalidate_continue_watching()
+
+        # Set init-burst suppression flag — Emby fires rapid pause/unpause
+        # webhooks during playback initialisation (buffering, seeking).
+        # Suppress those for 10 seconds after the start event.
+        if user:
+            try:
+                r = await get_redis()
+                await r.set(
+                    f"scrobble_init_suppress:{user.id}:{emby_item_id}",
+                    "1", ex=10,
+                )
+            except Exception:
+                pass
 
         if user.trakt_access_token:
             try:
