@@ -184,10 +184,12 @@ async def list_users(db: AsyncSession = Depends(get_db)):
             total_secs = int(delta.total_seconds())
             if total_secs > 0:
                 days = total_secs // 86400
+                hours = (total_secs % 86400) // 3600
                 token_info = {
                     "token_expires": expires.isoformat(),
                     "token_days_left": days,
-                    "token_status": "ok" if days > 7 else "expiring_soon" if days > 0 else "expired",
+                    "token_hours_left": hours,
+                    "token_status": "ok" if days > 7 else "expiring_soon" if days >= 1 else "expiring_today",
                 }
             else:
                 token_info = {
@@ -260,11 +262,21 @@ async def list_all_emby_users(db: AsyncSession = Depends(get_db)):
             if _exp.tzinfo is None:
                 _exp = _exp.replace(tzinfo=timezone.utc)
             delta = _exp - now
-            days = max(0, int(delta.total_seconds()) // 86400)
-            token_info = {
-                "token_status": "ok" if days > 7 else "expiring_soon" if days > 0 else "expired",
-                "token_days_left": days,
-            }
+            total_secs = int(delta.total_seconds())
+            if total_secs > 0:
+                days = total_secs // 86400
+                hours = (total_secs % 86400) // 3600
+                token_info = {
+                    "token_status": "ok" if days > 7 else "expiring_soon" if days >= 1 else "expiring_today",
+                    "token_days_left": days,
+                    "token_hours_left": hours,
+                }
+            else:
+                token_info = {
+                    "token_status": "expired",
+                    "token_days_left": 0,
+                    "token_hours_left": 0,
+                }
         result.append({
             "id": u.id,
             "emby_user_id": u.emby_user_id,

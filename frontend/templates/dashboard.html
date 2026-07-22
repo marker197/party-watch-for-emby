@@ -1013,10 +1013,11 @@ async function loadUsers() {
     list.innerHTML = linkedUsers.map(u => {
       let tokenHtml = '';
       if (u.token_status) {
-        const icon = u.token_status === 'ok' ? '🟢' : u.token_status === 'expiring_soon' ? '🟡' : '🔴';
-        const label = u.token_status === 'expired' ? 'Token expired'
-          : u.token_days_left != null ? `${u.token_days_left}d left`
-          : '';
+        const icon = u.token_status === 'ok' ? '🟢' : u.token_status === 'expiring_soon' ? '🟡' : u.token_status === 'expiring_today' ? '🟠' : '🔴';
+        let label = '';
+        if (u.token_status === 'expired') label = 'Token expired';
+        else if (u.token_status === 'expiring_today') label = u.token_hours_left != null ? `${u.token_hours_left}h left` : 'expires today';
+        else if (u.token_days_left != null) label = `${u.token_days_left}d left`;
         tokenHtml = ` <span style="font-size:0.72rem;opacity:0.7;">${icon} ${label}</span>`;
       }
       return `<div class="user-row">
