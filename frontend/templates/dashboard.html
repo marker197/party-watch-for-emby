@@ -1524,7 +1524,7 @@ async function viewQueue(skipTransition) {
     }
 
     el.innerHTML = '<table class="queue-table"><thead><tr>' +
-      '<th style="width:30px;">#</th><th>Title</th><th style="width:80px;">Source</th><th style="width:55px;">Score</th><th style="width:80px;">Status</th><th style="width:70px;"></th><th style="width:24px;"></th>' +
+      '<th style="width:30px;">#</th><th>Title</th><th style="width:80px;">Source</th><th style="width:55px;">Score</th><th style="width:70px;"></th><th style="width:24px;"></th>' +
       '</tr></thead><tbody>' +
       items.map((i, n) => {
         const inLib = i.in_library !== false;
@@ -1540,37 +1540,33 @@ async function viewQueue(skipTransition) {
           dlEps = dlByTvdb[i.tvdb_id];
         }
 
-        let statusBadge;
+        // "New" badge — shown inline in title after rating
+        const newBadge = (inLib && !i.played && !dl && !dlEps) ? ' <span class="queue-badge unwatched">new</span>' : '';
+
+        // Download progress — shown inline under title
+        let dlInline = '';
         if (dl) {
-          // Movie downloading — show progress bar
           const pct = dl.progress || 0;
           const barColor = dl.tracked_status === 'warning' ? 'var(--orange)' : 'var(--blue)';
           const etaStr = _formatEta(dl.eta);
           const sizeStr = dl.size_mb ? `${dl.size_mb.toFixed(0)} MB` : '';
           const nzoAttr = dl.download_id ? ` data-nzo="${dl.download_id}"` : '';
-          statusBadge = `<div class="dl-progress-wrap"${nzoAttr}>
+          dlInline = `<div class="dl-progress-wrap"${nzoAttr} style="margin-top:3px;">
             <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${pct}%;background:${barColor};"></div></div>
             <span class="dl-progress-text">${pct.toFixed(0)}%</span>
           </div>
           <div class="dl-meta" style="font-size:0.6rem;color:var(--text-dim);margin-top:1px;">${etaStr}${sizeStr ? ' · ' + sizeStr : ''}</div>`;
         } else if (dlEps && dlEps.length > 0) {
-          // Show downloading — aggregate or show per-episode
           const totalPct = dlEps.reduce((s, d) => s + (d.progress || 0), 0) / dlEps.length;
           const anyWarning = dlEps.some(d => d.tracked_status === 'warning');
           const barColor = anyWarning ? 'var(--orange)' : 'var(--blue)';
           const epLabels = dlEps.map(d => d.episode_label).filter(Boolean).join(', ');
           const nzoAttr = dlEps[0].download_id ? ` data-nzo="${dlEps[0].download_id}"` : '';
-          statusBadge = `<div class="dl-progress-wrap"${nzoAttr}>
+          dlInline = `<div class="dl-progress-wrap"${nzoAttr} style="margin-top:3px;">
             <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${totalPct}%;background:${barColor};"></div></div>
             <span class="dl-progress-text">${totalPct.toFixed(0)}%</span>
           </div>
           <div class="dl-meta" style="font-size:0.6rem;color:var(--text-dim);margin-top:1px;">${dlEps.length} ep${dlEps.length > 1 ? 's' : ''}${epLabels ? ': ' + epLabels : ''}</div>`;
-        } else if (!inLib) {
-          statusBadge = '<span class="queue-badge missing">not in library</span>';
-        } else if (i.played) {
-          statusBadge = '<span class="queue-badge played">✓</span>';
-        } else {
-          statusBadge = '<span class="queue-badge unwatched">new</span>';
         }
 
         const titleClass = inLib ? 'queue-title' : (dl || dlEps ? 'queue-title' : 'queue-title missing');
@@ -1621,10 +1617,9 @@ async function viewQueue(skipTransition) {
 
         return `<tr id="queue-row-${n}">
           <td style="color:var(--text-dim);font-size:0.78rem;">${n + 1}</td>
-          <td><span class="${titleClass}">${i.title}</span>${yearStr}${rating}${imdbLink}</td>
+          <td><span class="${titleClass}">${i.title}</span>${yearStr}${rating}${newBadge}${imdbLink}${dlInline}</td>
           <td class="queue-source"><span class="source-tag source-${i.source}">${i.source}</span></td>
           <td class="queue-score">${i.score}</td>
-          <td>${statusBadge}</td>
           <td>${actionBtn}</td>
           <td>${blockBtn}</td>
         </tr>`;
