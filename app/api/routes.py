@@ -5589,3 +5589,37 @@ async def delete_trakt_playback(
         pass
 
     return {"status": "deleted", "playback_id": playback_id}
+
+
+# ---------------------------------------------------------------------------
+# DB Inspector — browse app_settings from the browser
+# ---------------------------------------------------------------------------
+
+@router.get("/api/db/app-settings")
+async def db_app_settings(prefix: str = "", db: AsyncSession = Depends(get_db)):
+    """List app_settings rows, optionally filtered by key prefix.
+
+    GET /api/db/app-settings              → all rows
+    GET /api/db/app-settings?prefix=scrobble  → keys starting with 'scrobble'
+    GET /api/db/app-settings?prefix=ml_drift  → drift snapshots
+    """
+    if prefix:
+        rows = (await db.execute(
+            select(AppSetting).where(AppSetting.key.like(f"{prefix}%"))
+        )).scalars().all()
+    else:
+        rows = (await db.execute(select(AppSetting))).scalars().all()
+    result = []
+    for r in rows:
+        try:
+            val = _json.loads(r.value) if r.value else None
+        except Exception:
+            val = r.value
+        result.append({
+            "key": r.key,
+            "value": val,
+            "value_length": len(r.value) if r.value else 0,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        })
+    result.sort(key=lambda x: x["key"])
+    return {"count": len(result), "rows": result}
