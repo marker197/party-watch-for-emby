@@ -37,6 +37,10 @@ Start a watch party, share a code with friends, and everyone watches together in
 3. **A Trakt.tv account** (free at trakt.tv)
 4. **Container Manager** (the Docker app on Synology — it comes pre-installed on most models)
 
+
+https://addons.mozilla.org/en-GB/firefox/addon/emby-remote-play/
+
+Fireforx extension that allows you to play an item driect from trakt, imdb or tmdb item page. Do npt pin the extension, has a floating button with a device selection. 
 ---
 
 ## Quick Links
