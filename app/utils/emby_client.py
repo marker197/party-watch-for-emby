@@ -229,7 +229,8 @@ class EmbyClient:
         if not item_ids:
             return []
         fields = ("CommunityRating,OfficialRating,ProductionYear,ProviderIds,"
-                  "RunTimeTicks,Genres,Overview,Tags,Taglines,People,Studios")
+                  "RunTimeTicks,Genres,Overview,Tags,Taglines,People,Studios,"
+                  "DateCreated")
         path = f"/Users/{user_id}/Items" if user_id else "/Items"
         resp = await self._get(path, {
             "Ids": ",".join(str(i) for i in item_ids),

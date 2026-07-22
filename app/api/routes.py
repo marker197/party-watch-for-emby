@@ -185,16 +185,20 @@ async def list_users(db: AsyncSession = Depends(get_db)):
             if total_secs > 0:
                 days = total_secs // 86400
                 hours = (total_secs % 86400) // 3600
+                minutes = (total_secs % 3600) // 60
                 token_info = {
                     "token_expires": expires.isoformat(),
                     "token_days_left": days,
                     "token_hours_left": hours,
+                    "token_minutes_left": minutes,
                     "token_status": "ok" if days > 7 else "expiring_soon" if days >= 1 else "expiring_today",
                 }
             else:
                 token_info = {
                     "token_expires": expires.isoformat(),
                     "token_days_left": 0,
+                    "token_hours_left": 0,
+                    "token_minutes_left": 0,
                     "token_status": "expired",
                 }
         result.append({
@@ -266,16 +270,19 @@ async def list_all_emby_users(db: AsyncSession = Depends(get_db)):
             if total_secs > 0:
                 days = total_secs // 86400
                 hours = (total_secs % 86400) // 3600
+                minutes = (total_secs % 3600) // 60
                 token_info = {
                     "token_status": "ok" if days > 7 else "expiring_soon" if days >= 1 else "expiring_today",
                     "token_days_left": days,
                     "token_hours_left": hours,
+                    "token_minutes_left": minutes,
                 }
             else:
                 token_info = {
                     "token_status": "expired",
                     "token_days_left": 0,
                     "token_hours_left": 0,
+                    "token_minutes_left": 0,
                 }
         result.append({
             "id": u.id,
@@ -329,6 +336,7 @@ async def get_queue(
                 ratings[str(it.get("Id"))] = {
                     "community_rating": it.get("CommunityRating"),
                     "official_rating": it.get("OfficialRating"),
+                    "date_created": it.get("DateCreated"),
                 }
     except Exception:
         pass
@@ -348,6 +356,7 @@ async def get_queue(
             "in_library": i.in_library if i.in_library is not None else True,
             "community_rating": ratings.get(str(i.emby_item_id), {}).get("community_rating"),
             "official_rating": ratings.get(str(i.emby_item_id), {}).get("official_rating"),
+            "date_created": ratings.get(str(i.emby_item_id), {}).get("date_created"),
             "tmdb_id": (i.metadata_json or {}).get("ids", {}).get("tmdb"),
             "imdb_id": (i.metadata_json or {}).get("ids", {}).get("imdb"),
             "tvdb_id": (i.metadata_json or {}).get("ids", {}).get("tvdb"),

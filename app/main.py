@@ -129,6 +129,9 @@ async def lifespan(app: FastAPI):
     # Seed Redis with durable settings from DB (survives Redis restarts)
     await _seed_redis_from_db()
 
+    # One-time migration: move dismissed lists and drift data from Redis to DB
+    await _migrate_redis_to_db()
+
     # Scheduler
     _register_jobs()
     scheduler.start()
@@ -342,6 +345,48 @@ async def _seed_redis_from_db():
                     log.info("suite.redis_seeded_from_db", key=key)
     except Exception as e:
         log.warning("suite.redis_seed_skipped", error=str(e)[:200])
+
+
+async def _migrate_redis_to_db():
+    """One-time migration: copy scrobble dismissed lists and ML drift data
+    from Redis into app_settings DB table so they survive rebuilds.
+
+    Only runs if the DB key doesn't already exist (idempotent).
+    """
+    from app.models.schema import AppSetting
+    from app.utils.redis_cache import get_redis
+    try:
+        r = await get_redis()
+        async with async_session() as db:
+            for pattern, db_prefix in [
+                ("scrobble_audit_dismissed:*", "scrobble_dismissed:"),
+                ("ml_drift:*", "ml_drift:"),
+            ]:
+                cursor = 0
+                while True:
+                    cursor, keys = await r.scan(cursor=cursor, match=pattern, count=100)
+                    for redis_key in keys:
+                        key_str = redis_key if isinstance(redis_key, str) else redis_key.decode()
+                        suffix = key_str.split(":")[-1]
+                        db_key = f"{db_prefix}{suffix}"
+                        existing = (await db.execute(
+                            select(AppSetting).where(AppSetting.key == db_key)
+                        )).scalar_one_or_none()
+                        if existing:
+                            continue
+                        raw = await r.get(redis_key)
+                        if raw:
+                            val = raw if isinstance(raw, str) else raw.decode()
+                            db.add(AppSetting(
+                                key=db_key, value=val,
+                                updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                            ))
+                            log.info("suite.migrated_redis_to_db", redis_key=key_str, db_key=db_key)
+                    if not cursor:
+                        break
+            await db.commit()
+    except Exception as e:
+        log.warning("suite.redis_to_db_migration_skipped", error=str(e)[:200])
 
 
 def _parse_cron(expr: str) -> dict:

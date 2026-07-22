@@ -35,12 +35,12 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.schema import MLModel, Prediction, User, UserRating
+from app.models.schema import MLModel, Prediction, User, UserRating, AppSetting
 from app.utils.trakt_client import TraktClient
+from app.utils.database import async_session
 from app.utils.emby_client import EmbyClient
 from app.utils.library_cache import LibraryCache
 from app.utils.redis_cache import get_redis
-from app.utils.database import async_session
 
 log = structlog.get_logger()
 
@@ -701,30 +701,83 @@ class MLPredictorService:
             else:
                 snapshot["numeric"][name] = imp_val
 
+        redis_key = f"ml_drift:{user_id}"
+        db_key = f"ml_drift:{user_id}"
+        # Read existing history (Redis first, then DB)
+        history = None
         try:
             r = await get_redis()
-            key = f"ml_drift:{user_id}"
-            raw = await r.get(key)
-            history = json.loads(raw) if raw else []
-            history.append(snapshot)
-            # Keep only the most recent snapshots
-            history = history[-self.DRIFT_MAX_SNAPSHOTS:]
-            await r.set(key, json.dumps(history))
+            raw = await r.get(redis_key)
+            if raw:
+                history = json.loads(raw)
+        except Exception:
+            pass
+        if history is None:
+            try:
+                async with async_session() as db:
+                    row = (await db.execute(
+                        select(AppSetting).where(AppSetting.key == db_key)
+                    )).scalar_one_or_none()
+                    history = json.loads(row.value) if row and row.value else []
+            except Exception:
+                history = []
+        history.append(snapshot)
+        history = history[-self.DRIFT_MAX_SNAPSHOTS:]
+        encoded = json.dumps(history)
+        # Write to DB
+        try:
+            async with async_session() as db:
+                row = (await db.execute(
+                    select(AppSetting).where(AppSetting.key == db_key)
+                )).scalar_one_or_none()
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                if row:
+                    row.value = encoded
+                    row.updated_at = now
+                else:
+                    db.add(AppSetting(key=db_key, value=encoded, updated_at=now))
+                await db.commit()
             log.info("ml_predictor.drift_snapshot", user_id=user_id, snapshots=len(history))
         except Exception:
-            log.warning("ml_predictor.drift_snapshot_failed", user_id=user_id)
+            log.warning("ml_predictor.drift_snapshot_db_failed", user_id=user_id)
+        # Write to Redis cache
+        try:
+            r = await get_redis()
+            await r.set(redis_key, encoded)
+        except Exception:
+            pass
 
     async def get_drift(self, user_id: int) -> dict:
         """Return drift data: historical snapshots + computed changes.
 
         Response: {snapshots: [...], changes: [...], summary: str}
         """
+        redis_key = f"ml_drift:{user_id}"
+        db_key = f"ml_drift:{user_id}"
+        snapshots = None
         try:
             r = await get_redis()
-            raw = await r.get(f"ml_drift:{user_id}")
-            snapshots = json.loads(raw) if raw else []
+            raw = await r.get(redis_key)
+            if raw:
+                snapshots = json.loads(raw)
         except Exception:
-            snapshots = []
+            pass
+        if snapshots is None:
+            try:
+                async with async_session() as db:
+                    row = (await db.execute(
+                        select(AppSetting).where(AppSetting.key == db_key)
+                    )).scalar_one_or_none()
+                    snapshots = json.loads(row.value) if row and row.value else []
+                # Re-populate Redis
+                if snapshots:
+                    try:
+                        r = await get_redis()
+                        await r.set(redis_key, json.dumps(snapshots))
+                    except Exception:
+                        pass
+            except Exception:
+                snapshots = []
 
         if len(snapshots) < 2:
             return {

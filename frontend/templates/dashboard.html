@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Emby-Trakt Suite</title>
+<link rel="icon" href="/static/favicon.ico" type="image/x-icon">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
 <style>
   :root {
@@ -1016,7 +1017,10 @@ async function loadUsers() {
         const icon = u.token_status === 'ok' ? '🟢' : u.token_status === 'expiring_soon' ? '🟡' : u.token_status === 'expiring_today' ? '🟠' : '🔴';
         let label = '';
         if (u.token_status === 'expired') label = 'Token expired';
-        else if (u.token_status === 'expiring_today') label = u.token_hours_left != null ? `${u.token_hours_left}h left` : 'expires today';
+        else if (u.token_status === 'expiring_today') {
+          if (u.token_hours_left > 0) label = `${u.token_hours_left}h ${u.token_minutes_left || 0}m left`;
+          else label = `${u.token_minutes_left || 0}m left`;
+        }
         else if (u.token_days_left != null) label = `${u.token_days_left}d left`;
         tokenHtml = ` <span style="font-size:0.72rem;opacity:0.7;">${icon} ${label}</span>`;
       }
@@ -1114,22 +1118,28 @@ async function loadSchedulerStatus() {
       ml_retrain: '🤖 ML Retrain',
       universe_scan: '🌌 Universe Scan',
       bias_analysis: '🎓 Bias Analysis',
-      ssl_cert_check: '🔒 SSL Cert Check',
+      ssl_cert_check: '🔒 SSL Check',
+      heartbeat: '💓 Heartbeat',
+      watchlist_sync: '🔄 Watchlist Sync',
     };
 
+    grid.style.display = 'grid';
+    grid.style.gridTemplateColumns = 'repeat(4, 1fr)';
+    grid.style.gap = '6px';
+
     grid.innerHTML = entries.map(([id, j]) => {
-      const label = labels[id] || id;
+      const label = labels[id] || id.replace(/_/g, ' ');
       const dot = j.status === 'ok' ? '🟢' : j.status === 'error' ? '🔴' : '⚪';
       const lastRun = j.last_run
         ? new Date(j.last_run + 'Z').toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
         : 'Never';
       const dur = j.duration_s != null ? `${j.duration_s}s` : '';
       const sched = j.cron ? cronToHuman(j.cron) : '';
-      const errHtml = j.error ? `<span style="color:var(--red);font-size:0.68rem;display:block;margin-top:2px;word-break:break-all;">${j.error.substring(0,60)}</span>` : '';
-      return `<div class="cache-stat" style="text-align:left;padding:10px 14px;">
-        <span class="label" style="text-align:left;">${label}</span>
-        <span class="value" style="font-size:0.88rem;display:flex;align-items:center;gap:6px;">${dot} ${lastRun}</span>
-        <span style="color:var(--text-dim);font-size:0.7rem;">${sched} ${dur ? '· ' + dur : ''}</span>
+      const errHtml = j.error ? `<span style="color:var(--red);font-size:0.64rem;display:block;margin-top:1px;word-break:break-all;">${j.error.substring(0,40)}</span>` : '';
+      return `<div class="cache-stat" style="text-align:left;padding:6px 10px;">
+        <span class="label" style="text-align:left;font-size:0.65rem;">${label}</span>
+        <span class="value" style="font-size:0.78rem;display:flex;align-items:center;gap:4px;">${dot} ${lastRun}</span>
+        <span style="color:var(--text-dim);font-size:0.64rem;">${sched} ${dur ? '· ' + dur : ''}</span>
         ${errHtml}
       </div>`;
     }).join('');
@@ -1540,8 +1550,13 @@ async function viewQueue(skipTransition) {
           dlEps = dlByTvdb[i.tvdb_id];
         }
 
-        // "New" badge — shown inline in title after rating
-        const newBadge = (inLib && !i.played && !dl && !dlEps) ? ' <span class="queue-badge unwatched">new</span>' : '';
+        // "New" badge — shown inline in title after rating, only if added to library within 7 days
+        let newBadge = '';
+        if (inLib && !i.played && !dl && !dlEps && i.date_created) {
+          const addedMs = new Date(i.date_created).getTime();
+          const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+          if (addedMs > sevenDaysAgo) newBadge = ' <span class="queue-badge unwatched">new</span>';
+        }
 
         // Download progress — shown inline under title
         let dlInline = '';
@@ -1607,7 +1622,7 @@ async function viewQueue(skipTransition) {
             actionBtn = `<button class="queue-sonarr-btn" id="sonarr-btn-${n}-0" onclick="sendToSonarr(${n}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Sonarr</button>`;
           }
         } else if (inLib && i.emby_item_id) {
-          actionBtn = `<span style="display:inline-flex;gap:4px;"><button class="btn btn-sm" style="background:var(--green);padding:2px 7px;font-size:0.7rem;" onclick="pickDeviceAndPlay('${i.emby_item_id}', 0)">▶ Play</button><button class="btn btn-sm" style="background:var(--accent);padding:2px 7px;font-size:0.7rem;" onclick="createPartyFromQueue('${i.emby_item_id}', '${safeTitle}')">🎉</button></span>`;
+          actionBtn = `<span style="display:inline-flex;gap:4px;"><button class="btn btn-sm" style="background:none;border:1px solid var(--accent);color:var(--accent);padding:2px 7px;border-radius:4px;font-size:0.72rem;white-space:nowrap;cursor:pointer;" onclick="createPartyFromQueue('${i.emby_item_id}', '${safeTitle}')">🎉 Party</button><button class="btn btn-sm" style="background:none;border:1px solid var(--green);color:var(--green);padding:2px 7px;border-radius:4px;font-size:0.72rem;white-space:nowrap;cursor:pointer;" onclick="pickDeviceAndPlay('${i.emby_item_id}', 0)">▶ Play</button></span>`;
         }
 
         // Block button
@@ -3153,9 +3168,30 @@ async function refreshDownloadsCard() {
 // Initialization
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Adaptive token expiry refresh: 1h normally, 5m within 30m, 1m within 5m
+let _tokenRefreshTimer = null;
+function scheduleTokenRefresh() {
+  if (_tokenRefreshTimer) clearTimeout(_tokenRefreshTimer);
+  // Find the shortest token expiry across all linked users
+  let minMinsLeft = Infinity;
+  for (const u of allUsers) {
+    if (!u.linked || !u.token_status || u.token_status === 'expired') continue;
+    const total = (u.token_days_left || 0) * 1440 + (u.token_hours_left || 0) * 60 + (u.token_minutes_left || 0);
+    if (total < minMinsLeft) minMinsLeft = total;
+  }
+  let intervalMs;
+  if (minMinsLeft <= 5) intervalMs = 60_000;       // every 1 min
+  else if (minMinsLeft <= 30) intervalMs = 300_000; // every 5 min
+  else intervalMs = 3600_000;                       // every 1 hour
+  _tokenRefreshTimer = setTimeout(async () => {
+    await loadUsers();
+    scheduleTokenRefresh();
+  }, intervalMs);
+}
+
 function init() {
   dashboardPoll();
-  loadUsers();
+  loadUsers().then(scheduleTokenRefresh);
   loadParties();
   loadSchedulerStatus();
   loadSSLStatus();

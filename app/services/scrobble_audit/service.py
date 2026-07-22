@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 import structlog
 from sqlalchemy import select
 
-from app.models.schema import User
+from app.models.schema import User, AppSetting
 from app.utils.trakt_client import TraktClient
 from app.utils.emby_client import EmbyClient
 from app.utils.redis_cache import get_redis
@@ -73,26 +73,68 @@ class ScrobbleAuditService:
             pass
 
     async def get_dismissed(self, user_id: int) -> list[str]:
-        """Return list of dismissed Emby IDs for a user."""
+        """Return list of dismissed Emby IDs for a user (DB-backed, Redis-cached)."""
+        cache_key = f"scrobble_audit_dismissed:{user_id}"
+        db_key = f"scrobble_dismissed:{user_id}"
+        # Try Redis cache first
         try:
             r = await get_redis()
-            raw = await r.get(f"scrobble_audit_dismissed:{user_id}")
+            raw = await r.get(cache_key)
             if raw:
                 return json.loads(raw)
         except Exception:
             pass
+        # Fall back to DB
+        try:
+            async with async_session() as db:
+                row = (await db.execute(
+                    select(AppSetting).where(AppSetting.key == db_key)
+                )).scalar_one_or_none()
+                dismissed = json.loads(row.value) if row and row.value else []
+            # Re-populate Redis cache
+            try:
+                r = await get_redis()
+                await r.set(cache_key, json.dumps(dismissed))
+            except Exception:
+                pass
+            return dismissed
+        except Exception:
+            pass
         return []
 
+    async def _save_dismissed(self, user_id: int, dismissed: list[str]) -> None:
+        """Persist dismissed list to DB and Redis."""
+        cache_key = f"scrobble_audit_dismissed:{user_id}"
+        db_key = f"scrobble_dismissed:{user_id}"
+        encoded = json.dumps(dismissed)
+        # Write to DB
+        try:
+            async with async_session() as db:
+                row = (await db.execute(
+                    select(AppSetting).where(AppSetting.key == db_key)
+                )).scalar_one_or_none()
+                if row:
+                    row.value = encoded
+                    row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                else:
+                    db.add(AppSetting(key=db_key, value=encoded,
+                                      updated_at=datetime.now(timezone.utc).replace(tzinfo=None)))
+                await db.commit()
+        except Exception:
+            log.warning("scrobble_audit.dismissed_db_write_failed", user_id=user_id)
+        # Write to Redis cache
+        try:
+            r = await get_redis()
+            await r.set(cache_key, encoded)
+        except Exception:
+            pass
+
     async def dismiss_item(self, user_id: int, emby_id: str) -> dict:
-        """Dismiss an item from the audit list (persisted in Redis)."""
+        """Dismiss an item from the audit list (persisted to DB)."""
         dismissed = await self.get_dismissed(user_id)
         if emby_id not in dismissed:
             dismissed.append(emby_id)
-        try:
-            r = await get_redis()
-            await r.set(f"scrobble_audit_dismissed:{user_id}", json.dumps(dismissed))
-        except Exception:
-            pass
+        await self._save_dismissed(user_id, dismissed)
         await self.invalidate_cache(user_id)
         return {"dismissed": emby_id}
 
@@ -100,11 +142,7 @@ class ScrobbleAuditService:
         """Re-enable a previously dismissed item."""
         dismissed = await self.get_dismissed(user_id)
         dismissed = [d for d in dismissed if d != emby_id]
-        try:
-            r = await get_redis()
-            await r.set(f"scrobble_audit_dismissed:{user_id}", json.dumps(dismissed))
-        except Exception:
-            pass
+        await self._save_dismissed(user_id, dismissed)
         await self.invalidate_cache(user_id)
         return {"undismissed": emby_id}
 
