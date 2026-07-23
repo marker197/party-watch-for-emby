@@ -96,12 +96,15 @@ class MDBListClient:
         return await self._get(f"/lists/{list_id}")
 
     async def get_liked_lists(self) -> list[dict]:
-        """Fetch lists the user has liked.
-        Uses the external/lists/user endpoint which returns liked + own lists.
-        Falls back to empty list if the endpoint is not available.
-        """
+        """Fetch lists the user has liked on MDBList."""
         try:
-            return await self._get("/external/lists/user")
+            data = await self._get("/lists/liked")
+            # API may return list of dicts or a wrapper — normalise
+            if isinstance(data, dict) and "lists" in data:
+                return data["lists"]
+            if isinstance(data, list):
+                return data
+            return []
         except Exception:
             return []
 

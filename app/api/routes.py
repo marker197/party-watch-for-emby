@@ -4244,8 +4244,10 @@ async def get_mdblist_lists(db: AsyncSession = Depends(get_db)):
         })
 
     for lst in (liked_lists or []):
+        if not isinstance(lst, dict):
+            continue
         lid = lst.get("id")
-        if lid in seen_ids:
+        if not lid or lid in seen_ids:
             continue
         seen_ids.add(lid)
         results.append({
