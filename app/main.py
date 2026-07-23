@@ -648,7 +648,7 @@ async def check_trakt_tokens():
 
     from app.utils.trakt_client import TraktClient
 
-    async with async_session_ctx() as db:
+    async with async_session() as db:
         result = await db.execute(
             select(User).where(User.trakt_access_token.isnot(None))
         )
@@ -660,7 +660,7 @@ async def check_trakt_tokens():
 
         async def _make_callback(uid=user.id):
             async def _cb(access, refresh, expires):
-                async with async_session_ctx() as rdb:
+                async with async_session() as rdb:
                     u = (await rdb.execute(
                         select(User).where(User.id == uid)
                     )).scalar_one()
