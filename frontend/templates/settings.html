@@ -713,12 +713,12 @@
     <!-- Watchlist Sync -->
     <div class="section">
       <h2>🔄 Watchlist Sync</h2>
-      <p style="color:var(--text-dim);margin-bottom:16px;">Bi-directional sync between Radarr/Sonarr and your Trakt watchlist. Runs at startup, daily at 2:30 AM, and in the background when you open Airing Soon.</p>
+      <p style="color:var(--text-dim);margin-bottom:16px;">Bi-directional sync between Radarr/Sonarr and your <span id="wlSyncProviderLabel">Trakt/MDBList</span> watchlist. Runs at startup, daily at 2:30 AM, and in the background when you open Airing Soon.</p>
 
       <div class="toggle-group">
         <div class="toggle-label">
           <span class="title">Arr → Watchlist</span>
-          <span class="desc">Sync missing Radarr/Sonarr items (monitored, no file) to your Trakt watchlist so they appear in Airing Soon</span>
+          <span class="desc">Sync missing Radarr/Sonarr items (monitored, no file) to your watchlist so they appear in Airing Soon</span>
         </div>
         <div class="toggle-switch" id="wlSyncArrToWl" onclick="toggleWatchlistSync('arr_to_watchlist')"></div>
       </div>
@@ -726,7 +726,7 @@
       <div class="toggle-group" style="margin-top:12px;">
         <div class="toggle-label">
           <span class="title">Watchlist → Arr</span>
-          <span class="desc">Auto-add Trakt watchlist items to Radarr/Sonarr if not already there (uses first configured server)</span>
+          <span class="desc">Auto-add watchlist items to Radarr/Sonarr if not already there (uses first configured server)</span>
         </div>
         <div class="toggle-switch" id="wlSyncWlToArr" onclick="toggleWatchlistSync('watchlist_to_arr')"></div>
       </div>
@@ -880,6 +880,13 @@
       const mdbSection = document.getElementById('sectionMdblist');
       if (traktSection) traktSection.style.display = (provider === 'trakt' || provider === 'both') ? '' : 'none';
       if (mdbSection) mdbSection.style.display = (provider === 'mdblist' || provider === 'both') ? '' : 'none';
+      // Update watchlist sync provider label
+      const wlLabel = document.getElementById('wlSyncProviderLabel');
+      if (wlLabel) {
+        if (provider === 'both') wlLabel.textContent = 'Trakt + MDBList';
+        else if (provider === 'mdblist') wlLabel.textContent = 'MDBList';
+        else wlLabel.textContent = 'Trakt';
+      }
     }
 
     async function changeProvider(value) {

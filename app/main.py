@@ -145,7 +145,7 @@ async def lifespan(app: FastAPI):
         log.warning("suite.initial_heartbeat_failed")
 
     # First-run watchlist sync — ensures missing Radarr/Sonarr items are
-    # on the Trakt watchlist from the moment the container starts
+    # on the Trakt/MDBList watchlist from the moment the container starts
     try:
         from app.services.watchlist_sync.service import WatchlistSyncService
         _wls_startup = WatchlistSyncService()

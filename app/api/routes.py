@@ -644,24 +644,23 @@ async def get_airing_soon(
     home_releases = result.get("upcoming_home_releases", [])
 
     # Fire watchlist sync in background — ensures missing Radarr/Sonarr
-    # items are on the Trakt watchlist so they appear in Airing Soon.
+    # items are on the Trakt/MDBList watchlist so they appear in Airing Soon.
     # Throttled: runs at most once every 30 minutes per user.
-    if user.trakt_access_token:
-        r = await get_redis()
-        throttle_key = f"watchlist_sync:last_run:{user_id}"
-        already_ran = await r.get(throttle_key)
-        if not already_ran:
-            from app.services.watchlist_sync.service import WatchlistSyncService
-            _wls = WatchlistSyncService()
+    r = await get_redis()
+    throttle_key = f"watchlist_sync:last_run:{user_id}"
+    already_ran = await r.get(throttle_key)
+    if not already_ran:
+        from app.services.watchlist_sync.service import WatchlistSyncService
+        _wls = WatchlistSyncService()
 
-            async def _bg_sync():
-                try:
-                    await r.setex(throttle_key, 1800, "1")  # 30 min throttle
-                    await _wls._sync_user(user)
-                except Exception:
-                    log.warning("watchlist_sync.background_failed", user_id=user_id)
+        async def _bg_sync():
+            try:
+                await r.setex(throttle_key, 1800, "1")  # 30 min throttle
+                await _wls._sync_user(user)
+            except Exception:
+                log.warning("watchlist_sync.background_failed", user_id=user_id)
 
-            background_tasks.add_task(_bg_sync)
+        background_tasks.add_task(_bg_sync)
 
     return {
         "count": len(alerts),

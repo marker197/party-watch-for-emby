@@ -1,18 +1,19 @@
 """Watchlist Sync Service.
 
-Bi-directional sync between Radarr/Sonarr and Trakt watchlist:
+Bi-directional sync between Radarr/Sonarr and Trakt/MDBList watchlists:
 
 1. **Arr → Watchlist**: Reads missing (monitored, no file) movies/series from
-   Radarr/Sonarr, compares against the user's Trakt watchlist, adds any items
+   Radarr/Sonarr, compares against the user's watchlist(s), adds any items
    not already there.  Clears the Airing Soon cache afterwards so newly-
    watchlisted shows with upcoming premieres appear immediately.
 
-2. **Watchlist → Arr**: Reads the user's Trakt watchlist, compares against all
+2. **Watchlist → Arr**: Reads the user's watchlist(s), compares against all
    items in Radarr/Sonarr, adds any items not already present using the first
    configured server's quality profile and root folder.
 
 Both directions are independently toggleable via the watchlist_sync_settings
-stored in Redis/DB.
+stored in Redis/DB.  Which provider(s) are synced depends on the configured
+integration_provider setting (trakt, mdblist, both, or none).
 """
 
 from __future__ import annotations
@@ -33,7 +34,11 @@ SETTINGS_KEY = "watchlist_sync_settings"
 
 
 class WatchlistSyncService:
-    """Bi-directional sync: Radarr/Sonarr ↔ Trakt watchlist."""
+    """Bi-directional sync: Radarr/Sonarr ↔ Trakt/MDBList watchlist."""
+
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
 
     async def run_for_all_users(self):
         settings = await self._get_settings()
@@ -41,27 +46,73 @@ class WatchlistSyncService:
             log.info("watchlist_sync.both_disabled")
             return
 
+        providers = await self._get_active_providers()
+        if not providers:
+            log.info("watchlist_sync.no_active_providers")
+            return
+
         log.info("watchlist_sync.run_start",
                  arr_to_wl=settings.get("arr_to_watchlist"),
-                 wl_to_arr=settings.get("watchlist_to_arr"))
+                 wl_to_arr=settings.get("watchlist_to_arr"),
+                 providers=sorted(providers))
 
         async with async_session() as db:
-            users = (await db.execute(
-                select(User).where(User.trakt_access_token.isnot(None))
-            )).scalars().all()
+            # Users with Trakt tokens OR any linked user when MDBList-only
+            if "trakt" in providers:
+                users = (await db.execute(
+                    select(User).where(User.trakt_access_token.isnot(None))
+                )).scalars().all()
+            else:
+                # MDBList-only mode: use all users (MDBList uses API key, not per-user tokens)
+                users = (await db.execute(select(User))).scalars().all()
+
+        if not users:
+            log.info("watchlist_sync.no_users")
+            return
 
         for user in users:
             try:
-                await self._sync_user(user)
+                await self._sync_user(user, providers)
             except Exception:
                 log.exception("watchlist_sync.user_error", user_id=user.id)
 
         log.info("watchlist_sync.run_complete", users_processed=len(users))
 
-    async def _sync_user(self, user: User):
+    async def _sync_user(self, user: User, providers: set[str] | None = None):
+        if providers is None:
+            providers = await self._get_active_providers()
+
         settings = await self._get_settings()
 
-        # Token refresh callback
+        # ---------- Trakt ----------
+        if "trakt" in providers and user.trakt_access_token:
+            trakt = await self._build_trakt_client(user)
+            try:
+                if settings.get("arr_to_watchlist"):
+                    await self._arr_to_trakt_watchlist(user, trakt)
+                if settings.get("watchlist_to_arr"):
+                    await self._trakt_watchlist_to_arr(user, trakt)
+            finally:
+                await trakt.close()
+
+        # ---------- MDBList ----------
+        if "mdblist" in providers:
+            mdb = await self._build_mdblist_client()
+            if mdb:
+                try:
+                    if settings.get("arr_to_watchlist"):
+                        await self._arr_to_mdblist_watchlist(user, mdb)
+                    if settings.get("watchlist_to_arr"):
+                        await self._mdblist_watchlist_to_arr(user, mdb)
+                finally:
+                    await mdb.close()
+
+    # ------------------------------------------------------------------
+    # Client builders
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _build_trakt_client(user: User) -> TraktClient:
         async def on_token_refresh(access, refresh, expires):
             async with async_session() as db:
                 u = (await db.execute(
@@ -72,32 +123,35 @@ class WatchlistSyncService:
                 u.trakt_token_expires = expires
                 await db.commit()
 
-        trakt = TraktClient(
+        return TraktClient(
             access_token=user.trakt_access_token,
             refresh_token=user.trakt_refresh_token,
             token_expires=user.trakt_token_expires,
             token_refresh_callback=on_token_refresh,
         )
 
-        try:
-            if settings.get("arr_to_watchlist"):
-                await self._arr_to_watchlist(user, trakt)
+    @staticmethod
+    async def _build_mdblist_client():
+        """Build an MDBListClient using the stored API key, or None if not configured."""
+        from app.utils.mdblist_client import MDBListClient
+        r = await get_redis()
+        raw = await r.get("mdblist_api_key")
+        key = (raw if isinstance(raw, str) else raw.decode()) if raw else ""
+        if not key:
+            log.debug("watchlist_sync.mdblist.no_api_key")
+            return None
+        return MDBListClient(api_key=key)
 
-            if settings.get("watchlist_to_arr"):
-                await self._watchlist_to_arr(user, trakt)
-        finally:
-            await trakt.close()
-
-    # ------------------------------------------------------------------
+    # ==================================================================
     # Direction 1: Arr → Watchlist
-    # ------------------------------------------------------------------
+    # ==================================================================
 
-    async def _arr_to_watchlist(self, user: User, trakt: TraktClient):
+    async def _arr_to_trakt_watchlist(self, user: User, trakt: TraktClient):
         """Send missing Radarr/Sonarr items to Trakt watchlist (with dupe check)."""
         missing_tmdb, missing_tvdb = await self._get_arr_missing_ids()
 
         if not missing_tmdb and not missing_tvdb:
-            log.info("watchlist_sync.arr_to_wl.nothing_missing", user_id=user.id)
+            log.info("watchlist_sync.arr_to_trakt.nothing_missing", user_id=user.id)
             return
 
         # Fetch current Trakt watchlist for dupe check
@@ -129,13 +183,13 @@ class WatchlistSyncService:
         ]
 
         if not movies_to_add and not shows_to_add:
-            log.info("watchlist_sync.arr_to_wl.all_on_watchlist",
+            log.info("watchlist_sync.arr_to_trakt.all_on_watchlist",
                      user_id=user.id,
                      missing_movies=len(missing_tmdb),
                      missing_shows=len(missing_tvdb))
             return
 
-        log.info("watchlist_sync.arr_to_wl.adding",
+        log.info("watchlist_sync.arr_to_trakt.adding",
                  user_id=user.id,
                  movies=len(movies_to_add),
                  shows=len(shows_to_add))
@@ -147,7 +201,7 @@ class WatchlistSyncService:
 
         added = result.get("added", {})
         existing = result.get("existing", {})
-        log.info("watchlist_sync.arr_to_wl.done",
+        log.info("watchlist_sync.arr_to_trakt.done",
                  user_id=user.id,
                  movies_added=added.get("movies", 0),
                  shows_added=added.get("shows", 0),
@@ -158,22 +212,94 @@ class WatchlistSyncService:
         if shows_to_add:
             await self._refresh_airing_soon(user)
 
-    # ------------------------------------------------------------------
+    async def _arr_to_mdblist_watchlist(self, user: User, mdb):
+        """Send missing Radarr/Sonarr items to MDBList watchlist (with dupe check)."""
+        missing_tmdb, missing_tvdb = await self._get_arr_missing_ids()
+
+        if not missing_tmdb and not missing_tvdb:
+            log.info("watchlist_sync.arr_to_mdblist.nothing_missing", user_id=user.id)
+            return
+
+        # Fetch current MDBList watchlist for dupe check
+        # MDBList returns {"movies": [...], "shows": [...]} or a flat list
+        wl_data = await mdb.get_watchlist()
+
+        wl_tmdb_ids: set[int] = set()
+        wl_imdb_ids: set[str] = set()
+
+        # MDBList watchlist items have tmdb/imdb at top level
+        wl_items = []
+        if isinstance(wl_data, dict):
+            wl_items = (wl_data.get("movies") or []) + (wl_data.get("shows") or [])
+        elif isinstance(wl_data, list):
+            wl_items = wl_data
+
+        for item in wl_items:
+            tmdb = item.get("tmdb") or item.get("tmdbid")
+            imdb = item.get("imdb") or item.get("imdbid")
+            if tmdb:
+                wl_tmdb_ids.add(int(tmdb))
+            if imdb:
+                wl_imdb_ids.add(str(imdb))
+
+        # Filter out items already on watchlist (check by TMDB ID)
+        movies_to_add = [
+            {"tmdb": tmdb}
+            for tmdb in missing_tmdb
+            if tmdb not in wl_tmdb_ids
+        ]
+
+        # For shows, MDBList uses TMDB IDs too — but Sonarr gives us TVDB IDs.
+        # We can pass TVDB as imdb won't work. MDBList accepts tmdb for shows.
+        # Since we only have tvdb_id from Sonarr, we'll try to look up TMDB
+        # from our library cache or just pass what we have.
+        # MDBList add_to_watchlist accepts: {"tmdb": N} or {"imdb": "tt..."}
+        # It does NOT accept tvdb. So we need TMDB or IMDB for shows.
+        # Best effort: check library cache for TMDB ID mapped from TVDB.
+        shows_to_add = []
+        if missing_tvdb:
+            tvdb_to_tmdb = await self._resolve_tvdb_to_tmdb(missing_tvdb)
+            for tvdb in missing_tvdb:
+                tmdb = tvdb_to_tmdb.get(tvdb)
+                if tmdb and tmdb not in wl_tmdb_ids:
+                    shows_to_add.append({"tmdb": tmdb})
+                elif not tmdb:
+                    log.debug("watchlist_sync.arr_to_mdblist.no_tmdb_for_tvdb",
+                              tvdb=tvdb)
+
+        if not movies_to_add and not shows_to_add:
+            log.info("watchlist_sync.arr_to_mdblist.all_on_watchlist",
+                     user_id=user.id,
+                     missing_movies=len(missing_tmdb),
+                     missing_shows=len(missing_tvdb))
+            return
+
+        log.info("watchlist_sync.arr_to_mdblist.adding",
+                 user_id=user.id,
+                 movies=len(movies_to_add),
+                 shows=len(shows_to_add))
+
+        result = await mdb.add_to_watchlist(
+            movies=movies_to_add or None,
+            shows=shows_to_add or None,
+        )
+
+        log.info("watchlist_sync.arr_to_mdblist.done",
+                 user_id=user.id,
+                 result=str(result)[:200])
+
+        if shows_to_add:
+            await self._refresh_airing_soon(user)
+
+    # ==================================================================
     # Direction 2: Watchlist → Arr
-    # ------------------------------------------------------------------
+    # ==================================================================
 
-    async def _watchlist_to_arr(self, user: User, trakt: TraktClient):
+    async def _trakt_watchlist_to_arr(self, user: User, trakt: TraktClient):
         """Add Trakt watchlist items to Radarr/Sonarr if not already there."""
-        from app.utils.radarr_client import RadarrClient
-        from app.utils.sonarr_client import SonarrClient
-
-        r = await get_redis()
-
-        # Fetch Trakt watchlist
         wl_movies = await trakt.get_watchlist(kind="movies")
         wl_shows = await trakt.get_watchlist(kind="shows")
 
-        # Build watchlist ID maps: {tmdb_id: movie_data, ...}
         wl_movie_map: dict[int, dict] = {}
         for item in (wl_movies or []):
             movie = item.get("movie") or {}
@@ -189,15 +315,88 @@ class WatchlistSyncService:
                 wl_show_map[tvdb] = show
 
         if not wl_movie_map and not wl_show_map:
-            log.info("watchlist_sync.wl_to_arr.empty_watchlist", user_id=user.id)
+            log.info("watchlist_sync.trakt_to_arr.empty_watchlist", user_id=user.id)
             return
+
+        await self._add_to_arr(
+            user, wl_movie_map, wl_show_map,
+            log_prefix="watchlist_sync.trakt_to_arr",
+        )
+
+    async def _mdblist_watchlist_to_arr(self, user: User, mdb):
+        """Add MDBList watchlist items to Radarr/Sonarr if not already there."""
+        wl_data = await mdb.get_watchlist()
+
+        # Parse MDBList response — items have tmdb/imdb/tvdbid at top level
+        wl_items = []
+        if isinstance(wl_data, dict):
+            wl_items = (wl_data.get("movies") or []) + (wl_data.get("shows") or [])
+        elif isinstance(wl_data, list):
+            wl_items = wl_data
+
+        wl_movie_map: dict[int, dict] = {}
+        wl_show_map: dict[int, dict] = {}
+
+        for item in wl_items:
+            mediatype = item.get("mediatype") or item.get("type") or ""
+            tmdb = item.get("tmdb") or item.get("tmdbid")
+            imdb = item.get("imdb") or item.get("imdbid")
+            tvdb = item.get("tvdbid") or item.get("tvdb")
+            title = item.get("title") or ""
+            year = item.get("year")
+
+            if mediatype == "movie" or (not mediatype and not tvdb):
+                if tmdb:
+                    wl_movie_map[int(tmdb)] = {
+                        "title": title,
+                        "year": year,
+                        "ids": {"tmdb": int(tmdb), "imdb": imdb or None},
+                    }
+            elif mediatype == "show" or tvdb:
+                if tvdb:
+                    wl_show_map[int(tvdb)] = {
+                        "title": title,
+                        "year": year,
+                        "ids": {"tvdb": int(tvdb), "imdb": imdb or None},
+                    }
+                elif tmdb:
+                    # No TVDB ID — try to resolve from TMDB
+                    # For now, skip shows without TVDB (Sonarr requires TVDB)
+                    log.debug("watchlist_sync.mdblist_to_arr.show_no_tvdb",
+                              tmdb=tmdb, title=title)
+
+        if not wl_movie_map and not wl_show_map:
+            log.info("watchlist_sync.mdblist_to_arr.empty_watchlist", user_id=user.id)
+            return
+
+        await self._add_to_arr(
+            user, wl_movie_map, wl_show_map,
+            log_prefix="watchlist_sync.mdblist_to_arr",
+        )
+
+    # ------------------------------------------------------------------
+    # Shared: push watchlist items into Radarr/Sonarr
+    # ------------------------------------------------------------------
+
+    async def _add_to_arr(
+        self,
+        user: User,
+        movie_map: dict[int, dict],
+        show_map: dict[int, dict],
+        log_prefix: str,
+    ):
+        """Add movies (keyed by TMDB) and shows (keyed by TVDB) to Radarr/Sonarr."""
+        from app.utils.radarr_client import RadarrClient
+        from app.utils.sonarr_client import SonarrClient
+
+        r = await get_redis()
 
         # Get all items currently in Radarr/Sonarr
         radarr_tmdb_ids, sonarr_tvdb_ids = await self._get_arr_all_ids()
 
         # --- Movies → Radarr ---
         movies_to_add = {
-            tmdb: data for tmdb, data in wl_movie_map.items()
+            tmdb: data for tmdb, data in movie_map.items()
             if tmdb not in radarr_tmdb_ids
         }
 
@@ -208,7 +407,7 @@ class WatchlistSyncService:
             if raw:
                 servers = _json.loads(raw)
                 if servers:
-                    srv = servers[0]  # Use first server
+                    srv = servers[0]
                     client = None
                     try:
                         client = RadarrClient(
@@ -226,25 +425,23 @@ class WatchlistSyncService:
                                     quality_profile_id=int(profile_id) if profile_id else None,
                                 )
                                 if result.get("status") == "error":
-                                    log.warning("watchlist_sync.wl_to_arr.radarr_add_failed",
+                                    log.warning(f"{log_prefix}.radarr_add_failed",
                                                 tmdb=tmdb, reason=result.get("reason", "")[:120])
                                     movies_failed += 1
                                 else:
                                     movies_added += 1
-                                    log.info("watchlist_sync.wl_to_arr.radarr_added",
+                                    log.info(f"{log_prefix}.radarr_added",
                                              tmdb=tmdb, title=movie.get("title", ""))
                             except Exception as e:
-                                # Radarr returns 400 if movie already exists
                                 err = str(e)[:120]
                                 if "already" in err.lower() or "exist" in err.lower():
-                                    log.debug("watchlist_sync.wl_to_arr.radarr_exists",
-                                              tmdb=tmdb)
+                                    log.debug(f"{log_prefix}.radarr_exists", tmdb=tmdb)
                                 else:
-                                    log.warning("watchlist_sync.wl_to_arr.radarr_add_error",
+                                    log.warning(f"{log_prefix}.radarr_add_error",
                                                 tmdb=tmdb, error=err)
                                     movies_failed += 1
                     except Exception:
-                        log.exception("watchlist_sync.wl_to_arr.radarr_connect_failed",
+                        log.exception(f"{log_prefix}.radarr_connect_failed",
                                       server=srv.get("name"))
                     finally:
                         if client:
@@ -252,7 +449,7 @@ class WatchlistSyncService:
 
         # --- Shows → Sonarr ---
         shows_to_add = {
-            tvdb: data for tvdb, data in wl_show_map.items()
+            tvdb: data for tvdb, data in show_map.items()
             if tvdb not in sonarr_tvdb_ids
         }
 
@@ -263,7 +460,7 @@ class WatchlistSyncService:
             if raw:
                 servers = _json.loads(raw)
                 if servers:
-                    srv = servers[0]  # Use first server
+                    srv = servers[0]
                     client = None
                     try:
                         client = SonarrClient(
@@ -281,42 +478,42 @@ class WatchlistSyncService:
                                     quality_profile_id=int(profile_id) if profile_id else None,
                                 )
                                 if result.get("status") == "error":
-                                    log.warning("watchlist_sync.wl_to_arr.sonarr_add_failed",
+                                    log.warning(f"{log_prefix}.sonarr_add_failed",
                                                 tvdb=tvdb, reason=result.get("reason", "")[:120])
                                     shows_failed += 1
                                 else:
                                     shows_added += 1
-                                    log.info("watchlist_sync.wl_to_arr.sonarr_added",
+                                    log.info(f"{log_prefix}.sonarr_added",
                                              tvdb=tvdb, title=show.get("title", ""))
                             except Exception as e:
                                 err = str(e)[:120]
                                 if "already" in err.lower() or "exist" in err.lower():
-                                    log.debug("watchlist_sync.wl_to_arr.sonarr_exists",
-                                              tvdb=tvdb)
+                                    log.debug(f"{log_prefix}.sonarr_exists", tvdb=tvdb)
                                 else:
-                                    log.warning("watchlist_sync.wl_to_arr.sonarr_add_error",
+                                    log.warning(f"{log_prefix}.sonarr_add_error",
                                                 tvdb=tvdb, error=err)
                                     shows_failed += 1
                     except Exception:
-                        log.exception("watchlist_sync.wl_to_arr.sonarr_connect_failed",
+                        log.exception(f"{log_prefix}.sonarr_connect_failed",
                                       server=srv.get("name"))
                     finally:
                         if client:
                             await client.close()
 
-        log.info("watchlist_sync.wl_to_arr.done",
+        log.info(f"{log_prefix}.done",
                  user_id=user.id,
                  movies_added=movies_added,
                  movies_failed=movies_failed,
-                 movies_skipped=len(wl_movie_map) - len(movies_to_add),
+                 movies_skipped=len(movie_map) - len(movies_to_add),
                  shows_added=shows_added,
                  shows_failed=shows_failed,
-                 shows_skipped=len(wl_show_map) - len(shows_to_add))
+                 shows_skipped=len(show_map) - len(shows_to_add))
 
         # Invalidate Coming Soon cache so new items appear immediately
         if movies_added or shows_added:
             try:
-                await r.delete("availability_monitor_v2")
+                r2 = await get_redis()
+                await r2.delete("availability_monitor_v2")
             except Exception:
                 pass
 
@@ -336,6 +533,18 @@ class WatchlistSyncService:
             pass
         # Defaults: both off
         return {"arr_to_watchlist": False, "watchlist_to_arr": False}
+
+    @staticmethod
+    async def _get_active_providers() -> set[str]:
+        """Return set of active integration providers, e.g. {'trakt', 'mdblist'}."""
+        r = await get_redis()
+        raw = await r.get("integration_provider")
+        provider = (raw if isinstance(raw, str) else raw.decode()) if raw else "trakt"
+        if provider == "both":
+            return {"trakt", "mdblist"}
+        if provider in ("trakt", "mdblist"):
+            return {provider}
+        return set()  # "none"
 
     @staticmethod
     async def _get_arr_missing_ids() -> tuple[list[int], list[int]]:
@@ -466,6 +675,45 @@ class WatchlistSyncService:
                         await client.close()
 
         return radarr_tmdb, sonarr_tvdb
+
+    @staticmethod
+    async def _resolve_tvdb_to_tmdb(tvdb_ids: list[int]) -> dict[int, int]:
+        """Best-effort TVDB→TMDB resolution via Sonarr's existing data.
+
+        Queries all Sonarr servers for series that have both tvdbId and tmdbId.
+        Returns {tvdb_id: tmdb_id} for any matches found.
+        """
+        from app.utils.sonarr_client import SonarrClient
+
+        r = await get_redis()
+        mapping: dict[int, int] = {}
+        tvdb_set = set(tvdb_ids)
+
+        raw = await r.get("sonarr_servers")
+        if raw:
+            for srv in _json.loads(raw):
+                client = None
+                try:
+                    client = SonarrClient(
+                        srv["url"], srv["api_key"],
+                        name=srv.get("name", "Sonarr"),
+                    )
+                    series = await client.get_all_series()
+                    for s in series:
+                        tvdb = s.get("tvdbId")
+                        tmdb = s.get("tmdbId")
+                        if tvdb and tmdb and tvdb in tvdb_set:
+                            mapping[tvdb] = tmdb
+                except Exception:
+                    log.debug("watchlist_sync.tvdb_tmdb_resolve_failed",
+                              server=srv.get("name"))
+                finally:
+                    if client:
+                        await client.close()
+
+        log.debug("watchlist_sync.tvdb_to_tmdb_resolved",
+                  requested=len(tvdb_ids), resolved=len(mapping))
+        return mapping
 
     @staticmethod
     async def _refresh_airing_soon(user: User):
