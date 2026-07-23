@@ -56,10 +56,12 @@ class WatchPartyService:
     # Party lifecycle (called from REST API)
     # -----------------------------------------------------------------------
 
-    async def create_party(self, host_user_id: int, emby_item_id: str) -> dict:
+    async def create_party(self, host_user_id: int, emby_item_id: str | None) -> dict:
         """Create a new watch party and return its join code.
         
-        NEW: Automatically checkin to Trakt when party starts.
+        If emby_item_id is None, creates a lobby-only party where the item
+        will be set later via Pick Together.
+        Automatically checkin to Trakt when party starts with an item.
         """
         code = _generate_code()
 
@@ -68,20 +70,23 @@ class WatchPartyService:
                 select(User).where(User.id == host_user_id)
             )).scalar_one_or_none()
 
-        # resolve item title from Emby (tolerates builds where /Items/{id} 404s)
-        item = await self.emby.get_item_safe(
-            emby_item_id,
-            user_id=host_user.emby_user_id if host_user else None,
-        )
-        if not item:
-            raise ValueError(f"Emby item '{emby_item_id}' not found — use the search box to pick a title")
-        title = item.get("Name", "Unknown")
+        # resolve item title from Emby if an item was provided
+        item = None
+        title = "Pick Together Lobby"
+        if emby_item_id:
+            item = await self.emby.get_item_safe(
+                emby_item_id,
+                user_id=host_user.emby_user_id if host_user else None,
+            )
+            if not item:
+                raise ValueError(f"Emby item '{emby_item_id}' not found — use the search box to pick a title")
+            title = item.get("Name", "Unknown")
 
         async with async_session() as db:
             party = WatchParty(
                 code=code,
                 host_user_id=host_user_id,
-                emby_item_id=emby_item_id,
+                emby_item_id=emby_item_id or "",
                 title=title,
                 status="waiting",
             )
@@ -101,7 +106,7 @@ class WatchPartyService:
         await r.hset(f"party:{code}", mapping={
             "id": str(party_id),
             "host": str(host_user_id),
-            "item": emby_item_id,
+            "item": emby_item_id or "",
             "title": title,
             "status": "waiting",
             "position": "0",
@@ -109,8 +114,8 @@ class WatchPartyService:
         })
         await r.expire(f"party:{code}", 86400)
         
-        # NEW: Trakt checkin when party created
-        if host_user and host_user.trakt_access_token:
+        # Trakt checkin when party created with an item
+        if item and host_user and host_user.trakt_access_token:
             await self._trakt_checkin(host_user, item)
 
         log.info("watch_party.created", code=code, title=title, host_id=host_user_id)

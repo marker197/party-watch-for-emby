@@ -248,6 +248,24 @@
     .trakt-comment-box .comment-status {
       font-size: 0.75rem; margin-top: 4px; font-weight: 600;
     }
+
+    /* Pick Together candidate cards */
+    .pick-card {
+      background: var(--bg); border: 2px solid var(--border); border-radius: 8px;
+      padding: 14px; cursor: pointer; transition: border-color 0.2s, transform 0.15s;
+      position: relative;
+    }
+    .pick-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .pick-card.voted { border-color: var(--green); background: rgba(0,184,148,0.06); }
+    .pick-card.winner { border-color: var(--orange); background: rgba(253,203,110,0.08); }
+    .pick-card .pick-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 4px; }
+    .pick-card .pick-meta { color: var(--text-dim); font-size: 0.78rem; }
+    .pick-card .pick-votes {
+      position: absolute; top: 8px; right: 10px;
+      background: var(--accent); color: #fff; border-radius: 12px;
+      padding: 2px 8px; font-size: 0.72rem; font-weight: 700; min-width: 22px; text-align: center;
+    }
+    .pick-card .pick-votes.has-votes { background: var(--green); }
   </style>
 </head>
 <body>
@@ -280,6 +298,13 @@
     </div>
     <p style="color:var(--text-dim);font-size:0.75rem;margin:-14px 0 16px 0;padding-left:4px;">Select the same Emby user you're signed into on your playback device. Devices are matched by Emby username.</p>
 
+    <!-- Solo Pick Together (in the room) -->
+    <div class="card" style="margin-bottom:20px; text-align:center;">
+      <h2>🎬 Pick Together</h2>
+      <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:12px;">Can't decide? Pull candidates from your smart queue and vote as a group — right here on one device.</p>
+      <button class="btn btn-accent" onclick="soloPickTogether()">🎬 Pick Together</button>
+    </div>
+
     <!-- Create / Join -->
     <div class="grid-2">
       <div class="card">
@@ -291,7 +316,10 @@
         <div id="createSearchResults" class="search-results" style="display:none;"></div>
         <div id="createSelected" class="selected-item" style="display:none;"></div>
         <input type="hidden" id="createItemId" />
-        <button class="btn btn-accent" onclick="createParty()" id="btnCreate">Create Party</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-accent" onclick="createParty()" id="btnCreate">Create Party</button>
+          <button class="btn btn-sm" style="background:var(--surface-hover);color:var(--text);" onclick="createLobby()" id="btnCreateLobby" title="Create a party without choosing content — use Pick Together to decide as a group">🎬 Create Lobby (Pick Together)</button>
+        </div>
       </div>
 
       <div class="card">
@@ -345,11 +373,30 @@
     <div class="chat-area">
       <!-- Playback controls -->
       <div class="playback-bar" id="playbackBar">
+        <button class="btn btn-accent btn-sm" id="btnPick" onclick="startPickTogether()">🎬 Pick Together</button>
         <button class="btn btn-green btn-sm" id="btnStart" onclick="loadDevices()">▶ Start Playback</button>
         <button class="btn btn-sm" style="background:var(--surface-hover);display:none;" id="btnPause" onclick="pauseAll()">⏸ Pause All</button>
         <button class="btn btn-sm" style="background:var(--surface-hover);display:none;" id="btnSeek" onclick="promptSeek()">⏩ Seek All</button>
         <button class="btn btn-red btn-sm" id="btnEnd" onclick="endParty()">⏹ End</button>
         <span class="status-text" id="playbackStatus"></span>
+      </div>
+
+      <!-- Pick Together / Theater Mode overlay -->
+      <div id="pickTogetherPanel" style="display:none; padding:20px; border-bottom:1px solid var(--border); background:var(--surface);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+          <h3 style="font-size:1rem; font-weight:700;">🎬 Pick Together</h3>
+          <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="closePickPanel()">✕ Cancel</button>
+        </div>
+        <div id="pickCandidates" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px,1fr)); gap:10px;"></div>
+        <div id="pickCountdown" style="display:none; text-align:center; padding:24px;">
+          <div style="font-size:0.85rem; color:var(--text-dim); margin-bottom:6px;">Starting in</div>
+          <div id="countdownNumber" style="font-size:3rem; font-weight:700; color:var(--accent-light);">20</div>
+          <div id="countdownTitle" style="font-size:1.1rem; font-weight:600; margin-top:8px;"></div>
+          <div style="font-size:0.82rem; color:var(--text-dim); margin-top:8px;">Bring your Emby app into focus now</div>
+        </div>
+        <div id="pickActions" style="margin-top:12px; display:flex; gap:8px;">
+          <button class="btn btn-green btn-sm" id="btnConfirmWinner" onclick="confirmWinner()" style="display:none;">✓ Confirm & Start</button>
+        </div>
       </div>
 
       <!-- Device picker (shown before start) -->
@@ -499,6 +546,24 @@ async function createParty() {
   btn.disabled = false;
 }
 
+async function createLobby() {
+  if (!currentUserId) return alert('Select a user first');
+  const btn = document.getElementById('btnCreateLobby');
+  btn.disabled = true;
+  try {
+    const r = await fetch(API + '/party/create', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({host_user_id: currentUserId})
+    });
+    if (!r.ok) { const d = await r.json(); throw new Error(d.detail || 'Failed'); }
+    const d = await r.json();
+    enterParty(d.code);
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+  btn.disabled = false;
+}
+
 async function joinParty() {
   if (!currentUserId) return alert('Select a user first');
   const code = document.getElementById('joinCode').value.trim().toUpperCase();
@@ -559,8 +624,18 @@ async function loadActiveParties() {
         </div>
         <span class="party-badge ${p.status}">${p.status}</span>
         <button class="btn btn-green btn-sm" style="margin-left:12px;" onclick="joinFromLobby('${p.code}')">Join</button>
+        <button class="btn btn-red btn-sm" style="margin-left:4px;" onclick="endPartyFromLobby('${p.code}')" title="End this party">✕</button>
       </div>`;
     }).join('') + '</div>';
+  } catch(e) { console.error(e); }
+}
+
+async function endPartyFromLobby(code) {
+  if (!confirm('End this party?')) return;
+  try {
+    await fetch(API + `/party/${code}/end`, {method: 'POST'});
+    loadActiveParties();
+    loadRecentParties();
   } catch(e) { console.error(e); }
 }
 
@@ -626,24 +701,29 @@ async function enterParty(code, alreadyJoined) {
 
   // Restore playback controls based on party status
   const status = party.status || 'waiting';
+  const hasItem = party.emby_item_id && party.emby_item_id !== '';
   const btnStart = document.getElementById('btnStart');
+  const btnPick = document.getElementById('btnPick');
   const btnPause = document.getElementById('btnPause');
   const btnSeek = document.getElementById('btnSeek');
   const playbackStatus = document.getElementById('playbackStatus');
 
   if (status === 'playing' || status === 'paused') {
     btnStart.style.display = 'none';
+    btnPick.style.display = 'none';
     btnPause.style.display = '';
     btnSeek.style.display = '';
     btnPause.textContent = status === 'paused' ? '▶ Resume' : '⏸ Pause All';
     playbackStatus.textContent = status === 'paused' ? '⏸ Paused' : '▶ Playing';
   } else {
-    btnStart.style.display = '';
+    // Pick Together only visible for lobby parties (no item)
+    btnPick.style.display = hasItem ? 'none' : '';
+    btnStart.style.display = hasItem ? '' : 'none';
     btnStart.disabled = false;
-    btnStart.textContent = '▶ Start Playback';
+    btnStart.textContent = '📱 Choose Devices';
     btnPause.style.display = 'none';
     btnSeek.style.display = 'none';
-    playbackStatus.textContent = '';
+    playbackStatus.textContent = hasItem ? '' : 'Use Pick Together to choose what to watch';
   }
 
   // Connect WebSocket
@@ -696,6 +776,9 @@ function connectSocket(code) {
     addSystemMsg('⏹ Party ended by host');
     document.getElementById('playbackBar').innerHTML = '<span style="padding:10px;color:var(--text-dim);">Party ended</span>';
   });
+
+  // Pick Together / Theater Mode events
+  setupPickSocketEvents();
 }
 
 function refreshMembers(code) {
@@ -747,29 +830,24 @@ async function startOnSelected() {
 
   document.getElementById('devicePicker').style.display = 'none';
   const btn = document.getElementById('btnStart');
-  btn.disabled = true; btn.textContent = '▶ Starting…';
+  btn.disabled = true; btn.textContent = '⏳ Starting countdown…';
 
   try {
-    const r = await fetch(API + `/party/${partyCode}/start-selected`, {
+    const r = await fetch(API + `/party/${partyCode}/start-with-countdown`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({session_ids: sessionIds})
     });
     const d = await r.json();
     if (d.status === 'ok') {
-      const n = d.started || 0;
-      document.getElementById('playbackStatus').textContent = `Playing on ${n} device${n!==1?'s':''}`;
-      btn.style.display = 'none';
-      document.getElementById('btnPause').style.display = '';
-      document.getElementById('btnSeek').style.display = '';
-      addSystemMsg(`▶ Playback started on ${n} device${n!==1?'s':''}`);
-      if (d.failed?.length) addSystemMsg(`⚠ ${d.failed.length} device(s) failed`);
+      addSystemMsg('⏳ 20 second countdown started — bring your Emby app into focus!');
+      // Countdown ticks and playback handled by Socket.IO events
     } else {
       document.getElementById('playbackStatus').textContent = d.reason || 'Failed';
-      btn.disabled = false; btn.textContent = '▶ Start Playback';
+      btn.disabled = false; btn.textContent = '📱 Choose Devices';
     }
   } catch(e) {
     document.getElementById('playbackStatus').textContent = e.message;
-    btn.disabled = false; btn.textContent = '▶ Start Playback';
+    btn.disabled = false; btn.textContent = '📱 Choose Devices';
   }
 }
 
@@ -884,6 +962,331 @@ function addSystemMsg(text) {
   div.innerHTML = `<span>${text}</span>`;
   list.appendChild(div);
   list.scrollTop = list.scrollHeight;
+}
+
+// ═══════════ Pick Together / Theater Mode ═══════════
+
+let pickCandidates = [];
+let myVoteIdx = null;
+
+async function startPickTogether() {
+  const panel = document.getElementById('pickTogetherPanel');
+  panel.style.display = 'block';
+  document.getElementById('pickCandidates').innerHTML = '<div style="color:var(--text-dim);font-size:0.85rem;">Loading candidates from everyone\'s queue…</div>';
+  document.getElementById('pickCountdown').style.display = 'none';
+  document.getElementById('btnConfirmWinner').style.display = 'none';
+  myVoteIdx = null;
+
+  try {
+    const r = await fetch(API + `/party/${partyCode}/pick-together`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({candidate_count: 8}),
+    });
+    if (!r.ok) { const d = await r.json(); throw new Error(d.detail || 'Failed'); }
+    const d = await r.json();
+    pickCandidates = d.candidates;
+    renderPickCandidates();
+    addSystemMsg('🎬 Pick Together started — vote for what to watch!');
+  } catch(e) {
+    document.getElementById('pickCandidates').innerHTML = `<div style="color:var(--red);font-size:0.85rem;">${esc(e.message)}</div>`;
+  }
+}
+
+function renderPickCandidates() {
+  const el = document.getElementById('pickCandidates');
+  el.innerHTML = pickCandidates.map((c, i) => {
+    const voted = myVoteIdx === i ? ' voted' : '';
+    const winner = c._winner ? ' winner' : '';
+    const voteClass = c.votes > 0 ? ' has-votes' : '';
+    return `<div class="pick-card${voted}${winner}" onclick="castVote(${i})" data-idx="${i}">
+      <div class="pick-votes${voteClass}">${c.votes}</div>
+      <div class="pick-title">${esc(c.title)}</div>
+      <div class="pick-meta">${esc(c.type || '')}${c.year ? ' · ' + c.year : ''} · Score: ${c.score}</div>
+      <div class="pick-meta" style="margin-top:2px;">via ${esc(c.source || 'queue')}</div>
+    </div>`;
+  }).join('');
+
+  // Show confirm button if host and there are votes
+  const hasVotes = pickCandidates.some(c => c.votes > 0);
+  document.getElementById('btnConfirmWinner').style.display = hasVotes ? '' : 'none';
+}
+
+async function castVote(idx) {
+  if (!partyCode) return;
+  myVoteIdx = idx;
+  try {
+    const r = await fetch(API + `/party/${partyCode}/vote`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({candidate_idx: idx, user_id: currentUserId}),
+    });
+    const d = await r.json();
+    if (d.votes) {
+      d.votes.forEach(v => {
+        if (pickCandidates[v.idx]) pickCandidates[v.idx].votes = v.votes;
+      });
+    }
+    renderPickCandidates();
+  } catch(e) { console.error('Vote failed:', e); }
+}
+
+async function confirmWinner() {
+  if (!partyCode) return;
+  document.getElementById('btnConfirmWinner').disabled = true;
+  try {
+    const r = await fetch(API + `/party/${partyCode}/pick-winner`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({}),
+    });
+    const d = await r.json();
+    if (d.winner) {
+      // Close pick panel and show device picker
+      document.getElementById('pickTogetherPanel').style.display = 'none';
+      document.getElementById('partyTitle').textContent = d.winner.title || 'Selected';
+      addSystemMsg(`🏆 Winner: ${d.winner.title} — choose devices to play on`);
+      // Show Choose Devices button, hide Pick Together
+      document.getElementById('btnPick').style.display = 'none';
+      document.getElementById('btnStart').style.display = '';
+      document.getElementById('btnStart').disabled = false;
+      document.getElementById('btnStart').textContent = '📱 Choose Devices';
+    }
+  } catch(e) { console.error('Confirm failed:', e); }
+}
+
+function showCountdown(title, seconds) {
+  // Show countdown overlay in the pick panel
+  const panel = document.getElementById('pickTogetherPanel');
+  panel.style.display = 'block';
+  document.getElementById('pickCandidates').style.display = 'none';
+  document.getElementById('pickActions').style.display = 'none';
+  const cd = document.getElementById('pickCountdown');
+  cd.style.display = 'block';
+  document.getElementById('countdownNumber').textContent = seconds;
+  document.getElementById('countdownTitle').textContent = title || 'Starting…';
+}
+
+function closePickPanel() {
+  document.getElementById('pickTogetherPanel').style.display = 'none';
+}
+
+// Socket.IO events for Pick Together
+function setupPickSocketEvents() {
+  if (!socket) return;
+
+  socket.on('pick_started', (d) => {
+    pickCandidates = d.candidates || [];
+    myVoteIdx = null;
+    document.getElementById('pickTogetherPanel').style.display = 'block';
+    document.getElementById('pickCandidates').style.display = '';
+    document.getElementById('pickCountdown').style.display = 'none';
+    document.getElementById('pickActions').style.display = '';
+    document.getElementById('btnConfirmWinner').style.display = 'none';
+    renderPickCandidates();
+    addSystemMsg('🎬 Pick Together started — tap to vote!');
+  });
+
+  socket.on('vote_update', (d) => {
+    if (d.votes) {
+      d.votes.forEach(v => {
+        if (pickCandidates[v.idx]) pickCandidates[v.idx].votes = v.votes;
+      });
+      renderPickCandidates();
+    }
+  });
+
+  socket.on('pick_winner', (d) => {
+    const winner = d.winner || {};
+    // Mark winner in candidates
+    pickCandidates.forEach((c, i) => { c._winner = i === d.winner_idx; });
+    renderPickCandidates();
+    // Close pick panel, update title
+    document.getElementById('pickTogetherPanel').style.display = 'none';
+    document.getElementById('partyTitle').textContent = winner.title || 'Selected';
+    addSystemMsg(`🏆 Winner: ${winner.title}`);
+    // Show Choose Devices for host
+    document.getElementById('btnPick').style.display = 'none';
+    document.getElementById('btnStart').style.display = '';
+    document.getElementById('btnStart').disabled = false;
+    document.getElementById('btnStart').textContent = '📱 Choose Devices';
+  });
+
+  socket.on('countdown_started', (d) => {
+    showCountdown(d.title || '', d.countdown_seconds || 20);
+    addSystemMsg(`⏳ Playback starting in ${d.countdown_seconds || 20}s — bring your Emby app into focus!`);
+  });
+
+  socket.on('countdown_tick', (d) => {
+    const el = document.getElementById('countdownNumber');
+    if (el) el.textContent = d.remaining;
+  });
+
+  socket.on('countdown_play', (d) => {
+    document.getElementById('pickTogetherPanel').style.display = 'none';
+    const n = d.started || 0;
+    document.getElementById('playbackStatus').textContent = `Playing on ${n} device${n!==1?'s':''}`;
+    document.getElementById('btnStart').style.display = 'none';
+    document.getElementById('btnPick').style.display = 'none';
+    document.getElementById('btnPause').style.display = '';
+    document.getElementById('btnSeek').style.display = '';
+    addSystemMsg(`▶ Playback started on ${n} device${n!==1?'s':''}`);
+  });
+}
+
+// ═══════════ Solo Pick Together (in-the-room, no party) ═══════════
+
+async function soloPickTogether() {
+  if (!currentUserId) return alert('Select a user first');
+  try {
+    const r = await fetch(API + '/api/pick-together/solo', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({user_id: currentUserId, candidate_count: 8}),
+    });
+    if (!r.ok) { const d = await r.json(); throw new Error(d.detail || 'Failed'); }
+    const d = await r.json();
+    showSoloPicker(d.candidates);
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+function showSoloPicker(candidates) {
+  // Create a modal overlay for solo picking
+  let overlay = document.getElementById('soloPickOverlay');
+  if (overlay) overlay.remove();
+
+  overlay = document.createElement('div');
+  overlay.id = 'soloPickOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
+
+  const panel = document.createElement('div');
+  panel.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;max-width:700px;width:100%;max-height:80vh;overflow-y:auto;';
+
+  panel.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <h2 style="font-size:1.1rem;font-weight:700;">🎬 Pick Together</h2>
+      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="document.getElementById('soloPickOverlay').remove()">✕ Close</button>
+    </div>
+    <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:14px;">Pass the device around — everyone taps their pick. Highest votes wins!</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">
+      ${candidates.map((c, i) => `
+        <div class="pick-card" onclick="soloVote(this,${i})" data-idx="${i}" data-votes="0">
+          <div class="pick-votes">0</div>
+          <div class="pick-title">${esc(c.title)}</div>
+          <div class="pick-meta">${esc(c.type||'')}${c.year?' · '+c.year:''}</div>
+        </div>
+      `).join('')}
+    </div>
+    <div style="margin-top:14px;display:flex;gap:8px;">
+      <button class="btn btn-green btn-sm" onclick="soloConfirm()">✓ Pick Winner</button>
+      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="document.getElementById('soloPickOverlay').remove()">Cancel</button>
+    </div>
+  `;
+
+  overlay.appendChild(panel);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+  window._soloCandidates = candidates;
+}
+
+function soloVote(el, idx) {
+  const current = parseInt(el.dataset.votes || '0');
+  el.dataset.votes = current + 1;
+  el.querySelector('.pick-votes').textContent = current + 1;
+  el.querySelector('.pick-votes').classList.add('has-votes');
+  window._soloCandidates[idx].votes = current + 1;
+}
+
+function soloConfirm() {
+  const candidates = window._soloCandidates || [];
+  let bestIdx = 0, bestVotes = 0;
+  candidates.forEach((c, i) => {
+    if ((c.votes || 0) > bestVotes) { bestVotes = c.votes; bestIdx = i; }
+  });
+  const winner = candidates[bestIdx];
+  if (!winner) return;
+
+  // Replace picker content with device selector
+  const overlay = document.getElementById('soloPickOverlay');
+  if (!overlay) return;
+  const panel = overlay.querySelector('div');
+  panel.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <h2 style="font-size:1.1rem;font-weight:700;">🏆 ${esc(winner.title)}</h2>
+      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="document.getElementById('soloPickOverlay').remove()">✕ Close</button>
+    </div>
+    <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:14px;">Select a device to play on:</p>
+    <div id="soloDeviceList" style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;">
+      <div style="color:var(--text-dim);font-size:0.85rem;">Loading devices…</div>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-green btn-sm" id="soloPlayBtn" disabled onclick="soloPlay()">▶ Play</button>
+      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="document.getElementById('soloPickOverlay').remove()">Cancel</button>
+    </div>
+  `;
+  window._soloWinner = winner;
+  loadSoloDevices();
+}
+
+async function loadSoloDevices() {
+  try {
+    const user = allUsers.find(u => u.id === currentUserId);
+    const embyUserId = user?.emby_user_id || '';
+    const r = await fetch(API + '/api/watch-party/server-sessions');
+    const data = await r.json();
+    const el = document.getElementById('soloDeviceList');
+
+    // server-sessions returns {users: [{emby_user_id, devices: [{session_id, device_name, client, now_playing}]}]}
+    const userEntry = (data.users || []).find(u => u.emby_user_id === embyUserId);
+    const devices = userEntry?.devices || [];
+
+    if (!devices.length) {
+      el.innerHTML = '<div style="color:var(--red);font-size:0.85rem;">No active devices found. Open your Emby app first.</div>';
+      return;
+    }
+
+    el.innerHTML = devices.map(d => `
+      <label style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:0.85rem;">
+        <input type="radio" name="soloDevice" value="${d.session_id}" style="accent-color:var(--accent);" />
+        <span style="font-weight:600;">${esc(d.device_name || 'Unknown')}</span>
+        <span style="color:var(--text-dim);font-size:0.78rem;">${esc(d.client || '')}</span>
+        ${d.now_playing ? `<span style="color:var(--orange);font-size:0.72rem;">▶ ${esc(d.now_playing)}</span>` : ''}
+      </label>
+    `).join('');
+
+    // Auto-select if only one device
+    const radios = el.querySelectorAll('input[type="radio"]');
+    if (radios.length === 1) radios[0].checked = true;
+    document.getElementById('soloPlayBtn').disabled = false;
+  } catch(e) {
+    document.getElementById('soloDeviceList').innerHTML = `<div style="color:var(--red);font-size:0.85rem;">${esc(e.message)}</div>`;
+  }
+}
+
+async function soloPlay() {
+  const selected = document.querySelector('input[name="soloDevice"]:checked');
+  if (!selected) return alert('Select a device');
+  const sessionId = selected.value;
+  const winner = window._soloWinner;
+  if (!winner || !winner.emby_item_id) return;
+
+  const btn = document.getElementById('soloPlayBtn');
+  btn.disabled = true;
+  btn.textContent = '▶ Starting…';
+
+  try {
+    const r = await fetch(API + `/api/emby/play`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: sessionId, item_id: winner.emby_item_id}),
+    });
+    if (!r.ok) throw new Error('Playback failed');
+    btn.textContent = '✓ Playing!';
+    btn.style.background = 'var(--green)';
+    setTimeout(() => {
+      const overlay = document.getElementById('soloPickOverlay');
+      if (overlay) overlay.remove();
+    }, 1500);
+  } catch(e) {
+    btn.textContent = '▶ Play';
+    btn.disabled = false;
+    alert('Error: ' + e.message);
+  }
 }
 
 // ═══════════ Util ═══════════
