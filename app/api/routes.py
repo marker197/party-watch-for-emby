@@ -1891,7 +1891,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 log.warning("webhook.trakt_scrobble_start_failed", error=str(e))
                 await _activity_log(f"⚠ Trakt start failed: {item_name} — {str(e)[:80]}", category="trakt")
         # MDBList scrobble start
-        await _mdblist_scrobble("start", _calc_progress())
+        asyncio.create_task(_mdblist_scrobble("start", _calc_progress()))
         return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
 
     # ── playback.pause → Trakt scrobble/pause ───────────────────────────────
@@ -1930,7 +1930,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         log.warning("webhook.trakt_scrobble_pause_failed", error=err_str)
                         await _activity_log(f"⚠ Trakt pause failed: {item_name} — {err_str[:80]}", category="trakt")
         # MDBList scrobble pause
-        await _mdblist_scrobble("pause", _calc_progress())
+        asyncio.create_task(_mdblist_scrobble("pause", _calc_progress()))
         return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
 
     # ── playback.unpause → Trakt scrobble/start (resume) ────────────────────
@@ -1953,7 +1953,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 log.warning("webhook.trakt_scrobble_resume_failed", error=str(e))
                 await _activity_log(f"⚠ Trakt resume failed: {item_name} — {str(e)[:80]}", category="trakt")
         # MDBList scrobble resume
-        await _mdblist_scrobble("resume", _calc_progress())
+        asyncio.create_task(_mdblist_scrobble("resume", _calc_progress()))
         return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
 
     # ── playback.stop / item.markplayed → Trakt watch history ───────────────
@@ -2135,10 +2135,10 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
         # ── MDBList: scrobble stop + history sync ─────────────────────────
         if is_play_stop:
-            await _mdblist_scrobble("stop", _calc_progress())
+            asyncio.create_task(_mdblist_scrobble("stop", _calc_progress()))
         if not scrobble_already_added or True:
             # Always try MDBList history (independent of Trakt scrobble state)
-            await _mdblist_add_to_history()
+            asyncio.create_task(_mdblist_add_to_history())
 
     # ── library.new / item.added → check smart queue for missing items ─────
     if is_library_event and item_type_raw in ("Movie", "Episode", "Series"):
