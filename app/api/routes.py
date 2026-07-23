@@ -79,6 +79,84 @@ async def health():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Integration Provider Selection
+# ═══════════════════════════════════════════════════════════════════════════
+
+VALID_PROVIDERS = {"trakt", "mdblist", "both", "none"}
+
+async def _get_integration_provider(db: AsyncSession | None = None) -> str:
+    """Return the configured integration provider: 'trakt', 'mdblist', 'both', or 'none'.
+    Checks Redis first (fast), falls back to DB, defaults to 'trakt' for legacy installs."""
+    r = await get_redis()
+    raw = await r.get("integration_provider")
+    if raw:
+        val = raw if isinstance(raw, str) else raw.decode()
+        if val in VALID_PROVIDERS:
+            return val
+    if db:
+        row = (await db.execute(select(AppSetting).where(AppSetting.key == "integration_provider"))).scalar_one_or_none()
+        if row and row.value in VALID_PROVIDERS:
+            await r.set("integration_provider", row.value)
+            return row.value
+    # Legacy installs without this setting default to 'trakt' if trakt creds exist
+    if settings.trakt_client_id:
+        return "trakt"
+    return "none"
+
+
+def _provider_set(provider: str) -> set[str]:
+    """Convert provider string to set of active integrations."""
+    if provider == "both":
+        return {"trakt", "mdblist"}
+    if provider in ("trakt", "mdblist"):
+        return {provider}
+    return set()
+
+
+async def _get_active_providers(db: AsyncSession | None = None) -> set[str]:
+    """Return set of active integration providers, e.g. {'trakt', 'mdblist'}."""
+    return _provider_set(await _get_integration_provider(db))
+
+
+@router.get("/api/integration-provider")
+async def get_integration_provider(db: AsyncSession = Depends(get_db)):
+    """Return the current integration provider setting."""
+    provider = await _get_integration_provider(db)
+    return {"provider": provider, "active": list(_provider_set(provider))}
+
+
+@router.put("/api/integration-provider")
+async def set_integration_provider(payload: dict, db: AsyncSession = Depends(get_db)):
+    """Set the integration provider: 'trakt', 'mdblist', 'both', or 'none'."""
+    provider = payload.get("provider", "").strip().lower()
+    if provider not in VALID_PROVIDERS:
+        raise HTTPException(400, f"Invalid provider. Must be one of: {', '.join(sorted(VALID_PROVIDERS))}")
+
+    r = await get_redis()
+    await r.set("integration_provider", provider)
+    # Inline upsert (can't use _put_setting — defined later in file)
+    row = (await db.execute(select(AppSetting).where(AppSetting.key == "integration_provider"))).scalar_one_or_none()
+    if row:
+        row.value = provider
+        row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    else:
+        db.add(AppSetting(key="integration_provider", value=provider, updated_at=datetime.now(timezone.utc).replace(tzinfo=None)))
+    await db.commit()
+
+    log.info("integration_provider.changed", provider=provider)
+    return {"status": "ok", "provider": provider, "active": list(_provider_set(provider))}
+
+
+@router.get("/api/integration-provider/setup-required")
+async def check_setup_required(db: AsyncSession = Depends(get_db)):
+    """Check if first-run setup is needed (no provider configured yet)."""
+    row = (await db.execute(
+        select(AppSetting).where(AppSetting.key == "integration_provider")
+    )).scalar_one_or_none()
+    return {"setup_required": row is None}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Auth — Trakt device-code OAuth
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -511,6 +589,33 @@ async def unblock_queue_item(
     await db.commit()
     log.info("queue.item_unblocked", block_id=block_id, title=title)
     return {"status": "ok", "unblocked": title}
+
+
+@router.get("/api/sonarr/imported")
+async def get_sonarr_imported():
+    """Return all Sonarr-imported episodes stored in Redis.
+    Used by Airing Soon card to show 'Imported' badge.
+    Returns {"{tvdb_id}:S{s}E{e}": {...}, ...}
+    """
+    r = await get_redis()
+    cursor = b"0"
+    imported: dict = {}
+    while True:
+        cursor, keys = await r.scan(cursor, match="sonarr_imported:*", count=200)
+        for key in keys:
+            key_str = key if isinstance(key, str) else key.decode()
+            val = await r.get(key)
+            if val:
+                val_str = val if isinstance(val, str) else val.decode()
+                # Strip prefix to get "tvdb_id:SxEx"
+                short_key = key_str.replace("sonarr_imported:", "")
+                try:
+                    imported[short_key] = _json.loads(val_str)
+                except Exception:
+                    imported[short_key] = {"raw": val_str}
+        if cursor == b"0" or cursor == 0:
+            break
+    return imported
 
 
 @router.get("/api/airing-soon/{user_id}")
@@ -1280,6 +1385,108 @@ async def list_recent_parties(limit: int = Query(10, ge=1, le=50)):
 # Emby Webhook receiver
 # ═══════════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Webhook — Sonarr (import complete / grab / series added)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/webhook/sonarr")
+@router.post("/webhook/sonarr/")
+async def sonarr_webhook(request: Request):
+    """Receive Sonarr webhooks for import/grab/series events.
+
+    On 'Download' (import complete):
+      - Stores imported episode info in Redis keyed by TVDB ID + SxxExx
+      - Airing Soon card reads this to show 'Imported' badge instead of 'In Sonarr'
+
+    On 'Grab':
+      - Logs the grab event to the activity log
+
+    On 'SeriesAdd':
+      - Logs the new series event
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "error", "message": "invalid JSON"}
+
+    event_type = payload.get("eventType", "")
+    series = payload.get("series", {})
+    episodes = payload.get("episodes", [])
+
+    series_title = series.get("title", "Unknown")
+    tvdb_id = series.get("tvdbId")
+
+    log.info("webhook.sonarr", event_type=event_type, series=series_title,
+             tvdb_id=tvdb_id, episodes=len(episodes))
+
+    if event_type == "Test":
+        await _activity_log(f"📡 Sonarr test webhook received", category="webhook")
+        return {"status": "ok", "event": "Test"}
+
+    if event_type == "Download":
+        # Import complete — store each imported episode in Redis
+        r = await get_redis()
+        imported_count = 0
+        for ep in episodes:
+            s_num = ep.get("seasonNumber", 0)
+            e_num = ep.get("episodeNumber", 0)
+            ep_title = ep.get("title", "")
+
+            if tvdb_id and s_num and e_num:
+                # Key format: sonarr_imported:{tvdb_id}:S{s}E{e}
+                redis_key = f"sonarr_imported:{tvdb_id}:S{s_num}E{e_num}"
+                import_data = _json.dumps({
+                    "series": series_title,
+                    "season": s_num,
+                    "episode": e_num,
+                    "episode_title": ep_title,
+                    "quality": ep.get("quality", ""),
+                    "imported_at": datetime.now(timezone.utc).isoformat(),
+                })
+                # TTL 30 days — airing soon card only shows ~30 days ahead
+                await r.setex(redis_key, 30 * 86400, import_data)
+                imported_count += 1
+
+                await _activity_log(
+                    f"📥 Sonarr imported: {series_title} S{s_num:02d}E{e_num:02d}"
+                    + (f" — {ep_title}" if ep_title else ""),
+                    category="webhook",
+                )
+
+        log.info("webhook.sonarr_import_stored", series=series_title,
+                 tvdb_id=tvdb_id, episodes_imported=imported_count)
+        return {"status": "ok", "event": event_type, "imported": imported_count}
+
+    if event_type == "Grab":
+        ep_list = ", ".join(
+            f"S{ep.get('seasonNumber', 0):02d}E{ep.get('episodeNumber', 0):02d}"
+            for ep in episodes
+        )
+        await _activity_log(
+            f"🎣 Sonarr grabbed: {series_title} {ep_list}",
+            category="webhook",
+        )
+        return {"status": "ok", "event": event_type}
+
+    if event_type == "SeriesAdd":
+        await _activity_log(
+            f"📺 Sonarr series added: {series_title}",
+            category="webhook",
+        )
+        return {"status": "ok", "event": event_type}
+
+    # Any other event — just log it
+    await _activity_log(
+        f"📡 Sonarr webhook: {event_type} — {series_title}",
+        category="webhook",
+    )
+    return {"status": "ok", "event": event_type}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Webhook — Emby (playback, scrobble, mark played)
+# ═══════════════════════════════════════════════════════════════════════════
+
 @router.post("/webhook/emby")
 @router.post("/")
 async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
@@ -1429,6 +1636,95 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 return {"episode": episode_obj}
         return None
 
+    # -- Helper: get MDBList client for scrobble if enabled --------------------
+    async def _get_mdblist_client_for_scrobble():
+        """Build an MDBListClient using the stored API key, if MDBList is active."""
+        providers = await _get_active_providers()
+        if "mdblist" not in providers:
+            return None
+        key = await _get_mdblist_key()
+        if not key:
+            return None
+        from app.utils.mdblist_client import MDBListClient
+        return MDBListClient(api_key=key)
+
+    # -- Helper: build MDBList scrobble payload --------------------------------
+    def _build_mdblist_scrobble_payload():
+        """Build MDBList-compatible scrobble payload from webhook item data.
+        MDBList uses the same structure as Trakt for scrobble endpoints."""
+        return _build_scrobble_payload()  # Same format
+
+    # -- Helper: scrobble to MDBList (fire-and-forget, non-blocking) -----------
+    async def _mdblist_scrobble(action: str, progress: float):
+        """Send a scrobble event to MDBList if enabled. Never raises."""
+        try:
+            mdb = await _get_mdblist_client_for_scrobble()
+            if not mdb:
+                return
+            payload = _build_mdblist_scrobble_payload()
+            if not payload:
+                return
+            try:
+                if action == "start":
+                    await mdb.scrobble_start(payload, progress=progress)
+                elif action == "pause":
+                    await mdb.scrobble_pause(payload, progress=progress)
+                elif action == "stop":
+                    result = await mdb.scrobble_stop(payload, progress=progress)
+                    return result
+                await _activity_log(f"📋 MDBList {action}: {item_name}", category="trakt")
+            finally:
+                await mdb.close()
+        except Exception as e:
+            log.warning(f"webhook.mdblist_scrobble_{action}_failed", error=str(e)[:120])
+
+    # -- Helper: add to MDBList watched history --------------------------------
+    async def _mdblist_add_to_history():
+        """Add item to MDBList watched history if enabled. Never raises."""
+        try:
+            mdb = await _get_mdblist_client_for_scrobble()
+            if not mdb:
+                return
+            provider_ids = item_data.get("ProviderIds", {})
+            ids: dict = {}
+            if provider_ids.get("Imdb"):
+                ids["imdb"] = provider_ids["Imdb"]
+            if provider_ids.get("Tmdb"):
+                ids["tmdb"] = int(provider_ids["Tmdb"])
+            if provider_ids.get("Tvdb"):
+                ids["tvdb"] = int(provider_ids["Tvdb"])
+            if not ids:
+                return
+            watched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            try:
+                if item_type_raw == "Movie":
+                    await mdb.add_to_watched(
+                        movies=[{"ids": ids, "watched_at": watched_at}],
+                    )
+                elif item_type_raw == "Episode":
+                    series_ids = {}
+                    series_provider = item_data.get("SeriesProviderIds", {})
+                    if series_provider.get("Imdb"):
+                        series_ids["imdb"] = series_provider["Imdb"]
+                    if series_provider.get("Tmdb"):
+                        series_ids["tmdb"] = int(series_provider["Tmdb"])
+                    if series_provider.get("Tvdb"):
+                        series_ids["tvdb"] = int(series_provider["Tvdb"])
+                    show_ids = series_ids or ids
+                    season_num = item_data.get("ParentIndexNumber", 1)
+                    episode_num = item_data.get("IndexNumber", 1)
+                    await mdb.add_to_watched(
+                        shows=[{
+                            "ids": show_ids,
+                            "seasons": [{"number": season_num, "episodes": [{"number": episode_num, "watched_at": watched_at}]}],
+                        }],
+                    )
+                await _activity_log(f"📋 MDBList watched: {item_name}", category="trakt")
+            finally:
+                await mdb.close()
+        except Exception as e:
+            log.warning("webhook.mdblist_history_failed", error=str(e)[:120])
+
     # -- Helper: extract playback position ticks from webhook payload ---------
     def _get_position_ticks():
         """Emby sends position in various locations depending on event type."""
@@ -1536,6 +1832,8 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             except Exception as e:
                 log.warning("webhook.trakt_scrobble_start_failed", error=str(e))
                 await _activity_log(f"⚠ Trakt start failed: {item_name} — {str(e)[:80]}", category="trakt")
+        # MDBList scrobble start
+        await _mdblist_scrobble("start", _calc_progress())
         return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
 
     # ── playback.pause → Trakt scrobble/pause ───────────────────────────────
@@ -1573,6 +1871,8 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     else:
                         log.warning("webhook.trakt_scrobble_pause_failed", error=err_str)
                         await _activity_log(f"⚠ Trakt pause failed: {item_name} — {err_str[:80]}", category="trakt")
+        # MDBList scrobble pause
+        await _mdblist_scrobble("pause", _calc_progress())
         return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
 
     # ── playback.unpause → Trakt scrobble/start (resume) ────────────────────
@@ -1594,6 +1894,8 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             except Exception as e:
                 log.warning("webhook.trakt_scrobble_resume_failed", error=str(e))
                 await _activity_log(f"⚠ Trakt resume failed: {item_name} — {str(e)[:80]}", category="trakt")
+        # MDBList scrobble resume
+        await _mdblist_scrobble("start", _calc_progress())
         return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
 
     # ── playback.stop / item.markplayed → Trakt watch history ───────────────
@@ -1772,6 +2074,13 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     f"Skipped Trakt sync: {item_name} — user has no Trakt token",
                     category="trakt",
                 )
+
+        # ── MDBList: scrobble stop + history sync ─────────────────────────
+        if is_play_stop:
+            await _mdblist_scrobble("stop", _calc_progress())
+        if not scrobble_already_added or True:
+            # Always try MDBList history (independent of Trakt scrobble state)
+            await _mdblist_add_to_history()
 
     # ── library.new / item.added → check smart queue for missing items ─────
     if is_library_event and item_type_raw in ("Movie", "Episode", "Series"):
@@ -2368,6 +2677,16 @@ async def library_search(q: str = Query(..., min_length=2, max_length=100)):
 # ═══════════════════════════════════════════════════════════════════════════
 # HTML Pages
 # ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/setup", response_class=HTMLResponse)
+async def get_setup_page():
+    """Serve the first-run integration provider setup page."""
+    try:
+        with open("frontend/templates/setup.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Setup page not found</h1>"
+
 
 @router.get("/lists", response_class=HTMLResponse)
 @router.get("/universes", response_class=HTMLResponse)
@@ -3199,6 +3518,9 @@ async def connection_status():
         mdb_key = await r.get("mdblist_api_key")
         if mdb_key:
             result["mdblist"] = {"status": "unknown", "checked_at": None}
+    # Integration provider
+    raw_prov = await r.get("integration_provider")
+    result["integration_provider"] = (raw_prov if isinstance(raw_prov, str) else raw_prov.decode()) if raw_prov else "trakt"
     return result
 
 
@@ -5830,3 +6152,324 @@ async def db_app_settings(prefix: str = "", db: AsyncSession = Depends(get_db)):
         })
     result.sort(key=lambda x: x["key"])
     return {"count": len(result), "rows": result}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Trakt ↔ MDBList Cross-Sync
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/mdblist/sync-status")
+async def mdblist_sync_status(db: AsyncSession = Depends(get_db)):
+    """Compare Trakt watched history against MDBList to show what's missing.
+    Returns counts and sample items for movies and shows."""
+    import json as _json
+
+    providers = await _get_active_providers(db)
+    if "mdblist" not in providers:
+        raise HTTPException(400, "MDBList is not an active provider")
+
+    key = await _get_mdblist_key(db)
+    if not key:
+        raise HTTPException(400, "MDBList API key not configured")
+
+    # Get the first linked user
+    user = (await db.execute(
+        select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+    )).scalars().first()
+    if not user:
+        raise HTTPException(400, "No linked Trakt user found")
+
+    from app.utils.mdblist_client import MDBListClient
+
+    trakt = TraktClient(
+        access_token=user.trakt_access_token,
+        refresh_token=user.trakt_refresh_token,
+        token_expires=user.trakt_token_expires,
+    )
+    mdb = MDBListClient(api_key=key)
+
+    try:
+        # Fetch Trakt watched movies
+        trakt_movies = await trakt.get_watched(kind="movies")
+        # Fetch MDBList watched
+        mdb_watched = await mdb.get_watched()
+
+        # Build MDBList watched ID sets
+        mdb_movie_ids: set[str] = set()
+        for entry in mdb_watched.get("movies", []):
+            ids = entry.get("movie", {}).get("ids", {})
+            for k in ("imdb", "tmdb", "tvdb", "trakt"):
+                v = ids.get(k)
+                if v:
+                    mdb_movie_ids.add(f"{k}:{v}")
+
+        mdb_show_keys: set[str] = set()
+        for entry in mdb_watched.get("shows", []):
+            ids = entry.get("show", {}).get("ids", {})
+            for k in ("imdb", "tmdb", "tvdb", "trakt"):
+                v = ids.get(k)
+                if v:
+                    mdb_show_keys.add(f"{k}:{v}")
+
+        # Find Trakt movies not in MDBList
+        missing_movies = []
+        for entry in trakt_movies:
+            movie = entry.get("movie", {})
+            ids = movie.get("ids", {})
+            item_keys = set()
+            for k in ("imdb", "tmdb", "tvdb", "trakt"):
+                v = ids.get(k)
+                if v:
+                    item_keys.add(f"{k}:{v}")
+            if not item_keys & mdb_movie_ids:
+                missing_movies.append({
+                    "title": movie.get("title", ""),
+                    "year": movie.get("year"),
+                    "ids": ids,
+                    "last_watched_at": entry.get("last_watched_at"),
+                })
+
+        # Find Trakt shows not in MDBList (show-level only)
+        trakt_shows = await trakt.get_watched(kind="shows")
+        missing_shows = []
+        for entry in trakt_shows:
+            show = entry.get("show", {})
+            ids = show.get("ids", {})
+            item_keys = set()
+            for k in ("imdb", "tmdb", "tvdb", "trakt"):
+                v = ids.get(k)
+                if v:
+                    item_keys.add(f"{k}:{v}")
+            if not item_keys & mdb_show_keys:
+                missing_shows.append({
+                    "title": show.get("title", ""),
+                    "year": show.get("year"),
+                    "ids": ids,
+                    "last_watched_at": entry.get("last_watched_at"),
+                })
+
+        return {
+            "trakt_movies": len(trakt_movies),
+            "trakt_shows": len(trakt_shows),
+            "mdblist_movies": len(mdb_watched.get("movies", [])),
+            "mdblist_shows": len(mdb_watched.get("shows", [])),
+            "missing_movies": len(missing_movies),
+            "missing_shows": len(missing_shows),
+            "sample_movies": missing_movies[:20],
+            "sample_shows": missing_shows[:20],
+        }
+    finally:
+        await trakt.close()
+        await mdb.close()
+
+
+@router.post("/api/mdblist/sync-from-trakt")
+async def sync_trakt_to_mdblist(db: AsyncSession = Depends(get_db)):
+    """Bulk-sync all Trakt watched history into MDBList.
+    Pushes movies and shows (with full season/episode detail) to MDBList's
+    /sync/watched endpoint."""
+    import json as _json
+
+    providers = await _get_active_providers(db)
+    if "mdblist" not in providers:
+        raise HTTPException(400, "MDBList is not an active provider")
+
+    key = await _get_mdblist_key(db)
+    if not key:
+        raise HTTPException(400, "MDBList API key not configured")
+
+    user = (await db.execute(
+        select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+    )).scalars().first()
+    if not user:
+        raise HTTPException(400, "No linked Trakt user found")
+
+    from app.utils.mdblist_client import MDBListClient
+
+    trakt = TraktClient(
+        access_token=user.trakt_access_token,
+        refresh_token=user.trakt_refresh_token,
+        token_expires=user.trakt_token_expires,
+    )
+    mdb = MDBListClient(api_key=key)
+
+    try:
+        # Fetch full Trakt watched history
+        trakt_movies = await trakt.get_watched(kind="movies")
+        trakt_shows = await trakt.get_watched(kind="shows")
+
+        # Build MDBList payloads
+        mdb_movies = []
+        for entry in trakt_movies:
+            movie = entry.get("movie", {})
+            ids = movie.get("ids", {})
+            mdb_ids = {}
+            for k in ("imdb", "tmdb", "tvdb", "trakt"):
+                if ids.get(k):
+                    mdb_ids[k] = ids[k]
+            if mdb_ids:
+                mdb_movies.append({
+                    "ids": mdb_ids,
+                    "watched_at": entry.get("last_watched_at",
+                                            datetime.now(timezone.utc).isoformat()),
+                })
+
+        mdb_shows = []
+        # Trakt's watched/shows endpoint no longer includes season/episode data
+        # by default (noseason is the new default). Instead, paginate through
+        # /users/me/history/episodes to get all watched episodes, then group
+        # by show → season → episode for the MDBList payload.
+        from collections import defaultdict
+        show_eps: dict[str, dict] = {}  # show_key → {"ids": {...}, "seasons": {s_num: [eps]}}
+
+        ep_page = 1
+        ep_per_page = 500
+        ep_max_pages = 50
+        total_eps_fetched = 0
+
+        while ep_page <= ep_max_pages:
+            await asyncio.sleep(0)  # yield to event loop
+            try:
+                resp = await trakt._client.get(
+                    "/users/me/history/episodes",
+                    headers=trakt._auth_headers(),
+                    params={"page": ep_page, "limit": ep_per_page},
+                )
+                trakt._update_rate_limit(resp)
+                if resp.status_code == 429:
+                    await asyncio.sleep(min(30, float(resp.headers.get("Retry-After", "10"))))
+                    continue
+                if resp.status_code != 200:
+                    log.warning("mdblist_sync.history_page_failed",
+                                page=ep_page, status=resp.status_code)
+                    break
+                entries = resp.json()
+                if not entries:
+                    break
+                for entry in entries:
+                    show = entry.get("show", {})
+                    show_ids = show.get("ids", {})
+                    ep = entry.get("episode", {})
+                    s_num = ep.get("season", 0)
+                    e_num = ep.get("number", 0)
+                    watched_at = entry.get("watched_at",
+                                           datetime.now(timezone.utc).isoformat())
+
+                    # Build a stable key for grouping
+                    show_key = str(show_ids.get("trakt", "")) or str(show_ids.get("imdb", ""))
+                    if not show_key:
+                        continue
+
+                    if show_key not in show_eps:
+                        mdb_ids = {}
+                        for k in ("imdb", "tmdb", "tvdb", "trakt"):
+                            if show_ids.get(k):
+                                mdb_ids[k] = show_ids[k]
+                        show_eps[show_key] = {"ids": mdb_ids, "seasons": defaultdict(list)}
+
+                    show_eps[show_key]["seasons"][s_num].append({
+                        "number": e_num,
+                        "watched_at": watched_at,
+                    })
+                    total_eps_fetched += 1
+
+                total_pages = int(resp.headers.get("X-Pagination-Page-Count", "1"))
+                if ep_page >= total_pages:
+                    break
+                ep_page += 1
+            except Exception as e:
+                log.warning("mdblist_sync.history_page_error",
+                            page=ep_page, error=str(e)[:120])
+                break
+
+        log.info("mdblist_sync.episodes_fetched",
+                 shows=len(show_eps), episodes=total_eps_fetched, pages=ep_page)
+
+        # Convert grouped data to MDBList payload
+        for show_key, show_data in show_eps.items():
+            if not show_data["ids"]:
+                continue
+            mdb_seasons = []
+            for s_num, eps in sorted(show_data["seasons"].items()):
+                # Deduplicate episodes (history can have multiple plays)
+                seen = set()
+                deduped = []
+                for ep in eps:
+                    if ep["number"] not in seen:
+                        seen.add(ep["number"])
+                        deduped.append(ep)
+                mdb_seasons.append({"number": s_num, "episodes": deduped})
+            if mdb_seasons:
+                mdb_shows.append({"ids": show_data["ids"], "seasons": mdb_seasons})
+
+        # Send to MDBList in batches (max ~200 items per call to stay safe)
+        results = {"movies": 0, "shows": 0, "episodes": 0}
+        batch_size = 100
+
+        for i in range(0, len(mdb_movies), batch_size):
+            batch = mdb_movies[i:i + batch_size]
+            try:
+                r = await mdb.add_to_watched(movies=batch)
+                results["movies"] += r.get("updated", {}).get("movies", 0)
+            except Exception as e:
+                log.warning("mdblist_sync.movie_batch_failed", batch=i, error=str(e)[:120])
+
+        for i in range(0, len(mdb_shows), batch_size):
+            batch = mdb_shows[i:i + batch_size]
+            try:
+                r = await mdb.add_to_watched(shows=batch)
+                results["shows"] += r.get("updated", {}).get("seasons", 0)
+                results["episodes"] += r.get("updated", {}).get("episodes", 0)
+            except Exception as e:
+                log.warning("mdblist_sync.show_batch_failed", batch=i, error=str(e)[:120])
+
+        # Also sync ratings
+        ratings_result = {"movies": 0, "episodes": 0}
+        try:
+            trakt_ratings = await trakt.get_user_ratings(kind="movies")
+            mdb_rate_movies = []
+            for entry in trakt_ratings:
+                movie = entry.get("movie", {})
+                ids = movie.get("ids", {})
+                mdb_ids = {}
+                for k in ("imdb", "tmdb", "tvdb", "trakt"):
+                    if ids.get(k):
+                        mdb_ids[k] = ids[k]
+                if mdb_ids and entry.get("rating"):
+                    mdb_rate_movies.append({
+                        "ids": mdb_ids,
+                        "rating": entry["rating"],
+                        "rated_at": entry.get("rated_at",
+                                              datetime.now(timezone.utc).isoformat()),
+                    })
+            if mdb_rate_movies:
+                for i in range(0, len(mdb_rate_movies), batch_size):
+                    batch = mdb_rate_movies[i:i + batch_size]
+                    try:
+                        r = await mdb.add_ratings(movies=batch)
+                        ratings_result["movies"] += r.get("updated", {}).get("movies", 0)
+                    except Exception as e:
+                        log.warning("mdblist_sync.rating_batch_failed", batch=i, error=str(e)[:120])
+        except Exception as e:
+            log.warning("mdblist_sync.ratings_failed", error=str(e)[:120])
+
+        log.info("mdblist_sync.complete",
+                 movies_synced=results["movies"],
+                 shows_synced=results["shows"],
+                 episodes_synced=results["episodes"],
+                 ratings_movies=ratings_result["movies"])
+
+        return {
+            "status": "ok",
+            "watched": results,
+            "ratings": ratings_result,
+            "totals": {
+                "trakt_movies": len(trakt_movies),
+                "trakt_shows": len(trakt_shows),
+                "pushed_movies": len(mdb_movies),
+                "pushed_shows": len(mdb_shows),
+            },
+        }
+    finally:
+        await trakt.close()
+        await mdb.close()

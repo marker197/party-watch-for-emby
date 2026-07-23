@@ -11,15 +11,19 @@ class Settings(BaseSettings):
     SECURITY: No weak default values for secrets - must be explicitly set.
     """
 
-    # -- Trakt (REQUIRED) ---------------------------------------------------------------
+    # -- Trakt (optional — not needed if using MDBList-only mode) ---------------------
     trakt_client_id: str = Field(
-        ...,  # Required (... means no default)
+        default="",
         alias="TRAKT_CLIENT_ID",
     )
     trakt_client_secret: str = Field(
-        ...,  # Required
+        default="",
         alias="TRAKT_CLIENT_SECRET",
     )
+
+    # -- MDBList (optional — OAuth for full integration) ----------------------------
+    mdblist_client_id: str = Field(default="", alias="MDBLIST_CLIENT_ID")
+    mdblist_client_secret: str = Field(default="", alias="MDBLIST_CLIENT_SECRET")
 
     # -- Emby (REQUIRED) ----------------------------------------------------------------
     emby_url: str = Field(
@@ -84,7 +88,7 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore", "case_sensitive": False}
 
     # ✅ SECURITY: Validate secrets are not weak/default
-    @field_validator('trakt_client_id', 'trakt_client_secret', 'emby_api_key', 'db_password', 'jwt_secret_key')
+    @field_validator('emby_api_key', 'db_password', 'jwt_secret_key')
     @classmethod
     def validate_no_weak_secrets(cls, v: str, info) -> str:
         if not v or v.strip() == "":
@@ -126,11 +130,12 @@ try:
 except ValueError as e:
     print(f"❌ Configuration error: {e}")
     print("\nRequired environment variables:")
-    print("  - TRAKT_CLIENT_ID")
-    print("  - TRAKT_CLIENT_SECRET")
     print("  - EMBY_URL")
     print("  - EMBY_API_KEY")
     print("  - DATABASE_URL")
     print("  - DB_PASSWORD")
     print("  - JWT_SECRET_KEY")
+    print("\nOptional (at least one integration recommended):")
+    print("  - TRAKT_CLIENT_ID / TRAKT_CLIENT_SECRET")
+    print("  - MDBLIST_CLIENT_ID / MDBLIST_CLIENT_SECRET")
     raise

@@ -333,8 +333,31 @@
   </div>
 
   <div class="container">
-    <!-- Trakt Credentials -->
+    <!-- Integration Provider Selection -->
     <div class="section">
+      <h2>🔌 Integration Provider</h2>
+      <p style="color: var(--text-dim); font-size: 0.82rem; margin-bottom: 12px;">
+        Choose which services to use for scrobbling, watchlist sync, and watch history tracking.
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+        <label style="display:flex;align-items:center;gap:6px;padding:8px 14px;background:var(--bg);border:2px solid var(--border);border-radius:8px;cursor:pointer;font-size:0.85rem;transition:border-color 0.15s;" id="providerOpt_trakt">
+          <input type="radio" name="integrationProvider" value="trakt" style="accent-color:var(--accent);" onchange="changeProvider(this.value)"> Trakt Only
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;padding:8px 14px;background:var(--bg);border:2px solid var(--border);border-radius:8px;cursor:pointer;font-size:0.85rem;transition:border-color 0.15s;" id="providerOpt_mdblist">
+          <input type="radio" name="integrationProvider" value="mdblist" style="accent-color:var(--accent);" onchange="changeProvider(this.value)"> MDBList Only
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;padding:8px 14px;background:var(--bg);border:2px solid var(--border);border-radius:8px;cursor:pointer;font-size:0.85rem;transition:border-color 0.15s;" id="providerOpt_both">
+          <input type="radio" name="integrationProvider" value="both" style="accent-color:var(--accent);" onchange="changeProvider(this.value)"> Both
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;padding:8px 14px;background:var(--bg);border:2px solid var(--border);border-radius:8px;cursor:pointer;font-size:0.85rem;transition:border-color 0.15s;" id="providerOpt_none">
+          <input type="radio" name="integrationProvider" value="none" style="accent-color:var(--accent);" onchange="changeProvider(this.value)"> None
+        </label>
+      </div>
+      <div id="providerStatus" style="font-size:0.78rem;color:var(--text-dim);"></div>
+    </div>
+
+    <!-- Trakt Credentials -->
+    <div class="section" id="sectionTrakt">
       <h2>🎯 Trakt Configuration <span id="badgeTrakt" class="conn-badge unknown" onclick="refreshStatus()" title="Click to refresh"><span class="dot"></span> Checking…</span></h2>
 
       <div class="form-group">
@@ -728,7 +751,7 @@
     </div>
 
     <!-- MDBList Integration -->
-    <div class="section">
+    <div class="section" id="sectionMdblist">
       <h2>📋 MDBList <span id="badgeMdblist" class="conn-badge unknown" onclick="refreshStatus()" title="Click to refresh"><span class="dot"></span> —</span></h2>
       <p style="color: var(--text-dim); font-size: 0.82rem; margin-bottom: 12px;">
         Optional. Import MDBList lists as Emby playlists with auto-sync. Dynamic lists update automatically every morning.
@@ -742,6 +765,19 @@
           <button class="btn btn-green" onclick="saveMdblist()">Save</button>
         </div>
         <div id="mdblistStatus" style="font-size:0.78rem;margin-top:6px;"></div>
+      </div>
+
+      <!-- Trakt → MDBList Sync -->
+      <div class="form-group" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
+        <label>Sync Trakt History → MDBList</label>
+        <p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:10px;">
+          Push your entire Trakt watched history, ratings, and show progress into MDBList. Existing entries won't be duplicated.
+        </p>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="btn btn-blue" onclick="checkMdblistSyncStatus()">Check Status</button>
+          <button class="btn btn-green" onclick="runTraktToMdblistSync()" id="btnSyncToMdb">Sync Now</button>
+        </div>
+        <div id="mdblistSyncResult" style="font-size:0.8rem;margin-top:8px;"></div>
       </div>
     </div>
 
@@ -798,7 +834,10 @@
     let pendingAction = null;
     let autoSaveTimeout = null;
 
+    let currentProvider = 'trakt';
+
     async function init() {
+      await loadIntegrationProvider();
       loadSettings();
       loadRadarrServers();
       loadSonarrServers();
@@ -810,6 +849,65 @@
       loadMdblistSettings();
       loadConnectionStatus();
       setupEventListeners();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Integration Provider
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function loadIntegrationProvider() {
+      try {
+        const r = await fetch('/api/integration-provider');
+        const data = await r.json();
+        currentProvider = data.provider || 'trakt';
+        const radio = document.querySelector(`input[name="integrationProvider"][value="${currentProvider}"]`);
+        if (radio) radio.checked = true;
+        // Highlight selected
+        document.querySelectorAll('[id^="providerOpt_"]').forEach(el => {
+          el.style.borderColor = 'var(--border)';
+        });
+        const opt = document.getElementById('providerOpt_' + currentProvider);
+        if (opt) opt.style.borderColor = 'var(--accent)';
+        updateProviderVisibility(currentProvider);
+      } catch(e) {
+        console.error('Failed to load integration provider:', e);
+      }
+    }
+
+    function updateProviderVisibility(provider) {
+      const traktSection = document.getElementById('sectionTrakt');
+      const mdbSection = document.getElementById('sectionMdblist');
+      if (traktSection) traktSection.style.display = (provider === 'trakt' || provider === 'both') ? '' : 'none';
+      if (mdbSection) mdbSection.style.display = (provider === 'mdblist' || provider === 'both') ? '' : 'none';
+    }
+
+    async function changeProvider(value) {
+      // Highlight selected
+      document.querySelectorAll('[id^="providerOpt_"]').forEach(el => {
+        el.style.borderColor = 'var(--border)';
+      });
+      const opt = document.getElementById('providerOpt_' + value);
+      if (opt) opt.style.borderColor = 'var(--accent)';
+      updateProviderVisibility(value);
+
+      const status = document.getElementById('providerStatus');
+      status.textContent = 'Saving…';
+      status.style.color = 'var(--text-dim)';
+      try {
+        const r = await fetch('/api/integration-provider', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({provider: value}),
+        });
+        if (!r.ok) throw new Error('Save failed');
+        currentProvider = value;
+        status.textContent = '✓ Saved — active: ' + (value === 'both' ? 'Trakt + MDBList' : value === 'none' ? 'none' : value);
+        status.style.color = 'var(--green)';
+        setTimeout(() => { status.textContent = ''; }, 3000);
+      } catch(e) {
+        status.textContent = '✗ ' + e.message;
+        status.style.color = 'var(--red)';
+      }
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -2125,6 +2223,67 @@
         }
       } catch(e) {
         status.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Trakt → MDBList Sync
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function checkMdblistSyncStatus() {
+      const el = document.getElementById('mdblistSyncResult');
+      el.innerHTML = '<span style="color:var(--text-dim);">Checking…</span>';
+      try {
+        const r = await fetch('/api/mdblist/sync-status');
+        if (!r.ok) {
+          const d = await r.json();
+          throw new Error(d.detail || 'Failed');
+        }
+        const d = await r.json();
+        el.innerHTML = `
+          <div style="margin-top:6px;">
+            <strong>Trakt:</strong> ${d.trakt_movies} movies, ${d.trakt_shows} shows<br>
+            <strong>MDBList:</strong> ${d.mdblist_movies} movies, ${d.mdblist_shows} shows<br>
+            <strong style="color:var(--orange);">Missing from MDBList:</strong> ${d.missing_movies} movies, ${d.missing_shows} shows
+          </div>`;
+        if (d.missing_movies > 0 || d.missing_shows > 0) {
+          el.innerHTML += `<div style="margin-top:6px;font-size:0.78rem;color:var(--text-dim);">
+            Sample: ${d.sample_movies.slice(0,5).map(m => m.title + ' (' + (m.year||'') + ')').join(', ')}${d.sample_movies.length > 5 ? '…' : ''}
+          </div>`;
+        }
+      } catch(e) {
+        el.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
+      }
+    }
+
+    async function runTraktToMdblistSync() {
+      const el = document.getElementById('mdblistSyncResult');
+      const btn = document.getElementById('btnSyncToMdb');
+      btn.disabled = true;
+      btn.textContent = 'Syncing…';
+      el.innerHTML = '<span style="color:var(--text-dim);">Pushing Trakt history to MDBList… this may take a minute.</span>';
+      try {
+        const r = await fetch('/api/mdblist/sync-from-trakt', {method: 'POST'});
+        if (!r.ok) {
+          const d = await r.json();
+          throw new Error(d.detail || 'Sync failed');
+        }
+        const d = await r.json();
+        const w = d.watched || {};
+        const rt = d.ratings || {};
+        const t = d.totals || {};
+        el.innerHTML = `
+          <div style="color:var(--green);margin-top:6px;">
+            ✓ Sync complete<br>
+            <strong>Watched:</strong> Pushed ${t.pushed_movies || 0} movies, ${t.pushed_shows || 0} shows<br>
+            <strong>Updated:</strong> ${w.movies || 0} movies, ${w.episodes || 0} episodes<br>
+            <strong>Ratings:</strong> ${rt.movies || 0} movie ratings synced
+          </div>`;
+      } catch(e) {
+        el.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sync Now';
       }
     }
 

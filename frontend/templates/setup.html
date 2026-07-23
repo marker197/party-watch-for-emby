@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Setup — Emby-Trakt Suite</title>
+<link rel="icon" href="/static/favicon.ico" type="image/x-icon">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface-hover: #22263a;
+    --border: #2a2e3e;
+    --text: #e0e0e6;
+    --text-dim: #8b8fa3;
+    --accent: #6c5ce7;
+    --accent-light: #a29bfe;
+    --green: #00b894;
+    --orange: #fdcb6e;
+    --red: #e17055;
+    --blue: #74b9ff;
+    --radius: 10px;
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    line-height: 1.6;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .setup-container {
+    max-width: 540px;
+    width: 100%;
+    padding: 24px;
+  }
+
+  .setup-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 36px 32px;
+  }
+
+  h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+    text-align: center;
+  }
+
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 0.88rem;
+    text-align: center;
+    margin-bottom: 28px;
+  }
+
+  .option {
+    background: var(--bg);
+    border: 2px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    margin-bottom: 12px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+  }
+
+  .option:hover {
+    border-color: var(--accent);
+    background: var(--surface-hover);
+  }
+
+  .option.selected {
+    border-color: var(--accent);
+    background: rgba(108, 92, 231, 0.08);
+  }
+
+  .option input[type="radio"] {
+    margin-top: 3px;
+    accent-color: var(--accent);
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+
+  .option-content {
+    flex: 1;
+  }
+
+  .option-title {
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin-bottom: 4px;
+  }
+
+  .option-desc {
+    color: var(--text-dim);
+    font-size: 0.82rem;
+    line-height: 1.5;
+  }
+
+  .badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 4px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  .badge-rec { background: rgba(0, 184, 148, 0.15); color: var(--green); }
+  .badge-beta { background: rgba(253, 203, 110, 0.15); color: var(--orange); }
+
+  .btn {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 0.92rem;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 20px;
+    transition: opacity 0.15s;
+  }
+
+  .btn:hover { opacity: 0.9; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .btn-skip {
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    margin-top: 10px;
+    font-weight: 500;
+    font-size: 0.85rem;
+  }
+
+  .error-msg {
+    color: var(--red);
+    font-size: 0.82rem;
+    margin-top: 8px;
+    text-align: center;
+    display: none;
+  }
+
+  .note {
+    color: var(--text-dim);
+    font-size: 0.78rem;
+    text-align: center;
+    margin-top: 16px;
+  }
+
+  .note a {
+    color: var(--blue);
+    text-decoration: none;
+  }
+</style>
+</head>
+<body>
+
+<div class="setup-container">
+  <div class="setup-card">
+    <h1>Welcome to Emby-Trakt Suite</h1>
+    <p class="subtitle">Choose which services to integrate with for scrobbling, watchlist sync, and watch history.</p>
+
+    <div class="option selected" data-value="trakt" onclick="selectOption(this)">
+      <input type="radio" name="provider" value="trakt" checked>
+      <div class="option-content">
+        <div class="option-title">Trakt Only <span class="badge badge-rec">Recommended</span></div>
+        <div class="option-desc">Full integration with Trakt.tv — scrobbling, watchlist sync, ratings, watch history, and all suite features. Requires a Trakt account and OAuth setup.</div>
+      </div>
+    </div>
+
+    <div class="option" data-value="mdblist" onclick="selectOption(this)">
+      <input type="radio" name="provider" value="mdblist">
+      <div class="option-content">
+        <div class="option-title">MDBList Only <span class="badge badge-beta">Beta</span></div>
+        <div class="option-desc">Full integration with MDBList — scrobbling, watchlist sync, watched history, ratings, and list management. Requires an MDBList API key.</div>
+      </div>
+    </div>
+
+    <div class="option" data-value="both" onclick="selectOption(this)">
+      <input type="radio" name="provider" value="both">
+      <div class="option-content">
+        <div class="option-title">Both</div>
+        <div class="option-desc">Dual integration — scrobble to both services simultaneously. Watch history, ratings, and watchlists synced to both Trakt and MDBList.</div>
+      </div>
+    </div>
+
+    <div class="option" data-value="none" onclick="selectOption(this)">
+      <input type="radio" name="provider" value="none">
+      <div class="option-content">
+        <div class="option-title">None</div>
+        <div class="option-desc">Skip external integrations. The suite will still manage your Emby library, smart queue, and predictions using Emby data only.</div>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" id="continueBtn" onclick="saveAndContinue()">Continue to Dashboard</button>
+    <div class="error-msg" id="errorMsg"></div>
+    <p class="note">You can change this anytime in <a href="/settings">Settings</a>.</p>
+  </div>
+</div>
+
+<script>
+  function selectOption(el) {
+    document.querySelectorAll('.option').forEach(o => o.classList.remove('selected'));
+    el.classList.add('selected');
+    el.querySelector('input[type="radio"]').checked = true;
+  }
+
+  async function saveAndContinue() {
+    const selected = document.querySelector('input[name="provider"]:checked');
+    if (!selected) return;
+
+    const btn = document.getElementById('continueBtn');
+    const err = document.getElementById('errorMsg');
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    err.style.display = 'none';
+
+    try {
+      const r = await fetch('/api/integration-provider', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider: selected.value}),
+      });
+      if (!r.ok) {
+        const data = await r.json();
+        throw new Error(data.detail || 'Failed to save');
+      }
+      window.location.href = '/';
+    } catch (e) {
+      err.textContent = e.message;
+      err.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Continue to Dashboard';
+    }
+  }
+</script>
+
+</body>
+</html>

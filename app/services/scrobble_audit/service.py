@@ -29,12 +29,17 @@ AUDIT_CACHE_TTL = 3600  # 1h — avoids hammering both APIs on repeated opens
 class ScrobbleAuditService:
 
     async def run_audit(self, user: User, force: bool = False) -> dict:
-        """Compare Emby played items against Trakt watched history.
+        """Compare Emby played items against Trakt and/or MDBList watched history.
 
         Returns {movies: [...], shows: [...], summary: {...}}.
         Each item includes enough metadata for display + backfill.
         """
-        if not user.trakt_access_token or not user.emby_user_id:
+        # Determine which providers are active
+        providers = await self._get_active_providers()
+        has_trakt = "trakt" in providers and user.trakt_access_token
+        has_mdblist = "mdblist" in providers and await self._get_mdblist_key()
+
+        if not user.emby_user_id or (not has_trakt and not has_mdblist):
             return {"movies": [], "shows": [], "summary": {"movies": 0, "shows": 0}}
 
         # Check cache first (skip if force)
@@ -48,12 +53,16 @@ class ScrobbleAuditService:
             except Exception:
                 pass
 
-        trakt = await self._make_trakt(user)
+        trakt = await self._make_trakt(user) if has_trakt else None
+        mdb = await self._make_mdblist() if has_mdblist else None
         emby = EmbyClient()
         try:
-            result = await self._compare(trakt, emby, user)
+            result = await self._compare(trakt, emby, user, mdb=mdb)
         finally:
-            await trakt.close()
+            if trakt:
+                await trakt.close()
+            if mdb:
+                await mdb.close()
             await emby.close()
 
         # Cache result
@@ -211,6 +220,9 @@ class ScrobbleAuditService:
             log.info("scrobble_audit.backfill_done", user=user.emby_username,
                      requested=len(items), payload_entries=len(payload), added=total)
 
+            # Also backfill to MDBList if enabled
+            await self._backfill_mdblist(items)
+
             # Invalidate audit cache so next view reflects the backfill
             await self.invalidate_cache(user.id)
 
@@ -249,55 +261,96 @@ class ScrobbleAuditService:
             start += batch
         return items
 
-    async def _compare(self, trakt: TraktClient, emby: EmbyClient, user: User) -> dict:
+    async def _compare(self, trakt: TraktClient | None, emby: EmbyClient, user: User, mdb=None) -> dict:
         # ── Dismissed items ──
         dismissed = set(await self.get_dismissed(user.id))
 
         # ── Trakt side: build sets of watched IDs ──
         trakt_movie_ids: set[str] = set()
 
-        try:
-            trakt_movies = await trakt.get_watched(kind="movies")
-            for entry in trakt_movies:
-                ids = entry.get("movie", {}).get("ids", {})
-                for key in ("imdb", "tmdb", "tvdb"):
-                    val = ids.get(key)
-                    if val:
-                        trakt_movie_ids.add(f"{key}:{val}")
-        except Exception:
-            log.warning("scrobble_audit.trakt_movies_failed")
+        if trakt:
+            try:
+                trakt_movies = await trakt.get_watched(kind="movies")
+                for entry in trakt_movies:
+                    ids = entry.get("movie", {}).get("ids", {})
+                    for key in ("imdb", "tmdb", "tvdb"):
+                        val = ids.get(key)
+                        if val:
+                            trakt_movie_ids.add(f"{key}:{val}")
+            except Exception:
+                log.warning("scrobble_audit.trakt_movies_failed")
 
         # Trakt shows: build a set of "showkey:SxxExx" for episode-level matching
         trakt_watched_eps: set[str] = set()  # "{imdb_or_tvdb}:S{s}E{e}"
-        try:
-            trakt_shows = await trakt.get_watched(kind="shows")
-            for entry in trakt_shows:
-                show_ids = entry.get("show", {}).get("ids", {})
-                # Build all provider keys for this show
-                show_keys: list[str] = []
-                for key in ("imdb", "tvdb", "tmdb"):
-                    val = show_ids.get(key)
-                    if val:
-                        show_keys.append(f"{key}:{val}")
-                # Walk seasons → episodes
-                for season in entry.get("seasons", []):
-                    s_num = season.get("number", 0)
-                    for ep in season.get("episodes", []):
-                        e_num = ep.get("number", 0)
-                        ep_tag = f"S{s_num}E{e_num}"
-                        for sk in show_keys:
-                            trakt_watched_eps.add(f"{sk}:{ep_tag}")
-        except Exception:
-            log.warning("scrobble_audit.trakt_shows_failed")
+        if trakt:
+            try:
+                trakt_shows = await trakt.get_watched(kind="shows")
+                for entry in trakt_shows:
+                    show_ids = entry.get("show", {}).get("ids", {})
+                    # Build all provider keys for this show
+                    show_keys: list[str] = []
+                    for key in ("imdb", "tvdb", "tmdb"):
+                        val = show_ids.get(key)
+                        if val:
+                            show_keys.append(f"{key}:{val}")
+                    # Walk seasons → episodes
+                    for season in entry.get("seasons", []):
+                        s_num = season.get("number", 0)
+                        for ep in season.get("episodes", []):
+                            e_num = ep.get("number", 0)
+                            ep_tag = f"S{s_num}E{e_num}"
+                            for sk in show_keys:
+                                trakt_watched_eps.add(f"{sk}:{ep_tag}")
+            except Exception:
+                log.warning("scrobble_audit.trakt_shows_failed")
 
         # Episode-level provider IDs from Trakt history — catches numbering
         # mismatches between Emby and Trakt (e.g. The Pitt S2E24 vs S2E14)
         trakt_ep_ids: set[str] = set()
-        try:
-            trakt_ep_ids = await trakt.get_watched_episode_ids()
-            log.info("scrobble_audit.trakt_episode_ids", count=len(trakt_ep_ids))
-        except Exception:
-            log.warning("scrobble_audit.trakt_ep_ids_failed")
+        if trakt:
+            try:
+                trakt_ep_ids = await trakt.get_watched_episode_ids()
+                log.info("scrobble_audit.trakt_episode_ids", count=len(trakt_ep_ids))
+            except Exception:
+                log.warning("scrobble_audit.trakt_ep_ids_failed")
+
+        # ── MDBList side: merge watched data into the same sets ──
+        if mdb:
+            try:
+                mdb_watched = await mdb.get_watched()
+                # Movies
+                for entry in mdb_watched.get("movies", []):
+                    ids = entry.get("movie", {}).get("ids", {})
+                    for key in ("imdb", "tmdb", "tvdb", "trakt"):
+                        val = ids.get(key)
+                        if val:
+                            trakt_movie_ids.add(f"{key}:{val}")
+                # Shows (episode-level)
+                for entry in mdb_watched.get("shows", []):
+                    show_ids = entry.get("show", {}).get("ids", {})
+                    show_keys_mdb: list[str] = []
+                    for key in ("imdb", "tvdb", "tmdb", "trakt"):
+                        val = show_ids.get(key)
+                        if val:
+                            show_keys_mdb.append(f"{key}:{val}")
+                    for season in entry.get("seasons", []):
+                        s_num = season.get("number", 0)
+                        for ep in season.get("episodes", []):
+                            e_num = ep.get("number", 0)
+                            ep_tag = f"S{s_num}E{e_num}"
+                            for sk in show_keys_mdb:
+                                trakt_watched_eps.add(f"{sk}:{ep_tag}")
+                            # Also add to episode-level ID set
+                            ep_ids = ep.get("ids", {})
+                            for key in ("imdb", "tmdb", "tvdb"):
+                                val = ep_ids.get(key)
+                                if val:
+                                    trakt_ep_ids.add(f"{key}:{val}")
+                log.info("scrobble_audit.mdblist_watched_merged",
+                         movies=len(mdb_watched.get("movies", [])),
+                         shows=len(mdb_watched.get("shows", [])))
+            except Exception as e:
+                log.warning("scrobble_audit.mdblist_watched_failed", error=str(e)[:120])
 
         # ── Emby side: played movies ──
         missing_movies = []
@@ -550,3 +603,91 @@ class ScrobbleAuditService:
             token_expires=user.trakt_token_expires,
             token_refresh_callback=on_token_refresh,
         )
+
+    @staticmethod
+    async def _get_active_providers() -> set[str]:
+        """Return set of active integration providers."""
+        try:
+            r = await get_redis()
+            raw = await r.get("integration_provider")
+            if raw:
+                val = raw if isinstance(raw, str) else raw.decode()
+                if val == "both":
+                    return {"trakt", "mdblist"}
+                if val in ("trakt", "mdblist"):
+                    return {val}
+        except Exception:
+            pass
+        return {"trakt"}  # legacy default
+
+    @staticmethod
+    async def _get_mdblist_key() -> str:
+        """Return the configured MDBList API key from Redis."""
+        try:
+            r = await get_redis()
+            raw = await r.get("mdblist_api_key")
+            if raw:
+                return raw if isinstance(raw, str) else raw.decode()
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    async def _make_mdblist():
+        """Create an MDBListClient using the stored API key."""
+        from app.utils.mdblist_client import MDBListClient
+        r = await get_redis()
+        raw = await r.get("mdblist_api_key")
+        if not raw:
+            return None
+        key = raw if isinstance(raw, str) else raw.decode()
+        return MDBListClient(api_key=key)
+
+    async def _backfill_mdblist(self, items: list[dict]) -> None:
+        """Send backfill items to MDBList watched history if MDBList is active."""
+        providers = await self._get_active_providers()
+        if "mdblist" not in providers:
+            return
+        mdb = await self._make_mdblist()
+        if not mdb:
+            return
+        try:
+            movies = []
+            shows = []
+            for item in items:
+                ids = {}
+                if item.get("imdb_id"):
+                    ids["imdb"] = item["imdb_id"]
+                if item.get("tmdb_id"):
+                    ids["tmdb"] = int(item["tmdb_id"]) if str(item["tmdb_id"]).isdigit() else item["tmdb_id"]
+                if item.get("tvdb_id"):
+                    ids["tvdb"] = int(item["tvdb_id"]) if str(item["tvdb_id"]).isdigit() else item["tvdb_id"]
+                if not ids:
+                    continue
+
+                watched_at = item.get("last_played") or datetime.now(timezone.utc).isoformat()
+
+                if item.get("type") == "show" and item.get("episodes"):
+                    for ep in item["episodes"]:
+                        ep_at = ep.get("last_played") or watched_at
+                        shows.append({
+                            "ids": ids,
+                            "seasons": [{"number": ep.get("season", 0),
+                                         "episodes": [{"number": ep.get("episode", 0),
+                                                       "watched_at": ep_at}]}],
+                        })
+                elif item.get("type") == "movie":
+                    movies.append({"ids": ids, "watched_at": watched_at})
+
+            if movies or shows:
+                result = await mdb.add_to_watched(
+                    movies=movies if movies else None,
+                    shows=shows if shows else None,
+                )
+                log.info("scrobble_audit.mdblist_backfill_done",
+                         movies=len(movies), shows=len(shows),
+                         result=result)
+        except Exception as e:
+            log.warning("scrobble_audit.mdblist_backfill_failed", error=str(e)[:120])
+        finally:
+            await mdb.close()

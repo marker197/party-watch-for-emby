@@ -35,8 +35,9 @@ BASE = "https://api.trakt.tv"
 HEADERS_BASE = {
     "Content-Type": "application/json",
     "trakt-api-version": "2",
-    "trakt-api-key": settings.trakt_client_id,
 }
+if settings.trakt_client_id:
+    HEADERS_BASE["trakt-api-key"] = settings.trakt_client_id
 
 # Rate limit defaults (Trakt: 1000 calls/day)
 DEFAULT_RATE_LIMIT = 1000
@@ -375,8 +376,45 @@ class TraktClient:
     # -- Ratings -------------------------------------------------------------
 
     async def get_user_ratings(self, kind: str = "all") -> list[dict]:
-        """kind: movies | shows | seasons | episodes | all"""
-        return await self._get(f"/users/me/ratings/{kind}", params={"extended": "full"})
+        """kind: movies | shows | seasons | episodes | all
+        Paginates to fetch all ratings.
+        """
+        all_items: list[dict] = []
+        page = 1
+        per_page = 500
+        max_pages = 50
+
+        while page <= max_pages:
+            await self._ensure_token_valid()
+            resp = await self._client.get(
+                f"/users/me/ratings/{kind}",
+                headers=self._auth_headers(),
+                params={"extended": "full", "page": page, "limit": per_page},
+            )
+            self._update_rate_limit(resp)
+
+            if resp.status_code == 429:
+                await self._wait_for_rate_limit_reset()
+                continue
+            if resp.status_code == 401:
+                refreshed = await self._try_refresh_on_401(f"/users/me/ratings/{kind}")
+                if refreshed:
+                    continue
+                break
+            if resp.status_code != 200:
+                break
+
+            entries = resp.json()
+            if not entries:
+                break
+            all_items.extend(entries)
+
+            total_pages = int(resp.headers.get("X-Pagination-Page-Count", "1"))
+            if page >= total_pages:
+                break
+            page += 1
+
+        return all_items
 
     # -- Watchlist -----------------------------------------------------------
 
@@ -487,7 +525,53 @@ class TraktClient:
     # -- Watched progress ----------------------------------------------------
 
     async def get_watched(self, kind: str = "shows") -> list[dict]:
-        return await self._get(f"/users/me/watched/{kind}")
+        """Fetch all unique watched items, handling Trakt's pagination.
+
+        The /users/me/watched/{type} endpoint paginates.  For shows,
+        requests ``extended=full`` so season/episode detail is included
+        (Trakt changed the default to noseason in mid-2026).
+        """
+        all_items: list[dict] = []
+        page = 1
+        per_page = 500
+        max_pages = 50
+
+        while page <= max_pages:
+            await self._ensure_token_valid()
+            params: dict = {"page": page, "limit": per_page}
+            if kind == "shows":
+                params["extended"] = "full"
+            resp = await self._client.get(
+                f"/users/me/watched/{kind}",
+                headers=self._auth_headers(),
+                params=params,
+            )
+            self._update_rate_limit(resp)
+
+            if resp.status_code == 429:
+                await self._wait_for_rate_limit_reset()
+                continue
+            if resp.status_code == 401:
+                refreshed = await self._try_refresh_on_401(f"/users/me/watched/{kind}")
+                if refreshed:
+                    continue
+                break
+            if resp.status_code != 200:
+                break
+
+            entries = resp.json()
+            if not entries:
+                break
+            all_items.extend(entries)
+
+            # Check pagination headers
+            total_pages = int(resp.headers.get("X-Pagination-Page-Count", "1"))
+            if page >= total_pages:
+                break
+            page += 1
+
+        log.info("trakt.get_watched_complete", kind=kind, total=len(all_items), pages=page)
+        return all_items
 
     # -- Trending / Popular --------------------------------------------------
 

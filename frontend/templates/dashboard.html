@@ -1723,9 +1723,10 @@ async function viewAiring() {
   const el = document.getElementById('airingTable');
   el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Loading…</div>';
   try {
-    const [r, arrr] = await Promise.all([
+    const [r, arrr, importedR] = await Promise.all([
       fetch(API + `/api/airing-soon/${currentUserId}?days=30`),
       fetch(API + '/api/arr-library').catch(() => null),
+      fetch(API + '/api/sonarr/imported').catch(() => null),
     ]);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
@@ -1738,6 +1739,13 @@ async function viewAiring() {
       const arrData = await arrr.json();
       for (const tid of (arrData.radarr_tmdb || [])) arrRadarr[tid] = (arrData.radarr_names || {})[tid] || 'Radarr';
       for (const tid of (arrData.sonarr_tvdb || [])) arrSonarr[tid] = (arrData.sonarr_names || {})[tid] || 'Sonarr';
+    }
+
+    // Build sonarr imported lookup: "tvdbId:SxxExx" → data
+    const sonarrImported = {};
+    if (importedR && importedR.ok) {
+      const impData = await importedR.json();
+      for (const [k, v] of Object.entries(impData)) sonarrImported[k] = v;
     }
 
     const homeReleases = data.upcoming_home_releases || [];
@@ -1818,11 +1826,14 @@ async function viewAiring() {
           }).join(' ');
           streamBadges = `<span style="margin-left:8px;display:inline-flex;gap:4px;align-items:center;vertical-align:middle;">${badges}</span>`;
         }
-        // Status column: In Radarr / In Sonarr badge
-        // For shows, "In Sonarr" takes priority — the series may be in the
-        // library but these are future episodes Sonarr will grab on air date.
+        // Status column: Imported / In Radarr / In Sonarr badge
+        // Check sonarr import status first (highest priority for shows)
         let statusBadge = '';
-        if (i.media_type === 'movie') {
+        const importKey = i.tvdb_id && i.season != null && i.episode != null
+          ? `${i.tvdb_id}:S${i.season}E${i.episode}` : '';
+        if (importKey && sonarrImported[importKey]) {
+          statusBadge = '<span class="queue-badge watched" style="background:rgba(0,184,148,0.15);color:var(--green);border-color:var(--green);">Imported</span>';
+        } else if (i.media_type === 'movie') {
           if (i.in_library) {
             statusBadge = '<span class="queue-badge unwatched">in library</span>';
           } else if (i.tmdb_id && arrRadarr[i.tmdb_id]) {

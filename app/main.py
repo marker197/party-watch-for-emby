@@ -22,6 +22,7 @@ import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
@@ -228,6 +229,17 @@ app.add_exception_handler(429, lambda r, e: JSONResponse(
     content={"error": "Rate limit exceeded", "retry_after": "60"},
 ))
 
+# 6. Log validation errors so 422s are diagnosable from server logs
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(request: Request, exc: RequestValidationError):
+    log.warning(
+        "request_validation_error",
+        path=request.url.path,
+        method=request.method,
+        errors=exc.errors(),
+    )
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
 # REST routes
 app.include_router(router)
 # Monitoring routes (health checks, metrics)
@@ -250,6 +262,24 @@ app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 
 @app.get("/")
 async def dashboard(request: Request):
+    # Check if first-run setup is needed
+    from app.utils.redis_cache import get_redis as _get_redis
+    from fastapi.responses import RedirectResponse
+    try:
+        r = await _get_redis()
+        provider = await r.get("integration_provider")
+        if not provider:
+            # Check DB as fallback
+            from app.models.schema import AppSetting
+            async with async_session() as db:
+                row = (await db.execute(
+                    select(AppSetting).where(AppSetting.key == "integration_provider")
+                )).scalar_one_or_none()
+            if not row:
+                return RedirectResponse(url="/setup", status_code=302)
+    except Exception:
+        pass  # If check fails, show dashboard normally
+
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "features": {
@@ -484,21 +514,22 @@ async def run_heartbeat():
     finally:
         await emby.close()
 
-    # --- Trakt ---
-    from app.utils.trakt_client import TraktClient
-    trakt = TraktClient()
-    try:
-        await trakt.get_trending(kind="shows")
-        await r.set("heartbeat:trakt", _json.dumps({
-            "status": "ok", "checked_at": now,
-        }), ex=600)
-    except Exception as e:
-        await r.set("heartbeat:trakt", _json.dumps({
-            "status": "error", "checked_at": now,
-            "message": str(e)[:200],
-        }), ex=600)
-    finally:
-        await trakt.close()
+    # --- Trakt (only if configured) ---
+    if settings.trakt_client_id:
+        from app.utils.trakt_client import TraktClient
+        trakt = TraktClient()
+        try:
+            await trakt.get_trending(kind="shows")
+            await r.set("heartbeat:trakt", _json.dumps({
+                "status": "ok", "checked_at": now,
+            }), ex=600)
+        except Exception as e:
+            await r.set("heartbeat:trakt", _json.dumps({
+                "status": "error", "checked_at": now,
+                "message": str(e)[:200],
+            }), ex=600)
+        finally:
+            await trakt.close()
 
     # --- Radarr (0..N servers from Redis config) ---
     raw_servers = await r.get("radarr_servers")
@@ -571,7 +602,7 @@ async def run_heartbeat():
     if mdb_key:
         from app.utils.mdblist_client import MDBListClient
         mdb_key_str = mdb_key if isinstance(mdb_key, str) else mdb_key.decode()
-        client = MDBListClient(mdb_key_str)
+        client = MDBListClient(api_key=mdb_key_str)
         try:
             result = await client.test_connection()
             await r.set("heartbeat:mdblist", _json.dumps({
@@ -597,7 +628,24 @@ async def check_trakt_tokens():
     linked user and calls _ensure_token_valid(), which refreshes the token
     if it's within 5 minutes of expiry (or already expired but the refresh
     token hasn't gone stale yet).
+
+    Skips entirely if Trakt is not an active integration provider.
     """
+    # Check if Trakt is enabled
+    from app.utils.redis_cache import get_redis as _get_redis
+    try:
+        r = await _get_redis()
+        provider = await r.get("integration_provider")
+        if provider:
+            pval = provider if isinstance(provider, str) else provider.decode()
+            if pval not in ("trakt", "both"):
+                return  # Trakt not active, skip
+    except Exception:
+        pass  # If Redis fails, continue with check anyway
+
+    if not settings.trakt_client_id:
+        return  # No Trakt credentials configured
+
     from app.utils.trakt_client import TraktClient
 
     async with async_session_ctx() as db:
