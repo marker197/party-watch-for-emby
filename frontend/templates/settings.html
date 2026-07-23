@@ -771,11 +771,12 @@
       <div class="form-group" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
         <label>Sync Trakt History → MDBList</label>
         <p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:10px;">
-          Push your entire Trakt watched history, ratings, and show progress into MDBList. Existing entries won't be duplicated.
+          Push your Trakt watched history, ratings, and show progress into MDBList. After the first full sync, subsequent syncs only push new items.
         </p>
         <div style="display:flex;gap:8px;align-items:center;">
           <button class="btn btn-blue" onclick="checkMdblistSyncStatus()">Check Status</button>
-          <button class="btn btn-green" onclick="runTraktToMdblistSync()" id="btnSyncToMdb">Sync Now</button>
+          <button class="btn btn-green" onclick="runTraktToMdblistSync(false)" id="btnSyncToMdb">Sync New</button>
+          <button class="btn" style="background:var(--surface-hover);color:var(--text-dim);border:1px solid var(--border);" onclick="runTraktToMdblistSync(true)">Full Re-sync</button>
         </div>
         <div id="mdblistSyncResult" style="font-size:0.8rem;margin-top:8px;"></div>
       </div>
@@ -2260,14 +2261,19 @@
       }
     }
 
-    async function runTraktToMdblistSync() {
+    async function runTraktToMdblistSync(full) {
       const el = document.getElementById('mdblistSyncResult');
       const btn = document.getElementById('btnSyncToMdb');
       btn.disabled = true;
       btn.textContent = 'Syncing…';
-      el.innerHTML = '<span style="color:var(--text-dim);">Pushing Trakt history to MDBList… this may take a minute.</span>';
+      const mode = full ? 'full re-sync' : 'incremental sync';
+      el.innerHTML = `<span style="color:var(--text-dim);">Running ${mode}…</span>`;
       try {
-        const r = await fetch('/api/mdblist/sync-from-trakt', {method: 'POST'});
+        const r = await fetch('/api/mdblist/sync-from-trakt', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(full ? {full: true} : {}),
+        });
         if (!r.ok) {
           const d = await r.json();
           throw new Error(d.detail || 'Sync failed');
@@ -2276,18 +2282,19 @@
         const w = d.watched || {};
         const rt = d.ratings || {};
         const t = d.totals || {};
+        const syncMode = d.mode === 'delta' ? 'Incremental' : 'Full';
         el.innerHTML = `
           <div style="color:var(--green);margin-top:6px;">
-            ✓ Sync complete<br>
-            <strong>Watched:</strong> Pushed ${t.pushed_movies || 0} movies, ${t.pushed_shows || 0} shows<br>
-            <strong>Updated:</strong> ${w.movies || 0} movies, ${w.episodes || 0} episodes<br>
+            ✓ ${syncMode} sync complete<br>
+            <strong>Pushed:</strong> ${t.pushed_movies || 0} movies, ${t.pushed_shows || 0} shows<br>
+            <strong>Skipped:</strong> ${t.skipped_movies || 0} movies, ${t.skipped_episodes || 0} episodes (already synced)<br>
             <strong>Ratings:</strong> ${rt.movies || 0} movie ratings synced
           </div>`;
       } catch(e) {
         el.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
       } finally {
         btn.disabled = false;
-        btn.textContent = 'Sync Now';
+        btn.textContent = 'Sync New';
       }
     }
 

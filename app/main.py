@@ -647,6 +647,7 @@ async def check_trakt_tokens():
         return  # No Trakt credentials configured
 
     from app.utils.trakt_client import TraktClient
+    from app.models.schema import User
 
     async with async_session() as db:
         result = await db.execute(

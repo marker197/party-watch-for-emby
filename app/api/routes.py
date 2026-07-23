@@ -6337,10 +6337,13 @@ async def mdblist_sync_status(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/api/mdblist/sync-from-trakt")
-async def sync_trakt_to_mdblist(db: AsyncSession = Depends(get_db)):
-    """Bulk-sync all Trakt watched history into MDBList.
-    Pushes movies and shows (with full season/episode detail) to MDBList's
-    /sync/watched endpoint."""
+async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get_db)):
+    """Incremental sync of Trakt watched history into MDBList.
+
+    On first run, pushes everything. On subsequent runs, only pushes items
+    watched after the last successful sync timestamp (stored in Redis).
+    Pass {"full": true} in the body to force a full re-sync.
+    """
     import json as _json
 
     providers = await _get_active_providers(db)
@@ -6357,6 +6360,22 @@ async def sync_trakt_to_mdblist(db: AsyncSession = Depends(get_db)):
     if not user:
         raise HTTPException(400, "No linked Trakt user found")
 
+    # Check for force-full flag
+    force_full = False
+    try:
+        body = await request.json()
+        force_full = body.get("full", False)
+    except Exception:
+        pass
+
+    # Load last sync timestamp from Redis
+    r = await get_redis()
+    last_sync_ts = None
+    if not force_full:
+        raw = await r.get("mdblist_sync_last_completed")
+        if raw:
+            last_sync_ts = raw if isinstance(raw, str) else raw.decode()
+
     from app.utils.mdblist_client import MDBListClient
 
     trakt = TraktClient(
@@ -6366,14 +6385,21 @@ async def sync_trakt_to_mdblist(db: AsyncSession = Depends(get_db)):
     )
     mdb = MDBListClient(api_key=key)
 
+    sync_started_at = datetime.now(timezone.utc).isoformat()
+
     try:
         # Fetch full Trakt watched history
         trakt_movies = await trakt.get_watched(kind="movies")
         trakt_shows = await trakt.get_watched(kind="shows")
 
-        # Build MDBList payloads
+        # Build MDBList movie payloads — filter by last_watched_at if delta sync
         mdb_movies = []
+        skipped_movies = 0
         for entry in trakt_movies:
+            watched_at = entry.get("last_watched_at", "")
+            if last_sync_ts and watched_at and watched_at <= last_sync_ts:
+                skipped_movies += 1
+                continue
             movie = entry.get("movie", {})
             ids = movie.get("ids", {})
             mdb_ids = {}
@@ -6383,30 +6409,30 @@ async def sync_trakt_to_mdblist(db: AsyncSession = Depends(get_db)):
             if mdb_ids:
                 mdb_movies.append({
                     "ids": mdb_ids,
-                    "watched_at": entry.get("last_watched_at",
-                                            datetime.now(timezone.utc).isoformat()),
+                    "watched_at": watched_at or datetime.now(timezone.utc).isoformat(),
                 })
 
         mdb_shows = []
-        # Trakt's watched/shows endpoint no longer includes season/episode data
-        # by default (noseason is the new default). Instead, paginate through
-        # /users/me/history/episodes to get all watched episodes, then group
-        # by show → season → episode for the MDBList payload.
+        # Paginate through /users/me/history/episodes for episode-level data
         from collections import defaultdict
-        show_eps: dict[str, dict] = {}  # show_key → {"ids": {...}, "seasons": {s_num: [eps]}}
+        show_eps: dict[str, dict] = {}
 
         ep_page = 1
         ep_per_page = 500
         ep_max_pages = 50
         total_eps_fetched = 0
+        skipped_eps = 0
 
         while ep_page <= ep_max_pages:
-            await asyncio.sleep(0)  # yield to event loop
+            await asyncio.sleep(0)
             try:
+                params: dict = {"page": ep_page, "limit": ep_per_page}
+                # For delta sync, use start_at filter if Trakt supports it
+                # Otherwise filter client-side
                 resp = await trakt._client.get(
                     "/users/me/history/episodes",
                     headers=trakt._auth_headers(),
-                    params={"page": ep_page, "limit": ep_per_page},
+                    params=params,
                 )
                 trakt._update_rate_limit(resp)
                 if resp.status_code == 429:
@@ -6419,16 +6445,24 @@ async def sync_trakt_to_mdblist(db: AsyncSession = Depends(get_db)):
                 entries = resp.json()
                 if not entries:
                     break
+
+                # For delta sync: episodes are returned newest-first.
+                # Once we hit an entry older than last_sync_ts, we can stop.
+                page_all_old = True
+
                 for entry in entries:
+                    watched_at = entry.get("watched_at", "")
+                    if last_sync_ts and watched_at and watched_at <= last_sync_ts:
+                        skipped_eps += 1
+                        continue
+
+                    page_all_old = False
                     show = entry.get("show", {})
                     show_ids = show.get("ids", {})
                     ep = entry.get("episode", {})
                     s_num = ep.get("season", 0)
                     e_num = ep.get("number", 0)
-                    watched_at = entry.get("watched_at",
-                                           datetime.now(timezone.utc).isoformat())
 
-                    # Build a stable key for grouping
                     show_key = str(show_ids.get("trakt", "")) or str(show_ids.get("imdb", ""))
                     if not show_key:
                         continue
@@ -6446,6 +6480,10 @@ async def sync_trakt_to_mdblist(db: AsyncSession = Depends(get_db)):
                     })
                     total_eps_fetched += 1
 
+                # If delta sync and entire page was old, stop paginating
+                if last_sync_ts and page_all_old:
+                    break
+
                 total_pages = int(resp.headers.get("X-Pagination-Page-Count", "1"))
                 if ep_page >= total_pages:
                     break
@@ -6456,7 +6494,9 @@ async def sync_trakt_to_mdblist(db: AsyncSession = Depends(get_db)):
                 break
 
         log.info("mdblist_sync.episodes_fetched",
-                 shows=len(show_eps), episodes=total_eps_fetched, pages=ep_page)
+                 shows=len(show_eps), episodes=total_eps_fetched,
+                 skipped_eps=skipped_eps, skipped_movies=skipped_movies,
+                 pages=ep_page, mode="delta" if last_sync_ts else "full")
 
         # Convert grouped data to MDBList payload
         for show_key, show_data in show_eps.items():
@@ -6464,7 +6504,6 @@ async def sync_trakt_to_mdblist(db: AsyncSession = Depends(get_db)):
                 continue
             mdb_seasons = []
             for s_num, eps in sorted(show_data["seasons"].items()):
-                # Deduplicate episodes (history can have multiple plays)
                 seen = set()
                 deduped = []
                 for ep in eps:
@@ -6475,33 +6514,36 @@ async def sync_trakt_to_mdblist(db: AsyncSession = Depends(get_db)):
             if mdb_seasons:
                 mdb_shows.append({"ids": show_data["ids"], "seasons": mdb_seasons})
 
-        # Send to MDBList in batches (max ~200 items per call to stay safe)
+        # Send to MDBList in batches
         results = {"movies": 0, "shows": 0, "episodes": 0}
         batch_size = 100
 
         for i in range(0, len(mdb_movies), batch_size):
             batch = mdb_movies[i:i + batch_size]
             try:
-                r = await mdb.add_to_watched(movies=batch)
-                results["movies"] += r.get("updated", {}).get("movies", 0)
+                resp_data = await mdb.add_to_watched(movies=batch)
+                results["movies"] += resp_data.get("updated", {}).get("movies", 0)
             except Exception as e:
                 log.warning("mdblist_sync.movie_batch_failed", batch=i, error=str(e)[:120])
 
         for i in range(0, len(mdb_shows), batch_size):
             batch = mdb_shows[i:i + batch_size]
             try:
-                r = await mdb.add_to_watched(shows=batch)
-                results["shows"] += r.get("updated", {}).get("seasons", 0)
-                results["episodes"] += r.get("updated", {}).get("episodes", 0)
+                resp_data = await mdb.add_to_watched(shows=batch)
+                results["shows"] += resp_data.get("updated", {}).get("seasons", 0)
+                results["episodes"] += resp_data.get("updated", {}).get("episodes", 0)
             except Exception as e:
                 log.warning("mdblist_sync.show_batch_failed", batch=i, error=str(e)[:120])
 
-        # Also sync ratings
+        # Also sync ratings (only new ones since last sync)
         ratings_result = {"movies": 0, "episodes": 0}
         try:
             trakt_ratings = await trakt.get_user_ratings(kind="movies")
             mdb_rate_movies = []
             for entry in trakt_ratings:
+                rated_at = entry.get("rated_at", "")
+                if last_sync_ts and rated_at and rated_at <= last_sync_ts:
+                    continue
                 movie = entry.get("movie", {})
                 ids = movie.get("ids", {})
                 mdb_ids = {}
@@ -6512,28 +6554,34 @@ async def sync_trakt_to_mdblist(db: AsyncSession = Depends(get_db)):
                     mdb_rate_movies.append({
                         "ids": mdb_ids,
                         "rating": entry["rating"],
-                        "rated_at": entry.get("rated_at",
-                                              datetime.now(timezone.utc).isoformat()),
+                        "rated_at": rated_at or datetime.now(timezone.utc).isoformat(),
                     })
             if mdb_rate_movies:
                 for i in range(0, len(mdb_rate_movies), batch_size):
                     batch = mdb_rate_movies[i:i + batch_size]
                     try:
-                        r = await mdb.add_ratings(movies=batch)
-                        ratings_result["movies"] += r.get("updated", {}).get("movies", 0)
+                        resp_data = await mdb.add_ratings(movies=batch)
+                        ratings_result["movies"] += resp_data.get("updated", {}).get("movies", 0)
                     except Exception as e:
                         log.warning("mdblist_sync.rating_batch_failed", batch=i, error=str(e)[:120])
         except Exception as e:
             log.warning("mdblist_sync.ratings_failed", error=str(e)[:120])
 
+        # Store sync timestamp on success
+        await r.set("mdblist_sync_last_completed", sync_started_at)
+
         log.info("mdblist_sync.complete",
                  movies_synced=results["movies"],
                  shows_synced=results["shows"],
                  episodes_synced=results["episodes"],
-                 ratings_movies=ratings_result["movies"])
+                 ratings_movies=ratings_result["movies"],
+                 mode="delta" if last_sync_ts else "full",
+                 skipped_movies=skipped_movies,
+                 skipped_eps=skipped_eps)
 
         return {
             "status": "ok",
+            "mode": "delta" if last_sync_ts else "full",
             "watched": results,
             "ratings": ratings_result,
             "totals": {
@@ -6541,6 +6589,8 @@ async def sync_trakt_to_mdblist(db: AsyncSession = Depends(get_db)):
                 "trakt_shows": len(trakt_shows),
                 "pushed_movies": len(mdb_movies),
                 "pushed_shows": len(mdb_shows),
+                "skipped_movies": skipped_movies,
+                "skipped_episodes": skipped_eps,
             },
         }
     finally:
