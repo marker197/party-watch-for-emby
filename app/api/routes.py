@@ -94,14 +94,20 @@ class LinkPollRequest(BaseModel):
 
 @router.post("/auth/trakt/device-code")
 @limiter.limit(LIMITS["auth"])
-async def trakt_device_code(request: Request, body: LinkRequest, db: AsyncSession = Depends(get_db)):
+async def trakt_device_code(request: Request, db: AsyncSession = Depends(get_db)):
     """Start Trakt device-code flow.  Returns user_code + verification_url."""
+    body = await request.json()
+    emby_user_id = body.get("emby_user_id", "").strip()
+    emby_username = body.get("emby_username", "").strip()
+    if not emby_user_id:
+        raise HTTPException(400, "emby_user_id is required")
+
     user = (await db.execute(
-        select(User).where(User.emby_user_id == body.emby_user_id)
+        select(User).where(User.emby_user_id == emby_user_id)
     )).scalar_one_or_none()
 
     if not user:
-        user = User(emby_user_id=body.emby_user_id, emby_username=body.emby_username)
+        user = User(emby_user_id=emby_user_id, emby_username=emby_username)
         db.add(user)
         await db.commit()
         await db.refresh(user)
@@ -123,11 +129,17 @@ async def trakt_device_code(request: Request, body: LinkRequest, db: AsyncSessio
 
 @router.post("/auth/trakt/poll")
 @limiter.limit(LIMITS["auth"])
-async def trakt_poll(request: Request, body: LinkPollRequest, db: AsyncSession = Depends(get_db)):
+async def trakt_poll(request: Request, db: AsyncSession = Depends(get_db)):
     """Poll for completed Trakt authorisation."""
+    body = await request.json()
+    device_code = body.get("device_code", "").strip()
+    emby_user_id = body.get("emby_user_id", "").strip()
+    if not device_code or not emby_user_id:
+        raise HTTPException(400, "device_code and emby_user_id are required")
+
     trakt = TraktClient()
     try:
-        token_data = await trakt.poll_device_token(body.device_code)
+        token_data = await trakt.poll_device_token(device_code)
     finally:
         await trakt.close()
 
@@ -135,7 +147,7 @@ async def trakt_poll(request: Request, body: LinkPollRequest, db: AsyncSession =
         return {"status": "pending"}
 
     user = (await db.execute(
-        select(User).where(User.emby_user_id == body.emby_user_id)
+        select(User).where(User.emby_user_id == emby_user_id)
     )).scalar_one_or_none()
 
     if not user:
@@ -2357,9 +2369,10 @@ async def library_search(q: str = Query(..., min_length=2, max_length=100)):
 # HTML Pages
 # ═══════════════════════════════════════════════════════════════════════════
 
+@router.get("/lists", response_class=HTMLResponse)
 @router.get("/universes", response_class=HTMLResponse)
 async def get_universes_page():
-    """Serve the universes visualization page."""
+    """Serve the lists page (renamed from universes)."""
     try:
         with open("frontend/templates/universes.html", "r") as f:
             return f.read()
@@ -4506,6 +4519,120 @@ async def sync_all_trakt_lists(db: AsyncSession = Depends(get_db)):
     return {"status": "ok", "results": results}
 
 
+@router.get("/api/trakt-lists/popular")
+async def get_trakt_popular_lists():
+    """Fetch popular Trakt community lists (public endpoint, no auth needed)."""
+    trakt = TraktClient()
+
+    try:
+        raw = await trakt.get_popular_lists(limit=25)
+    finally:
+        await trakt.close()
+
+    results = []
+    for entry in (raw or []):
+        lst = entry.get("list", entry)
+        u = lst.get("user", {})
+        ids = lst.get("ids", {})
+        results.append({
+            "name": lst.get("name", ""),
+            "slug": ids.get("slug", ""),
+            "item_count": lst.get("item_count", 0),
+            "description": lst.get("description") or "",
+            "likes": lst.get("likes", 0) if "likes" in lst else entry.get("like_count", 0),
+            "user_name": u.get("username", ""),
+        })
+    return {"lists": results}
+
+
+@router.get("/api/trakt-lists/trending")
+async def get_trakt_trending_lists():
+    """Fetch trending Trakt community lists (public endpoint, no auth needed)."""
+    trakt = TraktClient()
+
+    try:
+        raw = await trakt.get_trending_lists(limit=25)
+    finally:
+        await trakt.close()
+
+    results = []
+    for entry in (raw or []):
+        lst = entry.get("list", entry)
+        u = lst.get("user", {})
+        ids = lst.get("ids", {})
+        results.append({
+            "name": lst.get("name", ""),
+            "slug": ids.get("slug", ""),
+            "item_count": lst.get("item_count", 0),
+            "description": lst.get("description") or "",
+            "likes": lst.get("likes", 0) if "likes" in lst else entry.get("like_count", 0),
+            "user_name": u.get("username", ""),
+        })
+    return {"lists": results}
+
+
+@router.get("/api/trakt-lists/items")
+async def get_trakt_list_items_detail(slug: str, username: str = "me"):
+    """Fetch items from a Trakt list with in-library/missing status for each item."""
+    async with async_session_ctx() as db:
+        user = (await db.execute(
+            select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+        )).scalars().first()
+        if not user or not user.trakt_access_token:
+            raise HTTPException(400, "No Trakt-linked user found")
+
+        async def _on_refresh(access, refresh, expires):
+            async with async_session_ctx() as rdb:
+                u = (await rdb.execute(select(User).where(User.id == user.id))).scalar_one()
+                u.trakt_access_token = access
+                u.trakt_refresh_token = refresh
+                u.trakt_token_expires = expires
+                await rdb.commit()
+
+        trakt = TraktClient(
+            access_token=user.trakt_access_token,
+            refresh_token=user.trakt_refresh_token,
+            token_expires=user.trakt_token_expires,
+            token_refresh_callback=_on_refresh,
+        )
+
+    try:
+        items = await trakt.get_list_items(username, slug)
+    finally:
+        await trakt.close()
+
+    results = []
+    for entry in (items or []):
+        item_type = entry.get("type", "")
+        item_data = entry.get(item_type, {}) if item_type else {}
+        ids = item_data.get("ids", {})
+        title = item_data.get("title", "Unknown")
+        year = item_data.get("year")
+
+        # Resolve against library cache
+        match = None
+        if ids.get("imdb"):
+            match = await LibraryCache.find_by_provider_id("Imdb", ids["imdb"])
+        if not match and ids.get("tmdb"):
+            match = await LibraryCache.find_by_provider_id("Tmdb", str(ids["tmdb"]))
+        if not match and ids.get("tvdb"):
+            match = await LibraryCache.find_by_provider_id("Tvdb", str(ids["tvdb"]))
+
+        in_library = bool(match and match.get("emby_id"))
+        results.append({
+            "title": title,
+            "year": year,
+            "type": item_type,
+            "in_library": in_library,
+            "imdb_id": ids.get("imdb"),
+            "tmdb_id": ids.get("tmdb"),
+            "tvdb_id": ids.get("tvdb"),
+        })
+
+    in_lib = sum(1 for r in results if r["in_library"])
+    return {"items": results, "total": len(results), "in_library": in_lib, "missing": len(results) - in_lib}
+
+
 @router.get("/api/mdblist/synced")
 async def get_mdblist_synced(db: AsyncSession = Depends(get_db)):
     """Return the list of MDBList lists that have been imported and are tracked for auto-sync."""
@@ -4591,6 +4718,84 @@ async def sync_all_mdblist_lists(db: AsyncSession = Depends(get_db)):
             results.append({"list_id": entry["list_id"], "status": "error", "message": str(e)[:200]})
 
     return {"status": "ok", "results": results}
+
+
+@router.get("/api/mdblist/items")
+async def get_mdblist_list_items_detail(list_id: int, db: AsyncSession = Depends(get_db)):
+    """Fetch items from an MDBList list with in-library/missing status for each item."""
+    key = await _get_mdblist_key(db)
+    if not key:
+        raise HTTPException(400, "MDBList API key not configured")
+
+    from app.utils.mdblist_client import MDBListClient
+    client = MDBListClient(api_key=key)
+
+    try:
+        items = await client.get_all_list_items(list_id)
+    finally:
+        await client.close()
+
+    results = []
+    for item in items:
+        imdb_id = item.get("imdb_id") or ""
+        tvdb_id = item.get("tvdb_id")
+        ids = item.get("ids") or {}
+        tmdb_id = ids.get("tmdb") or item.get("tmdb_id")
+        title = item.get("title", "Unknown")
+        year = item.get("release_year") or item.get("year")
+        mediatype = item.get("mediatype", "movie")
+
+        # Resolve against library cache
+        match = None
+        if imdb_id:
+            match = await LibraryCache.find_by_provider_id("Imdb", imdb_id)
+        if not match and tmdb_id:
+            match = await LibraryCache.find_by_provider_id("Tmdb", str(tmdb_id))
+        if not match and tvdb_id:
+            match = await LibraryCache.find_by_provider_id("Tvdb", str(tvdb_id))
+
+        in_library = bool(match and match.get("emby_id"))
+        results.append({
+            "title": title,
+            "year": year,
+            "type": "show" if mediatype == "show" else "movie",
+            "in_library": in_library,
+            "imdb_id": imdb_id or None,
+            "tmdb_id": tmdb_id,
+            "tvdb_id": tvdb_id,
+        })
+
+    in_lib = sum(1 for r in results if r["in_library"])
+    return {"items": results, "total": len(results), "in_library": in_lib, "missing": len(results) - in_lib}
+
+
+@router.get("/api/mdblist/top")
+async def get_mdblist_top_lists(db: AsyncSession = Depends(get_db)):
+    """Fetch top/popular public lists from MDBList."""
+    key = await _get_mdblist_key(db)
+    if not key:
+        raise HTTPException(400, "MDBList API key not configured")
+
+    from app.utils.mdblist_client import MDBListClient
+    client = MDBListClient(api_key=key)
+
+    try:
+        raw = await client.get_top_lists()
+    finally:
+        await client.close()
+
+    results = []
+    for lst in (raw or []):
+        results.append({
+            "name": lst.get("name", ""),
+            "list_id": lst.get("id", 0),
+            "item_count": lst.get("items", lst.get("item_count", 0)),
+            "likes": lst.get("likes", 0),
+            "user_name": lst.get("user_name", lst.get("username", "")),
+            "mediatype": lst.get("mediatype", ""),
+            "dynamic": lst.get("dynamic", False),
+        })
+    return {"lists": results}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

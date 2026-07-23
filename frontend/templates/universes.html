@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Shared Universes - Emby-Trakt Suite</title>
+  <title>Lists - Emby-Trakt Suite</title>
 <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
   <style>
     :root {
@@ -490,7 +490,7 @@
 <nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
     <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
     <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
-    <a href="/universes" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">🌌 Universes</a>
+    <a href="/lists" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">📋 Lists</a>
     <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
     <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
     <a href="/stats" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📊 Stats</a>
@@ -500,7 +500,7 @@
 </nav>
 
   <div class="header">
-    <h1>🌌 Shared Universe Discovery</h1>
+    <h1>📋 Lists</h1>
   </div>
 
   <div class="container">
@@ -547,6 +547,9 @@
       <div id="importTabs" style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--border);">
         <button id="tabTrakt" class="import-tab active" onclick="switchImportTab('trakt')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent-light);cursor:pointer;">Trakt <span id="traktBadge" style="font-size:0.72rem;padding:1px 6px;border-radius:10px;background:var(--surface-hover);color:var(--text-dim);font-weight:600;margin-left:4px;">—</span></button>
         <button id="tabMdblist" class="import-tab" onclick="switchImportTab('mdblist')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim);cursor:pointer;">MDBList <span id="mdblistBadge" style="font-size:0.72rem;padding:1px 6px;border-radius:10px;background:var(--surface-hover);color:var(--text-dim);font-weight:600;margin-left:4px;">—</span></button>
+        <button id="tabPopular" class="import-tab" onclick="switchImportTab('popular')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim);cursor:pointer;">🔥 Popular</button>
+        <button id="tabTrending" class="import-tab" onclick="switchImportTab('trending')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim);cursor:pointer;">📈 Trending</button>
+        <button id="tabMdblistTop" class="import-tab" onclick="switchImportTab('mdblistTop')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim);cursor:pointer;">⭐ MDBList Top</button>
       </div>
 
       <!-- ── Trakt Tab ── -->
@@ -622,8 +625,43 @@
           MDBList API key not configured. <a href="/settings" style="color:var(--blue);">Add one in Settings</a> to import MDBList lists.
         </div>
       </div>
+
+      <!-- ── Popular Tab ── -->
+      <div id="panelPopular" style="display:none;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <p style="color:var(--text-dim);font-size:0.82rem;margin:0;">Browse popular Trakt community lists. Import any list as an Emby playlist.</p>
+          <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="loadPopularLists()" title="Refresh">🔄</button>
+        </div>
+        <div id="popularListsGrid" style="font-size:0.82rem;color:var(--text-dim);">Loading popular lists…</div>
+      </div>
+
+      <!-- ── Trending Tab ── -->
+      <div id="panelTrending" style="display:none;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <p style="color:var(--text-dim);font-size:0.82rem;margin:0;">Browse trending Trakt community lists. Import any list as an Emby playlist.</p>
+          <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="loadTrendingLists()" title="Refresh">🔄</button>
+        </div>
+        <div id="trendingListsGrid" style="font-size:0.82rem;color:var(--text-dim);">Loading trending lists…</div>
+      </div>
+
+      <!-- ── MDBList Top Tab ── -->
+      <div id="panelMdblistTop" style="display:none;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <p style="color:var(--text-dim);font-size:0.82rem;margin:0;">Browse top MDBList community lists sorted by likes. Import any list as an Emby playlist.</p>
+          <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="loadMdblistTopLists()" title="Refresh">🔄</button>
+        </div>
+        <div id="mdblistTopGrid" style="font-size:0.82rem;color:var(--text-dim);">Loading top lists…</div>
+      </div>
     </div>
 
+    <!-- Universe cards show/hide toggle -->
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer;user-select:none;" onclick="toggleUniverseCards()">
+      <span id="universeCardsToggleIcon" style="font-size:0.85rem;color:var(--text-dim);">▶</span>
+      <span style="font-size:0.92rem;font-weight:700;color:var(--text);">🌌 Shared Universes</span>
+      <span id="universeCardsCount" style="font-size:0.78rem;color:var(--text-dim);"></span>
+    </div>
+
+    <div id="universeCardsSection" style="display:none;">
     <div class="filter-group">
       <button class="filter-badge active" data-filter="all">All (21)</button>
       <button class="filter-badge" data-filter="complete">Complete</button>
@@ -637,6 +675,7 @@
         Loading universes...
       </div>
     </div>
+    </div><!-- end universeCardsSection -->
   </div>
 
   <div class="toast" id="toast"></div>
@@ -696,6 +735,7 @@
         if (!response.ok) throw new Error('Failed to load universes');
         allUniverses = await response.json();
         renderUniverses();
+        updateUniverseCardsCount();
       } catch (error) {
         console.error('Error loading universes:', error);
         document.getElementById('universesList').innerHTML = 
@@ -1367,13 +1407,20 @@
         t.style.borderBottomColor = 'transparent';
         t.style.color = 'var(--text-dim)';
       });
-      const active = document.getElementById(tab === 'trakt' ? 'tabTrakt' : 'tabMdblist');
+      const tabMap = {trakt:'tabTrakt', mdblist:'tabMdblist', popular:'tabPopular', trending:'tabTrending', mdblistTop:'tabMdblistTop'};
+      const active = document.getElementById(tabMap[tab]);
       if (active) {
         active.style.borderBottomColor = 'var(--accent)';
         active.style.color = 'var(--accent-light)';
       }
       document.getElementById('panelTrakt').style.display = tab === 'trakt' ? 'block' : 'none';
       document.getElementById('panelMdblist').style.display = tab === 'mdblist' ? 'block' : 'none';
+      document.getElementById('panelPopular').style.display = tab === 'popular' ? 'block' : 'none';
+      document.getElementById('panelTrending').style.display = tab === 'trending' ? 'block' : 'none';
+      document.getElementById('panelMdblistTop').style.display = tab === 'mdblistTop' ? 'block' : 'none';
+      if (tab === 'popular' && !document.getElementById('popularListsGrid')._loaded) loadPopularLists();
+      if (tab === 'trending' && !document.getElementById('trendingListsGrid')._loaded) loadTrendingLists();
+      if (tab === 'mdblistTop' && !document.getElementById('mdblistTopGrid')._loaded) loadMdblistTopLists();
     }
 
     async function initImportListsSection() {
@@ -1633,17 +1680,18 @@
 
         for (const s of synced) {
           const autoOn = s.auto_sync !== false;
-          html += '<tr style="border-bottom:1px solid var(--border);">';
-          html += `<td style="padding:6px 8px;">${escapeHtml(s.playlist_name || s.slug)}</td>`;
+          html += `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="toggleSyncedListItems('${escapeHtml(s.slug)}', '${escapeHtml(s.username || 'me')}', this)">`;
+          html += `<td style="padding:6px 8px;">▶ ${escapeHtml(s.playlist_name || s.slug)}</td>`;
           html += `<td style="padding:6px 8px;text-align:center;">${s.matched || '—'}</td>`;
           html += `<td style="padding:6px 8px;text-align:center;color:var(--text-dim);">${s.last_synced || 'never'}</td>`;
-          html += '<td style="padding:6px 8px;text-align:center;">';
-          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:${autoOn ? 'var(--green)' : 'var(--surface-hover)'};color:${autoOn ? '#fff' : 'var(--text-dim)'};border:1px solid var(--border);" onclick="toggleTraktAutoSync('${escapeHtml(s.slug)}', ${!autoOn})">${autoOn ? '✓ On' : '✗ Off'}</button>`;
+          html += '<td style="padding:6px 8px;text-align:center;" onclick="event.stopPropagation()">';
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:${autoOn ? 'var(--green)' : 'var(--surface-hover)'};color:${autoOn ? '#fff' : 'var(--text-dim)'};border:1px solid var(--border);" onclick="event.stopPropagation();toggleTraktAutoSync('${escapeHtml(s.slug)}', ${!autoOn})">${autoOn ? '✓ On' : '✗ Off'}</button>`;
           html += '</td>';
-          html += '<td style="padding:6px 8px;text-align:center;display:flex;gap:4px;justify-content:center;">';
-          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--blue);color:#fff;" onclick="refreshSingleTrakt('${escapeHtml(s.slug)}', '${escapeHtml(s.playlist_name || '')}', '${escapeHtml(s.description || '')}', '${escapeHtml(s.username || 'me')}')">🔄</button>`;
-          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--red);color:#fff;" onclick="removeTraktSync('${escapeHtml(s.slug)}')">✕</button>`;
-          html += '</td></tr>';
+          html += '<td style="padding:6px 8px;text-align:center;" onclick="event.stopPropagation()">';
+          html += `<span style="display:flex;gap:4px;justify-content:center;">`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--blue);color:#fff;" onclick="event.stopPropagation();refreshSingleTrakt('${escapeHtml(s.slug)}', '${escapeHtml(s.playlist_name || '')}', '${escapeHtml(s.description || '')}', '${escapeHtml(s.username || 'me')}')">🔄</button>`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--red);color:#fff;" onclick="event.stopPropagation();removeTraktSync('${escapeHtml(s.slug)}')">✕</button>`;
+          html += `</span></td></tr>`;
         }
 
         html += '</tbody></table>';
@@ -1878,17 +1926,18 @@
 
         for (const s of synced) {
           const autoOn = s.auto_sync !== false;
-          html += `<tr style="border-bottom:1px solid var(--border);">`;
-          html += `<td style="padding:6px 8px;">${escapeHtml(s.playlist_name || 'List #' + s.list_id)}</td>`;
+          html += `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="toggleMdblistSyncedItems(${s.list_id}, this)">`;
+          html += `<td style="padding:6px 8px;">▶ ${escapeHtml(s.playlist_name || 'List #' + s.list_id)}</td>`;
           html += `<td style="padding:6px 8px;text-align:center;">${s.matched || '—'}</td>`;
           html += `<td style="padding:6px 8px;text-align:center;color:var(--text-dim);">${s.last_synced || 'never'}</td>`;
-          html += `<td style="padding:6px 8px;text-align:center;">`;
-          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:${autoOn ? 'var(--green)' : 'var(--surface-hover)'};color:${autoOn ? '#fff' : 'var(--text-dim)'};border:1px solid var(--border);" onclick="toggleMdblistAutoSync(${s.list_id}, ${!autoOn})">${autoOn ? '✓ On' : '✗ Off'}</button>`;
+          html += `<td style="padding:6px 8px;text-align:center;" onclick="event.stopPropagation()">`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:${autoOn ? 'var(--green)' : 'var(--surface-hover)'};color:${autoOn ? '#fff' : 'var(--text-dim)'};border:1px solid var(--border);" onclick="event.stopPropagation();toggleMdblistAutoSync(${s.list_id}, ${!autoOn})">${autoOn ? '✓ On' : '✗ Off'}</button>`;
           html += `</td>`;
-          html += `<td style="padding:6px 8px;text-align:center;display:flex;gap:4px;justify-content:center;">`;
-          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--blue);color:#fff;" onclick="refreshSingleMdblist(${s.list_id}, '${escapeHtml(s.playlist_name || '')}', '${escapeHtml(s.description || '')}')">🔄</button>`;
-          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--red);color:#fff;" onclick="removeMdblistSync(${s.list_id})">✕</button>`;
-          html += `</td></tr>`;
+          html += `<td style="padding:6px 8px;text-align:center;" onclick="event.stopPropagation()">`;
+          html += `<span style="display:flex;gap:4px;justify-content:center;">`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--blue);color:#fff;" onclick="event.stopPropagation();refreshSingleMdblist(${s.list_id}, '${escapeHtml(s.playlist_name || '')}', '${escapeHtml(s.description || '')}')">🔄</button>`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--red);color:#fff;" onclick="event.stopPropagation();removeMdblistSync(${s.list_id})">✕</button>`;
+          html += `</span></td></tr>`;
         }
 
         html += '</tbody></table>';
@@ -1965,6 +2014,317 @@
         }
       } catch(e) {
         showToast('Error: ' + e.message);
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Universe Cards Show/Hide
+    // ═══════════════════════════════════════════════════════════════════
+
+    let universeCardsVisible = false;
+    function toggleUniverseCards() {
+      universeCardsVisible = !universeCardsVisible;
+      document.getElementById('universeCardsSection').style.display = universeCardsVisible ? 'block' : 'none';
+      document.getElementById('universeCardsToggleIcon').textContent = universeCardsVisible ? '▼' : '▶';
+    }
+    function updateUniverseCardsCount() {
+      const el = document.getElementById('universeCardsCount');
+      if (el && allUniverses.length) el.textContent = `(${allUniverses.length})`;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Popular & Trending Trakt Lists
+    // ═══════════════════════════════════════════════════════════════════
+
+    function renderCommunityListGrid(lists, containerId) {
+      const container = document.getElementById(containerId);
+      if (!lists.length) {
+        container.innerHTML = '<p style="color:var(--text-dim);">No lists found</p>';
+        return;
+      }
+      container.innerHTML = lists.map(l => `
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-weight:600;font-size:0.88rem;">${escapeHtml(l.name)}</div>
+              <div style="font-size:0.78rem;color:var(--text-dim);margin-top:2px;">
+                by ${escapeHtml(l.user_name)} · ${l.item_count} items${l.likes ? ` · ❤️ ${l.likes}` : ''}
+              </div>
+              ${l.description ? `<div style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;max-height:2.6em;overflow:hidden;">${escapeHtml(l.description)}</div>` : ''}
+            </div>
+            <button class="btn" style="background:var(--green);color:#fff;font-size:0.75rem;padding:5px 10px;flex-shrink:0;" onclick="importCommunityList('${escapeHtml(l.slug)}', '${escapeHtml(l.name).replace(/'/g,"\\'")}', '${escapeHtml(l.user_name).replace(/'/g,"\\'")}', '${escapeHtml(l.description || '').replace(/'/g,"\\'")}', this)">📥 Import</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function importCommunityList(slug, name, username, desc, btn) {
+      const origText = btn.textContent;
+      btn.textContent = '…';
+      btn.disabled = true;
+      try {
+        const r = await fetch('/api/trakt-lists/import', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ list_slug: slug, playlist_name: name, description: desc, username: username }),
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          await fetch('/api/trakt-lists/track', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ list_slug: slug, playlist_name: name, description: desc, username: username, matched: d.matched }),
+          });
+          let msg = `✓ ${d.matched} items`;
+          if (d.unmatched > 0) msg += `, ${d.unmatched} missing`;
+          btn.textContent = msg;
+          btn.style.background = 'var(--surface-hover)';
+          btn.style.color = 'var(--green)';
+          showToast(`Imported "${name}" — ${d.matched} matched`);
+          await loadTraktSynced();
+        } else {
+          btn.textContent = '✗ Failed';
+          btn.style.color = 'var(--red)';
+        }
+      } catch(e) {
+        btn.textContent = '✗ Error';
+      }
+      setTimeout(() => { btn.textContent = origText; btn.disabled = false; btn.style.background = 'var(--green)'; btn.style.color = '#fff'; }, 3000);
+    }
+
+    async function loadPopularLists() {
+      const grid = document.getElementById('popularListsGrid');
+      grid.innerHTML = '<span style="color:var(--text-dim);">Loading popular lists…</span>';
+      try {
+        const r = await fetch('/api/trakt-lists/popular');
+        const d = await r.json();
+        renderCommunityListGrid(d.lists || [], 'popularListsGrid');
+        grid._loaded = true;
+      } catch(e) {
+        grid.innerHTML = `<span style="color:var(--red);">Error: ${e.message}</span>`;
+      }
+    }
+
+    async function loadTrendingLists() {
+      const grid = document.getElementById('trendingListsGrid');
+      grid.innerHTML = '<span style="color:var(--text-dim);">Loading trending lists…</span>';
+      try {
+        const r = await fetch('/api/trakt-lists/trending');
+        const d = await r.json();
+        renderCommunityListGrid(d.lists || [], 'trendingListsGrid');
+        grid._loaded = true;
+      } catch(e) {
+        grid.innerHTML = `<span style="color:var(--red);">Error: ${e.message}</span>`;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Expandable Synced List Items
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function toggleSyncedListItems(slug, username, rowEl) {
+      const detailId = 'syncDetail-' + slug.replace(/[^a-zA-Z0-9]/g, '_');
+      const existing = document.getElementById(detailId);
+      if (existing) {
+        existing.remove();
+        return;
+      }
+      const tr = rowEl.closest('tr');
+      const detailRow = document.createElement('tr');
+      detailRow.id = detailId;
+      detailRow.innerHTML = `<td colspan="5" style="padding:8px 12px;background:var(--bg);border-bottom:1px solid var(--border);"><span style="color:var(--text-dim);font-size:0.8rem;">Loading items…</span></td>`;
+      tr.after(detailRow);
+
+      try {
+        const r = await fetch(`/api/trakt-lists/items?slug=${encodeURIComponent(slug)}&username=${encodeURIComponent(username || 'me')}`);
+        const d = await r.json();
+        const items = d.items || [];
+        if (!items.length) {
+          detailRow.querySelector('td').innerHTML = '<span style="color:var(--text-dim);font-size:0.8rem;">List is empty</span>';
+          return;
+        }
+        let html = `<div style="font-size:0.8rem;color:var(--text-dim);margin-bottom:6px;">${d.in_library} in library · ${d.missing} missing</div>`;
+        html += '<div style="max-height:300px;overflow-y:auto;">';
+        for (const item of items) {
+          const badge = item.in_library
+            ? '<span style="color:var(--green);font-size:0.72rem;font-weight:600;padding:1px 6px;border-radius:4px;background:rgba(0,184,148,0.12);">In Library</span>'
+            : '<span style="color:var(--orange);font-size:0.72rem;font-weight:600;padding:1px 6px;border-radius:4px;background:rgba(253,203,110,0.12);">Missing</span>';
+          const sendBtn = !item.in_library && item.tmdb_id
+            ? (item.type === 'show'
+              ? ` <button class="btn" style="font-size:0.68rem;padding:2px 6px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;" onclick="sendSyncedItemToSonarr('${escapeHtml(item.title).replace(/'/g,"\\'")}', ${item.tvdb_id || 0}, event)">📥 Sonarr</button>`
+              : ` <button class="btn" style="font-size:0.68rem;padding:2px 6px;background:var(--orange);color:var(--bg);border:none;border-radius:4px;cursor:pointer;" onclick="sendSyncedItemToRadarr('${escapeHtml(item.title).replace(/'/g,"\\'")}', ${item.tmdb_id || 0}, '${item.imdb_id || ''}', event)">📥 Radarr</button>`)
+            : '';
+          html += `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);">
+            <span style="flex:1;font-size:0.82rem;">${escapeHtml(item.title)}${item.year ? ` <span style="color:var(--text-dim);">(${item.year})</span>` : ''}</span>
+            ${badge}${sendBtn}
+          </div>`;
+        }
+        html += '</div>';
+        detailRow.querySelector('td').innerHTML = html;
+      } catch(e) {
+        detailRow.querySelector('td').innerHTML = `<span style="color:var(--red);font-size:0.8rem;">Error: ${e.message}</span>`;
+      }
+    }
+
+    async function sendSyncedItemToRadarr(title, tmdbId, imdbId, event) {
+      event.stopPropagation();
+      const btn = event.target;
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const r = await fetch('/api/radarr/add', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ title, tmdb_id: tmdbId, imdb_id: imdbId }),
+        });
+        const d = await r.json();
+        if (d.status === 'ok' || d.status === 'already_monitored') {
+          btn.textContent = '✓'; btn.style.background = 'var(--green)'; btn.style.color = '#fff';
+        } else {
+          btn.textContent = '✗'; btn.style.color = 'var(--red)';
+        }
+      } catch(e) {
+        btn.textContent = '✗';
+      }
+    }
+
+    async function sendSyncedItemToSonarr(title, tvdbId, event) {
+      event.stopPropagation();
+      const btn = event.target;
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const r = await fetch('/api/sonarr/add', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ title, tvdb_id: tvdbId }),
+        });
+        const d = await r.json();
+        if (d.status === 'ok' || d.status === 'already_monitored') {
+          btn.textContent = '✓'; btn.style.background = 'var(--green)'; btn.style.color = '#fff';
+        } else {
+          btn.textContent = '✗'; btn.style.color = 'var(--red)';
+        }
+      } catch(e) {
+        btn.textContent = '✗';
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // MDBList Expandable Synced Items
+    // ═══════════════════════════════════════════════════════════════════
+
+    async function toggleMdblistSyncedItems(listId, rowEl) {
+      const detailId = 'mdbSyncDetail-' + listId;
+      const existing = document.getElementById(detailId);
+      if (existing) {
+        existing.remove();
+        return;
+      }
+      const tr = rowEl.closest('tr');
+      const detailRow = document.createElement('tr');
+      detailRow.id = detailId;
+      detailRow.innerHTML = `<td colspan="5" style="padding:8px 12px;background:var(--bg);border-bottom:1px solid var(--border);"><span style="color:var(--text-dim);font-size:0.8rem;">Loading items…</span></td>`;
+      tr.after(detailRow);
+
+      try {
+        const r = await fetch(`/api/mdblist/items?list_id=${listId}`);
+        const d = await r.json();
+        const items = d.items || [];
+        if (!items.length) {
+          detailRow.querySelector('td').innerHTML = '<span style="color:var(--text-dim);font-size:0.8rem;">List is empty</span>';
+          return;
+        }
+        let html = `<div style="font-size:0.8rem;color:var(--text-dim);margin-bottom:6px;">${d.in_library} in library · ${d.missing} missing</div>`;
+        html += '<div style="max-height:300px;overflow-y:auto;">';
+        for (const item of items) {
+          const badge = item.in_library
+            ? '<span style="color:var(--green);font-size:0.72rem;font-weight:600;padding:1px 6px;border-radius:4px;background:rgba(0,184,148,0.12);">In Library</span>'
+            : '<span style="color:var(--orange);font-size:0.72rem;font-weight:600;padding:1px 6px;border-radius:4px;background:rgba(253,203,110,0.12);">Missing</span>';
+          const sendBtn = !item.in_library && (item.tmdb_id || item.tvdb_id)
+            ? (item.type === 'show'
+              ? ` <button class="btn" style="font-size:0.68rem;padding:2px 6px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;" onclick="sendSyncedItemToSonarr('${escapeHtml(item.title).replace(/'/g,"\\'")}', ${item.tvdb_id || 0}, event)">📥 Sonarr</button>`
+              : ` <button class="btn" style="font-size:0.68rem;padding:2px 6px;background:var(--orange);color:var(--bg);border:none;border-radius:4px;cursor:pointer;" onclick="sendSyncedItemToRadarr('${escapeHtml(item.title).replace(/'/g,"\\'")}', ${item.tmdb_id || 0}, '${item.imdb_id || ''}', event)">📥 Radarr</button>`)
+            : '';
+          html += `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);">
+            <span style="flex:1;font-size:0.82rem;">${escapeHtml(item.title)}${item.year ? ` <span style="color:var(--text-dim);">(${item.year})</span>` : ''}</span>
+            ${badge}${sendBtn}
+          </div>`;
+        }
+        html += '</div>';
+        detailRow.querySelector('td').innerHTML = html;
+      } catch(e) {
+        detailRow.querySelector('td').innerHTML = `<span style="color:var(--red);font-size:0.8rem;">Error: ${e.message}</span>`;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // MDBList Top Lists
+    // ═══════════════════════════════════════════════════════════════════
+
+    function renderMdblistTopGrid(lists, containerId) {
+      const container = document.getElementById(containerId);
+      if (!lists.length) {
+        container.innerHTML = '<p style="color:var(--text-dim);">No lists found</p>';
+        return;
+      }
+      container.innerHTML = lists.map(l => `
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-weight:600;font-size:0.88rem;">${escapeHtml(l.name)}</div>
+              <div style="font-size:0.78rem;color:var(--text-dim);margin-top:2px;">
+                by ${escapeHtml(l.user_name)} · ${l.item_count} items · ❤️ ${l.likes}${l.dynamic ? ' · <span style="color:var(--blue);">Dynamic</span>' : ''}
+              </div>
+            </div>
+            <button class="btn" style="background:var(--green);color:#fff;font-size:0.75rem;padding:5px 10px;flex-shrink:0;" onclick="importMdblistTopList(${l.list_id}, '${escapeHtml(l.name).replace(/'/g,"\\'")}', this)">📥 Import</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function importMdblistTopList(listId, name, btn) {
+      const origText = btn.textContent;
+      btn.textContent = '…';
+      btn.disabled = true;
+      try {
+        const r = await fetch('/api/mdblist/import', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ list_id: listId, playlist_name: name }),
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          await fetch('/api/mdblist/track', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ list_id: listId, playlist_name: name, matched: d.matched }),
+          });
+          let msg = `✓ ${d.matched} items`;
+          if (d.unmatched > 0) msg += `, ${d.unmatched} missing`;
+          btn.textContent = msg;
+          btn.style.background = 'var(--surface-hover)';
+          btn.style.color = 'var(--green)';
+          showToast(`Imported "${name}" — ${d.matched} matched`);
+          await loadMdblistSynced();
+        } else {
+          btn.textContent = '✗ Failed';
+          btn.style.color = 'var(--red)';
+        }
+      } catch(e) {
+        btn.textContent = '✗ Error';
+      }
+      setTimeout(() => { btn.textContent = origText; btn.disabled = false; btn.style.background = 'var(--green)'; btn.style.color = '#fff'; }, 3000);
+    }
+
+    async function loadMdblistTopLists() {
+      const grid = document.getElementById('mdblistTopGrid');
+      grid.innerHTML = '<span style="color:var(--text-dim);">Loading top lists…</span>';
+      try {
+        const r = await fetch('/api/mdblist/top');
+        const d = await r.json();
+        renderMdblistTopGrid(d.lists || [], 'mdblistTopGrid');
+        grid._loaded = true;
+      } catch(e) {
+        grid.innerHTML = `<span style="color:var(--red);">Error: ${e.message}</span>`;
       }
     }
   </script>

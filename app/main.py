@@ -590,6 +590,55 @@ async def run_heartbeat():
             await client.close()
 
 
+async def check_trakt_tokens():
+    """Proactively refresh Trakt tokens before they expire.
+
+    Runs every 30 minutes.  Creates an authenticated TraktClient for each
+    linked user and calls _ensure_token_valid(), which refreshes the token
+    if it's within 5 minutes of expiry (or already expired but the refresh
+    token hasn't gone stale yet).
+    """
+    from app.utils.trakt_client import TraktClient
+
+    async with async_session_ctx() as db:
+        result = await db.execute(
+            select(User).where(User.trakt_access_token.isnot(None))
+        )
+        users = result.scalars().all()
+
+    for user in users:
+        if not user.trakt_access_token or not user.trakt_refresh_token:
+            continue
+
+        async def _make_callback(uid=user.id):
+            async def _cb(access, refresh, expires):
+                async with async_session_ctx() as rdb:
+                    u = (await rdb.execute(
+                        select(User).where(User.id == uid)
+                    )).scalar_one()
+                    u.trakt_access_token = access
+                    u.trakt_refresh_token = refresh
+                    u.trakt_token_expires = expires
+                    await rdb.commit()
+                log.info("trakt.token_refreshed_proactive", user_id=uid)
+            return _cb
+
+        callback = await _make_callback()
+        trakt = TraktClient(
+            access_token=user.trakt_access_token,
+            refresh_token=user.trakt_refresh_token,
+            token_expires=user.trakt_token_expires,
+            token_refresh_callback=callback,
+        )
+        try:
+            await trakt._ensure_token_valid()
+        except Exception as e:
+            log.error("trakt.proactive_refresh_failed", user_id=user.id,
+                      error=str(e)[:200])
+        finally:
+            await trakt.close()
+
+
 def _register_jobs():
     if settings.enable_smart_queue:
         from app.services.smart_queue.service import SmartQueueService
@@ -787,6 +836,16 @@ def _register_jobs():
         replace_existing=True,
     )
     log.info("scheduler.job_added", job="heartbeat", interval="5m")
+
+    # Proactive Trakt token refresh — every 30 minutes
+    scheduler.add_job(
+        check_trakt_tokens,
+        "interval",
+        minutes=30,
+        id="trakt_token_check",
+        replace_existing=True,
+    )
+    log.info("scheduler.job_added", job="trakt_token_check", interval="30m")
 
 
 # ---------------------------------------------------------------------------

@@ -358,6 +358,12 @@ class TraktClient:
                 "grant_type": "refresh_token",
             },
         )
+        if resp.status_code == 400:
+            log.error(
+                "trakt.refresh_token_rejected",
+                status=400,
+                hint="Refresh token is stale or revoked — user must re-link Trakt account",
+            )
         resp.raise_for_status()
         return resp.json()
 
@@ -673,6 +679,9 @@ class TraktClient:
 
     async def get_popular_lists(self, limit: int = 20) -> list[dict]:
         return await self._get("/lists/popular", params={"limit": limit})
+
+    async def get_trending_lists(self, limit: int = 20) -> list[dict]:
+        return await self._get("/lists/trending", params={"limit": limit})
 
     async def get_list_items(self, username: str, list_id: str) -> list[dict]:
         return await self._get(f"/users/{username}/lists/{list_id}/items")

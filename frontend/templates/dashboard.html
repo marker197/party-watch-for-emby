@@ -652,7 +652,7 @@
 <nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
     <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
     <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">Dashboard</a>
-    <a href="/universes" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🌌 Universes</a>
+    <a href="/lists" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📋 Lists</a>
     <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
     <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
     <a href="/stats" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📊 Stats</a>
@@ -788,7 +788,7 @@
       </div>
       <p>Detects MCU, Star Wars, DCEU and more in your library. Creates ordered collections automatically.</p>
       <button class="btn btn-orange" onclick="scanUniverses()">Scan Library</button>
-      <button class="btn btn-blue btn-sm" onclick="viewUniverses()">View Universes</button>
+      <button class="btn btn-blue btn-sm" onclick="viewUniverses()">View Lists</button>
       <div id="universeOutput" class="log-area" style="display:none; margin-top:12px;"></div>
     </div>
 
@@ -1289,9 +1289,14 @@ let _authPollInterval = null;
 let _authPollTimeout = null;
 
 async function startLink() {
-  const uid = document.getElementById('embyUserId').value;
-  const uname = document.getElementById('embyUsername').value;
-  if (!uid) return alert('Enter Emby User ID');
+  const uid = document.getElementById('embyUserId').value.trim();
+  const uname = document.getElementById('embyUsername').value.trim();
+  if (!uid) {
+    logTo('authOutput', 'Enter your Emby User ID first', 'err');
+    document.getElementById('embyUserId').style.border = '1px solid var(--red)';
+    return;
+  }
+  document.getElementById('embyUserId').style.border = '';
 
   // Cancel any previous poll loop
   if (_authPollInterval) { clearInterval(_authPollInterval); _authPollInterval = null; }
@@ -1306,7 +1311,10 @@ async function startLink() {
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      logTo('authOutput', `Failed to get device code: ${err.detail || r.status}`, 'err');
+      const msg = typeof err.detail === 'string' ? err.detail
+        : Array.isArray(err.detail) ? err.detail.map(e => e.msg || e).join('; ')
+        : `HTTP ${r.status}`;
+      logTo('authOutput', `Failed to get device code: ${msg}`, 'err');
       return;
     }
     const d = await r.json();
@@ -2049,7 +2057,7 @@ async function scanUniverses() {
 }
 
 async function viewUniverses() {
-  window.location.href = '/universes';
+  window.location.href = '/lists';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
