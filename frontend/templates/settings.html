@@ -1378,7 +1378,11 @@
 
     async function factoryReset() {
       try {
-        await fetch('/api/settings/factory-reset', { method: 'POST' });
+        await fetch('/api/settings/factory-reset', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({confirm: 'FACTORY_RESET'}),
+        });
         showNotification('Factory reset complete. Reloading...');
         setTimeout(() => location.reload(), 1000);
       } catch (error) {

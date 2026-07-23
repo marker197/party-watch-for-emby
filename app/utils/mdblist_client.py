@@ -175,6 +175,15 @@ class MDBListClient:
             "seconds_until_reset": max(0, self._rate_limit_reset - now),
         }
 
+    # -- Error sanitization ---------------------------------------------------
+
+    @staticmethod
+    def _sanitize_error(e: httpx.HTTPStatusError) -> httpx.HTTPStatusError:
+        """Remove API key from httpx error messages to prevent log leaks."""
+        import re as _re
+        sanitized_msg = _re.sub(r'apikey=[^&\s\'"]+', 'apikey=***', str(e))
+        return httpx.HTTPStatusError(sanitized_msg, request=e.request, response=e.response)
+
     # -- HTTP helpers -------------------------------------------------------
 
     async def _get(self, path: str, params: dict | None = None, max_retries: int = 3) -> Any:
@@ -217,7 +226,7 @@ class MDBListClient:
                 if 500 <= e.response.status_code < 600 and attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
-                raise
+                raise self._sanitize_error(e) from None
 
     async def _post(self, path: str, body: dict | None = None, max_retries: int = 3) -> Any:
         self._refresh_attempted = False
@@ -262,7 +271,7 @@ class MDBListClient:
                 if 500 <= e.response.status_code < 600 and attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
-                raise
+                raise self._sanitize_error(e) from None
 
     async def _patch(self, path: str, body: dict | None = None) -> Any:
         await self._ensure_token_valid()
@@ -271,7 +280,10 @@ class MDBListClient:
             json=body or {},
         )
         self._update_rate_limit(resp)
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise self._sanitize_error(e) from None
         if resp.status_code == 204:
             return {}
         return resp.json()
@@ -283,7 +295,10 @@ class MDBListClient:
             kwargs["json"] = body
         resp = await self._client.delete(path, **kwargs)
         self._update_rate_limit(resp)
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise self._sanitize_error(e) from None
         if resp.status_code == 204:
             return {}
         try:
@@ -605,19 +620,18 @@ class MDBListClient:
 
     async def scrobble_start(self, item_payload: dict, progress: float) -> dict:
         """Start/resume playback tracking.
-        item_payload: {"movie": {"ids": {"imdb": "tt..."}}} or
-                      {"show": {"ids": ...}, "episode": {"season": 1, "number": 2}}
+        item_payload: {"movie": {"ids": {"imdb": "tt..."}}}
         """
-        body = {**item_payload, "progress": progress}
+        body = {**item_payload, "progress": round(progress, 1), "app_version": "1.0.0"}
         return await self._post("/scrobble/start", body)
 
     async def scrobble_pause(self, item_payload: dict, progress: float) -> dict:
-        body = {**item_payload, "progress": progress}
+        body = {**item_payload, "progress": round(progress, 1), "app_version": "1.0.0"}
         return await self._post("/scrobble/pause", body)
 
     async def scrobble_stop(self, item_payload: dict, progress: float) -> dict:
         """Stop playback. If progress >= 80%, item marked as watched."""
-        body = {**item_payload, "progress": progress}
+        body = {**item_payload, "progress": round(progress, 1), "app_version": "1.0.0"}
         return await self._post("/scrobble/stop", body)
 
     async def scrobble_clear(self) -> dict:

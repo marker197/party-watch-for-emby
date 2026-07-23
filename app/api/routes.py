@@ -1651,12 +1651,29 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     # -- Helper: build MDBList scrobble payload --------------------------------
     def _build_mdblist_scrobble_payload():
         """Build MDBList-compatible scrobble payload from webhook item data.
-        MDBList uses the same structure as Trakt for scrobble endpoints."""
-        return _build_scrobble_payload()  # Same format
+        MDBList scrobble only supports movies (not episodes/shows).
+        MDBList only accepts these ID keys: imdb, tmdb, trakt, kitsu, mdblist.
+        Sending unsupported keys like 'tvdb' causes a 400 rejection.
+        """
+        if item_type_raw != "Movie":
+            return None  # MDBList scrobble API only supports movies
+
+        provider_ids = item_data.get("ProviderIds", {})
+        mdb_ids = {}
+        if provider_ids.get("Imdb"):
+            mdb_ids["imdb"] = provider_ids["Imdb"]
+        if provider_ids.get("Tmdb"):
+            mdb_ids["tmdb"] = int(provider_ids["Tmdb"])
+        # Note: tvdb is NOT supported by MDBList scrobble — omitted intentionally
+        if not mdb_ids:
+            return None
+        return {"movie": {"ids": mdb_ids}}
 
     # -- Helper: scrobble to MDBList (fire-and-forget, non-blocking) -----------
     async def _mdblist_scrobble(action: str, progress: float):
-        """Send a scrobble event to MDBList if enabled. Never raises."""
+        """Send a scrobble event to MDBList if enabled. Never raises.
+        Only fires for movies — MDBList's scrobble endpoint doesn't support TV.
+        """
         try:
             mdb = await _get_mdblist_client_for_scrobble()
             if not mdb:
@@ -1664,19 +1681,52 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             payload = _build_mdblist_scrobble_payload()
             if not payload:
                 return
+            log.debug("webhook.mdblist_scrobble_payload",
+                      action=action, progress=round(progress, 1),
+                      payload=payload, item_type=item_type_raw)
             try:
+                progress_pct = round(progress, 1)
+                pos_secs = _get_position_ticks() // 10000000
+                mm, ss = divmod(pos_secs, 60)
+                time_str = f"{mm}:{ss:02d}"
+
                 if action == "start":
                     await mdb.scrobble_start(payload, progress=progress)
+                    await _activity_log(f"📋 MDBList watching: {item_name}", category="trakt")
                 elif action == "pause":
                     await mdb.scrobble_pause(payload, progress=progress)
+                    await _activity_log(
+                        f"📋 MDBList paused: {item_name} at {time_str} ({progress_pct}%)",
+                        category="trakt",
+                    )
                 elif action == "stop":
                     result = await mdb.scrobble_stop(payload, progress=progress)
+                    await _activity_log(
+                        f"📋 MDBList stop: {item_name} ({progress_pct}%)",
+                        category="trakt",
+                    )
                     return result
-                await _activity_log(f"📋 MDBList {action}: {item_name}", category="trakt")
+                elif action == "resume":
+                    await mdb.scrobble_start(payload, progress=progress)
+                    await _activity_log(
+                        f"📋 MDBList resumed: {item_name} at {time_str} ({progress_pct}%)",
+                        category="trakt",
+                    )
             finally:
                 await mdb.close()
         except Exception as e:
-            log.warning(f"webhook.mdblist_scrobble_{action}_failed", error=str(e)[:120])
+            import re
+            err_str = re.sub(r'apikey=[^&\s\'"]+', 'apikey=***', str(e)[:200])
+            # Try to extract response body for 400 errors
+            resp_body = ""
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    resp_body = e.response.text[:200]
+                except Exception:
+                    pass
+            log.warning(f"webhook.mdblist_scrobble_{action}_failed",
+                        error=err_str, response_body=resp_body)
+            await _activity_log(f"⚠ MDBList {action} failed: {item_name}", category="trakt")
 
     # -- Helper: add to MDBList watched history --------------------------------
     async def _mdblist_add_to_history():
@@ -1719,7 +1769,15 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                             "seasons": [{"number": season_num, "episodes": [{"number": episode_num, "watched_at": watched_at}]}],
                         }],
                     )
-                await _activity_log(f"📋 MDBList watched: {item_name}", category="trakt")
+                if item_type_raw == "Movie":
+                    await _activity_log(f"✓ Synced to MDBList: {item_name} (movie)", category="trakt")
+                elif item_type_raw == "Episode":
+                    season_num = item_data.get("ParentIndexNumber", "?")
+                    episode_num = item_data.get("IndexNumber", "?")
+                    await _activity_log(
+                        f"✓ Synced to MDBList: {item_name} S{season_num}E{episode_num}",
+                        category="trakt",
+                    )
             finally:
                 await mdb.close()
         except Exception as e:
@@ -1895,7 +1953,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 log.warning("webhook.trakt_scrobble_resume_failed", error=str(e))
                 await _activity_log(f"⚠ Trakt resume failed: {item_name} — {str(e)[:80]}", category="trakt")
         # MDBList scrobble resume
-        await _mdblist_scrobble("start", _calc_progress())
+        await _mdblist_scrobble("resume", _calc_progress())
         return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
 
     # ── playback.stop / item.markplayed → Trakt watch history ───────────────
@@ -2812,7 +2870,7 @@ def _parse_db_url(url: str) -> tuple[str, str, str, str]:
     return user, password, host, dbname
 
 @router.post("/api/db/backup")
-async def create_db_backup():
+async def create_db_backup(_user: User = Depends(get_current_user)):
     """Create a pg_dump backup and return a download token."""
     import subprocess
     import uuid
@@ -2850,9 +2908,14 @@ async def create_db_backup():
 
 
 @router.get("/api/db/backup/{backup_id}")
-async def download_db_backup(backup_id: str):
+async def download_db_backup(backup_id: str, _user: User = Depends(get_current_user)):
     """Download a previously created backup file."""
+    import re
     from fastapi.responses import FileResponse
+
+    # SECURITY: backup_id must be hex-only (generated by uuid4().hex[:12])
+    if not re.fullmatch(r"[a-f0-9]{1,24}", backup_id):
+        raise HTTPException(400, "Invalid backup ID")
 
     filepath = f"/app/cache/backups/emby-trakt-backup-{backup_id}.sql"
     if not os.path.isfile(filepath):
@@ -2865,7 +2928,7 @@ async def download_db_backup(backup_id: str):
 
 
 @router.post("/api/db/restore")
-async def restore_db_backup(request: Request):
+async def restore_db_backup(request: Request, _user: User = Depends(get_current_user)):
     """Restore a database from an uploaded .sql backup.
 
     Accepts multipart form upload with field 'file'.
@@ -3358,7 +3421,7 @@ async def read_settings(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/api/settings")
-async def update_settings(request: SettingsRequest, db: AsyncSession = Depends(get_db)):
+async def update_settings(request: SettingsRequest, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Persist schedule settings to DB and reschedule live APScheduler jobs."""
     import json as _json
     from app.main import reschedule_job
@@ -3424,7 +3487,7 @@ async def test_connection(body: TestConnectionRequest):
 
 
 @router.post("/api/settings/reset-oauth")
-async def reset_oauth(db: AsyncSession = Depends(get_db)):
+async def reset_oauth(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Clear all stored Trakt OAuth tokens (users must re-link)."""
     users = (await db.execute(select(User))).scalars().all()
     for user in users:
@@ -3436,8 +3499,17 @@ async def reset_oauth(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/api/settings/factory-reset")
-async def factory_reset(db: AsyncSession = Depends(get_db)):
-    """Delete all users (cascades to ratings, predictions, queue) and clear the library cache."""
+async def factory_reset(request: Request, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
+    """Delete all users (cascades to ratings, predictions, queue) and clear the library cache.
+    Requires body: {"confirm": "FACTORY_RESET"}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if body.get("confirm") != "FACTORY_RESET":
+        raise HTTPException(400, "Confirmation required: send {\"confirm\": \"FACTORY_RESET\"}")
+
     from sqlalchemy import delete as sa_delete
     users = (await db.execute(select(User))).scalars().all()
     count = len(users)
@@ -3448,6 +3520,7 @@ async def factory_reset(db: AsyncSession = Depends(get_db)):
         await LibraryCache.clear()
     except Exception:
         pass
+    log.warning("security.factory_reset", users_deleted=count)
     return {"status": "ok", "message": f"Factory reset complete. Removed {count} user(s) and cleared cache."}
 
 
