@@ -188,6 +188,41 @@ async function runScan() {
   }
 }
 
+async function dismissHealthItem(type, id, btn) {
+  if (!currentUserId || !id) return;
+  btn.disabled = true;
+  btn.textContent = '⏳';
+  try {
+    const r = await fetch('/api/library-health/' + currentUserId + '/dismiss', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({type: type, id: id}),
+    });
+    if (r.ok) {
+      removeRowAndUpdateCount(btn);
+      showNotification('Item dismissed');
+    } else {
+      btn.textContent = '✕';
+      btn.disabled = false;
+    }
+  } catch(e) {
+    btn.textContent = '✕';
+    btn.disabled = false;
+  }
+}
+
+async function undismissAll() {
+  if (!currentUserId) return;
+  if (!confirm('Restore all dismissed items? They will reappear on the next scan.')) return;
+  try {
+    await fetch('/api/library-health/' + currentUserId + '/undismiss-all', {method:'POST'});
+    showNotification('All dismissed items restored — click Run Scan to refresh.');
+    loadReport();
+  } catch(e) {
+    showNotification('Failed to restore: ' + e.message);
+  }
+}
+
 function renderReport(data) {
   const s = data.summary || {};
 
@@ -196,7 +231,11 @@ function renderReport(data) {
   // Scan info
   if (data.scanned_at) {
     const d = new Date(data.scanned_at);
-    html += '<div style="color:var(--text-dim);font-size:0.8rem;margin-bottom:16px;">Scanned ' + d.toLocaleString() + ' · took ' + (s.scan_seconds || '?') + 's · ' + (s.total_issues || 0) + ' item' + (s.total_issues !== 1 ? 's' : '') + ' found</div>';
+    html += '<div style="display:flex;align-items:center;gap:12px;color:var(--text-dim);font-size:0.8rem;margin-bottom:16px;">'
+      + '<span>Scanned ' + d.toLocaleString() + ' · took ' + (s.scan_seconds || '?') + 's · ' + (s.total_issues || 0) + ' item' + (s.total_issues !== 1 ? 's' : '') + ' found</span>'
+      + '<button class="btn" style="background:none;border:1px solid var(--text-dim);color:var(--text-dim);padding:2px 10px;font-size:0.72rem;border-radius:4px;" '
+      + 'onclick="undismissAll()" title="Restore all previously dismissed items">Restore Dismissed</button>'
+      + '</div>';
   }
 
   // Summary stats
@@ -245,15 +284,19 @@ function renderMissing(title, items, type) {
   let html = '<div class="section"><h2>' + icon + ' ' + escapeHtml(title) + ' <span class="count">(' + items.length + ')</span></h2>';
   html += '<table class="item-table"><thead><tr><th>Title</th><th>Year</th>';
   if (type === 'show') html += '<th>Episodes</th>';
-  html += '<th>Last Watched</th><th></th></tr></thead><tbody>';
+  html += '<th>Last Watched</th><th></th><th></th></tr></thead><tbody>';
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
+    const itemId = it.imdb_id || it.tmdb_id || it.tvdb_id || it.trakt_id || '';
     const link = it.imdb_id ? '<a class="imdb-link" href="https://www.imdb.com/title/' + escapeHtml(it.imdb_id) + '/" target="_blank">' + escapeHtml(it.title) + '</a>' : escapeHtml(it.title);
     html += '<tr><td>' + link + '</td><td>' + (it.year || '') + '</td>';
     if (type === 'show') html += '<td>' + (it.episodes_watched || '') + '</td>';
     const lw = it.last_watched ? new Date(it.last_watched).toLocaleDateString() : '';
     html += '<td style="color:var(--text-dim);">' + lw + '</td>';
-    html += '<td>' + arrButton(type, it, 'miss-' + type + '-' + i) + '</td></tr>';
+    html += '<td>' + arrButton(type, it, 'miss-' + type + '-' + i) + '</td>';
+    html += '<td><button class="btn" style="background:none;border:1px solid var(--text-dim);color:var(--text-dim);padding:2px 6px;font-size:0.7rem;border-radius:4px;" '
+      + 'onclick="dismissHealthItem(\'' + type + '\',\'' + escapeHtml(String(itemId)) + '\',this)" title="Dismiss — hide from future reports">✕</button></td>';
+    html += '</tr>';
   }
   html += '</tbody></table></div>';
   return html;

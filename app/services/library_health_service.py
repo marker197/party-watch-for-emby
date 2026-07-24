@@ -37,11 +37,12 @@ class LibraryHealthService:
     """Async library health scanner."""
 
     async def get_report(self, user: User) -> dict:
-        """Return cached report or empty placeholder."""
+        """Return cached report or empty placeholder, with dismissed items filtered out."""
         r = await get_redis()
         raw = await r.get(f"{CACHE_KEY}:{user.id}")
         if raw:
-            return _json.loads(raw)
+            report = _json.loads(raw)
+            return await self._apply_dismissals(report, user.id)
         return {"status": "no_report", "message": "Run a scan first."}
 
     async def scan(self, user: User) -> dict:
@@ -336,6 +337,53 @@ class LibraryHealthService:
                 if match and match.get("emby_id"):
                     return True
         return False
+
+    async def _get_dismissed_set(self, user_id: int) -> set[tuple[str, str]]:
+        """Load the set of (type, id) pairs the user has dismissed from the DB."""
+        from app.models.schema import DismissedHealthItem
+        async with async_session() as db:
+            rows = (await db.execute(
+                select(DismissedHealthItem.item_type, DismissedHealthItem.item_id)
+                .where(DismissedHealthItem.user_id == user_id)
+            )).all()
+        return {(r[0], r[1]) for r in rows}
+
+    async def _apply_dismissals(self, report: dict, user_id: int) -> dict:
+        """Filter dismissed items from a cached report and recalculate summary counts."""
+        dismissed = await self._get_dismissed_set(user_id)
+        if not dismissed:
+            return report
+
+        def _item_id(item: dict) -> str:
+            """Return the best identifier for an item."""
+            for key in ("imdb_id", "tmdb_id", "tvdb_id", "trakt_id"):
+                v = item.get(key)
+                if v:
+                    return str(v)
+            return ""
+
+        wnl = report.get("watched_not_in_library", {})
+        movies = wnl.get("movies", [])
+        shows = wnl.get("shows", [])
+
+        movies = [m for m in movies if ("movie", _item_id(m)) not in dismissed]
+        shows = [s for s in shows if ("show", _item_id(s)) not in dismissed]
+
+        report["watched_not_in_library"]["movies"] = movies
+        report["watched_not_in_library"]["shows"] = shows
+
+        # Recalculate summary
+        if "summary" in report:
+            report["summary"]["movies_not_in_library"] = len(movies)
+            report["summary"]["shows_not_in_library"] = len(shows)
+            report["summary"]["total_issues"] = (
+                report["summary"].get("incomplete_series", 0)
+                + len(movies)
+                + len(shows)
+                + report["summary"].get("missing_sequels", 0)
+            )
+
+        return report
 
     async def _get_trakt_client(self, user: User) -> TraktClient | None:
         """Build an authenticated TraktClient with token refresh callback."""

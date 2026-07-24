@@ -326,6 +326,19 @@ class LibraryHealthReport(Base):
     user = relationship("User", foreign_keys=[user_id])
 
 
+class DismissedHealthItem(Base):
+    """Items dismissed from the Library Health 'watched not in library' report."""
+    __tablename__ = "dismissed_health_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    item_type = Column(String(16), nullable=False)   # 'movie' or 'show'
+    item_id = Column(String(64), nullable=False)      # imdb/tmdb/tvdb/trakt ID
+    dismissed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    user = relationship("User", foreign_keys=[user_id])
+
+
 # ---------------------------------------------------------------------------
 # Bulk Actions  (UI Feature)
 # ---------------------------------------------------------------------------

@@ -847,6 +847,36 @@ def _register_jobs():
     )
     log.info("scheduler.job_added", job="library_cache_rebuild", cron=cron)
 
+    # Library Health scan — weekly on Wednesdays at 4:30 AM
+    from app.services.library_health_service import LibraryHealthService
+    _lh_svc = LibraryHealthService()
+
+    async def _run_library_health_scan():
+        async def _do():
+            from app.utils.database import async_session as _async_session
+            async with _async_session() as db:
+                users = (await db.execute(
+                    select(User).where(User.trakt_access_token.isnot(None))
+                )).scalars().all()
+            for u in users:
+                try:
+                    await _lh_svc.scan(u)
+                    log.info("scheduler.library_health_scanned", user_id=u.id)
+                except Exception as e:
+                    log.warning("scheduler.library_health_failed",
+                                user_id=u.id, error=str(e)[:120])
+        await _tracked_job("library_health_scan", _do)
+
+    lh_cron = "30 4 * * 3"
+    _job_crons["library_health_scan"] = lh_cron
+    scheduler.add_job(
+        _run_library_health_scan,
+        CronTrigger(hour=4, minute=30, day_of_week="3"),
+        id="library_health_scan",
+        replace_existing=True,
+    )
+    log.info("scheduler.job_added", job="library_health_scan", cron=lh_cron)
+
     # SSL certificate check — daily at 6 AM (only runs if SSL_DOMAIN is set)
     if settings.ssl_domain:
         async def check_ssl_certificate():

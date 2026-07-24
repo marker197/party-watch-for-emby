@@ -4311,8 +4311,9 @@ async def get_availability():
                 for series in all_series:
                     if not series.get("monitored", False):
                         continue
-                    ep_file_count = series.get("episodeFileCount", 0)
-                    ep_count = series.get("episodeCount", 0)
+                    stats = series.get("statistics") or {}
+                    ep_file_count = stats.get("episodeFileCount", 0)
+                    ep_count = stats.get("episodeCount", 0)
                     tvdb_id = series.get("tvdbId")
 
                     if ep_count == 0:
@@ -4336,7 +4337,7 @@ async def get_availability():
                         "episodes_on_disk": ep_file_count,
                         "episodes_total": ep_count,
                         "server": srv.get("name", "Sonarr"),
-                        "size_on_disk": series.get("sizeOnDisk", 0),
+                        "size_on_disk": stats.get("sizeOnDisk", 0) or series.get("sizeOnDisk", 0),
                     })
             except Exception as e:
                 any_server_failed = True
@@ -6164,8 +6165,9 @@ async def get_recently_arrived():
                     tvdb_id = str(series.get("tvdbId", ""))
                     if not tvdb_id:
                         continue
-                    ep_file_count = series.get("episodeFileCount", 0)
-                    ep_count = series.get("episodeCount", 0)
+                    stats = series.get("statistics") or {}
+                    ep_file_count = stats.get("episodeFileCount", 0)
+                    ep_count = stats.get("episodeCount", 0)
                     if ep_count == 0:
                         continue
                     fully_available = ep_file_count >= ep_count
@@ -6631,6 +6633,78 @@ async def scan_library_health(
     if not user:
         raise HTTPException(404, "User not found")
     return await _library_health_svc.scan(user)
+
+
+@router.post("/api/library-health/{user_id}/dismiss")
+async def dismiss_library_health_item(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dismiss a 'watched not in library' item so it no longer appears in reports."""
+    from app.models.schema import DismissedHealthItem
+    require_user_ownership(current_user.id, user_id, "library_health")
+    body = await request.json()
+    item_type = body.get("type", "")  # "movie" or "show"
+    item_id = str(body.get("id", ""))  # imdb/tmdb/tvdb/trakt ID
+    if not item_id or not item_type:
+        raise HTTPException(400, "type and id required")
+
+    # Upsert: only insert if not already dismissed
+    existing = (await db.execute(
+        select(DismissedHealthItem).where(
+            DismissedHealthItem.user_id == user_id,
+            DismissedHealthItem.item_type == item_type,
+            DismissedHealthItem.item_id == item_id,
+        )
+    )).scalar_one_or_none()
+    if not existing:
+        db.add(DismissedHealthItem(user_id=user_id, item_type=item_type, item_id=item_id))
+        await db.commit()
+
+    count = (await db.execute(
+        select(func.count()).select_from(DismissedHealthItem).where(
+            DismissedHealthItem.user_id == user_id
+        )
+    )).scalar()
+    return {"status": "dismissed", "total_dismissed": count}
+
+
+@router.get("/api/library-health/{user_id}/dismissed")
+async def get_dismissed_library_health_items(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the list of dismissed library health items for a user."""
+    from app.models.schema import DismissedHealthItem
+    require_user_ownership(current_user.id, user_id, "library_health")
+    rows = (await db.execute(
+        select(DismissedHealthItem).where(DismissedHealthItem.user_id == user_id)
+    )).scalars().all()
+    return {"dismissed": [
+        {"type": r.item_type, "id": r.item_id, "dismissed_at": r.dismissed_at.isoformat() if r.dismissed_at else None}
+        for r in rows
+    ]}
+
+
+@router.post("/api/library-health/{user_id}/undismiss-all")
+async def undismiss_all_library_health(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clear all dismissed library health items for a user."""
+    from app.models.schema import DismissedHealthItem
+    require_user_ownership(current_user.id, user_id, "library_health")
+    await db.execute(
+        DismissedHealthItem.__table__.delete().where(
+            DismissedHealthItem.user_id == user_id
+        )
+    )
+    await db.commit()
+    return {"status": "cleared"}
 
 
 # ---------------------------------------------------------------------------
