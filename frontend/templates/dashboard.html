@@ -927,8 +927,11 @@
 
   <!-- Scheduler status -->
   <div style="margin-bottom:24px;">
-    <h3 style="margin-bottom:8px; font-size:0.95rem;">⏱️ Scheduler</h3>
-    <div id="schedulerGrid" class="cache-stats">>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+      <h3 style="margin:0;font-size:0.95rem;">⏱️ Scheduler</h3>
+      <button class="btn btn-sm" id="btnToggleSched" style="background:var(--surface-hover);font-size:0.72rem;padding:3px 10px;" onclick="toggleScheduler()">Show ▾</button>
+    </div>
+    <div id="schedulerGrid" class="cache-stats" style="display:none;">
       <div class="cache-stat"><span class="label">Loading…</span><span class="value" style="font-size:0.88rem;">—</span></div>
     </div>
   </div>
@@ -1100,6 +1103,21 @@ function cronToHuman(cron) {
   return `${dayName} ${hh}:${mm} UTC`;
 }
 
+let _schedLoaded = false;
+
+function toggleScheduler() {
+  const grid = document.getElementById('schedulerGrid');
+  const btn = document.getElementById('btnToggleSched');
+  if (grid.style.display === 'none') {
+    grid.style.display = '';
+    btn.textContent = 'Hide ▴';
+    if (!_schedLoaded) loadSchedulerStatus();
+  } else {
+    grid.style.display = 'none';
+    btn.textContent = 'Show ▾';
+  }
+}
+
 async function loadSchedulerStatus() {
   try {
     const r = await fetch(API + '/api/scheduler/status');
@@ -1124,9 +1142,9 @@ async function loadSchedulerStatus() {
       watchlist_sync: '🔄 Watchlist Sync',
     };
 
-    grid.style.display = 'grid';
     grid.style.gridTemplateColumns = 'repeat(4, 1fr)';
     grid.style.gap = '6px';
+    _schedLoaded = true;
 
     grid.innerHTML = entries.map(([id, j]) => {
       const label = labels[id] || id.replace(/_/g, ' ');
@@ -3213,13 +3231,12 @@ function init() {
   dashboardPoll();
   loadUsers().then(scheduleTokenRefresh);
   loadParties();
-  loadSchedulerStatus();
   loadSSLStatus();
   _loadArrServers();
   refreshDownloadsCard();
   setInterval(dashboardPoll, 30000); // consolidated: health + activity + job completions
   setInterval(loadParties, 60000);
-  setInterval(loadSchedulerStatus, 60000);
+  setInterval(() => { if (_schedLoaded) loadSchedulerStatus(); }, 60000);
   setInterval(loadSSLStatus, 300000);
   // Downloads card: poll every 5s only when features panel is expanded AND not in realtime mode
   setInterval(() => {
