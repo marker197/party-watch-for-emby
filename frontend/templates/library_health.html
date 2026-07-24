@@ -403,6 +403,15 @@ function removeRowAndUpdateCount(btn) {
   }
 }
 
+function autoDismiss(type, id) {
+  if (!currentUserId || !id) return;
+  fetch('/api/library-health/' + currentUserId + '/dismiss', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({type: type, id: id}),
+  }).catch(function() {});
+}
+
 function showNotification(msg) {
   const el = document.getElementById('scanStatus');
   if (el) el.textContent = msg;
@@ -428,6 +437,7 @@ async function sendToRadarr(btnId, tmdbId, imdbId, title, year, serverIdx) {
       btn.textContent = '✓ Sent';
       btn.style.background = 'var(--green)';
       showNotification(title + ' sent to ' + (_radarrServers[serverIdx]?.name || 'Radarr'));
+      autoDismiss('movie', imdbId || String(tmdbId || ''));
       removeRowAndUpdateCount(btn);
     } else {
       const reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Failed';
@@ -461,6 +471,7 @@ async function sendToSonarr(btnId, tvdbId, imdbId, title, year, serverIdx) {
       btn.textContent = '✓ Sent';
       btn.style.background = 'var(--green)';
       showNotification(title + ' sent to ' + (_sonarrServers[serverIdx]?.name || 'Sonarr'));
+      autoDismiss('show', imdbId || String(tvdbId || ''));
       removeRowAndUpdateCount(btn);
     } else {
       const reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Failed';
