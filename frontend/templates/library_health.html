@@ -216,7 +216,7 @@ function renderReport(data) {
   html += statBox(s.incomplete_series || 0, 'Incomplete Series');
   html += statBox(s.movies_not_in_library || 0, 'Watched Movies Missing');
   html += statBox(s.shows_not_in_library || 0, 'Watched Shows Missing');
-  html += statBox(s.missing_sequels || 0, 'Missing Sequels');
+  html += statBox(s.missing_sequels || 0, 'Missing Related');
   html += '</div>';
 
   // Sections
@@ -235,11 +235,9 @@ function statBox(val, label) {
 function renderIncomplete(items) {
   if (!items.length) return '<div class="section"><h2>📺 Incomplete Series <span class="count">(0)</span></h2><div class="empty">All series fully watched!</div></div>';
 
-  const MAX = 20;
-  const show = items.slice(0, MAX);
   let html = '<div class="section"><h2>📺 Incomplete Series <span class="count">(' + items.length + ')</span></h2>';
   html += '<table class="item-table"><thead><tr><th>Title</th><th>Progress</th><th>Played</th><th>Remaining</th></tr></thead><tbody>';
-  for (const it of show) {
+  for (const it of items) {
     const pct = it.completion_pct || 0;
     const barClass = pct < 30 ? 'low' : pct < 70 ? 'mid' : '';
     const link = it.imdb_id ? '<a class="imdb-link" href="https://www.imdb.com/title/' + escapeHtml(it.imdb_id) + '/" target="_blank">' + escapeHtml(it.title) + '</a>' : escapeHtml(it.title);
@@ -248,9 +246,7 @@ function renderIncomplete(items) {
     html += '<td>' + (it.played_episodes || 0) + '</td>';
     html += '<td>' + (it.unplayed_episodes || 0) + ' eps</td></tr>';
   }
-  html += '</tbody></table>';
-  if (items.length > MAX) html += '<div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">…and ' + (items.length - MAX) + ' more</div>';
-  html += '</div>';
+  html += '</tbody></table></div>';
   return html;
 }
 
@@ -258,45 +254,165 @@ function renderMissing(title, items, type) {
   const icon = type === 'movie' ? '🎬' : '📺';
   if (!items.length) return '<div class="section"><h2>' + icon + ' ' + title + ' <span class="count">(0)</span></h2><div class="empty">Everything in sync!</div></div>';
 
-  const MAX = 30;
-  const show = items.slice(0, MAX);
   let html = '<div class="section"><h2>' + icon + ' ' + escapeHtml(title) + ' <span class="count">(' + items.length + ')</span></h2>';
   html += '<table class="item-table"><thead><tr><th>Title</th><th>Year</th>';
   if (type === 'show') html += '<th>Episodes</th>';
-  html += '<th>Last Watched</th></tr></thead><tbody>';
-  for (const it of show) {
+  html += '<th>Last Watched</th><th></th></tr></thead><tbody>';
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
     const link = it.imdb_id ? '<a class="imdb-link" href="https://www.imdb.com/title/' + escapeHtml(it.imdb_id) + '/" target="_blank">' + escapeHtml(it.title) + '</a>' : escapeHtml(it.title);
     html += '<tr><td>' + link + '</td><td>' + (it.year || '') + '</td>';
     if (type === 'show') html += '<td>' + (it.episodes_watched || '') + '</td>';
     const lw = it.last_watched ? new Date(it.last_watched).toLocaleDateString() : '';
-    html += '<td style="color:var(--text-dim);">' + lw + '</td></tr>';
+    html += '<td style="color:var(--text-dim);">' + lw + '</td>';
+    html += '<td>' + arrButton(type, it, 'miss-' + type + '-' + i) + '</td></tr>';
   }
-  html += '</tbody></table>';
-  if (items.length > MAX) html += '<div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">…and ' + (items.length - MAX) + ' more</div>';
-  html += '</div>';
+  html += '</tbody></table></div>';
   return html;
 }
 
 function renderSequels(items) {
-  if (!items.length) return '<div class="section"><h2>🔗 Missing Sequels <span class="count">(0)</span></h2><div class="empty">No missing related movies found!</div></div>';
+  if (!items.length) return '<div class="section"><h2>🔗 Trakt Suggestions <span class="count">(0)</span></h2><div class="empty">No missing related movies found!</div></div>';
 
-  const MAX = 25;
-  const show = items.slice(0, MAX);
-  let html = '<div class="section"><h2>🔗 Missing Sequels & Related <span class="count">(' + items.length + ')</span></h2>';
-  html += '<table class="item-table"><thead><tr><th>Missing Title</th><th>Year</th><th>Related To</th><th>Your Rating</th></tr></thead><tbody>';
-  for (const it of show) {
+  let html = '<div class="section"><h2>🔗 Trakt Suggestions <span class="count">(' + items.length + ')</span></h2>';
+  html += '<table class="item-table"><thead><tr><th>Missing Title</th><th>Year</th><th>Related To</th><th>Your Rating</th><th></th></tr></thead><tbody>';
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
     const link = it.imdb_id ? '<a class="imdb-link" href="https://www.imdb.com/title/' + escapeHtml(it.imdb_id) + '/" target="_blank">' + escapeHtml(it.title) + '</a>' : escapeHtml(it.title);
     html += '<tr><td>' + link + '</td><td>' + (it.year || '') + '</td>';
     html += '<td>' + escapeHtml(it.related_to || '') + '</td>';
-    html += '<td><span class="badge badge-rating">★ ' + (it.your_rating || '?') + '</span></td></tr>';
+    html += '<td><span class="badge badge-rating">★ ' + (it.your_rating || '?') + '</span></td>';
+    html += '<td>' + arrButton('movie', it, 'seq-' + i) + '</td></tr>';
   }
-  html += '</tbody></table>';
-  if (items.length > MAX) html += '<div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">…and ' + (items.length - MAX) + ' more</div>';
-  html += '</div>';
+  html += '</tbody></table></div>';
   return html;
 }
 
-loadUsers();
+let _radarrServers = [];
+let _sonarrServers = [];
+
+async function _loadArrServers() {
+  try {
+    const [rr, sr] = await Promise.all([
+      fetch('/api/radarr/servers').then(r => r.json()),
+      fetch('/api/sonarr/servers').then(r => r.json()),
+    ]);
+    _radarrServers = rr.servers || [];
+    _sonarrServers = sr.servers || [];
+  } catch(e) { /* silent */ }
+}
+
+function arrButton(type, item, prefix) {
+  const id = prefix + '-0';
+  const safeTitle = escapeHtml((item.title || '').replace(/'/g, ''));
+  if (type === 'movie') {
+    const tmdbId = item.tmdb_id || '';
+    const imdbId = item.imdb_id || '';
+    if (!tmdbId && !imdbId) return '';
+    if (_radarrServers.length > 1) {
+      const opts = _radarrServers.map(function(s, si) {
+        return '<option value="' + si + '">' + escapeHtml(s.quality_profile_name || s.name || ('Server ' + (si+1))) + '</option>';
+      }).join('');
+      return '<span style="display:inline-flex;align-items:center;gap:2px;">'
+        + '<select id="radarr-sel-' + prefix + '" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--red);border-radius:5px;padding:1px 2px;font-size:0.65rem;max-width:80px;">' + opts + '</select>'
+        + '<button id="' + id + '" class="btn" style="background:var(--accent);color:#fff;padding:3px 8px;font-size:0.72rem;" '
+        + 'onclick="sendToRadarr(\'' + id + '\',' + (tmdbId || 'null') + ',\'' + escapeHtml(imdbId) + '\',\'' + safeTitle + '\',' + (item.year||'null')
+        + ',parseInt(document.getElementById(\'radarr-sel-' + prefix + '\').value))">📥</button></span>';
+    }
+    return '<button id="' + id + '" class="btn" style="background:var(--accent);color:#fff;padding:3px 10px;font-size:0.72rem;" '
+      + 'onclick="sendToRadarr(\'' + id + '\',' + (tmdbId || 'null') + ',\'' + escapeHtml(imdbId) + '\',\'' + safeTitle + '\',' + (item.year||'null') + ',0)">'
+      + '📥 Radarr</button>';
+  } else {
+    const tvdbId = item.tvdb_id || '';
+    const imdbId = item.imdb_id || '';
+    if (!tvdbId && !imdbId) return '';
+    if (_sonarrServers.length > 1) {
+      const opts = _sonarrServers.map(function(s, si) {
+        return '<option value="' + si + '">' + escapeHtml(s.quality_profile_name || s.name || ('Server ' + (si+1))) + '</option>';
+      }).join('');
+      return '<span style="display:inline-flex;align-items:center;gap:2px;">'
+        + '<select id="sonarr-sel-' + prefix + '" style="background:var(--surface-hover);color:var(--text);border:1px solid #6366f1;border-radius:5px;padding:1px 2px;font-size:0.65rem;max-width:80px;">' + opts + '</select>'
+        + '<button id="' + id + '" class="btn" style="background:#6c5ce7;color:#fff;padding:3px 8px;font-size:0.72rem;" '
+        + 'onclick="sendToSonarr(\'' + id + '\',' + (tvdbId || 'null') + ',\'' + escapeHtml(imdbId) + '\',\'' + safeTitle + '\',' + (item.year||'null')
+        + ',parseInt(document.getElementById(\'sonarr-sel-' + prefix + '\').value))">📥</button></span>';
+    }
+    return '<button id="' + id + '" class="btn" style="background:#6c5ce7;color:#fff;padding:3px 10px;font-size:0.72rem;" '
+      + 'onclick="sendToSonarr(\'' + id + '\',' + (tvdbId || 'null') + ',\'' + escapeHtml(imdbId) + '\',\'' + safeTitle + '\',' + (item.year||'null') + ',0)">'
+      + '📥 Sonarr</button>';
+  }
+}
+
+function showNotification(msg) {
+  const el = document.getElementById('scanStatus');
+  if (el) el.textContent = msg;
+  setTimeout(() => { if (el) el.textContent = ''; }, 4000);
+}
+
+async function sendToRadarr(btnId, tmdbId, imdbId, title, year, serverIdx) {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = '⏳';
+  try {
+    const r = await fetch('/api/radarr/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        server_index: serverIdx || 0,
+        movies: [{ tmdb_id: tmdbId, imdb_id: imdbId || undefined, title: title, year: year || undefined }]
+      })
+    });
+    const d = await r.json();
+    if (r.ok && d.added > 0) {
+      btn.textContent = '✓ Sent';
+      btn.style.background = 'var(--green)';
+      showNotification(title + ' sent to ' + (_radarrServers[serverIdx]?.name || 'Radarr'));
+    } else {
+      const reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Failed';
+      btn.textContent = '✗';
+      btn.style.background = 'var(--red)';
+      showNotification('Radarr: ' + reason);
+    }
+  } catch(e) {
+    btn.textContent = '✗';
+    btn.style.background = 'var(--red)';
+    showNotification('Radarr error: ' + e.message);
+  }
+}
+
+async function sendToSonarr(btnId, tvdbId, imdbId, title, year, serverIdx) {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = '⏳';
+  try {
+    const r = await fetch('/api/sonarr/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        server_index: serverIdx || 0,
+        shows: [{ tvdb_id: tvdbId || undefined, imdb_id: imdbId || undefined, title: title, year: year || undefined }]
+      })
+    });
+    const d = await r.json();
+    if (r.ok && d.added > 0) {
+      btn.textContent = '✓ Sent';
+      btn.style.background = 'var(--green)';
+      showNotification(title + ' sent to ' + (_sonarrServers[serverIdx]?.name || 'Sonarr'));
+    } else {
+      const reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Failed';
+      btn.textContent = '✗';
+      btn.style.background = 'var(--red)';
+      showNotification('Sonarr: ' + reason);
+    }
+  } catch(e) {
+    btn.textContent = '✗';
+    btn.style.background = 'var(--red)';
+    showNotification('Sonarr error: ' + e.message);
+  }
+}
+
+_loadArrServers().then(() => loadUsers());
 </script>
 </body>
 </html>
