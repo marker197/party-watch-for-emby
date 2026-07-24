@@ -126,7 +126,7 @@ async def get_integration_provider(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/api/integration-provider")
-async def set_integration_provider(payload: dict, db: AsyncSession = Depends(get_db)):
+async def set_integration_provider(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Set the integration provider: 'trakt', 'mdblist', 'both', or 'none'."""
     provider = payload.get("provider", "").strip().lower()
     if provider not in VALID_PROVIDERS:
@@ -391,7 +391,7 @@ async def list_all_emby_users(db: AsyncSession = Depends(get_db)):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post("/queue/refresh")
-async def refresh_queue():
+async def refresh_queue(_user: User = Depends(get_current_user)):
     """Manually trigger a Smart Queue update for all users."""
     asyncio.create_task(smart_queue_svc.run_for_all_users())
     return {"status": "refresh_started"}
@@ -864,7 +864,7 @@ async def scrobble_undismiss(
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post("/universes/scan")
-async def scan_universes():
+async def scan_universes(_user: User = Depends(get_current_user)):
     """Trigger a full universe scan."""
     asyncio.create_task(universe_svc.run_scan())
     return {"status": "scan_started"}
@@ -876,7 +876,7 @@ async def list_universes():
 
 
 @router.post("/api/universes")
-async def create_universe(payload: dict):
+async def create_universe(payload: dict, _user: User = Depends(get_current_user)):
     """Create a new custom universe.
 
     Payload: {"name": "...", "description": "..."}
@@ -923,7 +923,7 @@ async def create_universe(payload: dict):
 
 
 @router.delete("/api/universes/{universe_id}")
-async def delete_universe(universe_id: int):
+async def delete_universe(universe_id: int, _user: User = Depends(get_current_user)):
     """Delete an entire universe and all its items."""
     async with async_session_ctx() as db:
         universe = (await db.execute(
@@ -939,7 +939,7 @@ async def delete_universe(universe_id: int):
 
 
 @router.put("/api/universes/{universe_id}/settings")
-async def update_universe_settings(universe_id: int, payload: dict):
+async def update_universe_settings(universe_id: int, payload: dict, _user: User = Depends(get_current_user)):
     """Update universe display settings (playlist toggle, custom name, description).
 
     Payload: {"playlist_enabled": bool, "custom_name": str|null, "description": str|null}
@@ -1036,7 +1036,7 @@ async def export_universes():
 
 
 @router.post("/api/universes/import")
-async def import_universes(request: Request):
+async def import_universes(request: Request, _user: User = Depends(get_current_user)):
     """Import universes from JSON. Skips universes that already exist (by slug).
 
     Accepts either raw JSON body or multipart form upload with field 'file'.
@@ -1114,7 +1114,7 @@ async def import_universes(request: Request):
 
 
 @router.post("/api/universes/{universe_id}/reorder")
-async def reorder_universe(universe_id: int, payload: dict):
+async def reorder_universe(universe_id: int, payload: dict, _user: User = Depends(get_current_user)):
     """Reorder items within a universe, persist to DB, and recreate Emby playlist.
 
     Payload: {"item_ids": [db_item_id_1, db_item_id_2, ...]}
@@ -1176,7 +1176,7 @@ async def reorder_universe(universe_id: int, payload: dict):
 
 
 @router.post("/api/universes/{universe_id}/items")
-async def add_universe_item(universe_id: int, payload: dict):
+async def add_universe_item(universe_id: int, payload: dict, _user: User = Depends(get_current_user)):
     """Add a custom item to a universe.
 
     Payload: {"title": "...", "year": 2024, "imdb_id": "tt1234567", "item_type": "movie"}
@@ -1233,7 +1233,7 @@ async def add_universe_item(universe_id: int, payload: dict):
 
 
 @router.delete("/api/universes/{universe_id}/items/{item_id}")
-async def remove_universe_item(universe_id: int, item_id: int):
+async def remove_universe_item(universe_id: int, item_id: int, _user: User = Depends(get_current_user)):
     """Remove a custom item from a universe."""
     async with async_session_ctx() as db:
         item = (await db.execute(
@@ -1271,6 +1271,7 @@ async def get_auto_discover_setting(db: AsyncSession = Depends(get_db)):
 async def set_auto_discover_setting(
     payload: dict,
     db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """Set auto-discovery to 'enabled' or 'disabled'."""
     enabled = payload.get("enabled", False)
@@ -1295,7 +1296,7 @@ class JoinPartyRequest(BaseModel):
 
 
 @router.post("/party/create")
-async def create_party(body: CreatePartyRequest):
+async def create_party(body: CreatePartyRequest, _user: User = Depends(get_current_user)):
     try:
         return await watch_party_svc.create_party(body.host_user_id, body.emby_item_id)
     except ValueError as e:
@@ -1303,7 +1304,7 @@ async def create_party(body: CreatePartyRequest):
 
 
 @router.post("/party/join")
-async def join_party(body: JoinPartyRequest):
+async def join_party(body: JoinPartyRequest, _user: User = Depends(get_current_user)):
     result = await watch_party_svc.join_party(body.code, body.user_id)
     if not result:
         raise HTTPException(404, "Party not found or has ended")
@@ -1311,13 +1312,13 @@ async def join_party(body: JoinPartyRequest):
 
 
 @router.post("/party/{code}/end")
-async def end_party(code: str):
+async def end_party(code: str, _user: User = Depends(get_current_user)):
     await watch_party_svc.end_party(code)
     return {"status": "ended"}
 
 
 @router.post("/party/{code}/start")
-async def start_party_playback(code: str):
+async def start_party_playback(code: str, _user: User = Depends(get_current_user)):
     """Start playback on all participants' Emby sessions simultaneously."""
     return await watch_party_svc.start_playback(code)
 
@@ -1329,7 +1330,7 @@ async def list_party_sessions(code: str):
 
 
 @router.post("/party/{code}/start-selected")
-async def start_selected_playback(code: str, payload: dict):
+async def start_selected_playback(code: str, payload: dict, _user: User = Depends(get_current_user)):
     """Start playback on specific devices only.
 
     Payload: {"session_ids": ["sid1", "sid2"], "emby_item_id": "optional_override",
@@ -1346,13 +1347,13 @@ async def start_selected_playback(code: str, payload: dict):
 
 
 @router.post("/party/{code}/pause")
-async def pause_party_playback(code: str):
+async def pause_party_playback(code: str, _user: User = Depends(get_current_user)):
     """Toggle pause/play on all participants' Emby sessions."""
     return await watch_party_svc.pause_all(code)
 
 
 @router.post("/party/{code}/seek")
-async def seek_party_playback(code: str, payload: dict):
+async def seek_party_playback(code: str, payload: dict, _user: User = Depends(get_current_user)):
     """Seek all participants to a specific position.
 
     Payload: {"position_ticks": int}
@@ -1366,7 +1367,7 @@ async def seek_party_playback(code: str, payload: dict):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post("/party/{code}/pick-together")
-async def start_pick_together(code: str, payload: dict = None, db: AsyncSession = Depends(get_db)):
+async def start_pick_together(code: str, payload: dict = None, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Start a Pick Together voting round for a watch party.
 
     Pulls top candidates from each participant's smart queue (in-library only),
@@ -1467,7 +1468,7 @@ async def get_pick_status(code: str):
 
 
 @router.post("/party/{code}/vote")
-async def cast_vote(code: str, payload: dict):
+async def cast_vote(code: str, payload: dict, _user: User = Depends(get_current_user)):
     """Cast a vote for a candidate.
 
     Payload: {"candidate_idx": 0, "user_id": 1}
@@ -1515,7 +1516,7 @@ async def cast_vote(code: str, payload: dict):
 
 
 @router.post("/party/{code}/pick-winner")
-async def confirm_pick_winner(code: str, payload: dict = None):
+async def confirm_pick_winner(code: str, payload: dict = None, _user: User = Depends(get_current_user)):
     """Host confirms the winner (auto-selects top vote, or override).
 
     Payload: {"winner_idx": 0}  (optional — defaults to highest vote)
@@ -1591,7 +1592,7 @@ async def confirm_pick_winner(code: str, payload: dict = None):
 
 
 @router.post("/party/{code}/start-with-countdown")
-async def start_with_countdown(code: str, payload: dict):
+async def start_with_countdown(code: str, payload: dict, _user: User = Depends(get_current_user)):
     """Start playback on selected devices after a 20-second countdown.
 
     Payload: {"session_ids": ["sid1", "sid2"]}
@@ -1641,7 +1642,7 @@ async def start_with_countdown(code: str, payload: dict):
 
 
 @router.post("/api/pick-together/solo")
-async def solo_pick_together(payload: dict, db: AsyncSession = Depends(get_db)):
+async def solo_pick_together(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Standalone Pick Together (no party needed).
 
     For in-the-room use: pulls candidates from a user's queue for group
@@ -2940,7 +2941,7 @@ async def _check_ssl_cert(domain: str) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post("/cache/rebuild")
-async def rebuild_cache():
+async def rebuild_cache(_user: User = Depends(get_current_user)):
     """Manually trigger library cache rebuild."""
     async with EmbyClient() as emby:
         uid = await _first_emby_user_id()
@@ -2954,7 +2955,7 @@ async def cache_stats():
 
 
 @router.post("/cache/clear")
-async def clear_cache():
+async def clear_cache(_user: User = Depends(get_current_user)):
     return await LibraryCache.clear()
 
 
@@ -3134,7 +3135,7 @@ async def get_bias_page():
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post("/bias/analyze/{user_id}")
-async def analyze_bias(user_id: int, db: AsyncSession = Depends(get_db)):
+async def analyze_bias(user_id: int, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Trigger bias analysis for a user."""
     user = (await db.execute(
         select(User).where(User.id == user_id)
@@ -3259,19 +3260,82 @@ async def download_db_backup(backup_id: str, _user: User = Depends(get_current_u
 async def restore_db_backup(request: Request, _user: User = Depends(get_current_user)):
     """Restore a database from an uploaded .sql backup.
 
-    Accepts multipart form upload with field 'file'.
+    Accepts multipart form upload with fields:
+      - 'file': the .sql backup file (max 50 MB)
+      - 'confirm': must be the string "RESTORE" to proceed
+
     WARNING: This overwrites all current data.
     """
     import subprocess
+    import re as _re
+
+    MAX_RESTORE_SIZE = 50 * 1024 * 1024  # 50 MB
 
     form = await request.form()
+
+    # Require explicit confirmation
+    confirm = form.get("confirm", "")
+    if confirm != "RESTORE":
+        raise HTTPException(400, "Confirmation required: include form field confirm=RESTORE")
+
     upload = form.get("file")
     if not upload:
         raise HTTPException(400, "No file uploaded")
 
+    # Validate filename extension
+    filename = getattr(upload, "filename", "") or ""
+    if not filename.lower().endswith(".sql"):
+        raise HTTPException(400, "Only .sql files are accepted")
+
+    # Read with size limit — stream in chunks to avoid OOM
+    chunks = []
+    total_size = 0
+    while True:
+        chunk = await upload.read(1024 * 64)  # 64 KB chunks
+        if not chunk:
+            break
+        total_size += len(chunk)
+        if total_size > MAX_RESTORE_SIZE:
+            raise HTTPException(413, f"File too large — maximum {MAX_RESTORE_SIZE // (1024*1024)} MB")
+        chunks.append(chunk)
+
+    contents = b"".join(chunks)
+
+    if total_size == 0:
+        raise HTTPException(400, "Uploaded file is empty")
+
+    # Basic content validation — must look like a pg_dump SQL file
+    # Check first 4 KB for SQL-like content
+    head = contents[:4096].decode("utf-8", errors="replace")
+
+    # Reject if it looks like binary (not text)
+    non_printable = sum(1 for c in head if ord(c) < 32 and c not in '\n\r\t')
+    if non_printable > len(head) * 0.1:
+        raise HTTPException(400, "File does not appear to be a text SQL file")
+
+    # Must contain at least one pg_dump indicator
+    pg_dump_markers = ("pg_dump", "SET statement_timeout", "CREATE TABLE", "COPY ", "INSERT INTO", "ALTER TABLE")
+    has_marker = any(marker in head for marker in pg_dump_markers)
+    if not has_marker:
+        raise HTTPException(400, "File does not appear to be a valid pg_dump backup — no recognisable SQL statements found")
+
+    # Reject dangerous statements that shouldn't be in a data restore
+    dangerous_patterns = [
+        r'\bCREATE\s+ROLE\b', r'\bCREATE\s+USER\b', r'\bALTER\s+ROLE\b',
+        r'\bDROP\s+DATABASE\b', r'\bCREATE\s+DATABASE\b',
+        r'\bCOPY\b.*\bFROM\s+PROGRAM\b', r'\bCREATE\s+EXTENSION\b.*\buntrusted\b',
+    ]
+    full_text = contents.decode("utf-8", errors="replace")
+    for pat in dangerous_patterns:
+        if _re.search(pat, full_text, _re.IGNORECASE):
+            raise HTTPException(
+                400,
+                f"File contains disallowed SQL statement matching: {pat} — "
+                "only data restore files from this application's pg_dump are accepted",
+            )
+
     restore_path = "/app/cache/backups/restore_upload.sql"
     os.makedirs("/app/cache/backups", exist_ok=True)
-    contents = await upload.read()
     with open(restore_path, "wb") as f:
         f.write(contents)
 
@@ -3293,6 +3357,7 @@ async def restore_db_backup(request: Request, _user: User = Depends(get_current_
     if result.returncode != 0:
         return {"status": "error", "reason": result.stderr[:300]}
 
+    log.warning("security.db_restored", user_id=_user.id, file_size=total_size)
     return {"status": "ok", "message": "Database restored. Restart the container for changes to take full effect."}
 
 
@@ -3320,7 +3385,7 @@ async def get_radarr_servers(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/api/radarr/servers")
-async def save_radarr_servers(payload: dict, db: AsyncSession = Depends(get_db)):
+async def save_radarr_servers(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Save Radarr server configs to DB + Redis.
 
     Payload: {"servers": [{"name": "...", "url": "...", "api_key": "..."}, ...]}
@@ -3355,7 +3420,7 @@ async def save_radarr_servers(payload: dict, db: AsyncSession = Depends(get_db))
 
 
 @router.post("/api/radarr/test")
-async def test_radarr_connection(payload: dict):
+async def test_radarr_connection(payload: dict, _user: User = Depends(get_current_user)):
     """Test a Radarr server connection. Returns quality profiles on success."""
     from app.utils.radarr_client import RadarrClient
     url = payload.get("url", "")
@@ -3384,7 +3449,7 @@ async def test_radarr_connection(payload: dict):
 
 
 @router.post("/api/radarr/add")
-async def add_to_radarr(payload: dict):
+async def add_to_radarr(payload: dict, _user: User = Depends(get_current_user)):
     """Add movies to a Radarr server.
 
     Payload: {
@@ -3459,7 +3524,7 @@ async def get_sonarr_servers(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/api/sonarr/servers")
-async def save_sonarr_servers(payload: dict, db: AsyncSession = Depends(get_db)):
+async def save_sonarr_servers(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Save Sonarr server configs to DB + Redis.
 
     Payload: {"servers": [{"name": "...", "url": "...", "api_key": "..."}, ...]}
@@ -3494,7 +3559,7 @@ async def save_sonarr_servers(payload: dict, db: AsyncSession = Depends(get_db))
 
 
 @router.post("/api/sonarr/test")
-async def test_sonarr_connection(payload: dict):
+async def test_sonarr_connection(payload: dict, _user: User = Depends(get_current_user)):
     """Test a Sonarr server connection. Returns quality profiles on success."""
     from app.utils.sonarr_client import SonarrClient
     url = payload.get("url", "")
@@ -3523,7 +3588,7 @@ async def test_sonarr_connection(payload: dict):
 
 
 @router.post("/api/sonarr/add")
-async def add_to_sonarr(payload: dict):
+async def add_to_sonarr(payload: dict, _user: User = Depends(get_current_user)):
     """Add TV series to a Sonarr server.
 
     Payload: {
@@ -3596,7 +3661,7 @@ async def get_auto_send_settings(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/api/auto-send")
-async def update_auto_send_settings(payload: dict, db: AsyncSession = Depends(get_db)):
+async def update_auto_send_settings(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Save auto-send toggle state to DB + Redis.
 
     Payload: {"radarr_enabled": true/false, "sonarr_enabled": true/false}
@@ -3636,7 +3701,7 @@ async def get_queue_settings(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/api/queue-settings")
-async def update_queue_settings(payload: dict, db: AsyncSession = Depends(get_db)):
+async def update_queue_settings(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Save smart queue settings to DB + Redis."""
     import json as _json
     r = await get_redis()
@@ -3786,7 +3851,7 @@ class TestConnectionRequest(BaseModel):
 
 
 @router.post("/api/settings/test-connection")
-async def test_connection(body: TestConnectionRequest):
+async def test_connection(body: TestConnectionRequest, _user: User = Depends(get_current_user)):
     """Test Trakt or Emby connection (uses credentials from .env)."""
     service = body.service
     if service == "trakt":
@@ -3926,7 +3991,7 @@ async def connection_status():
 
 
 @router.post("/api/connection-status/refresh")
-async def refresh_connection_status():
+async def refresh_connection_status(_user: User = Depends(get_current_user)):
     """Force an immediate heartbeat check for all services."""
     from app.main import run_heartbeat
     await run_heartbeat()
@@ -4486,7 +4551,7 @@ async def get_sabnzbd_servers():
 
 
 @router.put("/api/sabnzbd/servers")
-async def save_sabnzbd_servers(request: Request):
+async def save_sabnzbd_servers(request: Request, _user: User = Depends(get_current_user)):
     """Save SABnzbd server configs (max 2) to Redis + DB."""
     import json as _json
     body = await request.json()
@@ -4520,7 +4585,7 @@ async def save_sabnzbd_servers(request: Request):
 
 
 @router.post("/api/sabnzbd/test")
-async def test_sabnzbd(request: Request):
+async def test_sabnzbd(request: Request, _user: User = Depends(get_current_user)):
     """Test connection to a SABnzbd server."""
     import json as _json
     from app.utils.sabnzbd_client import SabnzbdClient
@@ -4589,7 +4654,7 @@ async def get_watchlist_sync_settings(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/api/watchlist-sync/settings")
-async def update_watchlist_sync_settings(payload: dict, db: AsyncSession = Depends(get_db)):
+async def update_watchlist_sync_settings(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Save watchlist sync toggle state to DB + Redis.
 
     Payload: {"arr_to_watchlist": true/false, "watchlist_to_arr": true/false}
@@ -4626,7 +4691,7 @@ async def get_tmdb_key(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/api/tmdb/key")
-async def save_tmdb_key(payload: dict, db: AsyncSession = Depends(get_db)):
+async def save_tmdb_key(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Save or clear the TMDB API key."""
     import json as _json
     key = (payload.get("api_key") or "").strip()
@@ -4658,7 +4723,7 @@ async def save_tmdb_key(payload: dict, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/api/tmdb/test")
-async def test_tmdb_key(payload: dict):
+async def test_tmdb_key(payload: dict, _user: User = Depends(get_current_user)):
     """Test a TMDB API key by fetching a known movie."""
     import httpx
     key = (payload.get("api_key") or "").strip()
@@ -4751,7 +4816,7 @@ async def get_trakt_lists():
 
 
 @router.post("/api/trakt-lists/import")
-async def import_trakt_list(payload: dict):
+async def import_trakt_list(payload: dict, _user: User = Depends(get_current_user)):
     """Import a Trakt list into an Emby playlist.
 
     Payload: {"list_slug": "...", "playlist_name": "...", "username": "..."}
@@ -4885,7 +4950,7 @@ async def get_mdblist_key(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/api/mdblist/key")
-async def save_mdblist_key(payload: dict, db: AsyncSession = Depends(get_db)):
+async def save_mdblist_key(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Save or clear the MDBList API key."""
     key = (payload.get("api_key") or "").strip()
     r = await get_redis()
@@ -4902,7 +4967,7 @@ async def save_mdblist_key(payload: dict, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/api/mdblist/test")
-async def test_mdblist_key(payload: dict):
+async def test_mdblist_key(payload: dict, _user: User = Depends(get_current_user)):
     """Test an MDBList API key."""
     from app.utils.mdblist_client import MDBListClient
     key = (payload.get("api_key") or "").strip()
@@ -4992,7 +5057,7 @@ async def get_mdblist_lists(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/api/mdblist/import")
-async def import_mdblist_list(payload: dict, db: AsyncSession = Depends(get_db)):
+async def import_mdblist_list(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Import an MDBList list into an Emby playlist.
 
     Payload: {"list_id": 123, "playlist_name": "...", "description": "..."}
@@ -5133,7 +5198,7 @@ async def get_trakt_synced(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/api/trakt-lists/track")
-async def track_trakt_list(payload: dict, db: AsyncSession = Depends(get_db)):
+async def track_trakt_list(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Add or update a Trakt list in synced tracking after import."""
     import json as _json
     slug = (payload.get("list_slug") or "").strip()
@@ -5178,7 +5243,7 @@ async def track_trakt_list(payload: dict, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/api/trakt-lists/synced/{slug}/auto-sync")
-async def toggle_trakt_auto_sync(slug: str, payload: dict, db: AsyncSession = Depends(get_db)):
+async def toggle_trakt_auto_sync(slug: str, payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Toggle auto-sync for a tracked Trakt list."""
     import json as _json
     enabled = payload.get("enabled", True)
@@ -5200,7 +5265,7 @@ async def toggle_trakt_auto_sync(slug: str, payload: dict, db: AsyncSession = De
 
 
 @router.delete("/api/trakt-lists/synced/{slug}")
-async def remove_trakt_synced(slug: str, db: AsyncSession = Depends(get_db)):
+async def remove_trakt_synced(slug: str, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Remove a Trakt list from sync tracking (does NOT delete the Emby playlist)."""
     import json as _json
     r = await get_redis()
@@ -5216,7 +5281,7 @@ async def remove_trakt_synced(slug: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/api/trakt-lists/sync-all")
-async def sync_all_trakt_lists(db: AsyncSession = Depends(get_db)):
+async def sync_all_trakt_lists(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Re-import all auto-synced Trakt lists."""
     import json as _json
     r = await get_redis()
@@ -5373,7 +5438,7 @@ async def get_mdblist_synced(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/api/mdblist/synced/{list_id}/auto-sync")
-async def toggle_mdblist_auto_sync(list_id: int, payload: dict, db: AsyncSession = Depends(get_db)):
+async def toggle_mdblist_auto_sync(list_id: int, payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Toggle auto-sync on/off for a synced MDBList list."""
     import json as _json
     enabled = payload.get("enabled", True)
@@ -5395,7 +5460,7 @@ async def toggle_mdblist_auto_sync(list_id: int, payload: dict, db: AsyncSession
 
 
 @router.delete("/api/mdblist/synced/{list_id}")
-async def remove_mdblist_synced(list_id: int, db: AsyncSession = Depends(get_db)):
+async def remove_mdblist_synced(list_id: int, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Remove a list from auto-sync tracking (does NOT delete the Emby playlist)."""
     import json as _json
     r = await get_redis()
@@ -5411,7 +5476,7 @@ async def remove_mdblist_synced(list_id: int, db: AsyncSession = Depends(get_db)
 
 
 @router.post("/api/mdblist/sync-all")
-async def sync_all_mdblist_lists(db: AsyncSession = Depends(get_db)):
+async def sync_all_mdblist_lists(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Re-import all auto-synced MDBList lists (used by the daily cron and manual refresh)."""
     import json as _json
     r = await get_redis()
@@ -5782,7 +5847,7 @@ async def remote_play_sessions(user_id: int, db: AsyncSession = Depends(get_db))
 
 
 @router.post("/api/remote-play")
-async def remote_play(request: Request, db: AsyncSession = Depends(get_db)):
+async def remote_play(request: Request, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Resolve a media item from provider IDs and start playback on Emby.
 
     Called by the browser extension.  Accepts IDs from Trakt, IMDB, or TMDB,
@@ -6179,7 +6244,7 @@ async def get_recently_arrived():
 
 
 @router.post("/api/recently-arrived/dismiss")
-async def dismiss_recently_arrived():
+async def dismiss_recently_arrived(_user: User = Depends(get_current_user)):
     """Clear the recently arrived list by resetting the pending snapshot."""
     r = await get_redis()
     await r.delete("recently_arrived_result_v1")
@@ -6189,7 +6254,7 @@ async def dismiss_recently_arrived():
 
 
 @router.post("/api/recently-arrived/dismiss-item")
-async def dismiss_arrived_item(request: Request):
+async def dismiss_arrived_item(request: Request, _user: User = Depends(get_current_user)):
     """Remove a single item from the recently arrived list."""
     import json as _json
     body = await request.json()
@@ -6212,7 +6277,7 @@ async def dismiss_arrived_item(request: Request):
 
 
 @router.post("/api/play-on-session")
-async def play_on_session(request: Request, db: AsyncSession = Depends(get_db)):
+async def play_on_session(request: Request, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Start playing an Emby item by its ID on a specific session.
 
     Unlike /api/remote-play (which resolves from provider IDs), this
@@ -6521,6 +6586,53 @@ async def delete_trakt_playback(
     return {"status": "deleted", "playback_id": playback_id}
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Library Health Monitor
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.library_health_service import LibraryHealthService
+
+_library_health_svc = LibraryHealthService()
+
+
+@router.get("/library-health", response_class=HTMLResponse)
+async def get_library_health_page():
+    """Serve the Library Health Monitor page."""
+    try:
+        with open("frontend/templates/library_health.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Page not found</h1>"
+
+
+@router.get("/api/library-health/{user_id}")
+async def get_library_health_report(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return cached library health report for a user."""
+    require_user_ownership(current_user.id, user_id, "library_health")
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    return await _library_health_svc.get_report(user)
+
+
+@router.post("/api/library-health/{user_id}/scan")
+async def scan_library_health(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run a full library health scan for a user."""
+    require_user_ownership(current_user.id, user_id, "library_health")
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    return await _library_health_svc.scan(user)
+
+
 # ---------------------------------------------------------------------------
 # DB Inspector — browse app_settings from the browser
 # ---------------------------------------------------------------------------
@@ -6665,7 +6777,7 @@ async def mdblist_sync_status(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/api/mdblist/sync-from-trakt")
-async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get_db)):
+async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Incremental sync of Trakt watched history into MDBList.
 
     On first run, pushes everything. On subsequent runs, only pushes items
@@ -6931,7 +7043,7 @@ async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post("/api/emby/play")
-async def emby_direct_play(payload: dict):
+async def emby_direct_play(payload: dict, _user: User = Depends(get_current_user)):
     """Start playback of an Emby item on a specific session.
 
     Payload: {"session_id": "abc", "item_id": "123", "start_position_ticks": 0}

@@ -71,7 +71,8 @@ async def _get_user_trakt(user_id: int, db: AsyncSession) -> TraktClient:
 async def get_friends_watching_now(
     user_id: int,
     limit: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Get friends currently watching content in real-time.
@@ -106,7 +107,8 @@ async def get_friends_watching_now(
 async def get_influence_leaderboard(
     user_id: int,
     limit: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Get leaderboard of friends ranked by influence score (how often you watch what they watch).
@@ -140,7 +142,8 @@ async def get_influence_leaderboard(
 async def get_library_overlap(
     user_id: int,
     friend_username: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Analyze shared content (overlap) between user and friend.
@@ -172,7 +175,8 @@ async def get_library_overlap(
 async def enable_social_sync_mode(
     user_id: int,
     friend_username: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Enable social sync mode for watch party with a friend.
@@ -204,7 +208,8 @@ async def enable_social_sync_mode(
 @router.post("/social/refresh/{user_id}")
 async def refresh_social_graph(
     user_id: int,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Manually refresh social watching graph (sync all friends' current activity).
@@ -237,7 +242,8 @@ async def refresh_social_graph(
 @router.get("/health/report/{user_id}")
 async def get_health_report(
     user_id: int,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Get most recent library health report.
@@ -282,7 +288,8 @@ async def get_library_gaps(
     gap_type: Optional[str] = Query(None),
     priority: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=500),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Get detected gaps in library (incomplete series, orphaned episodes, etc.).
@@ -343,7 +350,8 @@ async def get_incomplete_series(
     user_id: int,
     min_completion: float = Query(0, ge=0, le=100),
     limit: int = Query(50, ge=1, le=500),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Get list of incomplete series (shows where you've watched some but not all episodes).
@@ -388,7 +396,8 @@ async def get_incomplete_series(
 async def get_orphaned_episodes(
     user_id: int,
     limit: int = Query(50, ge=1, le=500),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Get orphaned episodes (watched episodes without watching season/series premiere).
@@ -428,7 +437,8 @@ async def get_acquisition_recommendations(
     user_id: int,
     priority: Optional[str] = Query(None),
     limit: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Get recommendations for what to acquire to fill gaps in library.
@@ -468,7 +478,8 @@ async def get_acquisition_recommendations(
 @router.post("/health/analyze/{user_id}")
 async def analyze_library_health(
     user_id: int,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Run full library health analysis (generate report, detect gaps, etc.).
@@ -510,7 +521,8 @@ async def create_bulk_action(
     action_type: str,  # 'delete' | 'rate_batch' | 'export' | 'add_collection'
     item_ids: List[str],
     metadata: Dict = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Create bulk action (delete multiple, batch rate, export, add to collection).
@@ -570,7 +582,8 @@ async def create_bulk_action(
 @router.get("/bulk/status/{action_id}")
 async def get_bulk_action_status(
     action_id: int,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Get status of a bulk action.
@@ -615,7 +628,8 @@ async def get_bulk_action_history(
     user_id: int,
     status: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=500),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """
     Get history of bulk actions for a user.

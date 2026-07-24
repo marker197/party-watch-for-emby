@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Library Health - Emby-Trakt Suite</title>
+  <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface-hover: #22263a;
+      --border: #2a2e3e;
+      --text: #e0e0e6;
+      --text-dim: #8b8fa3;
+      --accent: #6c5ce7;
+      --accent-light: #a29bfe;
+      --green: #00b894;
+      --orange: #fdcb6e;
+      --red: #e17055;
+      --blue: #74b9ff;
+      --radius: 10px;
+      --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    body.light-mode {
+      --bg: #f5f6fa; --surface: #ffffff; --surface-hover: #f0f1f5;
+      --border: #e2e4ea; --text: #1f2937; --text-dim: #6b7280;
+    }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:var(--bg); color:var(--text); font-family:var(--font); line-height:1.6; min-height:100vh; }
+
+    .header { padding:28px 32px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+    .header h1 { font-size:1.3rem; font-weight:700; }
+    .container { max-width:1100px; margin:0 auto; padding:24px 32px 80px; }
+
+    .user-row { display:flex; align-items:center; gap:12px; margin-bottom:24px; }
+    .user-row label { font-size:0.85rem; color:var(--text-dim); }
+    .user-row select { background:var(--surface); color:var(--text); border:1px solid var(--border); padding:6px 12px; border-radius:6px; font-size:0.85rem; }
+
+    .btn { padding:8px 18px; border:none; border-radius:6px; font-size:0.82rem; font-weight:600; cursor:pointer; }
+    .btn-accent { background:var(--accent); color:#fff; }
+    .btn-accent:hover { opacity:0.9; }
+    .btn-accent:disabled { opacity:0.5; cursor:not-allowed; }
+
+    .score-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:24px; margin-bottom:24px; text-align:center; }
+    .score-value { font-size:2.8rem; font-weight:800; }
+    .score-label { font-size:0.82rem; color:var(--text-dim); margin-top:4px; }
+    .score-good { color:var(--green); }
+    .score-warn { color:var(--orange); }
+    .score-bad { color:var(--red); }
+
+    .summary-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:24px; }
+    .summary-stat { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; text-align:center; }
+    .summary-stat .val { font-size:1.5rem; font-weight:700; }
+    .summary-stat .lbl { font-size:0.75rem; color:var(--text-dim); margin-top:2px; }
+
+    .section { margin-bottom:32px; }
+    .section h2 { font-size:1rem; font-weight:700; margin-bottom:12px; padding-bottom:8px; border-bottom:1px solid var(--border); }
+    .section h2 .count { font-weight:400; color:var(--text-dim); font-size:0.85rem; }
+
+    .item-table { width:100%; border-collapse:collapse; font-size:0.82rem; }
+    .item-table th { text-align:left; padding:8px 10px; color:var(--text-dim); font-weight:600; border-bottom:1px solid var(--border); font-size:0.75rem; text-transform:uppercase; letter-spacing:0.3px; }
+    .item-table td { padding:8px 10px; border-bottom:1px solid var(--border); }
+    .item-table tr:hover { background:var(--surface-hover); }
+
+    .pct-bar { display:inline-block; height:6px; border-radius:3px; background:var(--green); vertical-align:middle; }
+    .pct-bar.low { background:var(--red); }
+    .pct-bar.mid { background:var(--orange); }
+    .pct-text { font-size:0.78rem; color:var(--text-dim); margin-left:6px; }
+
+    .badge { display:inline-block; padding:1px 8px; border-radius:4px; font-size:0.72rem; font-weight:600; }
+    .badge-movie { background:rgba(116,185,255,0.15); color:var(--blue); }
+    .badge-show { background:rgba(0,184,148,0.15); color:var(--green); }
+    .badge-rating { background:rgba(253,203,110,0.15); color:var(--orange); }
+
+    .empty { color:var(--text-dim); padding:16px; text-align:center; font-size:0.85rem; }
+    .loading { color:var(--text-dim); padding:24px; text-align:center; }
+    .error { color:var(--red); padding:12px; }
+
+    .imdb-link { color:var(--accent-light); text-decoration:none; }
+    .imdb-link:hover { text-decoration:underline; }
+
+    .toggle-btn { background:none; border:none; color:var(--accent-light); cursor:pointer; font-size:0.8rem; padding:4px 8px; }
+  </style>
+</head>
+<body>
+<script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
+
+<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
+    <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
+    <a href="/lists" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📋 Lists</a>
+    <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
+    <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
+    <a href="/stats" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📊 Stats</a>
+    <a href="/library-health" style="color:#ffffff;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;font-weight:600;">🏥 Library Health</a>
+    <a href="/settings" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
+    <a href="/watch-party" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
+    <a href="/guide" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📖 Guide</a>
+</nav>
+
+<div class="header">
+  <h1>🏥 Library Health Monitor</h1>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <button class="btn btn-accent" id="scanBtn" onclick="runScan()">🔍 Run Scan</button>
+  </div>
+</div>
+
+<div class="container">
+  <div class="user-row">
+    <label>👤 User:</label>
+    <select id="userSelect" onchange="loadReport()"></select>
+    <span id="scanStatus" style="font-size:0.8rem;color:var(--text-dim);"></span>
+  </div>
+
+  <div id="content">
+    <div class="loading">Select a user and run a scan to check library health.</div>
+  </div>
+</div>
+
+<script>
+function escapeHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+let currentUserId = null;
+
+async function loadUsers() {
+  try {
+    const r = await fetch('/auth/users');
+    const users = await r.json();
+    const sel = document.getElementById('userSelect');
+    sel.innerHTML = users
+      .filter(u => u.linked)
+      .map(u => '<option value="' + u.id + '">' + escapeHtml(u.emby_username || u.emby_user_id) + '</option>')
+      .join('');
+    if (sel.options.length > 0) {
+      currentUserId = parseInt(sel.value);
+      loadReport();
+    }
+  } catch(e) {
+    console.error('Failed to load users:', e);
+  }
+}
+
+async function loadReport() {
+  currentUserId = parseInt(document.getElementById('userSelect').value);
+  if (!currentUserId) return;
+
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="loading">Loading report…</div>';
+
+  try {
+    const r = await fetch('/api/library-health/' + currentUserId);
+    const data = await r.json();
+    if (data.status === 'no_report') {
+      content.innerHTML = '<div class="empty">No scan results yet. Click <strong>Run Scan</strong> to analyze your library.</div>';
+      return;
+    }
+    renderReport(data);
+  } catch(e) {
+    content.innerHTML = '<div class="error">Failed to load report: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+async function runScan() {
+  currentUserId = parseInt(document.getElementById('userSelect').value);
+  if (!currentUserId) return;
+
+  const btn = document.getElementById('scanBtn');
+  const status = document.getElementById('scanStatus');
+  btn.disabled = true;
+  btn.textContent = '⏳ Scanning…';
+  status.textContent = 'This may take a minute — checking Trakt history against your library…';
+
+  const content = document.getElementById('content');
+
+  try {
+    const r = await fetch('/api/library-health/' + currentUserId + '/scan', {method:'POST'});
+    const data = await r.json();
+    if (data.error) {
+      content.innerHTML = '<div class="error">Scan error: ' + escapeHtml(data.error) + '</div>';
+    } else {
+      renderReport(data);
+    }
+    const secs = (data.summary || {}).scan_seconds || '?';
+    status.textContent = 'Scan complete in ' + secs + 's';
+  } catch(e) {
+    content.innerHTML = '<div class="error">Scan failed: ' + escapeHtml(e.message) + '</div>';
+    status.textContent = '';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 Run Scan';
+  }
+}
+
+function renderReport(data) {
+  const s = data.summary || {};
+  const scoreClass = s.health_score >= 80 ? 'score-good' : s.health_score >= 50 ? 'score-warn' : 'score-bad';
+
+  let html = '';
+
+  // Score card
+  html += '<div class="score-card">';
+  html += '<div class="score-value ' + scoreClass + '">' + (s.health_score || 0) + '</div>';
+  html += '<div class="score-label">Health Score · ' + (s.total_issues || 0) + ' issue' + (s.total_issues !== 1 ? 's' : '') + ' found</div>';
+  if (data.scanned_at) {
+    const d = new Date(data.scanned_at);
+    html += '<div class="score-label">Scanned ' + d.toLocaleString() + ' · took ' + (s.scan_seconds || '?') + 's</div>';
+  }
+  html += '</div>';
+
+  // Summary stats
+  html += '<div class="summary-row">';
+  html += statBox(s.incomplete_series || 0, 'Incomplete Series');
+  html += statBox(s.movies_not_in_library || 0, 'Watched Movies Missing');
+  html += statBox(s.shows_not_in_library || 0, 'Watched Shows Missing');
+  html += statBox(s.missing_sequels || 0, 'Missing Sequels');
+  html += '</div>';
+
+  // Sections
+  html += renderIncomplete(data.incomplete_series || []);
+  html += renderMissing('Watched Movies Not in Library', data.watched_not_in_library?.movies || [], 'movie');
+  html += renderMissing('Watched Shows Not in Library', data.watched_not_in_library?.shows || [], 'show');
+  html += renderSequels(data.missing_sequels || []);
+
+  document.getElementById('content').innerHTML = html;
+}
+
+function statBox(val, label) {
+  return '<div class="summary-stat"><div class="val">' + val + '</div><div class="lbl">' + label + '</div></div>';
+}
+
+function renderIncomplete(items) {
+  if (!items.length) return '<div class="section"><h2>📺 Incomplete Series <span class="count">(0)</span></h2><div class="empty">All series fully watched!</div></div>';
+
+  const MAX = 20;
+  const show = items.slice(0, MAX);
+  let html = '<div class="section"><h2>📺 Incomplete Series <span class="count">(' + items.length + ')</span></h2>';
+  html += '<table class="item-table"><thead><tr><th>Title</th><th>Progress</th><th>Played</th><th>Remaining</th></tr></thead><tbody>';
+  for (const it of show) {
+    const pct = it.completion_pct || 0;
+    const barClass = pct < 30 ? 'low' : pct < 70 ? 'mid' : '';
+    const link = it.imdb_id ? '<a class="imdb-link" href="https://www.imdb.com/title/' + escapeHtml(it.imdb_id) + '/" target="_blank">' + escapeHtml(it.title) + '</a>' : escapeHtml(it.title);
+    html += '<tr><td>' + link + (it.year ? ' <span style="color:var(--text-dim);">(' + it.year + ')</span>' : '') + '</td>';
+    html += '<td><span class="pct-bar ' + barClass + '" style="width:' + Math.max(4, pct * 0.8) + 'px;"></span><span class="pct-text">' + pct + '%</span></td>';
+    html += '<td>' + (it.played_episodes || 0) + '</td>';
+    html += '<td>' + (it.unplayed_episodes || 0) + ' eps</td></tr>';
+  }
+  html += '</tbody></table>';
+  if (items.length > MAX) html += '<div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">…and ' + (items.length - MAX) + ' more</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderMissing(title, items, type) {
+  const icon = type === 'movie' ? '🎬' : '📺';
+  if (!items.length) return '<div class="section"><h2>' + icon + ' ' + title + ' <span class="count">(0)</span></h2><div class="empty">Everything in sync!</div></div>';
+
+  const MAX = 30;
+  const show = items.slice(0, MAX);
+  let html = '<div class="section"><h2>' + icon + ' ' + escapeHtml(title) + ' <span class="count">(' + items.length + ')</span></h2>';
+  html += '<table class="item-table"><thead><tr><th>Title</th><th>Year</th>';
+  if (type === 'show') html += '<th>Episodes</th>';
+  html += '<th>Last Watched</th></tr></thead><tbody>';
+  for (const it of show) {
+    const link = it.imdb_id ? '<a class="imdb-link" href="https://www.imdb.com/title/' + escapeHtml(it.imdb_id) + '/" target="_blank">' + escapeHtml(it.title) + '</a>' : escapeHtml(it.title);
+    html += '<tr><td>' + link + '</td><td>' + (it.year || '') + '</td>';
+    if (type === 'show') html += '<td>' + (it.episodes_watched || '') + '</td>';
+    const lw = it.last_watched ? new Date(it.last_watched).toLocaleDateString() : '';
+    html += '<td style="color:var(--text-dim);">' + lw + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  if (items.length > MAX) html += '<div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">…and ' + (items.length - MAX) + ' more</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderSequels(items) {
+  if (!items.length) return '<div class="section"><h2>🔗 Missing Sequels <span class="count">(0)</span></h2><div class="empty">No missing related movies found!</div></div>';
+
+  const MAX = 25;
+  const show = items.slice(0, MAX);
+  let html = '<div class="section"><h2>🔗 Missing Sequels & Related <span class="count">(' + items.length + ')</span></h2>';
+  html += '<table class="item-table"><thead><tr><th>Missing Title</th><th>Year</th><th>Related To</th><th>Your Rating</th></tr></thead><tbody>';
+  for (const it of show) {
+    const link = it.imdb_id ? '<a class="imdb-link" href="https://www.imdb.com/title/' + escapeHtml(it.imdb_id) + '/" target="_blank">' + escapeHtml(it.title) + '</a>' : escapeHtml(it.title);
+    html += '<tr><td>' + link + '</td><td>' + (it.year || '') + '</td>';
+    html += '<td>' + escapeHtml(it.related_to || '') + '</td>';
+    html += '<td><span class="badge badge-rating">★ ' + (it.your_rating || '?') + '</span></td></tr>';
+  }
+  html += '</tbody></table>';
+  if (items.length > MAX) html += '<div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">…and ' + (items.length - MAX) + ' more</div>';
+  html += '</div>';
+  return html;
+}
+
+loadUsers();
+</script>
+</body>
+</html>
