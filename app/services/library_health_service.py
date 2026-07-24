@@ -89,19 +89,13 @@ class LibraryHealthService:
                 "shows_not_in_library": len(report["watched_not_in_library"]["shows"]),
                 "missing_sequels": len(report["missing_sequels"]),
                 "scan_seconds": round(elapsed, 1),
+                "total_issues": (
+                    len(report["incomplete_series"])
+                    + len(report["watched_not_in_library"]["movies"])
+                    + len(report["watched_not_in_library"]["shows"])
+                    + len(report["missing_sequels"])
+                ),
             }
-
-            # Health score: 100 minus penalty points
-            total_issues = (
-                report["summary"]["incomplete_series"]
-                + report["summary"]["movies_not_in_library"]
-                + report["summary"]["shows_not_in_library"]
-                + report["summary"]["missing_sequels"]
-            )
-            report["summary"]["total_issues"] = total_issues
-            report["summary"]["health_score"] = max(
-                0, round(100 - min(total_issues * 2, 100), 1)
-            )
 
         except Exception as e:
             log.exception("library_health.scan_failed", user_id=user.id)
@@ -134,7 +128,7 @@ class LibraryHealthService:
         """Find series in Emby where the user has started but not finished."""
         results: list[dict] = []
 
-        # Fetch all Series with UserData (play counts, unplayed counts)
+        # Fetch all Series with UserData and RecursiveItemCount
         start = 0
         batch = 200
         all_series: list[dict] = []
@@ -142,7 +136,7 @@ class LibraryHealthService:
             resp = await emby.get_items(
                 user_id=emby_user_id,
                 item_type="Series",
-                fields="ProviderIds,UserData",
+                fields="ProviderIds,UserData,RecursiveItemCount",
                 sort_by="SortName",
                 limit=batch,
                 start_index=start,
@@ -155,36 +149,24 @@ class LibraryHealthService:
 
         for series in all_series:
             ud = series.get("UserData", {})
-            played_pct = ud.get("PlayedPercentage", 0) or 0
-            unplayed = ud.get("UnplayedItemCount", 0) or 0
-            play_count = ud.get("PlayCount", 0) or 0
-
-            # Skip series the user hasn't started at all
-            if play_count == 0 and played_pct == 0:
-                continue
-
-            # Skip fully watched series
-            if unplayed == 0:
-                continue
-
-            # This series has been started but not finished
-            # Estimate total episodes from unplayed + a rough played count
-            # Emby gives us UnplayedItemCount but not a direct "total episodes"
-            # in the Series-level UserData. We use PlayedPercentage to derive it.
-            total_eps = 0
-            if played_pct > 0 and played_pct < 100:
-                # played_pct = played / total * 100
-                # total = unplayed / (1 - played_pct/100)
-                total_eps = round(unplayed / (1 - played_pct / 100))
-                played_eps = total_eps - unplayed
-            else:
-                played_eps = play_count
-                total_eps = played_eps + unplayed
+            unplayed = ud.get("UnplayedItemCount") or 0
+            total_eps = series.get("RecursiveItemCount") or 0
 
             if total_eps <= 0:
                 continue
 
-            completion = round(played_eps / total_eps * 100, 1) if total_eps > 0 else 0
+            played_eps = total_eps - unplayed
+
+            # Skip series the user hasn't started at all
+            if played_eps <= 0:
+                continue
+
+            # Skip fully watched series
+            if unplayed <= 0:
+                continue
+
+            # This series has been started but not finished
+            completion = round(played_eps / total_eps * 100, 1)
 
             pids = series.get("ProviderIds", {})
             results.append({

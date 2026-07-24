@@ -42,13 +42,6 @@
     .btn-accent:hover { opacity:0.9; }
     .btn-accent:disabled { opacity:0.5; cursor:not-allowed; }
 
-    .score-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:24px; margin-bottom:24px; text-align:center; }
-    .score-value { font-size:2.8rem; font-weight:800; }
-    .score-label { font-size:0.82rem; color:var(--text-dim); margin-top:4px; }
-    .score-good { color:var(--green); }
-    .score-warn { color:var(--orange); }
-    .score-bad { color:var(--red); }
-
     .summary-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:24px; }
     .summary-stat { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; text-align:center; }
     .summary-stat .val { font-size:1.5rem; font-weight:700; }
@@ -197,19 +190,14 @@ async function runScan() {
 
 function renderReport(data) {
   const s = data.summary || {};
-  const scoreClass = s.health_score >= 80 ? 'score-good' : s.health_score >= 50 ? 'score-warn' : 'score-bad';
 
   let html = '';
 
-  // Score card
-  html += '<div class="score-card">';
-  html += '<div class="score-value ' + scoreClass + '">' + (s.health_score || 0) + '</div>';
-  html += '<div class="score-label">Health Score · ' + (s.total_issues || 0) + ' issue' + (s.total_issues !== 1 ? 's' : '') + ' found</div>';
+  // Scan info
   if (data.scanned_at) {
     const d = new Date(data.scanned_at);
-    html += '<div class="score-label">Scanned ' + d.toLocaleString() + ' · took ' + (s.scan_seconds || '?') + 's</div>';
+    html += '<div style="color:var(--text-dim);font-size:0.8rem;margin-bottom:16px;">Scanned ' + d.toLocaleString() + ' · took ' + (s.scan_seconds || '?') + 's · ' + (s.total_issues || 0) + ' item' + (s.total_issues !== 1 ? 's' : '') + ' found</div>';
   }
-  html += '</div>';
 
   // Summary stats
   html += '<div class="summary-row">';
@@ -342,6 +330,36 @@ function arrButton(type, item, prefix) {
   }
 }
 
+function removeRowAndUpdateCount(btn) {
+  const row = btn.closest('tr');
+  if (!row) return;
+  const section = row.closest('.section');
+  row.remove();
+  if (section) {
+    const countSpan = section.querySelector('h2 .count');
+    if (countSpan) {
+      const remaining = section.querySelectorAll('tbody tr').length;
+      countSpan.textContent = '(' + remaining + ')';
+    }
+    // Update the matching summary stat
+    const heading = section.querySelector('h2');
+    if (heading) {
+      const txt = heading.textContent;
+      const remaining = section.querySelectorAll('tbody tr').length;
+      const stats = document.querySelectorAll('.summary-stat');
+      for (const stat of stats) {
+        const lbl = stat.querySelector('.lbl');
+        if (!lbl) continue;
+        if ((txt.includes('Movies') && lbl.textContent.includes('Movies'))
+         || (txt.includes('Shows') && lbl.textContent.includes('Shows'))
+         || (txt.includes('Trakt Suggestions') && lbl.textContent.includes('Related'))) {
+          stat.querySelector('.val').textContent = remaining;
+        }
+      }
+    }
+  }
+}
+
 function showNotification(msg) {
   const el = document.getElementById('scanStatus');
   if (el) el.textContent = msg;
@@ -367,6 +385,7 @@ async function sendToRadarr(btnId, tmdbId, imdbId, title, year, serverIdx) {
       btn.textContent = '✓ Sent';
       btn.style.background = 'var(--green)';
       showNotification(title + ' sent to ' + (_radarrServers[serverIdx]?.name || 'Radarr'));
+      removeRowAndUpdateCount(btn);
     } else {
       const reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Failed';
       btn.textContent = '✗';
@@ -399,6 +418,7 @@ async function sendToSonarr(btnId, tvdbId, imdbId, title, year, serverIdx) {
       btn.textContent = '✓ Sent';
       btn.style.background = 'var(--green)';
       showNotification(title + ' sent to ' + (_sonarrServers[serverIdx]?.name || 'Sonarr'));
+      removeRowAndUpdateCount(btn);
     } else {
       const reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Failed';
       btn.textContent = '✗';
