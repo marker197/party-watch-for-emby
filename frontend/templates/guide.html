@@ -246,6 +246,7 @@
   <a class="page-link" data-page="stats"><span class="icon">📊</span> Stats</a>
   <a class="page-link" data-page="settings"><span class="icon">⚙️</span> Settings</a>
   <a class="page-link" data-page="watch-party"><span class="icon">👥</span> Watch Party</a>
+  <a class="page-link" data-page="library-health"><span class="icon">🏥</span> Library Health</a>
 
   <div class="sidebar-section" style="margin-top:16px;" id="sectionLinks">On this page</div>
   <div id="sectionNav"></div>
@@ -379,10 +380,8 @@
     <div class="feature">
       <div class="feature-name"><span class="emoji">⬇️</span> Active Downloads</div>
       <p>Live download progress for everything currently being grabbed by Radarr and Sonarr. Each item shows a progress bar, percentage, ETA, and file size. Show downloads are grouped when multiple episodes download at once.</p>
-      <p>When SABnzbd is configured in Settings, download items are enriched with real-time data from SABnzbd — actual download speed, ETA, and processing stage (Downloading, Repairing, Verifying, Extracting, Moving). The dashboard polls SABnzbd every 500ms while downloads are active, then drops back to a slower poll when idle.</p>
+      <p>When SABnzbd is configured in Settings, progress data comes directly from SABnzbd instead of Radarr/Sonarr, giving smoother real-time updates. A status label shows the current stage — Downloading, Repairing, Verifying, Extracting, or Moving. Download speed is shown alongside the ETA. The dashboard polls SABnzbd every 500ms while downloads are active, then drops back to a slower poll when idle.</p>
       <div class="tip">Without SABnzbd configured, the card still works using progress data from Radarr/Sonarr, which updates less frequently.</div>
-      <p>When SABnzbd is configured in Settings, progress data comes directly from SABnzbd instead of Radarr/Sonarr, giving smoother real-time updates. A status label shows the current SABnzbd stage — Downloading, Repairing, Verifying, Extracting, or Moving. Download speed is shown alongside the ETA. Items disappear from the card once SABnzbd finishes processing them.</p>
-      <div class="tip">Without SABnzbd configured, the card still works — it uses the progress numbers from Radarr/Sonarr, which update less frequently.</div>
     </div>
   </div>
 
@@ -403,7 +402,7 @@
   <div class="section">
     <span class="section-anchor" id="scheduler"></span>
     <h2>Scheduler</h2>
-    <p>The scheduler grid on the dashboard shows all background jobs, their schedule, and when they'll next run. Jobs include the library cache rebuild, smart queue refresh, ML model retraining, universe scan, and watchlist sync.</p>
+    <p>The scheduler grid on the dashboard shows all background jobs, their schedule, and when they last ran. Jobs include the library cache rebuild, smart queue refresh, ML model retraining, universe scan, bias analysis, watchlist sync, and library health scan. Click <span class="btn-label">Show ▾</span> to expand the grid and <span class="btn-label">Hide ▴</span> to collapse it. The grid refreshes every 60 seconds while visible.</p>
   </div>
 
   <div class="section">
@@ -425,7 +424,7 @@
   <div class="section">
     <span class="section-anchor" id="nav-bar"></span>
     <h2>Navigation Bar</h2>
-    <p>The dark bar across the top of every page links to Dashboard, Lists, Predictions, Taste Profile, Stats, Settings, Watch Party, and this Guide. The theme toggle in the top-right switches between dark and light mode.</p>
+    <p>The dark bar across the top of every page links to Dashboard, Lists, Predictions, Taste Profile, Stats, Library Health, Settings, Watch Party, and this Guide. The theme toggle in the top-right switches between dark and light mode.</p>
   </div>
 
 </div>
@@ -835,6 +834,69 @@
 
 </div>
 
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: LIBRARY HEALTH -->
+<!-- ════════════════════════════════════════════════════════════════════ -->
+
+<div class="page" id="page-library-health" data-sections="health-overview,health-incomplete,health-movies-missing,health-shows-missing,health-suggestions,health-dismiss,health-radarr-sonarr,health-scan">
+
+  <h1 class="page-title">🏥 Library Health</h1>
+  <p class="page-intro">Find gaps in your library — shows you've started but not finished, things you've watched on Trakt that aren't in Emby, and related movies you might want to grab.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="health-overview"></span>
+    <h2>Overview</h2>
+    <p>The Library Health page compares your Trakt watch history against your Emby library to spot anything that's out of sync or missing. Pick a user from the dropdown at the top, then click <span class="btn-label">🔍 Run Scan</span> to start. The scan checks three things: incomplete series, watched items not in your library, and related movies you might like. Results are cached for 6 hours so the page loads instantly if you come back.</p>
+    <p>A row of summary cards at the top shows the total count for each category at a glance.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="health-incomplete"></span>
+    <h2>Incomplete Series</h2>
+    <p>Shows in your Emby library where you've watched some episodes but not all. Each row shows the title, a progress bar, how many episodes you've played, and how many are left. Sorted with the most complete shows first, so you can quickly see what's closest to being finished.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="health-movies-missing"></span>
+    <h2>Watched Movies Not in Library</h2>
+    <p>Movies that appear in your Trakt watch history but aren't in your Emby library. These are things you've watched somewhere else — in a cinema, on a streaming service, or on a previous server — that aren't currently in your collection. Each row shows the title, year, and when you last watched it.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="health-shows-missing"></span>
+    <h2>Watched Shows Not in Library</h2>
+    <p>Same idea as movies, but for TV shows. Shows the title, year, how many episodes you've watched, and when you last watched. Useful for spotting series you followed on another platform but never added to Emby.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="health-suggestions"></span>
+    <h2>Trakt Suggestions</h2>
+    <p>For every movie you rated 8 or higher on Trakt, the scan checks Trakt's "related movies" list and flags any that aren't in your library. Each row shows the suggested title, what it's related to, and the rating you gave the original. Good for discovering sequels, prequels, and similar films you might have missed.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="health-dismiss"></span>
+    <h2>Dismissing Items</h2>
+    <p>Not every "missing" item is actually something you want. Cinema-only watches, one-off streaming views, and films you don't plan to collect will all show up. Click the <span class="btn-label">✕</span> button on any row to dismiss it. Dismissed items are saved to the database and won't reappear on future scans.</p>
+    <p>Sending an item to Radarr or Sonarr also auto-dismisses it, so you won't see it again even if the download hasn't finished yet.</p>
+    <p>To bring everything back, click <span class="btn-label">Restore Dismissed</span> in the scan info bar at the top of the results. This clears all dismissals and the items will return on the next scan.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="health-radarr-sonarr"></span>
+    <h2>Send to Radarr / Sonarr</h2>
+    <p>Missing movies show a <span class="btn-label">📥 Radarr</span> button and missing shows show a <span class="btn-label">📥 Sonarr</span> button, just like on the dashboard queue. If you have more than one Radarr or Sonarr server configured, a dropdown appears so you can pick which one. The row disappears from the table once the item is sent.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="health-scan"></span>
+    <h2>Scheduled Scans</h2>
+    <p>A full library health scan runs automatically every Wednesday at 4:30 AM for all linked users. You can also run a manual scan at any time from the page. Results are cached for 6 hours, so loading the page between scans is instant.</p>
+    <div class="tip">The scan checks items against the library cache, not Emby directly. If you've just added new content, rebuild the cache first (from the dashboard) so the scan picks it up.</div>
+  </div>
+
+</div>
+
 </div><!-- end .main -->
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
@@ -882,6 +944,11 @@
     'wp-overview':'Overview','wp-create':'Create','wp-lobby':'Create Lobby',
     'wp-pick-together':'Pick Together','wp-join':'Join',
     'wp-playback':'Playback','wp-chat':'Chat & Reactions','wp-end':'End Party',
+    // Library Health
+    'health-overview':'Overview','health-incomplete':'Incomplete Series',
+    'health-movies-missing':'Movies Missing','health-shows-missing':'Shows Missing',
+    'health-suggestions':'Suggestions','health-dismiss':'Dismissing',
+    'health-radarr-sonarr':'Radarr / Sonarr','health-scan':'Scheduled Scans',
   };
 
   function showPage(pageId) {
