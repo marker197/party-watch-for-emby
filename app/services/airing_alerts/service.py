@@ -364,9 +364,6 @@ class AiringAlertsService:
             show_trakt_id = str(show.get("ids", {}).get("trakt", ""))
             show_tvdb_id = show.get("ids", {}).get("tvdb")
 
-            if show_tvdb_id:
-                trakt_covered.add((str(show_tvdb_id), episode.get("season"), episode.get("number")))
-
             days_until = self._days_until(entry.get("first_aired"))
             air_date = entry.get("first_aired")
 
@@ -401,7 +398,13 @@ class AiringAlertsService:
             # Regular mid-season episodes for non-library shows are
             # skipped — Smart Queue's calendar source handles discovery.
             if not in_library and not is_premiere:
+                # Don't mark as trakt_covered so the Sonarr-only fallback
+                # can still pick it up (Sonarr may have better ID matching)
                 continue
+
+            # Mark as covered ONLY when we're actually including the episode
+            if show_tvdb_id:
+                trakt_covered.add((str(show_tvdb_id), episode.get("season"), episode.get("number")))
 
             result = {
                 "media_type": "show",
