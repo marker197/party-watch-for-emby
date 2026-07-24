@@ -234,7 +234,7 @@
 <nav class="sidebar" id="sidebar">
   <div class="sidebar-brand">
     <div class="title">Emby-Trakt Suite</div>
-    <div class="subtitle">User Guide</div>
+    <div class="subtitle">User Guide v2.1.1</div>
     <a href="/" style="display:inline-block;margin-top:10px;font-size:0.78rem;color:var(--accent-light);text-decoration:none;padding:4px 10px;border:1px solid var(--border);border-radius:5px;" onmouseover="this.style.background='var(--surface-hover)'" onmouseout="this.style.background='transparent'">← Back to Dashboard</a>
   </div>
 
@@ -261,10 +261,23 @@
 <!-- PAGE: DASHBOARD -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page active" id="page-dashboard" data-sections="status-bar,cache,link-trakt,smart-queue,ml-predictor,universes-card,airing-soon,scrobble-audit,taste-drift,continue-watching,new-coming-soon,active-downloads,activity-log,nav-bar">
+<div class="page active" id="page-dashboard" data-sections="first-run,status-bar,cache,link-trakt,smart-queue,ml-predictor,universes-card,airing-soon,scrobble-audit,taste-drift,continue-watching,new-coming-soon,active-downloads,watchlist-sync,scheduler,ssl-cert,activity-log,nav-bar">
 
   <h1 class="page-title">Dashboard</h1>
-  <p class="page-intro">Everything on the main dashboard — what each section does and how to use it.</p>
+  <p class="page-intro">Everything on the main dashboard — what each section does and how to use it. If this is your first time running the suite, start with First-Run Setup below.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="first-run"></span>
+    <h2>First-Run Setup</h2>
+    <p>The first time you start the suite, a setup page asks you to pick your integration provider. This controls which services the suite talks to for scrobbling, watchlists, and watch history.</p>
+    <div class="feature">
+      <p><strong>Trakt</strong> — uses Trakt.tv for all scrobbling, history, ratings, and watchlist features. Link your Trakt account afterwards.</p>
+      <p><strong>MDBList</strong> — uses MDBList.com instead. Enter your MDBList API key on the Settings page.</p>
+      <p><strong>Both</strong> — scrobbles and syncs to both services at the same time.</p>
+      <p><strong>None</strong> — disables external scrobbling. The suite still works for library management, downloads, and local features.</p>
+    </div>
+    <p>You can change this at any time from the Settings page under "Integration Provider".</p>
+  </div>
 
   <div class="section">
     <span class="section-anchor" id="status-bar"></span>
@@ -288,7 +301,8 @@
   <div class="section">
     <span class="section-anchor" id="link-trakt"></span>
     <h2>Link Trakt Account</h2>
-    <p>Used during initial setup. Enter your Emby User ID and username, click <span class="btn-label">Get Code</span>, then follow the on-screen instructions to authorise via Trakt. You won't need this again unless you add a new user.</p>
+    <p>Used during initial setup when Trakt is your chosen provider. Enter your Emby User ID and username, click <span class="btn-label">Get Code</span>, then follow the on-screen instructions to authorise via Trakt. You won't need this again unless you add a new user.</p>
+    <p>If you're using MDBList only, skip this section — just enter your API key in Settings instead.</p>
   </div>
 
   <hr class="divider">
@@ -300,10 +314,9 @@
 
     <div class="feature">
       <div class="feature-name"><span class="emoji">🎯</span> Smart Watch Queue</div>
-      <p>Builds a personalised list of what to watch next. Pulls from your Trakt watchlist, trending content, and calendar data, then cross-references against your Emby library. Items are ranked by weighted score.</p>
+      <p>Builds a personalised list of what to watch next. Pulls from your Trakt or MDBList watchlist, trending content, and calendar data, then cross-references against your Emby library. Items are ranked by weighted score.</p>
       <p><span class="btn-label">Refresh Now</span> rebuilds the queue immediately (normally runs daily at 2 AM).</p>
       <p><span class="btn-label">View Queue</span> opens the full queue table. Each row shows title, score, source, and library status.</p>
-      <p><span class="btn-label">Weight History</span> shows how scoring weights have shifted over time.</p>
       <p>Items not in your library show a Radarr or Sonarr button to send them to download.</p>
       <div class="tip">Fully watched items are filtered out automatically. Shows disappear once every episode is watched.</div>
     </div>
@@ -327,12 +340,15 @@
       <div class="feature-name"><span class="emoji">📅</span> Airing Soon</div>
       <p>Upcoming episodes and movies for the next 30 days, from Sonarr and Radarr calendars. Premieres and finales are flagged. Binge plans show how many episodes per day to catch up before a finale.</p>
       <p>Streaming logos appear when a TMDB key is configured. An "Upcoming Digital / Physical Releases" section shows monitored movies with approaching home release dates.</p>
+      <p>Each item shows a status badge. When Sonarr sends a webhook on import complete, episodes that have just arrived show a green "Imported" badge. Otherwise you'll see "In Sonarr" or "In Radarr" if the item is being monitored.</p>
+      <p>Opening Airing Soon triggers a background watchlist sync (at most once every 30 minutes). This pushes any missing Radarr/Sonarr items to your Trakt or MDBList watchlist so they appear here.</p>
     </div>
 
     <span class="section-anchor" id="scrobble-audit"></span>
     <div class="feature">
       <div class="feature-name"><span class="emoji">🔍</span> Scrobble Audit</div>
-      <p>Finds items played in Emby but missing from Trakt history. <span class="btn-label">Run Audit</span> compares both and shows gaps. Each item gets a Backfill button; <span class="btn-label">Backfill All</span> fixes everything at once.</p>
+      <p>Finds items played in Emby but missing from your watch history. When both Trakt and MDBList are active, the audit checks both services and merges the results. Backfilling pushes to whichever providers are active.</p>
+      <p><span class="btn-label">Run Audit</span> compares your Emby played items and shows gaps. Each item gets a Backfill button; <span class="btn-label">Backfill All</span> fixes everything at once.</p>
     </div>
 
     <span class="section-anchor" id="taste-drift"></span>
@@ -363,6 +379,8 @@
     <div class="feature">
       <div class="feature-name"><span class="emoji">⬇️</span> Active Downloads</div>
       <p>Live download progress for everything currently being grabbed by Radarr and Sonarr. Each item shows a progress bar, percentage, ETA, and file size. Show downloads are grouped when multiple episodes download at once.</p>
+      <p>When SABnzbd is configured in Settings, download items are enriched with real-time data from SABnzbd — actual download speed, ETA, and processing stage (Downloading, Repairing, Verifying, Extracting, Moving). The dashboard polls SABnzbd every 500ms while downloads are active, then drops back to a slower poll when idle.</p>
+      <div class="tip">Without SABnzbd configured, the card still works using progress data from Radarr/Sonarr, which updates less frequently.</div>
       <p>When SABnzbd is configured in Settings, progress data comes directly from SABnzbd instead of Radarr/Sonarr, giving smoother real-time updates. A status label shows the current SABnzbd stage — Downloading, Repairing, Verifying, Extracting, or Moving. Download speed is shown alongside the ETA. Items disappear from the card once SABnzbd finishes processing them.</p>
       <div class="tip">Without SABnzbd configured, the card still works — it uses the progress numbers from Radarr/Sonarr, which update less frequently.</div>
     </div>
@@ -371,9 +389,35 @@
   <hr class="divider">
 
   <div class="section">
+    <span class="section-anchor" id="watchlist-sync"></span>
+    <h2>Watchlist Sync</h2>
+    <p>Bi-directional sync between Radarr/Sonarr and your Trakt or MDBList watchlist. When both providers are active, it syncs to both.</p>
+    <div class="feature">
+      <p><strong>Arr → Watchlist</strong> — takes items that are monitored but don't have files yet, and adds them to your watchlist. This means they show up in Airing Soon and your smart queue.</p>
+      <p><strong>Watchlist → Arr</strong> — takes items from your watchlist and adds them to Radarr or Sonarr if they're not already there.</p>
+    </div>
+    <p>Both directions can be toggled independently in Settings. The sync runs at startup, daily at 2:30 AM, and in the background when you open Airing Soon (throttled to once every 30 minutes).</p>
+    <p>The <span class="btn-label">Watchlist Sync</span> button on the dashboard triggers a manual run.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="scheduler"></span>
+    <h2>Scheduler</h2>
+    <p>The scheduler grid on the dashboard shows all background jobs, their schedule, and when they'll next run. Jobs include the library cache rebuild, smart queue refresh, ML model retraining, universe scan, and watchlist sync.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="ssl-cert"></span>
+    <h2>SSL Certificate</h2>
+    <p>Only shown if an SSL domain is configured. Displays the current certificate status, expiry date, and days remaining. The certificate auto-renews before it expires.</p>
+  </div>
+
+  <hr class="divider">
+
+  <div class="section">
     <span class="section-anchor" id="activity-log"></span>
     <h2>Activity Log</h2>
-    <p>Live feed of suite activity at the bottom of the page. Filter by All, Webhook, Trakt, Playback, or General. Updates every 30 seconds.</p>
+    <p>Live feed of suite activity at the bottom of the page. When both Trakt and MDBList are active, you'll see separate entries for each provider's scrobbles. Filter by All, Webhook, Trakt, MDBList, Playback, or General. Updates every 30 seconds.</p>
   </div>
 
   <hr class="divider">
@@ -381,7 +425,7 @@
   <div class="section">
     <span class="section-anchor" id="nav-bar"></span>
     <h2>Navigation Bar</h2>
-    <p>The dark bar across the top of every page links to Dashboard, Lists, Predictions, Taste Profile, Stats, Settings, and Watch Party. The theme toggle in the top-right switches between dark and light mode.</p>
+    <p>The dark bar across the top of every page links to Dashboard, Lists, Predictions, Taste Profile, Stats, Settings, Watch Party, and this Guide. The theme toggle in the top-right switches between dark and light mode.</p>
   </div>
 
 </div>
@@ -559,7 +603,7 @@
 <!-- PAGE: STATS -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page" id="page-stats" data-sections="stats-overview,stats-trends,stats-queue-feedback">
+<div class="page" id="page-stats" data-sections="stats-overview,stats-top-people,stats-fun,stats-trends,stats-queue-feedback">
 
   <h1 class="page-title">📊 Stats</h1>
   <p class="page-intro">Your watching statistics and history at a glance.</p>
@@ -569,6 +613,20 @@
     <h2>Overview Tab</h2>
     <p>A user selector at the top lets you pick which linked account to view. The overview shows summary stats for total hours watched, items completed, average rating, and current streak.</p>
     <p>Below the stats row, two charts sit side by side — a genre breakdown (pie or bar chart of watch time by genre) and a monthly watch history (bar chart showing hours watched per month).</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="stats-top-people"></span>
+    <h2>Top People &amp; Studios</h2>
+    <p>Leaderboard-style lists showing your most watched actors, directors, studios, networks, and shows. Each entry shows how many items you've watched featuring that person or studio.</p>
+    <p>Hover over any entry to see a details popup with their full filmography from your library, sorted by your rating.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="stats-fun"></span>
+    <h2>Fun Stats</h2>
+    <p>A collection of interesting stats about your watching habits: longest binge session, longest watch streak, favourite day of the week, busiest month, and more.</p>
+    <p>A day-of-week bar chart shows which days you watch the most. Hover over any bar to see the exact count.</p>
   </div>
 
   <div class="section">
@@ -592,10 +650,25 @@
 <!-- PAGE: SETTINGS -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page" id="page-settings" data-sections="set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-trakt-import,set-danger">
+<div class="page" id="page-settings" data-sections="set-provider,set-mdblist,set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-trakt-import,set-danger">
 
   <h1 class="page-title">⚙️ Settings</h1>
   <p class="page-intro">Configure connections, features, schedules, and integrations.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="set-provider"></span>
+    <h2>Integration Provider</h2>
+    <p>Choose which services the suite uses for scrobbling, watch history, and watchlists. Options are Trakt, MDBList, Both, or None. Changing this controls which sections appear below and which services receive your playback data.</p>
+    <p>When set to "Both", every playback event scrobbles to Trakt and MDBList simultaneously. Watchlist sync, scrobble audit, and history all work with whichever providers are active.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-mdblist"></span>
+    <h2>MDBList</h2>
+    <p>Only shown when MDBList is selected as a provider. Enter your MDBList API key (found on your MDBList account page) and save.</p>
+    <p><span class="btn-label">Sync New</span> pushes your Trakt watch history and ratings to MDBList since the last sync (delta sync). <span class="btn-label">Full Re-sync</span> pushes everything from scratch. <span class="btn-label">Check Status</span> compares the two services and shows how many items are missing from MDBList.</p>
+    <div class="tip">MDBList scrobbling only works for movies — their API doesn't support TV episode scrobble. TV episodes are tracked via history sync instead, which fires when playback stops.</div>
+  </div>
 
   <div class="section">
     <span class="section-anchor" id="set-emby"></span>
@@ -659,9 +732,9 @@
   <div class="section">
     <span class="section-anchor" id="set-watchlist-sync"></span>
     <h2>Watchlist Sync</h2>
-    <p>Bi-directional sync between your download managers and Trakt watchlist. Two independent toggles:</p>
-    <p><strong>Arr → Watchlist</strong> — syncs monitored-but-missing Radarr/Sonarr items to your Trakt watchlist so they appear in Airing Soon.</p>
-    <p><strong>Watchlist → Arr</strong> — auto-adds Trakt watchlist items to Radarr/Sonarr (uses first configured server).</p>
+    <p>Bi-directional sync between your download managers and your Trakt or MDBList watchlist. When both providers are active, items are synced to both. Two independent toggles:</p>
+    <p><strong>Arr → Watchlist</strong> — syncs monitored-but-missing Radarr/Sonarr items to your watchlist so they appear in Airing Soon.</p>
+    <p><strong>Watchlist → Arr</strong> — auto-adds watchlist items to Radarr/Sonarr (uses first configured server).</p>
     <p>Runs at startup, daily at 2:30 AM, and in the background when you open Airing Soon.</p>
   </div>
 
@@ -694,7 +767,7 @@
 <!-- PAGE: WATCH PARTY -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page" id="page-watch-party" data-sections="wp-overview,wp-create,wp-join,wp-playback,wp-chat,wp-end">
+<div class="page" id="page-watch-party" data-sections="wp-overview,wp-create,wp-lobby,wp-pick-together,wp-join,wp-playback,wp-chat,wp-end">
 
   <h1 class="page-title">👥 Watch Party</h1>
   <p class="page-intro">Watch together with synchronised playback across Emby devices.</p>
@@ -709,21 +782,42 @@
   <div class="section">
     <span class="section-anchor" id="wp-create"></span>
     <h2>Create a Party</h2>
-    <p>Search your Emby library by title, select the item, and click <span class="btn-label">🎉 Create Party</span>. You'll get a party code to share with others. Active and past parties appear in a list below.</p>
+    <p>Search your Emby library by title, select the item, and click <span class="btn-label">Create Party</span>. You'll get a party code to share with others. Active and past parties appear in a list below.</p>
+    <p>Each active party in the list has a ✕ button to end it directly from the lobby without needing to enter it first.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wp-lobby"></span>
+    <h2>Create Lobby (Pick Together)</h2>
+    <p>Click <span class="btn-label">🎬 Create Lobby (Pick Together)</span> to create a party without choosing content first. Members join via code, then the group decides what to watch together using Pick Together.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wp-pick-together"></span>
+    <h2>Pick Together (Theater Mode)</h2>
+    <p>A group voting feature for deciding what to watch. Works in two modes:</p>
+
+    <h3>In a Watch Party (remote)</h3>
+    <p>After creating a lobby and members join, the host clicks <span class="btn-label">🎬 Pick Together</span>. Candidate cards are pulled from each participant's smart queue (in-library, unplayed items only) and appear on everyone's screen. Each person taps to vote from their own device. Votes update in real time.</p>
+    <p>The host clicks <span class="btn-label">✓ Confirm &amp; Start</span> to select the winner (highest votes, tie-break by queue score). The pick panel closes and the party item is set to the winner. The host then clicks <span class="btn-label">📱 Choose Devices</span> to pick which Emby devices to play on. After selecting devices, a 20-second countdown appears on all members' screens with a "Bring your Emby app into focus" message, then playback starts on the selected devices.</p>
+
+    <h3>In the room (solo, one device)</h3>
+    <p>On the Watch Party lobby, click the <span class="btn-label">🎬 Pick Together</span> card. Candidates from your smart queue appear in a popup. Pass the device around — each person taps their pick (votes stack up). Click <span class="btn-label">✓ Pick Winner</span> to select the top vote. A device picker then appears listing your active Emby sessions. Select one and hit <span class="btn-label">▶ Play</span> to start playback directly — no party or countdown needed.</p>
+    <div class="tip">Pick Together needs items in your smart queue. If no candidates appear, run a queue refresh from the dashboard first.</div>
   </div>
 
   <div class="section">
     <span class="section-anchor" id="wp-join"></span>
     <h2>Join a Party</h2>
-    <p>Everyone joining a party must have an active account on the Emby server and must select their username from the user dropdown at the top of the page before joining.</p>
-    <p>Enter the party code and click <span class="btn-label">Join</span>. You can also join by clicking a party from the active list. The member count updates in real time as people join.</p>
+    <p>Everyone joining must have an active Emby account and must select their username from the dropdown before joining.</p>
+    <p>Enter the party code and click <span class="btn-label">Join</span>, or click a party from the active list. The member count updates in real time as people join.</p>
   </div>
 
   <div class="section">
     <span class="section-anchor" id="wp-playback"></span>
     <h2>Playback Controls</h2>
-    <p>Once inside a party, the host clicks <span class="btn-label">▶ Start Playback</span>. Devices are listed with checkboxes — tick the ones to play on, then confirm. Playback starts on all selected devices at the same time.</p>
-    <p><span class="btn-label">⏸ Pause All</span> pauses every device simultaneously. Click again to resume.</p>
+    <p>The host clicks <span class="btn-label">📱 Choose Devices</span> to see active Emby sessions. Tick the devices to play on, then confirm. A 20-second countdown broadcasts to all members, then playback starts on the selected devices.</p>
+    <p><span class="btn-label">⏸ Pause All</span> pauses every device at the same time. Click again to resume.</p>
     <p><span class="btn-label">⏩ Seek</span> prompts for a timestamp (e.g. 15:30) and jumps all devices to that position.</p>
   </div>
 
@@ -756,11 +850,14 @@
   // Section label map (anchor id → display name)
   const labels = {
     // Dashboard
+    'first-run':'🚀 First-Run Setup',
     'status-bar':'📡 Status Bar','cache':'🗄️ Cache & Library','link-trakt':'🔗 Link Trakt',
     'smart-queue':'🎯 Smart Queue','ml-predictor':'🤖 ML Predictor','universes-card':'🌌 Universes',
     'airing-soon':'📅 Airing Soon','scrobble-audit':'🔍 Scrobble Audit','taste-drift':'📊 Taste Drift',
     'continue-watching':'⏸️ Continue Watching','new-coming-soon':'📥 New & Coming Soon',
-    'active-downloads':'⬇️ Downloads','activity-log':'📋 Activity Log','nav-bar':'🧭 Nav Bar',
+    'active-downloads':'⬇️ Downloads','watchlist-sync':'🔄 Watchlist Sync',
+    'scheduler':'⏰ Scheduler','ssl-cert':'🔒 SSL Certificate',
+    'activity-log':'📋 Activity Log','nav-bar':'🧭 Nav Bar',
     // Universes
     'uni-overview':'Overview','uni-auto-discover':'Auto-Discovery','uni-cards':'Universe Cards',
     'uni-reorder':'Reorder','uni-add':'Add Items','uni-create':'Create Universe',
@@ -773,14 +870,17 @@
     'taste-eras':'Eras','taste-gems':'Hidden Gems','taste-challenges':'Challenges',
     'taste-against':'Against Your Taste',
     // Stats
-    'stats-overview':'Overview','stats-trends':'Trends','stats-queue-feedback':'Queue Feedback',
+    'stats-overview':'Overview','stats-top-people':'Top People & Studios',
+    'stats-fun':'Fun Stats','stats-trends':'Trends','stats-queue-feedback':'Queue Feedback',
     // Settings
+    'set-provider':'Integration Provider','set-mdblist':'MDBList',
     'set-emby':'Emby','set-toggles':'Feature Toggles','set-queue-opts':'Queue Options',
     'set-blocklist':'Blocklist','set-scheduler':'Scheduler','set-backup':'Backup',
     'set-radarr':'Radarr','set-sonarr':'Sonarr','set-sabnzbd':'SABnzbd','set-watchlist-sync':'Watchlist Sync',
     'set-tmdb':'TMDB','set-trakt-import':'Trakt Import','set-danger':'Danger Zone',
     // Watch Party
-    'wp-overview':'Overview','wp-create':'Create','wp-join':'Join',
+    'wp-overview':'Overview','wp-create':'Create','wp-lobby':'Create Lobby',
+    'wp-pick-together':'Pick Together','wp-join':'Join',
     'wp-playback':'Playback','wp-chat':'Chat & Reactions','wp-end':'End Party',
   };
 
