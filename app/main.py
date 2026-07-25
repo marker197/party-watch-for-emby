@@ -36,12 +36,10 @@ from app.utils.database import init_db, get_db, async_session
 from app.utils.redis_cache import close_redis
 from app.api.routes import router
 from app.api.monitoring_routes import router as monitoring_router
-from app.api.rate_limit_admin_routes import router as rate_limit_router
 from app.api.phase5_routes import router as phase5_router
 from app.services.watch_party.service import sio as watch_party_sio
 from app.middleware.rate_limit import limiter
 from app.services.monitoring.health import monitor
-from app.services.rate_limit_service import RateLimitService
 
 log = structlog.get_logger()
 
@@ -118,11 +116,6 @@ async def lifespan(app: FastAPI):
     # Database
     await init_db()
     log.info("suite.db_ready")
-    
-    # Initialize rate limit configurations
-    async with async_session() as db:
-        await RateLimitService.initialize_defaults(db)
-    log.info("suite.rate_limits_initialized")
 
     # Load schedule overrides from DB (overwrite config defaults)
     await _load_schedule_overrides()
@@ -244,9 +237,7 @@ async def _validation_error_handler(request: Request, exc: RequestValidationErro
 app.include_router(router)
 # Monitoring routes (health checks, metrics)
 app.include_router(monitoring_router)
-# Rate limiting admin routes
-app.include_router(rate_limit_router)
-# Social Watching, Library Health, Metadata Enrichment, Bulk Actions
+# Social Watching, Library Health, Bulk Actions
 app.include_router(phase5_router)
 
 
@@ -289,12 +280,6 @@ async def dashboard(request: Request):
             "watch_party": settings.enable_watch_party,
         },
     })
-
-
-@app.get("/rate-limiting")
-async def rate_limiting_dashboard(request: Request):
-    """Rate limiting configuration dashboard."""
-    return templates.TemplateResponse("rate_limiting.html", {"request": request})
 
 
 # ---------------------------------------------------------------------------
