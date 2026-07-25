@@ -1980,28 +1980,55 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     # -- Helper: build MDBList scrobble payload --------------------------------
     def _build_mdblist_scrobble_payload():
         """Build MDBList-compatible scrobble payload from webhook item data.
-        MDBList scrobble only supports movies (not episodes/shows).
-        MDBList only accepts these ID keys: imdb, tmdb, trakt, kitsu, mdblist.
-        Sending unsupported keys like 'tvdb' causes a 400 rejection.
+        Supports movies and TV episodes.
+        Movie IDs accepted: imdb, tmdb, trakt, kitsu, mdblist (NOT tvdb).
+        Show/episode IDs accepted: imdb, tmdb, trakt, tvdb, mdblist.
+        Episode payload uses MDBList's nested format:
+          {"show": {"ids": {...}, "season": {"number": N, "episode": {"number": M}}}}
         """
-        if item_type_raw != "Movie":
-            return None  # MDBList scrobble API only supports movies
-
         provider_ids = item_data.get("ProviderIds", {})
-        mdb_ids = {}
-        if provider_ids.get("Imdb"):
-            mdb_ids["imdb"] = provider_ids["Imdb"]
-        if provider_ids.get("Tmdb"):
-            mdb_ids["tmdb"] = int(provider_ids["Tmdb"])
-        # Note: tvdb is NOT supported by MDBList scrobble — omitted intentionally
-        if not mdb_ids:
-            return None
-        return {"movie": {"ids": mdb_ids}}
+
+        if item_type_raw == "Movie":
+            mdb_ids = {}
+            if provider_ids.get("Imdb"):
+                mdb_ids["imdb"] = provider_ids["Imdb"]
+            if provider_ids.get("Tmdb"):
+                mdb_ids["tmdb"] = int(provider_ids["Tmdb"])
+            # Note: tvdb is NOT supported by MDBList scrobble for movies
+            if not mdb_ids:
+                return None
+            return {"movie": {"ids": mdb_ids}}
+
+        elif item_type_raw == "Episode":
+            # Build show-level IDs (prefer SeriesProviderIds, fall back to episode IDs)
+            show_ids = {}
+            series_provider = item_data.get("SeriesProviderIds", {})
+            for key in ("Imdb", "Tmdb", "Tvdb"):
+                val = series_provider.get(key) or provider_ids.get(key)
+                if val:
+                    show_ids[key.lower()] = int(val) if key != "Imdb" else val
+            if not show_ids:
+                return None
+
+            season_num = item_data.get("ParentIndexNumber", 1)
+            episode_num = item_data.get("IndexNumber", 1)
+
+            return {
+                "show": {
+                    "ids": show_ids,
+                    "season": {
+                        "number": season_num,
+                        "episode": {"number": episode_num},
+                    },
+                },
+            }
+
+        return None
 
     # -- Helper: scrobble to MDBList (fire-and-forget, non-blocking) -----------
     async def _mdblist_scrobble(action: str, progress: float):
         """Send a scrobble event to MDBList if enabled. Never raises.
-        Only fires for movies — MDBList's scrobble endpoint doesn't support TV.
+        Fires for movies and TV episodes.
         """
         try:
             mdb = await _get_mdblist_client_for_scrobble()
