@@ -119,7 +119,7 @@ class LibraryHealthService:
             user_id=user.id,
             **report.get("summary", {}),
         )
-        return report
+        return await self._apply_dismissals(report, user.id)
 
     # ── Scan: incomplete series ─────────────────────────────────────────
 
