@@ -373,15 +373,21 @@ class LibraryHealthService:
         report["watched_not_in_library"]["movies"] = movies
         report["watched_not_in_library"]["shows"] = shows
 
+        # Filter missing_sequels (Trakt Suggestions) — dismissed as type "movie"
+        sequels = report.get("missing_sequels", [])
+        sequels = [s for s in sequels if ("movie", _item_id(s)) not in dismissed]
+        report["missing_sequels"] = sequels
+
         # Recalculate summary
         if "summary" in report:
             report["summary"]["movies_not_in_library"] = len(movies)
             report["summary"]["shows_not_in_library"] = len(shows)
+            report["summary"]["missing_sequels"] = len(sequels)
             report["summary"]["total_issues"] = (
                 report["summary"].get("incomplete_series", 0)
                 + len(movies)
                 + len(shows)
-                + report["summary"].get("missing_sequels", 0)
+                + len(sequels)
             )
 
         return report

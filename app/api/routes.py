@@ -2505,6 +2505,20 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             imdb_id = provider_ids.get("Imdb")
             tvdb_id = provider_ids.get("Tvdb")
 
+            # Immediately update library cache for Movies and Series
+            # so all features (Library Health, Universe Discovery, etc.)
+            # see the new item without waiting for the nightly rebuild
+            if item_type_raw in ("Movie", "Series") and emby_item_id:
+                try:
+                    cache_type = "movie" if item_type_raw == "Movie" else "series"
+                    await LibraryCache._cache_item(item_data, item_type=cache_type)
+                    log.info("webhook.library_cache_updated",
+                             title=item_name, type=cache_type,
+                             emby_id=emby_item_id)
+                except Exception as _ce:
+                    log.debug("webhook.library_cache_update_failed",
+                              error=str(_ce)[:120])
+
             # For episodes, also extract the series-level IDs from SeriesId
             # so we can match the queue item (which tracks the series, not
             # individual episodes)
@@ -2606,8 +2620,6 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     f"📥 Library added: {item_name} ({item_type_raw}) — no provider IDs to match",
                     category="library",
                 )
-
-                # Also note: library cache will pick this up on next scheduled rebuild
 
             # ── Update Recently Arrived from webhook ──────────────────────
             # Check if this item was in the pending snapshot and surface it
