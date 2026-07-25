@@ -38,5 +38,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["sh", "-c", "python -c \"from app.config import settings; from sqlalchemy import create_engine, text; e=create_engine(settings.database_url.replace('asyncpg','psycopg')); c=e.connect(); c.execute(text('DELETE FROM alembic_version')); c.commit(); c.close(); print('alembic_version cleared')\" 2>/dev/null; alembic stamp 001_initial && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --log-level info"]
-
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --log-level info"]

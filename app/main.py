@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import select, text as sa_text
 from fastapi.templating import Jinja2Templates
 
 from app.config import settings
@@ -116,6 +116,18 @@ async def lifespan(app: FastAPI):
     # Database
     await init_db()
     log.info("suite.db_ready")
+
+    # One-time: update alembic_version after migration squash (remove next session)
+    try:
+        async with async_session() as db:
+            result = await db.execute(sa_text("SELECT version_num FROM alembic_version LIMIT 1"))
+            row = result.first()
+            if row and row[0] != "001_initial":
+                await db.execute(sa_text("UPDATE alembic_version SET version_num = '001_initial'"))
+                await db.commit()
+                log.info("suite.alembic_version_updated", old=row[0], new="001_initial")
+    except Exception as e:
+        log.warning("suite.alembic_version_check_skipped", error=str(e))
 
     # Load schedule overrides from DB (overwrite config defaults)
     await _load_schedule_overrides()
