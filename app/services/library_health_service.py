@@ -274,12 +274,13 @@ class LibraryHealthService:
             log.warning("library_health.ratings_failed", error=str(e)[:120])
             return results
 
-        # Filter to highly rated, sort by rating desc
+        # Filter to highly rated, shuffle so each scan surfaces different suggestions
+        import random as _random
         high_rated = [
             r for r in ratings
             if (r.get("rating") or 0) >= min_rating
         ]
-        high_rated.sort(key=lambda x: x.get("rating", 0), reverse=True)
+        _random.shuffle(high_rated)
 
         # Limit lookups to avoid hammering Trakt
         lookups_done = 0
