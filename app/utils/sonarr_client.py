@@ -239,12 +239,15 @@ class SonarrClient:
             result = []
             for ep in (data if isinstance(data, list) else []):
                 series = ep.get("series") or {}
+                ep_title = ep.get("title", "")
+                if ep_title.startswith("Spoiler: "):
+                    ep_title = ep_title[9:]
                 result.append({
                     "tvdb_id": series.get("tvdbId"),
                     "series_title": series.get("title", ""),
                     "season": ep.get("seasonNumber"),
                     "episode": ep.get("episodeNumber"),
-                    "episode_title": ep.get("title", ""),
+                    "episode_title": ep_title,
                     "air_date_utc": ep.get("airDateUtc"),
                     "has_file": ep.get("hasFile", False),
                 })
