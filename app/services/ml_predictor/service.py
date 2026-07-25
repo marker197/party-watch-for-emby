@@ -208,10 +208,12 @@ class MLPredictorService:
                 old = (await db.execute(
                     select(MLModel).where(MLModel.user_id == user.id, MLModel.is_active == True)
                 )).scalars().all()
+                next_version = max((m.version or 0 for m in old), default=0) + 1
                 for m in old:
                     m.is_active = False
                 db.add(MLModel(
                     user_id=user.id,
+                    version=next_version,
                     training_samples=len(y),
                     mae=mae,
                     r2=r2,
@@ -857,7 +859,7 @@ class MLPredictorService:
                     .order_by(MLModel.version.desc())
                     .limit(1)
                 )).scalar_one_or_none()
-                if latest_model and latest_model.version:
+                if latest_model and latest_model.version and latest_model.version > 1:
                     total_runs = latest_model.version
         except Exception:
             pass
