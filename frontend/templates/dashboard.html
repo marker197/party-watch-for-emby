@@ -960,6 +960,7 @@
 </div>
 
 <script>
+function esc(s) { if (!s && s !== 0) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 const API = '';  // same origin
 let currentUserId = null;
 let allUsers = [];
@@ -1004,7 +1005,7 @@ async function loadUsers() {
     // Populate selector with linked users only
     const select = document.getElementById('userSelect');
     select.innerHTML = linkedUsers.map(u => 
-      `<option value="${u.id}">${u.emby_username || u.emby_user_id}${u.linked ? ' ✓' : ''}</option>`
+      `<option value="${u.id}">${esc(u.emby_username || u.emby_user_id)}${u.linked ? ' ✓' : ''}</option>`
     ).join('');
     
     // Auto-select first linked user
@@ -1029,8 +1030,8 @@ async function loadUsers() {
         tokenHtml = ` <span style="font-size:0.72rem;opacity:0.7;">${icon} ${label}</span>`;
       }
       return `<div class="user-row">
-        <span class="name">${u.emby_username || u.emby_user_id}</span>
-        <span class="linked">✓ ${u.trakt_username}${tokenHtml}</span>
+        <span class="name">${esc(u.emby_username || u.emby_user_id)}</span>
+        <span class="linked">✓ ${esc(u.trakt_username)}${tokenHtml}</span>
       </div>`;
     }).join('');
   } catch(e) {
@@ -1179,9 +1180,9 @@ async function loadSSLStatus() {
 
     if (d.error && !d.days_left && d.days_left !== 0) {
       card.innerHTML = `<div class="cache-stat" style="text-align:left;padding:10px 14px;">
-        <span class="label" style="text-align:left;">🔴 ${d.domain || 'Unknown'}</span>
+        <span class="label" style="text-align:left;">🔴 ${esc(d.domain || 'Unknown')}</span>
         <span class="value" style="font-size:0.88rem;">Error</span>
-        <span style="color:var(--red);font-size:0.7rem;word-break:break-all;">${(d.error||'').substring(0,80)}</span>
+        <span style="color:var(--red);font-size:0.7rem;word-break:break-all;">${esc((d.error||'').substring(0,80))}</span>
       </div>`;
       return;
     }
@@ -1191,7 +1192,7 @@ async function loadSSLStatus() {
     const checked = d.checked_at ? new Date(d.checked_at + 'Z').toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
 
     card.innerHTML = `<div class="cache-stat" style="text-align:left;padding:10px 14px;min-width:180px;">
-      <span class="label" style="text-align:left;">${d.domain || ''}</span>
+      <span class="label" style="text-align:left;">${esc(d.domain || '')}</span>
       <span class="value" style="font-size:0.88rem;display:flex;align-items:center;gap:6px;">${dot} ${d.days_left} days left</span>
       <span style="color:var(--text-dim);font-size:0.7rem;">Expires ${expiry}</span>
     </div>
@@ -1227,7 +1228,7 @@ async function loadLibraries() {
       const div = document.createElement('div');
       div.className = 'cache-stat lib-card';
       div.innerHTML = `
-        <span class="label">${icon} ${lib.name}</span>
+        <span class="label">${icon} ${esc(lib.name)}</span>
         <span class="value">${lib.item_count}</span>
         <span style="color:var(--text-dim);font-size:0.68rem;">${label}</span>
       `;
@@ -1259,7 +1260,7 @@ async function loadParties() {
         const users = (p.participants && p.participants.length)
           ? p.participants.join(', ')
           : 'no participants';
-        return `<div style="margin-bottom:4px;"><strong>${p.title}</strong><br><span style="color:var(--text-dim);">${p.code} · ${users}</span></div>`;
+        return `<div style="margin-bottom:4px;"><strong>${esc(p.title)}</strong><br><span style="color:var(--text-dim);">${esc(p.code)} · ${esc(users)}</span></div>`;
       }).join('');
     }
 
@@ -1608,11 +1609,11 @@ async function viewQueue(skipTransition) {
             <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${totalPct}%;background:${barColor};"></div></div>
             <span class="dl-progress-text">${totalPct.toFixed(0)}%</span>
           </div>
-          <div class="dl-meta" style="font-size:0.6rem;color:var(--text-dim);margin-top:1px;">${dlEps.length} ep${dlEps.length > 1 ? 's' : ''}${epLabels ? ': ' + epLabels : ''}</div>`;
+          <div class="dl-meta" style="font-size:0.6rem;color:var(--text-dim);margin-top:1px;">${dlEps.length} ep${dlEps.length > 1 ? 's' : ''}${epLabels ? ': ' + esc(epLabels) : ''}</div>`;
         }
 
         const titleClass = inLib ? 'queue-title' : (dl || dlEps ? 'queue-title' : 'queue-title missing');
-        const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        const safeTitle = esc(i.title || '').replace(/'/g, '&#39;');
         const imdbLink = (!inLib && !dl && !dlEps && i.imdb_id)
           ? ` <a href="https://www.imdb.com/title/${i.imdb_id}/" target="_blank" rel="noopener" class="queue-imdb-link">IMDb</a>`
           : '';
@@ -1621,17 +1622,17 @@ async function viewQueue(skipTransition) {
         if (dl || dlEps) {
           // Item is downloading — show the server badge instead of action button
           const srvName = dl ? dl.server : dlEps[0].server;
-          actionBtn = `<span class="dl-badge">${srvName}</span>`;
+          actionBtn = `<span class="dl-badge">${esc(srvName)}</span>`;
         } else if (!inLib && i.tmdb_id && i.type === 'movie' && arrRadarr[i.tmdb_id]) {
           // Already in Radarr — show label instead of send button
-          actionBtn = `<span class="arr-in-badge">In ${arrRadarr[i.tmdb_id]}</span>`;
+          actionBtn = `<span class="arr-in-badge">In ${esc(arrRadarr[i.tmdb_id])}</span>`;
         } else if (!inLib && i.type === 'show' && i.tvdb_id && arrSonarr[i.tvdb_id]) {
           // Already in Sonarr — show label instead of send button
-          actionBtn = `<span class="arr-in-badge">In ${arrSonarr[i.tvdb_id]}</span>`;
+          actionBtn = `<span class="arr-in-badge">In ${esc(arrSonarr[i.tvdb_id])}</span>`;
         } else if (!inLib && i.tmdb_id && i.type === 'movie') {
           if (_radarrServers.length > 1) {
             const opts = _radarrServers.map((s, si) =>
-              `<option value="${si}">${s.quality_profile_name || s.name}</option>`
+              `<option value="${si}">${esc(s.quality_profile_name || s.name)}</option>`
             ).join('');
             actionBtn = `<span class="arr-dropdown-wrap"><select class="arr-dropdown radarr" id="radarr-sel-${n}" title="Choose Radarr server">${opts}</select>` +
               `<button class="queue-radarr-btn" id="radarr-btn-${n}-0" onclick="sendToRadarr(${n}, ${i.tmdb_id}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, parseInt(document.getElementById('radarr-sel-${n}').value))">📥</button></span>`;
@@ -1641,7 +1642,7 @@ async function viewQueue(skipTransition) {
         } else if (!inLib && i.type === 'show') {
           if (_sonarrServers.length > 1) {
             const opts = _sonarrServers.map((s, si) =>
-              `<option value="${si}">${s.quality_profile_name || s.name}</option>`
+              `<option value="${si}">${esc(s.quality_profile_name || s.name)}</option>`
             ).join('');
             actionBtn = `<span class="arr-dropdown-wrap"><select class="arr-dropdown sonarr" id="sonarr-sel-${n}" title="Choose Sonarr server">${opts}</select>` +
               `<button class="queue-sonarr-btn" id="sonarr-btn-${n}-0" onclick="sendToSonarr(${n}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, parseInt(document.getElementById('sonarr-sel-${n}').value))">📥</button></span>`;
@@ -1659,7 +1660,7 @@ async function viewQueue(skipTransition) {
 
         return `<tr id="queue-row-${n}">
           <td style="color:var(--text-dim);font-size:0.78rem;">${n + 1}</td>
-          <td><span class="${titleClass}">${i.title}</span>${yearStr}${rating}${newBadge}${imdbLink}${dlInline}</td>
+          <td><span class="${titleClass}">${esc(i.title)}</span>${yearStr}${rating}${newBadge}${imdbLink}${dlInline}</td>
           <td class="queue-source"><span class="source-tag source-${i.source}">${i.source}</span></td>
           <td class="queue-score">${i.score}</td>
           <td>${actionBtn}</td>
@@ -1682,7 +1683,7 @@ async function viewQueue(skipTransition) {
       }
     }
   } catch(e) {
-    document.getElementById('queueTable').innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+    document.getElementById('queueTable').innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${esc(e.message)}</div>`;
   }
 }
 
@@ -1839,9 +1840,9 @@ async function viewAiring() {
         if (i.streaming_services && i.streaming_services.length > 0) {
           const badges = i.streaming_services.map(s => {
             if (s.logo_url) {
-              return `<img src="${s.logo_url}" alt="${s.name}" title="${s.name}" style="height:20px;width:20px;border-radius:4px;vertical-align:middle;background:#222;padding:1px;">`;
+              return `<img src="${s.logo_url}" alt="${esc(s.name)}" title="${esc(s.name)}" style="height:20px;width:20px;border-radius:4px;vertical-align:middle;background:#222;padding:1px;">`;
             }
-            return `<span style="font-size:0.68rem;color:#ccc;background:#333;padding:2px 6px;border-radius:4px;vertical-align:middle;white-space:nowrap;">${s.name}</span>`;
+            return `<span style="font-size:0.68rem;color:#ccc;background:#333;padding:2px 6px;border-radius:4px;vertical-align:middle;white-space:nowrap;">${esc(s.name)}</span>`;
           }).join(' ');
           streamBadges = `<span style="margin-left:8px;display:inline-flex;gap:4px;align-items:center;vertical-align:middle;">${badges}</span>`;
         }
@@ -1856,11 +1857,11 @@ async function viewAiring() {
           if (i.in_library) {
             statusBadge = '<span class="queue-badge unwatched">in library</span>';
           } else if (i.tmdb_id && arrRadarr[i.tmdb_id]) {
-            statusBadge = `<span class="arr-in-badge">In ${arrRadarr[i.tmdb_id]}</span>`;
+            statusBadge = `<span class="arr-in-badge">In ${esc(arrRadarr[i.tmdb_id])}</span>`;
           }
         } else {
           if (i.tvdb_id && arrSonarr[i.tvdb_id]) {
-            statusBadge = `<span class="arr-in-badge">In ${arrSonarr[i.tvdb_id]}</span>`;
+            statusBadge = `<span class="arr-in-badge">In ${esc(arrSonarr[i.tvdb_id])}</span>`;
           } else if (i.in_library) {
             statusBadge = '<span class="queue-badge unwatched">in library</span>';
           }
@@ -1869,12 +1870,12 @@ async function viewAiring() {
         let actionBtn = '';
         if (i.media_type === 'movie' && !i.in_library && !(i.tmdb_id && arrRadarr[i.tmdb_id])) {
           if (i.tmdb_id) {
-            const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const safeTitle = esc(i.title || '').replace(/'/g, '&#39;');
             actionBtn = `<button class="queue-radarr-btn" id="radarr-btn-${2000 + idx}-0" onclick="sendToRadarr(${2000 + idx}, ${i.tmdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Radarr</button>`;
           }
         } else if (i.media_type === 'show' && !i.in_library && !(i.tvdb_id && arrSonarr[i.tvdb_id])) {
           if (i.is_premiere) {
-            const safeTitle = (i.title || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const safeTitle = esc(i.title || '').replace(/'/g, '&#39;');
             actionBtn = `<button class="queue-sonarr-btn" id="sonarr-btn-${1000 + idx}-0" onclick="sendToSonarr(${1000 + idx}, ${i.tvdb_id || 0}, '${i.imdb_id || ''}', '${safeTitle}', ${i.year || 0}, 0)">📥 Sonarr</button>`;
           }
         }
@@ -1912,9 +1913,9 @@ async function viewAiring() {
           if (m.streaming_services && m.streaming_services.length > 0) {
             const logos = m.streaming_services.map(s => {
               if (s.logo_url) {
-                return `<img src="${s.logo_url}" alt="${s.name}" title="${s.name}" style="height:18px;width:18px;border-radius:3px;vertical-align:middle;background:#222;padding:1px;">`;
+                return `<img src="${s.logo_url}" alt="${esc(s.name)}" title="${esc(s.name)}" style="height:18px;width:18px;border-radius:3px;vertical-align:middle;background:#222;padding:1px;">`;
               }
-              return `<span style="font-size:0.65rem;color:#ccc;background:#333;padding:1px 5px;border-radius:3px;">${s.name}</span>`;
+              return `<span style="font-size:0.65rem;color:#ccc;background:#333;padding:1px 5px;border-radius:3px;">${esc(s.name)}</span>`;
             }).join(' ');
             streamLogos = ` <span style="display:inline-flex;gap:3px;align-items:center;margin-left:4px;">${logos}</span>`;
           }
@@ -1930,7 +1931,7 @@ async function viewAiring() {
 
     el.innerHTML = html;
   } catch(e) {
-    el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+    el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${esc(e.message)}</div>`;
   }
 }
 
@@ -2236,7 +2237,7 @@ async function runAudit() {
 
     el.innerHTML = html;
   } catch(e) {
-    el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+    el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${esc(e.message)}</div>`;
   }
 }
 
@@ -2412,13 +2413,13 @@ async function viewDrift() {
         return `<div style="display:flex; align-items:flex-start; gap:10px; padding:8px 4px; border-bottom:1px solid var(--border);">
           <span style="color:${color}; font-weight:700; font-size:1rem; flex-shrink:0; margin-top:1px;">${arrow}</span>
           <div style="flex:1; min-width:0;">
-            <div style="font-size:0.85rem; line-height:1.4;">${desc}</div>
-            <span class="queue-source" style="font-size:0.7rem; margin-top:3px; display:inline-block;">${badge}</span>
+            <div style="font-size:0.85rem; line-height:1.4;">${esc(desc)}</div>
+            <span class="queue-source" style="font-size:0.7rem; margin-top:3px; display:inline-block;">${esc(badge)}</span>
           </div>
         </div>`;
       }).join('');
   } catch(e) {
-    el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+    el.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${esc(e.message)}</div>`;
   }
 }
 
@@ -2453,9 +2454,9 @@ function showToast(job, status, durationS, error) {
 
   let detail = isOk
     ? (durationS != null ? `Completed in ${durationS}s` : 'Completed')
-    : `Failed${error ? ': ' + error.slice(0, 80) : ''}`;
+    : `Failed${error ? ': ' + esc(error.slice(0, 80)) : ''}`;
 
-  el.innerHTML = `<div class="toast-job">${label}</div>` +
+  el.innerHTML = `<div class="toast-job">${esc(label)}</div>` +
     `<div class="toast-detail">${detail}</div>` +
     `<button class="toast-close" onclick="dismissToast(this.parentElement)">&times;</button>`;
 
@@ -2478,7 +2479,7 @@ function showNotification(message) {
   }
   const el = document.createElement('div');
   el.className = 'toast toast-ok';
-  el.innerHTML = `<div class="toast-detail">${message}</div>` +
+  el.innerHTML = `<div class="toast-detail">${esc(message)}</div>` +
     `<button class="toast-close" onclick="dismissToast(this.parentElement)">&times;</button>`;
   container.appendChild(el);
   setTimeout(() => dismissToast(el), 10000);
@@ -2543,7 +2544,7 @@ async function dashboardPoll() {
           else if (e.cat === 'trakt') icon = '🔄';
           else if (e.cat === 'webhook') icon = '📡';
           const cls = m.startsWith('✓') ? 'ok' : (m.startsWith('✗') || m.startsWith('⚠')) ? 'err' : '';
-          return `<div class="entry ${cls}"><span style="opacity:0.45;font-size:0.78rem;">${e.ts.split(' ')[1]}</span>  ${icon} ${m}</div>`;
+          return `<div class="entry ${cls}"><span style="opacity:0.45;font-size:0.78rem;">${e.ts.split(' ')[1]}</span>  ${icon} ${esc(m)}</div>`;
         }).join('');
         el.innerHTML = clientHtml + apiHtml;
       }
@@ -2587,7 +2588,7 @@ async function loadContinueWatching() {
     const r = await fetch(API + `/api/continue-watching/${currentUserId}`);
     if (!r.ok) {
       const txt = await r.text();
-      container.innerHTML = `<div style="color:var(--red);padding:8px;">HTTP ${r.status}: ${txt.substring(0,200)}</div>`;
+      container.innerHTML = `<div style="color:var(--red);padding:8px;">HTTP ${r.status}: ${esc(txt.substring(0,200))}</div>`;
       return;
     }
     const d = await r.json();
@@ -2641,7 +2642,7 @@ async function loadContinueWatching() {
 
         // Watch Party quick-start button — uses the series emby_id for shows
         const partyItemId = item.emby_id;
-        const partyTitle = item.title + (item.year ? ' (' + item.year + ')' : '');
+        const partyTitle = esc(item.title) + (item.year ? ' (' + item.year + ')' : '');
         const partyTicks = item.type === 'show' ? (item.resume_ticks || 0) : (item.position_ticks || 0);
         const partyPct = item.type === 'show'
           ? ((item.episodes || []).find(e => e.emby_id === item.resume_emby_id) || {}).progress_pct || pct
@@ -2653,7 +2654,7 @@ async function loadContinueWatching() {
 
         return '<div style="display:flex;align-items:center;gap:12px;padding:8px 10px;border-bottom:1px solid var(--border);">'
           + '<div style="flex:1;min-width:0;">'
-          + '<div style="font-weight:600;font-size:0.88rem;">' + item.title + (item.year ? ' <span style="color:var(--text-dim);font-weight:400;">(' + item.year + ')</span>' : '') + imdbLink + '</div>'
+          + '<div style="font-weight:600;font-size:0.88rem;">' + esc(item.title) + (item.year ? ' <span style="color:var(--text-dim);font-weight:400;">(' + item.year + ')</span>' : '') + imdbLink + '</div>'
           + '<div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px;">' + subtitle + '</div>'
           + '</div>'
           + '<div style="display:flex;align-items:center;gap:8px;">'
@@ -2668,7 +2669,7 @@ async function loadContinueWatching() {
       }).join('')}
     `;
   } catch(e) {
-    container.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${e.message}</div>`;
+    container.innerHTML = `<div style="color:var(--red);padding:8px;">Failed: ${esc(e.message)}</div>`;
   }
 }
 
@@ -2783,7 +2784,7 @@ async function syncTraktPlayback() {
 
         syncHtml += '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 8px;border-bottom:1px solid var(--border);font-size:0.82rem;">'
           + '<span style="color:' + syncColor + ';margin-right:5px;">' + syncIcon + '</span>'
-          + '<span style="flex:1;">' + item.title + epLabel + staleTag + '</span>'
+          + '<span style="flex:1;">' + esc(item.title) + epLabel + staleTag + '</span>'
           + '<span style="font-size:0.72rem;color:var(--text-dim);white-space:nowrap;">' + traktP + embyP + removeBtn + '</span>'
           + '</div>';
       });
@@ -3009,7 +3010,7 @@ async function loadAvailability() {
 
       arrivedMovies.forEach(m => {
         html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 8px;border-bottom:1px solid var(--border);font-size:0.85rem;">'
-          + '<span><span style="color:var(--green);margin-right:6px;">✓</span>🎬 ' + m.title + (m.year ? ' (' + m.year + ')' : '') + '</span>'
+          + '<span><span style="color:var(--green);margin-right:6px;">✓</span>🎬 ' + esc(m.title) + (m.year ? ' (' + m.year + ')' : '') + '</span>'
           + '<button onclick="dismissArrivedItem(\'movie\',' + (m.tmdb_id||0) + ',this)" style="background:none;border:1px solid var(--text-dim);color:var(--text-dim);padding:1px 5px;border-radius:3px;cursor:pointer;font-size:0.68rem;" title="Dismiss">✕</button>'
           + '</div>';
       });
@@ -3017,7 +3018,7 @@ async function loadAvailability() {
       arrivedShows.forEach(s => {
         const newEpLabel = s.new_episodes ? ' <span style="color:var(--green);font-size:0.72rem;font-weight:600;">+' + s.new_episodes + ' new</span>' : '';
         html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 8px;border-bottom:1px solid var(--border);font-size:0.85rem;">'
-          + '<span><span style="color:var(--green);margin-right:6px;">✓</span>📺 ' + s.title + (s.year ? ' (' + s.year + ')' : '') + ' <span style="color:var(--text-dim);font-size:0.72rem;">' + s.episodes_on_disk + '/' + s.episodes_total + ' eps</span>' + newEpLabel + '</span>'
+          + '<span><span style="color:var(--green);margin-right:6px;">✓</span>📺 ' + esc(s.title) + (s.year ? ' (' + s.year + ')' : '') + ' <span style="color:var(--text-dim);font-size:0.72rem;">' + s.episodes_on_disk + '/' + s.episodes_total + ' eps</span>' + newEpLabel + '</span>'
           + '<button onclick="dismissArrivedItem(\'show\',' + (s.tvdb_id||s.id||0) + ',this)" style="background:none;border:1px solid var(--text-dim);color:var(--text-dim);padding:1px 5px;border-radius:3px;cursor:pointer;font-size:0.68rem;" title="Dismiss">✕</button>'
           + '</div>';
       });
@@ -3035,7 +3036,7 @@ async function loadAvailability() {
 
     if (isPartial) {
       html += '<div style="background:rgba(253,203,110,0.12);border:1px solid rgba(253,203,110,0.3);border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:0.8rem;color:var(--orange);">'
-        + '⚠️ ' + failedServers.join(', ') + ' unreachable — results are partial.'
+        + '⚠️ ' + esc(failedServers.join(', ')) + ' unreachable — results are partial.'
         + ' <button onclick="_availLoaded=false;loadAvailability()" style="background:none;border:1px solid var(--orange);color:var(--orange);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:0.75rem;margin-left:8px;">Retry</button>'
         + '</div>';
     }
@@ -3057,9 +3058,9 @@ async function loadAvailability() {
       html += '<div style="font-size:0.82rem;font-weight:600;margin:8px 0 6px;color:var(--text-dim);">🎬 Movies (' + pendingMovies.length + ' pending)</div>';
       pendingMovies.forEach(m => {
         html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-bottom:1px solid var(--border);font-size:0.85rem;">'
-          + '<span>' + m.title + (m.year ? ' (' + m.year + ')' : '') + '</span>'
+          + '<span>' + esc(m.title) + (m.year ? ' (' + m.year + ')' : '') + '</span>'
           + '<span style="display:flex;align-items:center;gap:6px;">' + statusBadge(m.status)
-          + '<span style="color:var(--text-dim);font-size:0.7rem;">' + m.server + '</span></span></div>';
+          + '<span style="color:var(--text-dim);font-size:0.7rem;">' + esc(m.server) + '</span></span></div>';
       });
     }
 
@@ -3067,16 +3068,16 @@ async function loadAvailability() {
       html += '<div style="font-size:0.82rem;font-weight:600;margin:12px 0 6px;color:var(--text-dim);">📺 Shows (' + pendingShows.length + ' pending)</div>';
       pendingShows.forEach(s => {
         html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-bottom:1px solid var(--border);font-size:0.85rem;">'
-          + '<span>' + s.title + (s.year ? ' (' + s.year + ')' : '')
+          + '<span>' + esc(s.title) + (s.year ? ' (' + s.year + ')' : '')
           + ' <span style="color:var(--text-dim);font-size:0.72rem;margin-left:6px;">' + s.episodes_on_disk + '/' + s.episodes_total + ' eps</span></span>'
           + '<span style="display:flex;align-items:center;gap:6px;">' + statusBadge(s.status)
-          + '<span style="color:var(--text-dim);font-size:0.7rem;">' + s.server + '</span></span></div>';
+          + '<span style="color:var(--text-dim);font-size:0.7rem;">' + esc(s.server) + '</span></span></div>';
       });
     }
 
     container.innerHTML = html;
   } catch(e) {
-    container.innerHTML = '<div style="color:var(--red);padding:8px;">Failed: ' + e.message + '</div>';
+    container.innerHTML = '<div style="color:var(--red);padding:8px;">Failed: ' + esc(e.message) + '</div>';
   }
 }
 
@@ -3160,12 +3161,12 @@ async function refreshDownloadsCard() {
         const etaStr = dl.sab_eta || _formatEta(dl.eta);
         const sizeStr = dl.size_mb ? `${dl.size_mb.toFixed(0)} MB` : '';
         const speedStr = dl.sab_speed ? `${dl.sab_speed}B/s` : '';
-        const statusLabel = sabStatus && sabStatus !== 'Downloading' ? `<span style="font-size:0.6rem;color:var(--accent-light);margin-left:4px;">${sabStatus}</span>` : '';
+        const statusLabel = sabStatus && sabStatus !== 'Downloading' ? `<span style="font-size:0.6rem;color:var(--accent-light);margin-left:4px;">${esc(sabStatus)}</span>` : '';
         const nzoAttr = dl.download_id ? ` data-nzo="${dl.download_id}"` : '';
         return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
           <div style="display:flex;justify-content:space-between;align-items:center;">
-            <span style="font-size:0.78rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;">${dl.title}</span>
-            <span style="font-size:0.68rem;color:var(--text-dim);">${g.server}</span>
+            <span style="font-size:0.78rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;">${esc(dl.title)}</span>
+            <span style="font-size:0.68rem;color:var(--text-dim);">${esc(g.server)}</span>
           </div>
           <div class="dl-progress-wrap" style="margin-top:2px;"${nzoAttr}>
             <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${pct}%;background:${barColor};"></div></div>
@@ -3181,18 +3182,18 @@ async function refreshDownloadsCard() {
         // Use first item's SABnzbd status as representative for the group
         const sabStatus = g.items[0].sab_status || '';
         const speedStr = g.items[0].sab_speed ? `${g.items[0].sab_speed}B/s` : '';
-        const statusLabel = sabStatus && sabStatus !== 'Downloading' ? ` · ${sabStatus}` : '';
+        const statusLabel = sabStatus && sabStatus !== 'Downloading' ? ` · ${esc(sabStatus)}` : '';
         const nzoAttr = g.items[0].download_id ? ` data-nzo="${g.items[0].download_id}"` : '';
         return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
           <div style="display:flex;justify-content:space-between;align-items:center;">
-            <span style="font-size:0.78rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;">${g.title}</span>
-            <span style="font-size:0.68rem;color:var(--text-dim);">${g.server}</span>
+            <span style="font-size:0.78rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;">${esc(g.title)}</span>
+            <span style="font-size:0.68rem;color:var(--text-dim);">${esc(g.server)}</span>
           </div>
           <div class="dl-progress-wrap" style="margin-top:2px;"${nzoAttr}>
             <div class="dl-progress-bar"><div class="dl-progress-fill" style="width:${avgPct}%;background:${barColor};"></div></div>
             <span class="dl-progress-text">${avgPct.toFixed(0)}%</span>
           </div>
-          <div class="dl-meta" style="font-size:0.6rem;color:var(--text-dim);">${g.items.length} ep${g.items.length > 1 ? 's' : ''}${epLabels ? ': ' + epLabels : ''}${moreCount}${statusLabel}${speedStr ? ' · ' + speedStr : ''}</div>
+          <div class="dl-meta" style="font-size:0.6rem;color:var(--text-dim);">${g.items.length} ep${g.items.length > 1 ? 's' : ''}${epLabels ? ': ' + esc(epLabels) : ''}${moreCount}${statusLabel}${speedStr ? ' · ' + speedStr : ''}</div>
         </div>`;
       }
     }).join('') + (entries.length > 5 ? `<div style="font-size:0.7rem;color:var(--text-dim);padding:4px 0;">+${entries.length - 5} more</div>` : '');

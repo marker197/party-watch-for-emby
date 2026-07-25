@@ -479,7 +479,7 @@ async function loadUsers() {
     allUsers = await r.json();
     const sel = document.getElementById('userSelect');
     sel.innerHTML = allUsers.map(u =>
-      `<option value="${u.id}">${u.emby_username || u.emby_user_id}${u.linked ? ' (Trakt ✓)' : ''}</option>`
+      `<option value="${u.id}">${esc(u.emby_username || u.emby_user_id)}${u.linked ? ' (Trakt ✓)' : ''}</option>`
     ).join('');
     const linked = allUsers.find(u => u.linked);
     if (linked) sel.value = linked.id;
@@ -516,7 +516,7 @@ async function searchForParty() {
       el.addEventListener('click', () => selectCreateItem(el.dataset.itemId, el.dataset.itemLabel));
     });
   } catch(e) {
-    box.innerHTML = `<div class="search-result" style="color:var(--red);">${e.message}</div>`;
+    box.innerHTML = `<div class="search-result" style="color:var(--red);">${esc(e.message)}</div>`;
   }
 }
 
@@ -960,7 +960,7 @@ function addSystemMsg(text) {
   const list = document.getElementById('messageList');
   const div = document.createElement('div');
   div.className = 'message system';
-  div.innerHTML = `<span>${text}</span>`;
+  div.innerHTML = `<span>${esc(text)}</span>`;
   list.appendChild(div);
   list.scrollTop = list.scrollHeight;
 }
