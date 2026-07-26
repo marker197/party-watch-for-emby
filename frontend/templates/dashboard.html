@@ -6,6 +6,7 @@
 <title>Emby-Trakt Suite</title>
 <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 <style>
   :root {
     --bg: #0f1117;
@@ -3247,6 +3248,42 @@ function init() {
     const grid = document.getElementById('featureCardsGrid');
     if (grid && grid.style.maxHeight !== '0px' && _dlMode !== 'realtime') refreshDownloadsCard();
   }, 5000);
+
+  // Real-time activity log via Socket.IO
+  try {
+    const _dashSocket = io({ path: '/ws/socket.io', transports: ['websocket'] });
+    _dashSocket.on('activity_entry', function(e) {
+      if (!e || !e.msg) return;
+      if (e.msg.startsWith('Webhook received')) return;
+      if (activeCategory && e.cat !== activeCategory) return;
+      const el = document.getElementById('globalLog');
+      if (!el) return;
+      if (el.textContent === 'No activity yet') el.innerHTML = '';
+      let icon = '•';
+      const m = e.msg;
+      if (m.startsWith('▶ Trakt watching') || m.startsWith('▶ Trakt resumed')) icon = '▶️';
+      else if (m.startsWith('⏸')) icon = '⏸️';
+      else if (m.startsWith('⏹') || m.includes('stopped')) icon = '⏹️';
+      else if (m.startsWith('✓ Synced')) icon = '✅';
+      else if (m.startsWith('✓')) icon = '✅';
+      else if (m.startsWith('✗') || m.startsWith('⚠')) icon = '❌';
+      else if (m.includes('Watched:')) icon = '⏹️';
+      else if (m.includes('webhook')) icon = '📡';
+      else if (m.includes('party')) icon = '🎉';
+      else if (m.includes('Queue') || m.includes('queue')) icon = '🎯';
+      else if (m.includes('universe') || m.includes('Universe')) icon = '🌌';
+      else if (m.includes('ML') || m.includes('Train') || m.includes('predict')) icon = '🤖';
+      else if (m.includes('cache') || m.includes('Cache')) icon = '💾';
+      else if (e.cat === 'trakt') icon = '🔄';
+      else if (e.cat === 'webhook') icon = '📡';
+      const ts = (e.ts || '').split(' ')[1] || '';
+      const cls = m.startsWith('✓') ? 'ok' : (m.startsWith('✗') || m.startsWith('⚠')) ? 'err' : '';
+      const div = document.createElement('div');
+      div.className = 'entry ' + cls;
+      div.innerHTML = `<span style="opacity:0.45;font-size:0.78rem;">${ts}</span>  ${icon} ${esc(m)}`;
+      el.insertBefore(div, el.querySelector('.entry:not(.client-event)'));
+    });
+  } catch(_e) {}
 }
 
 // Start when page loads

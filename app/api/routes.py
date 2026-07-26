@@ -2809,17 +2809,24 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 # -- Activity log (Redis-backed, last 100 entries) ---------------------------
 
 async def _activity_log(message: str, category: str = "general"):
-    """Append an entry to the activity log in Redis."""
+    """Append an entry to the activity log in Redis and push to dashboard."""
     import json as _json
     try:
         r = await get_redis()
-        entry = _json.dumps({
+        entry_dict = {
             "ts": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "cat": category,
             "msg": message,
-        })
+        }
+        entry = _json.dumps(entry_dict)
         await r.lpush("activity_log", entry)
         await r.ltrim("activity_log", 0, 99)  # keep last 100
+        # Push to any connected dashboard clients
+        try:
+            from app.services.watch_party.service import sio
+            await sio.emit("activity_entry", entry_dict)
+        except Exception:
+            pass
     except Exception:
         pass  # logging should never crash the request
 
