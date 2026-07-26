@@ -2000,11 +2000,13 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             return {"movie": {"ids": mdb_ids}}
 
         elif item_type_raw == "Episode":
-            # Build show-level IDs (prefer SeriesProviderIds, fall back to episode IDs)
-            show_ids = {}
+            # Build show-level IDs from SeriesProviderIds ONLY.
+            # Episode-level ProviderIds (e.g. episode IMDB tt*, episode TVDB)
+            # are NOT valid show identifiers and cause 404 on MDBList.
             series_provider = item_data.get("SeriesProviderIds", {})
+            show_ids = {}
             for key in ("Imdb", "Tmdb", "Tvdb"):
-                val = series_provider.get(key) or provider_ids.get(key)
+                val = series_provider.get(key)
                 if val:
                     show_ids[key.lower()] = int(val) if key != "Imdb" else val
             if not show_ids:
@@ -2045,27 +2047,35 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 pos_secs = _get_position_ticks() // 10000000
                 mm, ss = divmod(pos_secs, 60)
                 time_str = f"{mm}:{ss:02d}"
+                # Use "SeriesName — EpisodeName" for episodes
+                mdb_display = item_name
+                if item_type_raw == "Episode":
+                    sn = item_data.get("SeriesName", "")
+                    snum = item_data.get("ParentIndexNumber", "")
+                    enum = item_data.get("IndexNumber", "")
+                    ep_tag = f" S{snum}E{enum}" if snum and enum else ""
+                    mdb_display = f"{sn}{ep_tag}" if sn else item_name
 
                 if action == "start":
                     await mdb.scrobble_start(payload, progress=progress)
-                    await _activity_log(f"📋 MDBList watching: {item_name}", category="trakt")
+                    await _activity_log(f"📋 MDBList watching: {mdb_display}", category="trakt")
                 elif action == "pause":
                     await mdb.scrobble_pause(payload, progress=progress)
                     await _activity_log(
-                        f"📋 MDBList paused: {item_name} at {time_str} ({progress_pct}%)",
+                        f"📋 MDBList paused: {mdb_display} at {time_str} ({progress_pct}%)",
                         category="trakt",
                     )
                 elif action == "stop":
                     result = await mdb.scrobble_stop(payload, progress=progress)
                     await _activity_log(
-                        f"📋 MDBList stop: {item_name} ({progress_pct}%)",
+                        f"📋 MDBList stop: {mdb_display} ({progress_pct}%)",
                         category="trakt",
                     )
                     return result
                 elif action == "resume":
                     await mdb.scrobble_start(payload, progress=progress)
                     await _activity_log(
-                        f"📋 MDBList resumed: {item_name} at {time_str} ({progress_pct}%)",
+                        f"📋 MDBList resumed: {mdb_display} at {time_str} ({progress_pct}%)",
                         category="trakt",
                     )
             finally:
@@ -2075,14 +2085,28 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             err_str = re.sub(r'apikey=[^&\s\'"]+', 'apikey=***', str(e)[:200])
             # Try to extract response body for 400 errors
             resp_body = ""
+            status_code = ""
             if hasattr(e, 'response') and e.response is not None:
                 try:
+                    status_code = str(e.response.status_code)
                     resp_body = e.response.text[:200]
                 except Exception:
                     pass
             log.warning(f"webhook.mdblist_scrobble_{action}_failed",
                         error=err_str, response_body=resp_body)
-            await _activity_log(f"⚠ MDBList {action} failed: {item_name}", category="trakt")
+            # Include status + body in activity log so it's visible on dashboard
+            detail = f" [{status_code}]" if status_code else ""
+            if resp_body:
+                detail += f" {resp_body[:120]}"
+            # mdb_display may not be set if error happened before it was built
+            _disp = item_name
+            if item_type_raw == "Episode":
+                sn = item_data.get("SeriesName", "")
+                snum = item_data.get("ParentIndexNumber", "")
+                enum = item_data.get("IndexNumber", "")
+                ep_tag = f" S{snum}E{enum}" if snum and enum else ""
+                _disp = f"{sn}{ep_tag}" if sn else item_name
+            await _activity_log(f"⚠ MDBList {action} failed: {_disp}{detail}", category="trakt")
 
     # -- Helper: add to MDBList watched history --------------------------------
     async def _mdblist_add_to_history():
