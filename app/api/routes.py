@@ -2511,10 +2511,23 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             if item_type_raw in ("Movie", "Series") and emby_item_id:
                 try:
                     cache_type = "movie" if item_type_raw == "Movie" else "series"
+                    # Check if already cached (avoid double-counting on duplicate webhooks)
+                    already_cached = False
+                    for _pid_type in ("Tmdb", "Imdb", "Tvdb"):
+                        _pid_val = provider_ids.get(_pid_type)
+                        if _pid_val:
+                            existing = await LibraryCache.find_by_provider_id(_pid_type, str(_pid_val))
+                            if existing:
+                                already_cached = True
+                                break
                     await LibraryCache._cache_item(item_data, item_type=cache_type)
+                    if not already_cached:
+                        _r = await get_redis()
+                        stat_key = f"library::stat:{'movies' if item_type_raw == 'Movie' else 'series'}"
+                        await _r.incr(stat_key)
                     log.info("webhook.library_cache_updated",
                              title=item_name, type=cache_type,
-                             emby_id=emby_item_id)
+                             emby_id=emby_item_id, new=not already_cached)
                 except Exception as _ce:
                     log.debug("webhook.library_cache_update_failed",
                               error=str(_ce)[:120])
