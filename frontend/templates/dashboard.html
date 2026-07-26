@@ -1208,9 +1208,7 @@ async function loadSSLStatus() {
 
 
 
-let librariesLoaded = false;
 async function loadLibraries() {
-  if (librariesLoaded) return;
   try {
     const r = await fetch(API + '/api/libraries/stats');
     const libs = await r.json();
@@ -1236,7 +1234,6 @@ async function loadLibraries() {
     }
     container.appendChild(fragment);
 
-    librariesLoaded = true;
   } catch(e) {
     console.warn('Failed to load libraries:', e);
   }
