@@ -1877,6 +1877,19 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     emby_user_id = user_data.get("Id", "")
     emby_username = user_data.get("Name", "")
 
+    # Unified display name for activity logs:
+    #   Movies: "Movie Title"
+    #   Episodes: "Series Name : Episode Name : S1E1"
+    if item_type_raw == "Episode":
+        _sn = item_data.get("SeriesName", "")
+        _snum = item_data.get("ParentIndexNumber", "")
+        _enum = item_data.get("IndexNumber", "")
+        _ep_tag = f"S{_snum}E{_enum}" if _snum and _enum else ""
+        parts = [p for p in (_sn, item_name, _ep_tag) if p]
+        display_name = " : ".join(parts) if parts else item_name
+    else:
+        display_name = item_name
+
     # Test webhooks and events without an item are acknowledged but not processed
     if not emby_item_id:
         return {"status": "ok", "event": event_type, "note": "no item data"}
@@ -2095,35 +2108,27 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 pos_secs = _get_position_ticks() // 10000000
                 mm, ss = divmod(pos_secs, 60)
                 time_str = f"{mm}:{ss:02d}"
-                # Use "SeriesName — EpisodeName" for episodes
-                mdb_display = item_name
-                if item_type_raw == "Episode":
-                    sn = item_data.get("SeriesName", "")
-                    snum = item_data.get("ParentIndexNumber", "")
-                    enum = item_data.get("IndexNumber", "")
-                    ep_tag = f" S{snum}E{enum}" if snum and enum else ""
-                    mdb_display = f"{sn}{ep_tag}" if sn else item_name
 
                 if action == "start":
                     await mdb.scrobble_start(payload, progress=progress)
-                    await _activity_log(f"📋 MDBList watching: {mdb_display}", category="trakt")
+                    await _activity_log(f"📋 MDBList watching: {display_name}", category="trakt")
                 elif action == "pause":
                     await mdb.scrobble_pause(payload, progress=progress)
                     await _activity_log(
-                        f"📋 MDBList paused: {mdb_display} at {time_str} ({progress_pct}%)",
+                        f"📋 MDBList paused: {display_name} at {time_str} ({progress_pct}%)",
                         category="trakt",
                     )
                 elif action == "stop":
                     result = await mdb.scrobble_stop(payload, progress=progress)
                     await _activity_log(
-                        f"📋 MDBList stop: {mdb_display} ({progress_pct}%)",
+                        f"📋 MDBList stop: {display_name} ({progress_pct}%)",
                         category="trakt",
                     )
                     return result
                 elif action == "resume":
                     await mdb.scrobble_start(payload, progress=progress)
                     await _activity_log(
-                        f"📋 MDBList resumed: {mdb_display} at {time_str} ({progress_pct}%)",
+                        f"📋 MDBList resumed: {display_name} at {time_str} ({progress_pct}%)",
                         category="trakt",
                     )
             finally:
@@ -2146,15 +2151,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             detail = f" [{status_code}]" if status_code else ""
             if resp_body:
                 detail += f" {resp_body[:120]}"
-            # mdb_display may not be set if error happened before it was built
-            _disp = item_name
-            if item_type_raw == "Episode":
-                sn = item_data.get("SeriesName", "")
-                snum = item_data.get("ParentIndexNumber", "")
-                enum = item_data.get("IndexNumber", "")
-                ep_tag = f" S{snum}E{enum}" if snum and enum else ""
-                _disp = f"{sn}{ep_tag}" if sn else item_name
-            await _activity_log(f"⚠ MDBList {action} failed: {_disp}{detail}", category="trakt")
+            await _activity_log(f"⚠ MDBList {action} failed: {display_name}{detail}", category="trakt")
 
     # -- Helper: add to MDBList watched history --------------------------------
     async def _mdblist_add_to_history():
@@ -2191,12 +2188,12 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         }],
                     )
                 if item_type_raw == "Movie":
-                    await _activity_log(f"✓ Synced to MDBList: {item_name} (movie)", category="trakt")
+                    await _activity_log(f"✓ Synced to MDBList: {display_name}", category="trakt")
                 elif item_type_raw == "Episode":
                     season_num = item_data.get("ParentIndexNumber", "?")
                     episode_num = item_data.get("IndexNumber", "?")
                     await _activity_log(
-                        f"✓ Synced to MDBList: {item_name} S{season_num}E{episode_num}",
+                        f"✓ Synced to MDBList: {display_name}",
                         category="trakt",
                     )
             finally:
@@ -2307,10 +2304,10 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     progress = _calc_progress()
                     await trakt.scrobble_start(scrobble, progress=progress)
                     trakt_synced = True
-                    await _activity_log(f"▶ Trakt watching: {item_name}", category="trakt")
+                    await _activity_log(f"▶ Trakt watching: {display_name}", category="trakt")
             except Exception as e:
                 log.warning("webhook.trakt_scrobble_start_failed", error=str(e))
-                await _activity_log(f"⚠ Trakt start failed: {item_name} — {str(e)[:80]}", category="trakt")
+                await _activity_log(f"⚠ Trakt start failed: {display_name} — {str(e)[:80]}", category="trakt")
         # MDBList scrobble start
         asyncio.create_task(_mdblist_scrobble("start", _calc_progress()))
         return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
@@ -2336,7 +2333,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         pos_secs = _get_position_ticks() // 10000000
                         mm, ss = divmod(pos_secs, 60)
                         await _activity_log(
-                            f"⏸ Trakt paused: {item_name} at {mm}:{ss:02d} ({progress:.0f}%)",
+                            f"⏸ Trakt paused: {display_name} at {mm}:{ss:02d} ({progress:.0f}%)",
                             category="trakt",
                         )
                 except Exception as e:
@@ -2344,12 +2341,12 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     if "422" in err_str:
                         # Trakt rejected — likely near end of content, not a real error
                         await _activity_log(
-                            f"⏸ Pause skipped by Trakt: {item_name} ({progress:.0f}%) — will sync on stop",
+                            f"⏸ Pause skipped by Trakt: {display_name} ({progress:.0f}%) — will sync on stop",
                             category="trakt",
                         )
                     else:
                         log.warning("webhook.trakt_scrobble_pause_failed", error=err_str)
-                        await _activity_log(f"⚠ Trakt pause failed: {item_name} — {err_str[:80]}", category="trakt")
+                        await _activity_log(f"⚠ Trakt pause failed: {display_name} — {err_str[:80]}", category="trakt")
         # MDBList scrobble pause
         asyncio.create_task(_mdblist_scrobble("pause", _calc_progress()))
         return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
@@ -2367,12 +2364,12 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     pos_secs = _get_position_ticks() // 10000000
                     mm, ss = divmod(pos_secs, 60)
                     await _activity_log(
-                        f"▶ Trakt resumed: {item_name} at {mm}:{ss:02d} ({progress:.0f}%)",
+                        f"▶ Trakt resumed: {display_name} at {mm}:{ss:02d} ({progress:.0f}%)",
                         category="trakt",
                     )
             except Exception as e:
                 log.warning("webhook.trakt_scrobble_resume_failed", error=str(e))
-                await _activity_log(f"⚠ Trakt resume failed: {item_name} — {str(e)[:80]}", category="trakt")
+                await _activity_log(f"⚠ Trakt resume failed: {display_name} — {str(e)[:80]}", category="trakt")
         # MDBList scrobble resume
         asyncio.create_task(_mdblist_scrobble("resume", _calc_progress()))
         return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
@@ -2402,7 +2399,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             log.warning("webhook.backfill_failed", error=str(e)[:120])
 
         await _activity_log(
-            f"⏹ Stopped: {item_name} ({item_type_raw}) — {emby_username}",
+            f"⏹ Stopped: {display_name} ({item_type_raw}) — {emby_username}",
             category="playback",
         )
 
@@ -2424,13 +2421,13 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         scrobble_already_added = True
                         trakt_synced = True
                         await _activity_log(
-                            f"✓ Trakt scrobbled: {item_name} ({progress:.0f}%)",
+                            f"✓ Trakt scrobbled: {display_name} ({progress:.0f}%)",
                             category="trakt",
                         )
                     else:
                         # <80% — Trakt saved as pause/playback progress
                         await _activity_log(
-                            f"⏹ Trakt stop: {item_name} ({progress:.0f}%) — action={action}",
+                            f"⏹ Trakt stop: {display_name} ({progress:.0f}%) — action={action}",
                             category="trakt",
                         )
             except Exception as e:
@@ -2440,19 +2437,19 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     scrobble_already_added = True
                     trakt_synced = True
                     await _activity_log(
-                        f"⏹ Trakt stop (already scrobbled): {item_name}",
+                        f"⏹ Trakt stop (already scrobbled): {display_name}",
                         category="trakt",
                     )
                 elif "422" in err_str:
                     # Progress < 1% — Trakt ignores, but watching state is cleared
                     await _activity_log(
-                        f"⏹ Trakt stop ignored (<1%): {item_name}",
+                        f"⏹ Trakt stop ignored (<1%): {display_name}",
                         category="trakt",
                     )
                 else:
                     log.warning("webhook.trakt_scrobble_stop_failed", error=err_str)
                     await _activity_log(
-                        f"⚠ Trakt stop failed: {item_name} — {err_str[:80]}",
+                        f"⚠ Trakt stop failed: {display_name} — {err_str[:80]}",
                         category="trakt",
                     )
 
@@ -2484,7 +2481,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         log.info("webhook.trakt_history_synced",
                                  type="movie", ids=trakt_ids, user=user.id)
                         await _activity_log(
-                            f"✓ Synced to Trakt: {item_name} (movie)",
+                            f"✓ Synced to Trakt: {display_name}",
                             category="trakt",
                         )
 
@@ -2516,24 +2513,24 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                                  type="episode", ids=series_ids or trakt_ids,
                                  ep_ids=trakt_ids, user=user.id)
                         await _activity_log(
-                            f"✓ Synced to Trakt: {item_name} S{season_num or '?'}E{episode_num or '?'}",
+                            f"✓ Synced to Trakt: {display_name}",
                             category="trakt",
                         )
                     else:
                         await _activity_log(
-                            f"Skipped Trakt sync: {item_name} — unsupported type '{item_type_raw}'",
+                            f"Skipped Trakt sync: {display_name} — unsupported type '{item_type_raw}'",
                             category="trakt",
                         )
                 else:
                     await _activity_log(
-                        f"Skipped Trakt sync: {item_name} — no provider IDs (IMDB/TMDB/TVDB)",
+                        f"Skipped Trakt sync: {display_name} — no provider IDs (IMDB/TMDB/TVDB)",
                         category="trakt",
                     )
 
             except Exception as e:
                 log.error("webhook.trakt_sync_failed", error=str(e), user=user.id)
                 await _activity_log(
-                    f"✗ Trakt sync failed: {item_name} — {str(e)[:80]}",
+                    f"✗ Trakt sync failed: {display_name} — {str(e)[:80]}",
                     category="trakt",
                 )
 
@@ -2544,7 +2541,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         else:
             if not scrobble_already_added:
                 await _activity_log(
-                    f"Skipped Trakt sync: {item_name} — user has no Trakt token",
+                    f"Skipped Trakt sync: {display_name} — user has no Trakt token",
                     category="trakt",
                 )
 
