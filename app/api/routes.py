@@ -1977,8 +1977,63 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         from app.utils.mdblist_client import MDBListClient
         return MDBListClient(api_key=key)
 
+    # -- Helper: resolve series-level provider IDs for an episode ---------------
+    async def _resolve_series_ids() -> dict:
+        """Get series-level provider IDs for the current episode item.
+        Three fallback levels:
+          1. SeriesProviderIds from the webhook payload (fastest)
+          2. Library cache lookup by SeriesName
+          3. Emby API lookup by SeriesId (network call, last resort)
+        Returns dict like {"imdb": "tt...", "tmdb": 12345, "tvdb": 67890} or {}.
+        """
+        # Level 1: SeriesProviderIds from webhook
+        series_provider = item_data.get("SeriesProviderIds", {})
+        result = {}
+        for key in ("Imdb", "Tmdb", "Tvdb"):
+            val = series_provider.get(key)
+            if val:
+                result[key.lower()] = int(val) if key != "Imdb" else val
+        if result:
+            return result
+
+        # Level 2: Library cache by series name
+        series_name = item_data.get("SeriesName", "")
+        if series_name:
+            cached = await LibraryCache.find_by_title(series_name, item_type="Series")
+            if cached:
+                cpids = cached.get("provider_ids", {})
+                for key in ("Imdb", "Tmdb", "Tvdb"):
+                    val = cpids.get(key)
+                    if val:
+                        result[key.lower()] = int(val) if key != "Imdb" else val
+                if result:
+                    log.debug("webhook.series_ids_from_cache", series=series_name, ids=result)
+                    return result
+
+        # Level 3: Emby API lookup by SeriesId
+        series_emby_id = item_data.get("SeriesId")
+        if series_emby_id:
+            try:
+                async with EmbyClient() as emby:
+                    series_item = await emby.get_item_safe(series_emby_id)
+                    if series_item:
+                        spids = series_item.get("ProviderIds", {})
+                        for key in ("Imdb", "Tmdb", "Tvdb"):
+                            val = spids.get(key)
+                            if val:
+                                result[key.lower()] = int(val) if key != "Imdb" else val
+                        if result:
+                            log.debug("webhook.series_ids_from_emby", series=series_name,
+                                      series_emby_id=series_emby_id, ids=result)
+                            return result
+            except Exception as e:
+                log.debug("webhook.series_id_emby_lookup_failed",
+                          series_emby_id=series_emby_id, error=str(e)[:80])
+
+        return result
+
     # -- Helper: build MDBList scrobble payload --------------------------------
-    def _build_mdblist_scrobble_payload():
+    async def _build_mdblist_scrobble_payload():
         """Build MDBList-compatible scrobble payload from webhook item data.
         Supports movies and TV episodes.
         Movie IDs accepted: imdb, tmdb, trakt, kitsu, mdblist (NOT tvdb).
@@ -2000,15 +2055,8 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             return {"movie": {"ids": mdb_ids}}
 
         elif item_type_raw == "Episode":
-            # Build show-level IDs from SeriesProviderIds ONLY.
-            # Episode-level ProviderIds (e.g. episode IMDB tt*, episode TVDB)
-            # are NOT valid show identifiers and cause 404 on MDBList.
-            series_provider = item_data.get("SeriesProviderIds", {})
-            show_ids = {}
-            for key in ("Imdb", "Tmdb", "Tvdb"):
-                val = series_provider.get(key)
-                if val:
-                    show_ids[key.lower()] = int(val) if key != "Imdb" else val
+            show_ids = await _resolve_series_ids()
+
             if not show_ids:
                 return None
 
@@ -2036,7 +2084,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             mdb = await _get_mdblist_client_for_scrobble()
             if not mdb:
                 return
-            payload = _build_mdblist_scrobble_payload()
+            payload = await _build_mdblist_scrobble_payload()
             if not payload:
                 return
             log.debug("webhook.mdblist_scrobble_payload",
@@ -2132,14 +2180,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         movies=[{"ids": ids, "watched_at": watched_at}],
                     )
                 elif item_type_raw == "Episode":
-                    series_ids = {}
-                    series_provider = item_data.get("SeriesProviderIds", {})
-                    if series_provider.get("Imdb"):
-                        series_ids["imdb"] = series_provider["Imdb"]
-                    if series_provider.get("Tmdb"):
-                        series_ids["tmdb"] = int(series_provider["Tmdb"])
-                    if series_provider.get("Tvdb"):
-                        series_ids["tvdb"] = int(series_provider["Tvdb"])
+                    series_ids = await _resolve_series_ids()
                     show_ids = series_ids or ids
                     season_num = item_data.get("ParentIndexNumber", 1)
                     episode_num = item_data.get("IndexNumber", 1)
@@ -2448,14 +2489,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         )
 
                     elif item_type_raw in ("Episode",):
-                        series_ids = {}
-                        series_provider = item_data.get("SeriesProviderIds", {})
-                        if series_provider.get("Imdb"):
-                            series_ids["imdb"] = series_provider["Imdb"]
-                        if series_provider.get("Tmdb"):
-                            series_ids["tmdb"] = int(series_provider["Tmdb"])
-                        if series_provider.get("Tvdb"):
-                            series_ids["tvdb"] = int(series_provider["Tvdb"])
+                        series_ids = await _resolve_series_ids()
 
                         episode = {
                             "watched_at": watched_at,
@@ -2479,7 +2513,8 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         await trakt.add_to_history([show_item])
                         trakt_synced = True
                         log.info("webhook.trakt_history_synced",
-                                 type="episode", ids=trakt_ids, user=user.id)
+                                 type="episode", ids=series_ids or trakt_ids,
+                                 ep_ids=trakt_ids, user=user.id)
                         await _activity_log(
                             f"✓ Synced to Trakt: {item_name} S{season_num or '?'}E{episode_num or '?'}",
                             category="trakt",
