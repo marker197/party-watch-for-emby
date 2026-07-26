@@ -198,6 +198,7 @@ class LibraryCache:
             last_rebuild = await r.get(f"{CACHE_KEY_PREFIX}:stat:last_rebuild")
             movies = int(await r.get(f"{CACHE_KEY_PREFIX}:stat:movies") or 0)
             series = int(await r.get(f"{CACHE_KEY_PREFIX}:stat:series") or 0)
+            version = int(await r.get(f"{CACHE_KEY_PREFIX}:stat:version") or 0)
             return {
                 "cached_keys": total_keys,
                 "movies": movies,
@@ -205,6 +206,7 @@ class LibraryCache:
                 "items": movies + series,
                 "hit_rate": round(hit_rate, 1),
                 "last_rebuild": last_rebuild,
+                "version": version,
             }
         except Exception as e:
             return {"cached_keys": 0, "hit_rate": 0, "last_rebuild": None, "error": str(e)}

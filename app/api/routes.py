@@ -2505,10 +2505,15 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             imdb_id = provider_ids.get("Imdb")
             tvdb_id = provider_ids.get("Tvdb")
 
+            # Skip cache updates for unpack/extraction events (no real item yet)
+            _is_unpack = "unpack" in item_name.lower() or "unpack" in (item_data.get("Path") or "").lower()
+
             # Immediately update library cache for Movies and Series
             # so all features (Library Health, Universe Discovery, etc.)
-            # see the new item without waiting for the nightly rebuild
-            if item_type_raw in ("Movie", "Series") and emby_item_id:
+            # see the new item without waiting for the nightly rebuild.
+            # Only when we have provider IDs (real item, not unpack stub).
+            has_provider_ids = any(provider_ids.get(k) for k in ("Tmdb", "Imdb", "Tvdb"))
+            if item_type_raw in ("Movie", "Series") and emby_item_id and has_provider_ids and not _is_unpack:
                 try:
                     cache_type = "movie" if item_type_raw == "Movie" else "series"
                     # Check if already cached (avoid double-counting on duplicate webhooks)
@@ -2525,6 +2530,8 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         _r = await get_redis()
                         stat_key = f"library::stat:{'movies' if item_type_raw == 'Movie' else 'series'}"
                         await _r.incr(stat_key)
+                        # Bump version so dashboard knows to refresh library counts
+                        await _r.incr("library::stat:version")
                     log.info("webhook.library_cache_updated",
                              title=item_name, type=cache_type,
                              emby_id=emby_item_id, new=not already_cached)

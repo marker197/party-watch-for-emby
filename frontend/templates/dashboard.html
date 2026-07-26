@@ -1208,6 +1208,7 @@ async function loadSSLStatus() {
 
 
 
+let _libCacheVersion = -1;
 async function loadLibraries() {
   try {
     const r = await fetch(API + '/api/libraries/stats');
@@ -2511,7 +2512,12 @@ async function dashboardPoll() {
         ? new Date(lc.last_rebuild).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
         : 'Never';
     }
-    loadLibraries();
+    // Refresh library counts only when a real webhook bumped the version
+    const _v = (h.library_cache || {}).version || 0;
+    if (_v !== _libCacheVersion) {
+      _libCacheVersion = _v;
+      loadLibraries();
+    }
 
     // --- Activity ---
     const entries = (d.activity || []).filter(e => !e.msg.startsWith('Webhook received'));
