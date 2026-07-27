@@ -117,6 +117,18 @@ async def lifespan(app: FastAPI):
     await init_db()
     log.info("suite.db_ready")
 
+    # One-time: update alembic_version after migration squash (remove next session)
+    try:
+        async with async_session() as db:
+            result = await db.execute(sa_text("SELECT version_num FROM alembic_version LIMIT 1"))
+            row = result.first()
+            if row and row[0] != "001_initial":
+                await db.execute(sa_text("UPDATE alembic_version SET version_num = '001_initial'"))
+                await db.commit()
+                log.info("suite.alembic_version_updated", old=row[0], new="001_initial")
+    except Exception as e:
+        log.warning("suite.alembic_version_check_skipped", error=str(e))
+
     # Load schedule overrides from DB (overwrite config defaults)
     await _load_schedule_overrides()
 
@@ -690,6 +702,23 @@ def _register_jobs():
             replace_existing=True,
         )
         log.info("scheduler.job_added", job="smart_queue", cron=cron)
+
+    # Rewatch Recommender — daily at 2:15 AM (right after smart queue)
+    from app.services.rewatch.service import RewatchRecommender
+    _rw_svc = RewatchRecommender()
+    rw_cron = "15 2 * * *"
+    _job_crons["rewatch_rebuild"] = rw_cron
+
+    async def _run_rewatch_rebuild(_fn=_rw_svc.run_for_all_users):
+        await _tracked_job("rewatch_rebuild", _fn)
+
+    scheduler.add_job(
+        _run_rewatch_rebuild,
+        CronTrigger(**_parse_cron(rw_cron)),
+        id="rewatch_rebuild",
+        replace_existing=True,
+    )
+    log.info("scheduler.job_added", job="rewatch_rebuild", cron=rw_cron)
 
     if settings.enable_ml_predictor:
         from app.services.ml_predictor.service import MLPredictorService

@@ -339,6 +339,22 @@ class DismissedHealthItem(Base):
     user = relationship("User", foreign_keys=[user_id])
 
 
+class DismissedRewatchItem(Base):
+    """Items dismissed from the Rewatch Recommender."""
+    __tablename__ = "dismissed_rewatch_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    item_key = Column(String(128), nullable=False)  # 'trakt:12345' or 'emby:abc'
+    dismissed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    user = relationship("User", foreign_keys=[user_id])
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "item_key", name="uq_rewatch_dismiss_user_item"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Bulk Actions  (UI Feature)
 # ---------------------------------------------------------------------------

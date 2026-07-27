@@ -4185,6 +4185,16 @@ async def get_stats_page():
         return "<h1>Page not found</h1>"
 
 
+@router.get("/rewatch", response_class=HTMLResponse)
+async def get_rewatch_page():
+    """Serve the Rewatch Recommender page."""
+    try:
+        with open("frontend/templates/rewatch.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Page not found</h1>"
+
+
 @router.get("/guide", response_class=HTMLResponse)
 async def get_guide_page():
     """Serve the User Guide page."""
@@ -7261,3 +7271,105 @@ async def emby_direct_play(payload: dict, _user: User = Depends(get_current_user
         raise HTTPException(502, f"Playback failed: {str(e)[:100]}")
     finally:
         await emby.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Rewatch Recommender
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.rewatch.service import RewatchRecommender
+
+_rewatch_svc = RewatchRecommender()
+
+
+@router.get("/api/rewatch/{user_id}")
+async def get_rewatch_suggestions(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return cached rewatch suggestions for a user."""
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    items = await _rewatch_svc.get_suggestions(user_id)
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/api/rewatch/{user_id}/refresh")
+async def refresh_rewatch(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """Force rebuild rewatch suggestions."""
+    require_user_ownership(_user.id, user_id, "rewatch_refresh")
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    items = await _rewatch_svc.build_suggestions(user_id)
+    return {"items": items, "count": len(items), "status": "rebuilt"}
+
+
+@router.post("/api/rewatch/{user_id}/dismiss/{item_key:path}")
+async def dismiss_rewatch_item(
+    user_id: int,
+    item_key: str,
+    _user: User = Depends(get_current_user),
+):
+    """Dismiss a rewatch suggestion permanently."""
+    require_user_ownership(_user.id, user_id, "rewatch_dismiss")
+    return await _rewatch_svc.dismiss(user_id, item_key)
+
+
+@router.get("/api/rewatch/{user_id}/history/{item_key:path}")
+async def get_rewatch_item_history(
+    user_id: int,
+    item_key: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Lazy-load watch history for hover flyout."""
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    return await _rewatch_svc.get_item_history(user_id, item_key)
+
+
+@router.get("/api/rewatch/{user_id}/settings")
+async def get_rewatch_settings(user_id: int):
+    """Read rewatch recommender settings for a user."""
+    import json as _json
+    r = await get_redis()
+    raw = await r.get(f"rewatch:settings:{user_id}")
+    if raw:
+        return _json.loads(raw)
+    return {"min_rating": 8, "min_months": 12, "seasonal": True}
+
+
+@router.put("/api/rewatch/{user_id}/settings")
+async def update_rewatch_settings(
+    user_id: int,
+    payload: dict,
+    _user: User = Depends(get_current_user),
+):
+    """Save rewatch recommender settings."""
+    import json as _json
+    require_user_ownership(_user.id, user_id, "rewatch_settings")
+    r = await get_redis()
+    settings_data = {
+        "min_rating": int(payload.get("min_rating", 8)),
+        "min_months": int(payload.get("min_months", 12)),
+        "seasonal": bool(payload.get("seasonal", True)),
+    }
+    await r.set(f"rewatch:settings:{user_id}", _json.dumps(settings_data))
+    # Also persist to DB for durability
+    from app.models.schema import AppSetting
+    async with async_session_ctx() as db:
+        existing = (await db.execute(
+            select(AppSetting).where(AppSetting.key == f"rewatch_settings:{user_id}")
+        )).scalar_one_or_none()
+        if existing:
+            existing.value = _json.dumps(settings_data)
+        else:
+            db.add(AppSetting(key=f"rewatch_settings:{user_id}", value=_json.dumps(settings_data)))
+        await db.commit()
+    return {"status": "ok", **settings_data}

@@ -322,6 +322,7 @@
     <a href="/lists" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📋 Lists</a>
     <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
     <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
+    <a href="/rewatch" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🔁 Rewatch</a>
     <a href="/stats" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📊 Stats</a>
     <a href="/library-health" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🏥 Health</a>
     <a href="/settings" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">⚙️ Settings</a>
@@ -468,6 +469,39 @@
       </div>
 
       <button class="btn btn-blue" id="saveFeatures" style="width: 100%; margin-top: 12px;">💾 Save Features</button>
+    </div>
+
+    <!-- Rewatch Recommender Settings -->
+    <div class="section">
+      <h2>🔁 Rewatch Recommender</h2>
+
+      <div class="form-group" style="margin-bottom: 14px;">
+        <label class="label">Minimum Rating Threshold</label>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <input type="number" id="rewatchMinRating" min="1" max="10" value="8"
+                 style="width:70px;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:0.85rem;">
+          <span style="color:var(--text-dim);font-size:0.82rem;">(1–10) Only suggest items rated at or above this</span>
+        </div>
+      </div>
+
+      <div class="form-group" style="margin-bottom: 14px;">
+        <label class="label">Minimum Months Since Last Watch</label>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <input type="number" id="rewatchMinMonths" min="1" max="120" value="12"
+                 style="width:70px;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:0.85rem;">
+          <span style="color:var(--text-dim);font-size:0.82rem;">How long before an item becomes eligible</span>
+        </div>
+      </div>
+
+      <div class="toggle-group">
+        <div class="toggle-label">
+          <span class="title">Seasonal Suggestions</span>
+          <span class="desc">Boost genre-matched items based on the current month (horror in October, holiday films in December, etc.)</span>
+        </div>
+        <div class="toggle-switch active" id="rewatchSeasonal" onclick="toggleRewatchSeasonal()"></div>
+      </div>
+
+      <button class="btn btn-blue" id="saveRewatchSettings" style="width: 100%; margin-top: 12px;" onclick="saveRewatchSettings()">💾 Save Rewatch Settings</button>
     </div>
 
     <!-- Smart Queue Options -->
@@ -847,6 +881,7 @@
       loadAutoSendSettings();
       loadWatchlistSyncSettings();
       loadQueueSettings();
+      loadRewatchSettings();
       loadTmdbSettings();
       loadMdblistSettings();
       loadConnectionStatus();
@@ -2310,6 +2345,59 @@
     function escapeHtml(s) {
       if (!s) return '';
       return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Rewatch Recommender Settings
+    // ═══════════════════════════════════════════════════════════════════
+
+    let rewatchSeasonal = true;
+
+    async function loadRewatchSettings() {
+      // Need a user ID — use first linked user
+      try {
+        const ur = await fetch('/auth/users');
+        const users = await ur.json();
+        if (!users.length) return;
+        const uid = users[0].id;
+        const r = await fetch(`/api/rewatch/${uid}/settings`);
+        const s = await r.json();
+        document.getElementById('rewatchMinRating').value = s.min_rating || 8;
+        document.getElementById('rewatchMinMonths').value = s.min_months || 12;
+        rewatchSeasonal = s.seasonal !== false;
+        const toggle = document.getElementById('rewatchSeasonal');
+        if (rewatchSeasonal) { toggle.classList.add('active'); } else { toggle.classList.remove('active'); }
+      } catch(e) { console.error('loadRewatchSettings failed:', e); }
+    }
+
+    function toggleRewatchSeasonal() {
+      rewatchSeasonal = !rewatchSeasonal;
+      const toggle = document.getElementById('rewatchSeasonal');
+      if (rewatchSeasonal) { toggle.classList.add('active'); } else { toggle.classList.remove('active'); }
+    }
+
+    async function saveRewatchSettings() {
+      try {
+        const ur = await fetch('/auth/users');
+        const users = await ur.json();
+        if (!users.length) return;
+        const uid = users[0].id;
+        const payload = {
+          min_rating: parseInt(document.getElementById('rewatchMinRating').value) || 8,
+          min_months: parseInt(document.getElementById('rewatchMinMonths').value) || 12,
+          seasonal: rewatchSeasonal,
+        };
+        const r = await fetch(`/api/rewatch/${uid}/settings`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (r.ok) {
+          const btn = document.getElementById('saveRewatchSettings');
+          btn.textContent = '✅ Saved!';
+          setTimeout(() => { btn.textContent = '💾 Save Rewatch Settings'; }, 2000);
+        }
+      } catch(e) { console.error('saveRewatchSettings failed:', e); }
     }
 
     init();

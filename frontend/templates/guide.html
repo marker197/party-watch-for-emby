@@ -243,6 +243,7 @@
   <a class="page-link" data-page="universes"><span class="icon">📋</span> Lists</a>
   <a class="page-link" data-page="predictions"><span class="icon">🤖</span> Predictions</a>
   <a class="page-link" data-page="taste-profile"><span class="icon">🎓</span> Taste Profile</a>
+  <a class="page-link" data-page="rewatch"><span class="icon">🔁</span> Rewatch</a>
   <a class="page-link" data-page="stats"><span class="icon">📊</span> Stats</a>
   <a class="page-link" data-page="settings"><span class="icon">⚙️</span> Settings</a>
   <a class="page-link" data-page="watch-party"><span class="icon">👥</span> Watch Party</a>
@@ -599,6 +600,49 @@
 </div>
 
 <!-- ════════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: REWATCH -->
+<!-- ════════════════════════════════════════════════════════════════════ -->
+
+<div class="page" id="page-rewatch" data-sections="rewatch-overview,rewatch-cards,rewatch-history,rewatch-settings">
+
+  <h1 class="page-title">🔁 Rewatch Recommender</h1>
+  <p class="page-intro">Surfaces items you've already watched and rated highly that are worth revisiting. Uses your rating history, time since last watch, and seasonal context to build recommendations.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="rewatch-overview"></span>
+    <h2>How It Works</h2>
+    <p>The recommender pulls your watch history and ratings from Trakt (preferred), MDBList, or Emby as a fallback. It builds a pool of items you rated 8 or higher that you watched at least 12 months ago, then ranks them using four scoring factors: your rating, how long since you last watched (staleness), whether the item matches the current season (horror in October, holiday films in December), and whether you watched it around this same date in a prior year (anniversary rewatch).</p>
+    <p>The suggestions rebuild automatically every day at 2:15 AM and are cached for 24 hours. Use the <span class="btn-label">🔄 Refresh</span> button to force an immediate rebuild.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="rewatch-cards"></span>
+    <h2>Poster Cards</h2>
+    <p>The page displays up to 30 items in a 6-column poster grid. Each card shows the poster image, title, year, your rating, and a recommendation tag explaining why it was surfaced — things like "Watched 2 years ago", "Halloween pick", or "Anniversary rewatch".</p>
+    <p>Use the All / Movies / TV Shows filter buttons at the top to narrow by type. The grid reflows automatically — no blank spaces.</p>
+    <p>Items not in your Emby library appear with a dimmed poster and a "Not in Library" badge. Click the ✕ in the corner of any card to permanently dismiss it from future suggestions.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="rewatch-history"></span>
+    <h2>Watch History Flyout</h2>
+    <p>Hover over a card (or tap on mobile) to see a flyout panel showing your full watch history for that item — every recorded watch date, ordered newest first. Data comes from Trakt if available, falling back to Emby's LastPlayedDate and PlayCount. If Emby only knows the play count, the flyout says "Watched 3 times" with the most recent date.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="rewatch-settings"></span>
+    <h2>Settings</h2>
+    <p>Three settings can be adjusted on the Settings page under "Rewatch Recommender":</p>
+    <div class="feature">
+      <p><strong>Minimum rating</strong> — only suggest items you rated at or above this threshold (default: 8).</p>
+      <p><strong>Minimum months since last watch</strong> — how long ago you must have watched something before it becomes eligible (default: 12 months).</p>
+      <p><strong>Seasonal suggestions</strong> — when enabled, genre-matched items get a scoring boost based on the current month.</p>
+    </div>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
 <!-- PAGE: STATS -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
@@ -931,6 +975,9 @@
     'taste-overview':'Overview','taste-curve':'Rating Curve','taste-genres':'Genres',
     'taste-eras':'Eras','taste-gems':'Hidden Gems','taste-challenges':'Challenges',
     'taste-against':'Against Your Taste',
+    // Rewatch
+    'rewatch-overview':'How It Works','rewatch-cards':'Poster Cards',
+    'rewatch-history':'Watch History Flyout','rewatch-settings':'Settings',
     // Stats
     'stats-overview':'Overview','stats-top-people':'Top People & Studios',
     'stats-fun':'Fun Stats','stats-trends':'Trends','stats-queue-feedback':'Queue Feedback',

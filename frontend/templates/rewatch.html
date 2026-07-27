@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rewatch Recommender - Emby-Trakt Suite</title>
+  <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface-hover: #22263a;
+      --border: #2a2e3e;
+      --text: #e0e0e6;
+      --text-dim: #8b8fa3;
+      --accent: #6c5ce7;
+      --accent-light: #a29bfe;
+      --green: #00b894;
+      --orange: #fdcb6e;
+      --red: #e17055;
+      --blue: #74b9ff;
+      --radius: 10px;
+      --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    body.light-mode {
+      --bg: #f5f6fa;
+      --surface: #ffffff;
+      --surface-hover: #f0f1f5;
+      --border: #e2e4ea;
+      --text: #1f2937;
+      --text-dim: #6b7280;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    .header {
+      padding: 28px 32px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
+    .header h1 { font-size: 1.5rem; font-weight: 700; }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .container { max-width: 1400px; margin: 0 auto; padding: 28px 32px; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      color: #fff;
+    }
+
+    .btn-accent { background: var(--accent); }
+    .btn-blue { background: var(--blue); color: var(--bg); }
+    .btn:hover { opacity: 0.85; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Filter bar */
+    .filter-bar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 24px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .filter-btn {
+      padding: 7px 16px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text-dim);
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .filter-btn:hover { background: var(--surface-hover); color: var(--text); }
+    .filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    .filter-btn .badge {
+      display: inline-block;
+      background: rgba(255,255,255,0.2);
+      padding: 1px 7px;
+      border-radius: 10px;
+      font-size: 0.72rem;
+      margin-left: 4px;
+    }
+
+    .filter-btn.active .badge { background: rgba(255,255,255,0.3); }
+
+    /* User selector */
+    .user-select {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+
+    /* Poster grid — 6 columns */
+    .poster-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 16px;
+    }
+
+    @media (max-width: 1100px) { .poster-grid { grid-template-columns: repeat(4, 1fr); } }
+    @media (max-width: 768px) { .poster-grid { grid-template-columns: repeat(3, 1fr); } }
+    @media (max-width: 480px) { .poster-grid { grid-template-columns: repeat(2, 1fr); } }
+
+    /* Poster card */
+    .poster-card {
+      position: relative;
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      transition: transform 0.15s, border-color 0.15s;
+      cursor: pointer;
+    }
+
+    .poster-card:hover {
+      transform: translateY(-4px);
+      border-color: var(--accent);
+    }
+
+    .poster-card .poster-img {
+      width: 100%;
+      aspect-ratio: 2/3;
+      object-fit: cover;
+      display: block;
+      background: var(--surface-hover);
+    }
+
+    .poster-card .poster-placeholder {
+      width: 100%;
+      aspect-ratio: 2/3;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--surface-hover);
+      color: var(--text-dim);
+      font-size: 2rem;
+    }
+
+    .poster-card .card-info {
+      padding: 10px 12px;
+    }
+
+    .poster-card .card-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 4px;
+    }
+
+    .poster-card .card-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .poster-card .rating-badge {
+      background: var(--green);
+      color: #fff;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .poster-card .tag-badge {
+      background: var(--surface-hover);
+      color: var(--text-dim);
+      font-size: 0.68rem;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 120px;
+    }
+
+    .poster-card .type-badge {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .type-movie { background: var(--blue); color: var(--bg); }
+    .type-show { background: var(--orange); color: var(--bg); }
+
+    .poster-card .dismiss-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      font-size: 0.75rem;
+      cursor: pointer;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s;
+    }
+
+    .poster-card:hover .dismiss-btn { display: flex; }
+    .poster-card .dismiss-btn:hover { background: var(--red); }
+
+    /* Not in library overlay */
+    .poster-card.not-in-library .poster-img,
+    .poster-card.not-in-library .poster-placeholder {
+      opacity: 0.5;
+    }
+
+    .poster-card .library-badge {
+      position: absolute;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: rgba(225, 112, 85, 0.9);
+      color: #fff;
+      white-space: nowrap;
+    }
+
+    /* Flyout (history panel on hover) */
+    .flyout {
+      position: absolute;
+      top: 0;
+      left: calc(100% + 8px);
+      width: 240px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      z-index: 200;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      display: none;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+
+    .flyout.show { display: block; }
+
+    /* If card is on the right edge, flip flyout to the left */
+    .poster-card.flyout-left .flyout {
+      left: auto;
+      right: calc(100% + 8px);
+    }
+
+    .flyout h4 {
+      font-size: 0.82rem;
+      font-weight: 700;
+      margin-bottom: 10px;
+      color: var(--accent-light);
+    }
+
+    .flyout .history-entry {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.78rem;
+    }
+
+    .flyout .history-entry:last-child { border-bottom: none; }
+
+    .flyout .history-entry .date { color: var(--text); font-weight: 600; }
+    .flyout .history-entry .source { color: var(--text-dim); font-size: 0.7rem; }
+
+    .flyout .play-count {
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      margin-top: 8px;
+      font-style: italic;
+    }
+
+    .flyout .loading {
+      color: var(--text-dim);
+      font-size: 0.78rem;
+    }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 80px 20px;
+      color: var(--text-dim);
+    }
+
+    .empty-state .emoji { font-size: 3rem; margin-bottom: 16px; }
+    .empty-state h3 { font-size: 1.1rem; color: var(--text); margin-bottom: 8px; }
+    .empty-state p { font-size: 0.88rem; max-width: 400px; margin: 0 auto; }
+
+    /* Loading spinner */
+    .spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Year dim */
+    .year-dim { color: var(--text-dim); font-size: 0.72rem; }
+
+    /* Theme toggle */
+    .theme-toggle {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.82rem;
+    }
+  </style>
+</head>
+<body>
+
+<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
+    <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
+    <a href="/lists" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📋 Lists</a>
+    <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
+    <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
+    <a href="/rewatch" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">🔁 Rewatch</a>
+    <a href="/stats" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📊 Stats</a>
+    <a href="/library-health" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🏥 Health</a>
+    <a href="/settings" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
+    <a href="/watch-party" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
+    <a href="/guide" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📖 Guide</a>
+</nav>
+
+<div class="header">
+  <h1>🔁 Rewatch Recommender</h1>
+  <div class="header-actions">
+    <select class="user-select" id="userSelect" onchange="switchUser()"></select>
+    <button class="btn btn-accent" id="refreshBtn" onclick="refreshSuggestions()">🔄 Refresh</button>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+  </div>
+</div>
+
+<div class="container">
+  <div class="filter-bar" id="filterBar">
+    <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">All <span class="badge" id="badgeAll">0</span></button>
+    <button class="filter-btn" data-filter="movie" onclick="setFilter('movie')">Movies <span class="badge" id="badgeMovies">0</span></button>
+    <button class="filter-btn" data-filter="show" onclick="setFilter('show')">TV Shows <span class="badge" id="badgeShows">0</span></button>
+  </div>
+
+  <div class="poster-grid" id="posterGrid"></div>
+
+  <div class="empty-state" id="emptyState" style="display:none;">
+    <div class="emoji">🔁</div>
+    <h3>No Rewatch Suggestions Yet</h3>
+    <p>Click Refresh to build your first set of rewatch recommendations. You need rated items in your Trakt or Emby history.</p>
+  </div>
+</div>
+
+<script>
+const API = '';
+let currentUser = null;
+let allItems = [];
+let currentFilter = 'all';
+let flyoutTimer = null;
+let activeFlyoutCard = null;
+
+// ── Escape helper ──
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+// ── Theme ──
+function toggleTheme() {
+  document.body.classList.toggle('light-mode');
+  localStorage.setItem('theme', document.body.classList.contains('light-mode') ? 'light' : 'dark');
+}
+if (localStorage.getItem('theme') === 'light') document.body.classList.add('light-mode');
+
+// ── Users ──
+async function loadUsers() {
+  try {
+    const r = await fetch(API + '/auth/users');
+    const users = await r.json();
+    const sel = document.getElementById('userSelect');
+    sel.innerHTML = '';
+    users.forEach(u => {
+      const o = document.createElement('option');
+      o.value = u.id;
+      o.textContent = u.emby_username || `User ${u.id}`;
+      sel.appendChild(o);
+    });
+    if (users.length > 0) {
+      currentUser = users[0].id;
+      sel.value = currentUser;
+    }
+  } catch (e) {
+    console.error('Failed to load users:', e);
+  }
+}
+
+function switchUser() {
+  currentUser = parseInt(document.getElementById('userSelect').value);
+  loadSuggestions();
+}
+
+// ── Load suggestions ──
+async function loadSuggestions() {
+  if (!currentUser) return;
+  const grid = document.getElementById('posterGrid');
+  grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;"><span class="spinner"></span></div>';
+
+  try {
+    const r = await fetch(API + `/api/rewatch/${currentUser}`);
+    const data = await r.json();
+    allItems = data.items || [];
+    renderGrid();
+  } catch (e) {
+    console.error('Failed to load suggestions:', e);
+    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--red);">Failed to load suggestions</div>';
+  }
+}
+
+// ── Refresh (force rebuild) ──
+async function refreshSuggestions() {
+  if (!currentUser) return;
+  const btn = document.getElementById('refreshBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Building...';
+
+  try {
+    const r = await fetch(API + `/api/rewatch/${currentUser}/refresh`, { method: 'POST' });
+    const data = await r.json();
+    allItems = data.items || [];
+    renderGrid();
+  } catch (e) {
+    console.error('Refresh failed:', e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 Refresh';
+  }
+}
+
+// ── Filter ──
+function setFilter(f) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === f));
+  renderGrid();
+}
+
+function updateBadges() {
+  document.getElementById('badgeAll').textContent = allItems.length;
+  document.getElementById('badgeMovies').textContent = allItems.filter(i => i.item_type === 'movie').length;
+  document.getElementById('badgeShows').textContent = allItems.filter(i => i.item_type === 'show').length;
+}
+
+// ── Render grid ──
+function renderGrid() {
+  updateBadges();
+  const grid = document.getElementById('posterGrid');
+  const empty = document.getElementById('emptyState');
+  const filtered = currentFilter === 'all' ? allItems : allItems.filter(i => i.item_type === currentFilter);
+
+  if (filtered.length === 0) {
+    grid.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  grid.innerHTML = filtered.map((item, idx) => {
+    const tag = buildTag(item);
+    const typeClass = item.item_type === 'movie' ? 'type-movie' : 'type-show';
+    const typeLabel = item.item_type === 'movie' ? 'MOVIE' : 'SHOW';
+    const notInLib = item.in_library === false ? ' not-in-library' : '';
+    // Cards in last 2 columns get flyout on the left
+    const colPos = idx % 6;
+    const flyoutClass = colPos >= 4 ? ' flyout-left' : '';
+    const posterHtml = item.poster_url
+      ? `<img class="poster-img" src="${esc(item.poster_url)}" alt="${esc(item.title)}" loading="lazy" onerror="this.outerHTML='<div class=\\'poster-placeholder\\'>🎬</div>'">`
+      : `<div class="poster-placeholder">🎬</div>`;
+
+    return `<div class="poster-card${notInLib}${flyoutClass}" data-key="${esc(item.item_key)}" data-type="${item.item_type}"
+                 onmouseenter="showFlyout(this, '${esc(item.item_key)}')"
+                 onmouseleave="hideFlyout(this)">
+      <span class="type-badge ${typeClass}">${typeLabel}</span>
+      <button class="dismiss-btn" onclick="event.stopPropagation(); dismissItem('${esc(item.item_key)}')" title="Dismiss">✕</button>
+      ${posterHtml}
+      ${item.in_library === false ? '<div class="library-badge">Not in Library</div>' : ''}
+      <div class="card-info">
+        <div class="card-title" title="${esc(item.title)}">${esc(item.title)} ${item.year ? '<span class="year-dim">(' + item.year + ')</span>' : ''}</div>
+        <div class="card-meta">
+          <span class="rating-badge">★ ${item.rating}</span>
+          <span class="tag-badge" title="${esc(tag)}">${esc(tag)}</span>
+        </div>
+      </div>
+      <div class="flyout" id="flyout-${idx}">
+        <div class="loading"><span class="spinner"></span> Loading history...</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Recommendation tag ──
+function buildTag(item) {
+  if (!item.last_watched) return '';
+  const lw = new Date(item.last_watched);
+  const now = new Date();
+  const diffMs = now - lw;
+  const diffYears = Math.floor(diffMs / (365.25 * 24 * 3600 * 1000));
+  const diffMonths = Math.floor(diffMs / (30 * 24 * 3600 * 1000));
+
+  // Anniversary check: within ±7 days of today
+  const lwDay = lw.getMonth() * 31 + lw.getDate();
+  const nowDay = now.getMonth() * 31 + now.getDate();
+  if (Math.abs(lwDay - nowDay) <= 7 && lw.getFullYear() < now.getFullYear()) {
+    return `Anniversary rewatch`;
+  }
+
+  // Seasonal check
+  const month = now.getMonth() + 1;
+  const genres = (item.genres || []).map(g => g.toLowerCase());
+  const seasonal = {
+    10: { genres: ['horror', 'thriller', 'mystery'], label: 'Halloween pick' },
+    12: { genres: ['family', 'animation', 'comedy', 'holiday', 'christmas', 'fantasy'], label: 'Holiday pick' },
+    2:  { genres: ['romance', 'comedy'], label: "Valentine's pick" },
+  };
+  const s = seasonal[month];
+  if (s && genres.some(g => s.genres.includes(g))) {
+    return s.label;
+  }
+
+  // Time since
+  if (diffYears >= 2) return `Watched ${diffYears} years ago`;
+  if (diffYears === 1) return `Watched 1 year ago`;
+  if (diffMonths >= 2) return `Watched ${diffMonths} months ago`;
+  return `Watched recently`;
+}
+
+// ── Flyout (hover history) ──
+let historyCache = {};
+
+function showFlyout(card, itemKey) {
+  clearTimeout(flyoutTimer);
+  // Close any existing
+  if (activeFlyoutCard && activeFlyoutCard !== card) {
+    const prev = activeFlyoutCard.querySelector('.flyout');
+    if (prev) prev.classList.remove('show');
+  }
+
+  flyoutTimer = setTimeout(async () => {
+    const flyout = card.querySelector('.flyout');
+    if (!flyout) return;
+    flyout.classList.add('show');
+    activeFlyoutCard = card;
+
+    if (historyCache[itemKey]) {
+      renderFlyout(flyout, historyCache[itemKey]);
+      return;
+    }
+
+    try {
+      const r = await fetch(API + `/api/rewatch/${currentUser}/history/${encodeURIComponent(itemKey)}`);
+      const data = await r.json();
+      historyCache[itemKey] = data;
+      renderFlyout(flyout, data);
+    } catch (e) {
+      flyout.innerHTML = '<div style="color:var(--red);font-size:0.78rem;">Failed to load history</div>';
+    }
+  }, 300);
+}
+
+function hideFlyout(card) {
+  clearTimeout(flyoutTimer);
+  flyoutTimer = setTimeout(() => {
+    const flyout = card.querySelector('.flyout');
+    if (flyout) flyout.classList.remove('show');
+    if (activeFlyoutCard === card) activeFlyoutCard = null;
+  }, 200);
+}
+
+function renderFlyout(flyout, data) {
+  if (!data || (!data.watches?.length && !data.play_count)) {
+    flyout.innerHTML = '<div style="color:var(--text-dim);font-size:0.78rem;">No watch history found</div>';
+    return;
+  }
+
+  let html = '<h4>Watch History</h4>';
+
+  if (data.watches && data.watches.length > 0) {
+    html += data.watches.map(w =>
+      `<div class="history-entry">
+        <span class="date">${esc(w.date)}</span>
+        <span class="source">${esc(w.source)}</span>
+      </div>`
+    ).join('');
+  }
+
+  if (data.note) {
+    html += `<div class="play-count">${esc(data.note)}</div>`;
+  } else if (data.play_count > 1 && (!data.watches || data.watches.length <= 1)) {
+    html += `<div class="play-count">Played ${data.play_count} times (only most recent date available)</div>`;
+  }
+
+  flyout.innerHTML = html;
+}
+
+// ── Dismiss ──
+async function dismissItem(itemKey) {
+  if (!currentUser) return;
+  try {
+    await fetch(API + `/api/rewatch/${currentUser}/dismiss/${encodeURIComponent(itemKey)}`, { method: 'POST' });
+    allItems = allItems.filter(i => i.item_key !== itemKey);
+    renderGrid();
+  } catch (e) {
+    console.error('Dismiss failed:', e);
+  }
+}
+
+// ── Mobile touch support ──
+document.addEventListener('click', (e) => {
+  // Close flyout if clicking outside a card
+  if (!e.target.closest('.poster-card')) {
+    if (activeFlyoutCard) {
+      const f = activeFlyoutCard.querySelector('.flyout');
+      if (f) f.classList.remove('show');
+      activeFlyoutCard = null;
+    }
+  }
+});
+
+// ── Init ──
+(async function init() {
+  await loadUsers();
+  if (currentUser) await loadSuggestions();
+})();
+</script>
+</body>
+</html>
