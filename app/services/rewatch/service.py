@@ -157,8 +157,12 @@ class RewatchRecommender:
     async def get_item_history(self, user_id: int, item_id: str) -> dict:
         """Lazy-load full watch history for a single item (hover flyout).
 
-        Returns: {"title": str, "watches": [{"date": str, "source": str}],
-                  "play_count": int}
+        Combines all three sources (Trakt + MDBList + Emby), deduplicates
+        dates within ±1 day tolerance, and notes unrecorded watches from
+        Emby PlayCount.
+
+        Returns: {"watches": [{"date": str, "source": str}],
+                  "play_count": int, "note": str|None}
         """
         r = await get_redis()
         cache_key = f"{self.CACHE_PREFIX}:history:{user_id}:{item_id}"
@@ -166,21 +170,90 @@ class RewatchRecommender:
         if raw:
             return json.loads(raw)
 
-        result = await self._history_from_trakt(user_id, item_id)
+        # Pull from all available sources in parallel-ish fashion
+        trakt_result = await self._history_from_trakt(user_id, item_id)
+        emby_result = await self._history_from_emby(user_id, item_id)
 
-        if not result or len(result.get("watches", [])) <= 1:
-            mdb_result = await self._history_from_mdblist(user_id, item_id)
-            if mdb_result and len(mdb_result.get("watches", [])) > len(result.get("watches", []) if result else []):
-                result = mdb_result
+        # Merge all watches into one list
+        all_watches: list[dict] = []
+        if trakt_result and trakt_result.get("watches"):
+            all_watches.extend(trakt_result["watches"])
+        if emby_result and emby_result.get("watches"):
+            all_watches.extend(emby_result["watches"])
 
-        if not result or not result.get("watches"):
-            result = await self._history_from_emby(user_id, item_id)
+        # Deduplicate: if two entries are within ±1 day, keep the one with
+        # more precision (Trakt typically has HH:MM, Emby just date)
+        deduped = self._deduplicate_watches(all_watches)
 
-        if not result:
-            result = {"title": "", "watches": [], "play_count": 0}
+        # Sort newest first
+        deduped.sort(key=lambda w: w["date"], reverse=True)
+
+        # Check Emby PlayCount for unrecorded watches
+        emby_play_count = 0
+        if emby_result:
+            emby_play_count = emby_result.get("play_count", 0)
+
+        total_known = len(deduped)
+        note = None
+        if emby_play_count > total_known and total_known > 0:
+            extra = emby_play_count - total_known
+            note = f"{extra} additional watch{'es' if extra != 1 else ''} (dates unknown)"
+        elif emby_play_count > 1 and total_known == 0:
+            note = f"Watched {emby_play_count} times (no dates recorded)"
+
+        play_count = max(emby_play_count, total_known)
+
+        result = {
+            "watches": deduped,
+            "play_count": play_count,
+            "note": note,
+        }
 
         await r.set(cache_key, json.dumps(result), ex=self.CACHE_TTL)
         return result
+
+    @staticmethod
+    def _deduplicate_watches(watches: list[dict]) -> list[dict]:
+        """Remove near-duplicate watch entries (within ±1 day tolerance).
+
+        Keeps the entry with longer date string (more precision).
+        """
+        if not watches:
+            return []
+
+        # Parse dates for comparison
+        parsed: list[tuple[datetime, dict]] = []
+        for w in watches:
+            try:
+                date_str = w["date"]
+                if len(date_str) > 10:
+                    dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M")
+                else:
+                    dt = datetime.strptime(date_str, "%Y-%m-%d")
+                parsed.append((dt, w))
+            except (ValueError, KeyError):
+                continue
+
+        # Sort by date
+        parsed.sort(key=lambda x: x[0])
+
+        deduped_dts: list[datetime] = []
+        deduped: list[dict] = []
+        for dt, w in parsed:
+            is_dup = False
+            for i, kept_dt in enumerate(deduped_dts):
+                if abs((dt - kept_dt).total_seconds()) < 86400:
+                    # Near-duplicate: keep the one with more precision
+                    if len(w["date"]) > len(deduped[i]["date"]):
+                        deduped[i] = w
+                        deduped_dts[i] = dt
+                    is_dup = True
+                    break
+            if not is_dup:
+                deduped.append(w)
+                deduped_dts.append(dt)
+
+        return deduped
 
     async def dismiss(self, user_id: int, item_key: str) -> dict:
         """Dismiss an item from rewatch suggestions (DB-backed)."""

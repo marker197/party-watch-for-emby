@@ -143,7 +143,6 @@
     .poster-card {
       position: relative;
       border-radius: var(--radius);
-      overflow: hidden;
       background: var(--surface);
       border: 1px solid var(--border);
       transition: transform 0.15s, border-color 0.15s;
@@ -153,6 +152,7 @@
     .poster-card:hover {
       transform: translateY(-4px);
       border-color: var(--accent);
+      z-index: 100;
     }
 
     .poster-card .poster-img {
@@ -161,6 +161,7 @@
       object-fit: cover;
       display: block;
       background: var(--surface-hover);
+      border-radius: var(--radius) var(--radius) 0 0;
     }
 
     .poster-card .poster-placeholder {
@@ -172,6 +173,7 @@
       background: var(--surface-hover);
       color: var(--text-dim);
       font-size: 2rem;
+      border-radius: var(--radius) var(--radius) 0 0;
     }
 
     .poster-card .card-info {
