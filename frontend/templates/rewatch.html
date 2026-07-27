@@ -332,6 +332,51 @@
       font-size: 0.78rem;
     }
 
+    .flyout-play-btn {
+      display: block;
+      width: 100%;
+      margin-top: 12px;
+      padding: 8px 0;
+      border: 1px solid var(--green);
+      border-radius: 6px;
+      background: none;
+      color: var(--green);
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .flyout-play-btn:hover {
+      background: var(--green);
+      color: #fff;
+    }
+
+    /* Toast notification */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 20px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      z-index: 10000;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+      animation: toastIn 0.25s ease-out;
+      max-width: 320px;
+    }
+
+    .toast.toast-ok { border-left: 4px solid var(--green); }
+    .toast.toast-error { border-left: 4px solid var(--red); }
+
+    @keyframes toastIn {
+      from { transform: translateY(20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
     /* Empty state */
     .empty-state {
       text-align: center;
@@ -532,8 +577,8 @@ function renderGrid() {
       ? `<img class="poster-img" src="${esc(item.poster_url)}" alt="${esc(item.title)}" loading="lazy" onerror="this.outerHTML='<div class=\\'poster-placeholder\\'>🎬</div>'">`
       : `<div class="poster-placeholder">🎬</div>`;
 
-    return `<div class="poster-card${notInLib}${flyoutClass}" data-key="${esc(item.item_key)}" data-type="${item.item_type}"
-                 onmouseenter="showFlyout(this, '${esc(item.item_key)}')"
+    return `<div class="poster-card${notInLib}${flyoutClass}" data-key="${esc(item.item_key)}" data-type="${item.item_type}" data-emby-id="${esc(item.emby_id || '')}"
+                 onmouseenter="showFlyout(this, '${esc(item.item_key)}', '${esc(item.emby_id || '')}')"
                  onmouseleave="hideFlyout(this)">
       <span class="type-badge ${typeClass}">${typeLabel}</span>
       <button class="dismiss-btn" onclick="event.stopPropagation(); dismissItem('${esc(item.item_key)}')" title="Dismiss">✕</button>
@@ -592,7 +637,7 @@ function buildTag(item) {
 // ── Flyout (hover history) ──
 let historyCache = {};
 
-function showFlyout(card, itemKey) {
+function showFlyout(card, itemKey, embyId) {
   clearTimeout(flyoutTimer);
   // Close any existing
   if (activeFlyoutCard && activeFlyoutCard !== card) {
@@ -607,7 +652,7 @@ function showFlyout(card, itemKey) {
     activeFlyoutCard = card;
 
     if (historyCache[itemKey]) {
-      renderFlyout(flyout, historyCache[itemKey]);
+      renderFlyout(flyout, historyCache[itemKey], embyId);
       return;
     }
 
@@ -615,7 +660,7 @@ function showFlyout(card, itemKey) {
       const r = await fetch(API + `/api/rewatch/${currentUser}/history/${encodeURIComponent(itemKey)}`);
       const data = await r.json();
       historyCache[itemKey] = data;
-      renderFlyout(flyout, data);
+      renderFlyout(flyout, data, embyId);
     } catch (e) {
       flyout.innerHTML = '<div style="color:var(--red);font-size:0.78rem;">Failed to load history</div>';
     }
@@ -631,9 +676,13 @@ function hideFlyout(card) {
   }, 200);
 }
 
-function renderFlyout(flyout, data) {
+function renderFlyout(flyout, data, embyId) {
   if (!data || (!data.watches?.length && !data.play_count)) {
     flyout.innerHTML = '<div style="color:var(--text-dim);font-size:0.78rem;">No watch history found</div>';
+    // Still show play button if we have an emby_id
+    if (embyId) {
+      flyout.innerHTML += renderPlayButton(embyId);
+    }
     return;
   }
 
@@ -654,7 +703,16 @@ function renderFlyout(flyout, data) {
     html += `<div class="play-count">Played ${data.play_count} times (only most recent date available)</div>`;
   }
 
+  // Play button (only for in-library items)
+  if (embyId) {
+    html += renderPlayButton(embyId);
+  }
+
   flyout.innerHTML = html;
+}
+
+function renderPlayButton(embyId) {
+  return `<button class="flyout-play-btn" onclick="event.stopPropagation(); pickDeviceAndPlay('${esc(embyId)}', 0)">▶ Play on Emby</button>`;
 }
 
 // ── Dismiss ──
@@ -680,6 +738,69 @@ document.addEventListener('click', (e) => {
     }
   }
 });
+
+// ── Play on Emby (device picker) ──
+async function pickDeviceAndPlay(embyId, ticks) {
+  try {
+    const r = await fetch(API + `/api/remote-play/sessions/${currentUser}`);
+    const d = await r.json();
+    const sessions = d.sessions || [];
+
+    if (!sessions.length) {
+      showToast('No active Emby devices found', 'error');
+      return;
+    }
+
+    if (sessions.length === 1) {
+      await playOnDevice(embyId, sessions[0].session_id, sessions[0].device_name, ticks);
+      return;
+    }
+
+    // Multiple devices — show picker modal
+    let pickerHtml = '<div id="devicePicker" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;" onclick="if(event.target===this)this.remove()">';
+    pickerHtml += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;min-width:260px;max-width:400px;">';
+    pickerHtml += '<div style="font-weight:600;margin-bottom:12px;font-size:0.92rem;">Choose device</div>';
+    sessions.forEach(s => {
+      const safeName = s.device_name.replace(/'/g, "\\'");
+      const label = esc(s.device_name) + (s.client ? ' (' + esc(s.client) + ')' : '') + (s.now_playing ? ' — playing: ' + esc(s.now_playing) : '');
+      pickerHtml += `<button onclick="document.getElementById('devicePicker').remove();playOnDevice('${embyId}','${s.session_id}','${safeName}',${ticks||0})" style="display:block;width:100%;text-align:left;background:var(--surface-hover);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;cursor:pointer;margin-bottom:6px;font-size:0.85rem;">${label}</button>`;
+    });
+    pickerHtml += '<button onclick="document.getElementById(\'devicePicker\').remove()" style="display:block;width:100%;text-align:center;background:none;border:1px solid var(--border);color:var(--text-dim);padding:8px;border-radius:6px;cursor:pointer;font-size:0.82rem;margin-top:4px;">Cancel</button>';
+    pickerHtml += '</div></div>';
+    document.body.insertAdjacentHTML('beforeend', pickerHtml);
+  } catch(e) {
+    showToast('Failed to fetch devices: ' + e.message, 'error');
+  }
+}
+
+async function playOnDevice(embyId, sessionId, deviceName, ticks) {
+  try {
+    const r = await fetch(API + '/api/play-on-session', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_id: currentUser, emby_item_id: embyId, session_id: sessionId, start_position_ticks: ticks || 0}),
+    });
+    const d = await r.json();
+    if (d.status === 'playing') {
+      showToast('▶ Playing on ' + deviceName, 'ok');
+    } else {
+      showToast(d.message || 'Playback failed', 'error');
+    }
+  } catch(e) {
+    showToast('Playback error: ' + e.message, 'error');
+  }
+}
+
+function showToast(msg, type) {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+  const cls = type === 'ok' ? 'toast-ok' : 'toast-error';
+  const el = document.createElement('div');
+  el.className = `toast ${cls}`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
 
 // ── Init ──
 (async function init() {
