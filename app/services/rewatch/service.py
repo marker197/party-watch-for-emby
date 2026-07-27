@@ -89,7 +89,8 @@ class RewatchRecommender:
                                 seasonal: bool = True) -> list[dict]:
         """Rebuild the suggestion list for *user_id*.
 
-        Tries Trakt first, falls back to MDBList, then Emby.
+        Merges candidates from all available sources (Trakt + MDBList + Emby),
+        deduplicating by item_key.  Trakt is authoritative where overlap exists.
         """
         r = await get_redis()
 
@@ -107,23 +108,53 @@ class RewatchRecommender:
         # Load dismissed item IDs
         dismissed = await self._load_dismissed(user_id)
 
-        # Try data sources in priority order
-        candidates = await self._candidates_from_trakt(user_id, min_rating, cutoff)
-        source = "trakt"
+        # Collect from all available sources and merge
+        all_candidates: list[dict] = []
+        sources_used: list[str] = []
 
-        if not candidates:
-            candidates = await self._candidates_from_mdblist(user_id, min_rating, cutoff)
-            source = "mdblist"
+        trakt_candidates = await self._candidates_from_trakt(user_id, min_rating, cutoff)
+        if trakt_candidates:
+            all_candidates.extend(trakt_candidates)
+            sources_used.append("trakt")
+            log.debug("rewatch.source_trakt", user_id=user_id,
+                       count=len(trakt_candidates))
 
-        if not candidates:
-            candidates = await self._candidates_from_emby(user_id, min_rating, cutoff)
-            source = "emby"
+        mdblist_candidates = await self._candidates_from_mdblist(user_id, min_rating, cutoff)
+        if mdblist_candidates:
+            all_candidates.extend(mdblist_candidates)
+            sources_used.append("mdblist")
+            log.debug("rewatch.source_mdblist", user_id=user_id,
+                       count=len(mdblist_candidates))
 
-        if not candidates:
+        emby_candidates = await self._candidates_from_emby(user_id, min_rating, cutoff)
+        if emby_candidates:
+            all_candidates.extend(emby_candidates)
+            sources_used.append("emby")
+            log.debug("rewatch.source_emby", user_id=user_id,
+                       count=len(emby_candidates))
+
+        if not all_candidates:
             log.info("rewatch.no_candidates", user_id=user_id)
             await r.set(f"{self.CACHE_PREFIX}:suggestions:{user_id}",
                         json.dumps([]), ex=self.CACHE_TTL)
             return []
+
+        # Deduplicate: prefer Trakt > MDBList > Emby by keeping first seen
+        # (Trakt added first).  Match by imdb_id or item_key.
+        seen_keys: set[str] = set()
+        seen_imdb: set[str] = set()
+        candidates: list[dict] = []
+        for c in all_candidates:
+            ik = c["item_key"]
+            iid = c.get("imdb_id", "")
+            if ik in seen_keys:
+                continue
+            if iid and iid in seen_imdb:
+                continue
+            seen_keys.add(ik)
+            if iid:
+                seen_imdb.add(iid)
+            candidates.append(c)
 
         # Filter dismissed
         candidates = [c for c in candidates if c["item_key"] not in dismissed]
@@ -150,7 +181,8 @@ class RewatchRecommender:
             ex=self.CACHE_TTL,
         )
 
-        log.info("rewatch.built", user_id=user_id, source=source,
+        source_str = "+".join(sources_used) if sources_used else "none"
+        log.info("rewatch.built", user_id=user_id, sources=source_str,
                  candidates=len(candidates), results=len(results))
         return results
 
@@ -165,19 +197,26 @@ class RewatchRecommender:
                   "play_count": int, "note": str|None}
         """
         r = await get_redis()
-        cache_key = f"{self.CACHE_PREFIX}:history:{user_id}:{item_id}"
+        cache_key = f"{self.CACHE_PREFIX}:history_v2:{user_id}:{item_id}"
         raw = await r.get(cache_key)
         if raw:
             return json.loads(raw)
 
-        # Pull from all available sources in parallel-ish fashion
+        # Pull from all available sources
         trakt_result = await self._history_from_trakt(user_id, item_id)
+        mdblist_result = await self._history_from_mdblist(user_id, item_id)
         emby_result = await self._history_from_emby(user_id, item_id)
+
+        log.debug("rewatch.history_sources", user_id=user_id, item_id=item_id,
+                  trakt=bool(trakt_result), mdblist=bool(mdblist_result),
+                  emby=bool(emby_result))
 
         # Merge all watches into one list
         all_watches: list[dict] = []
         if trakt_result and trakt_result.get("watches"):
             all_watches.extend(trakt_result["watches"])
+        if mdblist_result and mdblist_result.get("watches"):
+            all_watches.extend(mdblist_result["watches"])
         if emby_result and emby_result.get("watches"):
             all_watches.extend(emby_result["watches"])
 
@@ -188,20 +227,20 @@ class RewatchRecommender:
         # Sort newest first
         deduped.sort(key=lambda w: w["date"], reverse=True)
 
-        # Check Emby PlayCount for unrecorded watches
-        emby_play_count = 0
-        if emby_result:
-            emby_play_count = emby_result.get("play_count", 0)
+        # Check PlayCount from Emby and MDBList for unrecorded watches
+        emby_play_count = emby_result.get("play_count", 0) if emby_result else 0
+        mdblist_play_count = mdblist_result.get("play_count", 0) if mdblist_result else 0
+        best_play_count = max(emby_play_count, mdblist_play_count)
 
         total_known = len(deduped)
         note = None
-        if emby_play_count > total_known and total_known > 0:
-            extra = emby_play_count - total_known
+        if best_play_count > total_known and total_known > 0:
+            extra = best_play_count - total_known
             note = f"{extra} additional watch{'es' if extra != 1 else ''} (dates unknown)"
-        elif emby_play_count > 1 and total_known == 0:
-            note = f"Watched {emby_play_count} times (no dates recorded)"
+        elif best_play_count > 1 and total_known == 0:
+            note = f"Watched {best_play_count} times (no dates recorded)"
 
-        play_count = max(emby_play_count, total_known)
+        play_count = max(best_play_count, total_known)
 
         result = {
             "watches": deduped,
@@ -416,12 +455,134 @@ class RewatchRecommender:
     # Data source: MDBList
     # ------------------------------------------------------------------
 
+    @staticmethod
+    async def _build_mdblist_client():
+        """Build an MDBListClient using the stored API key, or None."""
+        from app.utils.mdblist_client import MDBListClient
+        r = await get_redis()
+        raw = await r.get("mdblist_api_key")
+        if not raw:
+            return None
+        key = raw if isinstance(raw, str) else raw.decode()
+        if not key:
+            return None
+        return MDBListClient(api_key=key)
+
     async def _candidates_from_mdblist(self, user_id: int, min_rating: int,
                                        cutoff: datetime) -> list[dict]:
-        """Fallback: use MDBList watched history if Trakt not available."""
-        # MDBList doesn't store per-user ratings the same way, but
-        # we can pull watched history and use Emby ratings as fallback
-        return []  # Placeholder — MDBList doesn't have a user history endpoint
+        """Fallback: use MDBList /sync/watched + /sync/ratings when Trakt unavailable."""
+        from app.utils.library_cache import LibraryCache
+
+        mdb = await self._build_mdblist_client()
+        if not mdb:
+            return []
+
+        try:
+            # Fetch watched history and ratings in parallel
+            watched_data = await mdb.get_watched()
+            ratings_data = await mdb.get_ratings()
+
+            # Build ratings lookup: (provider, id) -> rating
+            rating_lookup: dict[str, float] = {}
+            for kind in ("movies", "shows"):
+                for item in ratings_data.get(kind, []):
+                    r_val = item.get("rating")
+                    if r_val is None:
+                        continue
+                    ids = item.get("ids", {})
+                    for prov in ("imdb", "tmdb", "trakt", "mdblist"):
+                        pid = ids.get(prov)
+                        if pid:
+                            rating_lookup[f"{prov}:{pid}"] = float(r_val)
+
+            candidates = []
+            for kind, item_type in (("movies", "movie"), ("shows", "show")):
+                for entry in watched_data.get(kind, []):
+                    ids = entry.get("ids", {})
+                    title = entry.get("title", "Unknown")
+                    year = entry.get("year")
+                    genres = [g.lower() for g in entry.get("genres", [])]
+                    plays = entry.get("plays", 1)
+
+                    # Determine last watched date
+                    watched_at = entry.get("watched_at") or entry.get("last_watched_at", "")
+                    if not watched_at:
+                        continue
+                    try:
+                        lw_dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
+                    except (ValueError, TypeError):
+                        continue
+
+                    if lw_dt > cutoff:
+                        continue  # Watched too recently
+
+                    # Find rating from ratings lookup
+                    rating = None
+                    imdb_id = ids.get("imdb", "")
+                    tmdb_id = str(ids.get("tmdb", "")) if ids.get("tmdb") else ""
+                    trakt_id = str(ids.get("trakt", "")) if ids.get("trakt") else ""
+                    mdblist_id = str(ids.get("mdblist", "")) if ids.get("mdblist") else ""
+
+                    for key_str in (
+                        f"imdb:{imdb_id}" if imdb_id else "",
+                        f"tmdb:{tmdb_id}" if tmdb_id else "",
+                        f"trakt:{trakt_id}" if trakt_id else "",
+                        f"mdblist:{mdblist_id}" if mdblist_id else "",
+                    ):
+                        if key_str and key_str in rating_lookup:
+                            rating = rating_lookup[key_str]
+                            break
+
+                    if rating is None or rating < min_rating:
+                        continue
+
+                    # Resolve Emby ID from library cache
+                    emby_id = None
+                    if imdb_id:
+                        cached = await LibraryCache.find_by_provider_id("Imdb", imdb_id)
+                        if cached:
+                            emby_id = cached.get("emby_id")
+                    if not emby_id and tmdb_id:
+                        cached = await LibraryCache.find_by_provider_id("Tmdb", tmdb_id)
+                        if cached:
+                            emby_id = cached.get("emby_id")
+
+                    # Build item_key — prefer imdb, fall back to tmdb/mdblist
+                    item_key = (
+                        f"imdb:{imdb_id}" if imdb_id
+                        else f"tmdb:{tmdb_id}" if tmdb_id
+                        else f"mdblist:{mdblist_id}" if mdblist_id
+                        else f"emby:{emby_id}" if emby_id
+                        else None
+                    )
+                    if not item_key:
+                        continue
+
+                    candidates.append({
+                        "item_key": item_key,
+                        "title": title,
+                        "year": year,
+                        "item_type": item_type,
+                        "rating": round(rating, 1),
+                        "genres": genres,
+                        "last_watched": lw_dt.strftime("%Y-%m-%d"),
+                        "last_watched_iso": watched_at,
+                        "trakt_id": trakt_id,
+                        "imdb_id": imdb_id,
+                        "tmdb_id": tmdb_id,
+                        "emby_id": emby_id,
+                        "in_library": emby_id is not None,
+                        "play_count": plays,
+                        "source": "mdblist",
+                    })
+
+            return candidates
+        except Exception as e:
+            log.warning("rewatch.mdblist_fetch_failed", user_id=user_id,
+                        error=str(e)[:200])
+            return []
+        finally:
+            await mdb.close()
 
     # ------------------------------------------------------------------
     # Data source: Emby
@@ -587,8 +748,60 @@ class RewatchRecommender:
             await trakt.close()
 
     async def _history_from_mdblist(self, user_id: int, item_id: str) -> dict | None:
-        """MDBList doesn't expose per-item watch history — placeholder."""
-        return None
+        """Fetch watch history from MDBList /sync/watched for a single item.
+
+        MDBList returns watched_at and plays count per item. We scan the
+        full watched list and match by provider ID.
+        """
+        mdb = await self._build_mdblist_client()
+        if not mdb:
+            return None
+
+        try:
+            watched_data = await mdb.get_watched()
+
+            # Parse the item_id to get provider and value
+            if ":" not in item_id:
+                return None
+            provider, value = item_id.split(":", 1)
+
+            for kind in ("movies", "shows"):
+                for entry in watched_data.get(kind, []):
+                    ids = entry.get("ids", {})
+
+                    # Match by provider ID
+                    entry_val = ids.get(provider)
+                    if entry_val is not None and str(entry_val) == value:
+                        watched_at = entry.get("watched_at") or entry.get("last_watched_at", "")
+                        plays = entry.get("plays", 1)
+
+                        watches = []
+                        if watched_at:
+                            try:
+                                dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
+                                watches.append({
+                                    "date": dt.strftime("%Y-%m-%d %H:%M"),
+                                    "source": "mdblist",
+                                })
+                            except (ValueError, TypeError):
+                                pass
+
+                        return {
+                            "watches": watches,
+                            "play_count": plays,
+                            "note": (
+                                f"Watched {plays} time{'s' if plays != 1 else ''} (MDBList)"
+                                if plays > 1 and len(watches) <= 1 else None
+                            ),
+                        }
+
+            return None
+        except Exception as e:
+            log.warning("rewatch.mdblist_history_failed", user_id=user_id,
+                        item_id=item_id, error=str(e)[:200])
+            return None
+        finally:
+            await mdb.close()
 
     async def _history_from_emby(self, user_id: int, item_id: str) -> dict | None:
         """Emby stores only LastPlayedDate + PlayCount (no individual dates)."""
