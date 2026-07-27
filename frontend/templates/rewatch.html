@@ -139,10 +139,11 @@
     @media (max-width: 768px) { .poster-grid { grid-template-columns: repeat(3, 1fr); } }
     @media (max-width: 480px) { .poster-grid { grid-template-columns: repeat(2, 1fr); } }
 
-    /* Poster card */
+    /* Poster card — overflow:hidden forces uniform image sizing */
     .poster-card {
       position: relative;
       border-radius: var(--radius);
+      overflow: hidden;
       background: var(--surface);
       border: 1px solid var(--border);
       transition: transform 0.15s, border-color 0.15s;
@@ -161,7 +162,6 @@
       object-fit: cover;
       display: block;
       background: var(--surface-hover);
-      border-radius: var(--radius) var(--radius) 0 0;
     }
 
     .poster-card .poster-placeholder {
@@ -173,49 +173,51 @@
       background: var(--surface-hover);
       color: var(--text-dim);
       font-size: 2rem;
-      border-radius: var(--radius) var(--radius) 0 0;
     }
 
     .poster-card .card-info {
-      padding: 10px 12px;
+      padding: 8px 10px;
+      height: 52px;
+      overflow: hidden;
     }
 
     .poster-card .card-title {
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       font-weight: 600;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      margin-bottom: 4px;
+      margin-bottom: 3px;
+      line-height: 1.2;
     }
 
     .poster-card .card-meta {
       display: flex;
       align-items: center;
-      gap: 6px;
-      flex-wrap: wrap;
+      gap: 5px;
     }
 
     .poster-card .rating-badge {
       background: var(--green);
       color: #fff;
-      font-size: 0.7rem;
+      font-size: 0.65rem;
       font-weight: 700;
-      padding: 2px 6px;
+      padding: 2px 5px;
       border-radius: 4px;
+      flex-shrink: 0;
     }
 
     .poster-card .tag-badge {
       background: var(--surface-hover);
       color: var(--text-dim);
-      font-size: 0.68rem;
+      font-size: 0.63rem;
       font-weight: 600;
-      padding: 2px 6px;
+      padding: 2px 5px;
       border-radius: 4px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 120px;
+      min-width: 0;
     }
 
     .poster-card .type-badge {
@@ -272,41 +274,35 @@
       background: rgba(225, 112, 85, 0.9);
       color: #fff;
       white-space: nowrap;
+      z-index: 2;
     }
 
-    /* Flyout (history panel on hover) */
-    .flyout {
-      position: absolute;
-      top: 0;
-      left: calc(100% + 8px);
-      width: 240px;
+    /* Flyout — single shared element on body, positioned via JS */
+    #globalFlyout {
+      position: fixed;
+      width: 250px;
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
       padding: 14px 16px;
-      z-index: 200;
+      z-index: 9000;
       box-shadow: 0 8px 24px rgba(0,0,0,0.4);
       display: none;
       max-height: 320px;
       overflow-y: auto;
+      pointer-events: auto;
     }
 
-    .flyout.show { display: block; }
+    #globalFlyout.show { display: block; }
 
-    /* If card is on the right edge, flip flyout to the left */
-    .poster-card.flyout-left .flyout {
-      left: auto;
-      right: calc(100% + 8px);
-    }
-
-    .flyout h4 {
+    #globalFlyout h4 {
       font-size: 0.82rem;
       font-weight: 700;
       margin-bottom: 10px;
       color: var(--accent-light);
     }
 
-    .flyout .history-entry {
+    #globalFlyout .history-entry {
       display: flex;
       align-items: center;
       gap: 8px;
@@ -315,19 +311,19 @@
       font-size: 0.78rem;
     }
 
-    .flyout .history-entry:last-child { border-bottom: none; }
+    #globalFlyout .history-entry:last-child { border-bottom: none; }
 
-    .flyout .history-entry .date { color: var(--text); font-weight: 600; }
-    .flyout .history-entry .source { color: var(--text-dim); font-size: 0.7rem; }
+    #globalFlyout .history-entry .date { color: var(--text); font-weight: 600; }
+    #globalFlyout .history-entry .source { color: var(--text-dim); font-size: 0.7rem; }
 
-    .flyout .play-count {
+    #globalFlyout .play-count {
       font-size: 0.78rem;
       color: var(--text-dim);
       margin-top: 8px;
       font-style: italic;
     }
 
-    .flyout .loading {
+    #globalFlyout .loading {
       color: var(--text-dim);
       font-size: 0.78rem;
     }
@@ -456,6 +452,8 @@
   </div>
 </div>
 
+<div id="globalFlyout"></div>
+
 <script>
 const API = '';
 let currentUser = null;
@@ -570,14 +568,11 @@ function renderGrid() {
     const typeClass = item.item_type === 'movie' ? 'type-movie' : 'type-show';
     const typeLabel = item.item_type === 'movie' ? 'MOVIE' : 'SHOW';
     const notInLib = item.in_library === false ? ' not-in-library' : '';
-    // Cards in last 2 columns get flyout on the left
-    const colPos = idx % 6;
-    const flyoutClass = colPos >= 4 ? ' flyout-left' : '';
     const posterHtml = item.poster_url
       ? `<img class="poster-img" src="${esc(item.poster_url)}" alt="${esc(item.title)}" loading="lazy" onerror="this.outerHTML='<div class=\\'poster-placeholder\\'>🎬</div>'">`
       : `<div class="poster-placeholder">🎬</div>`;
 
-    return `<div class="poster-card${notInLib}${flyoutClass}" data-key="${esc(item.item_key)}" data-type="${item.item_type}" data-emby-id="${esc(item.emby_id || '')}"
+    return `<div class="poster-card${notInLib}" data-key="${esc(item.item_key)}" data-type="${item.item_type}" data-emby-id="${esc(item.emby_id || '')}"
                  onmouseenter="showFlyout(this, '${esc(item.item_key)}', '${esc(item.emby_id || '')}')"
                  onmouseleave="hideFlyout(this)">
       <span class="type-badge ${typeClass}">${typeLabel}</span>
@@ -590,9 +585,6 @@ function renderGrid() {
           <span class="rating-badge">★ ${item.rating}</span>
           <span class="tag-badge" title="${esc(tag)}">${esc(tag)}</span>
         </div>
-      </div>
-      <div class="flyout" id="flyout-${idx}">
-        <div class="loading"><span class="spinner"></span> Loading history...</div>
       </div>
     </div>`;
   }).join('');
@@ -634,25 +626,39 @@ function buildTag(item) {
   return `Watched recently`;
 }
 
-// ── Flyout (hover history) ──
+// ── Flyout (hover history) — global element positioned next to card ──
 let historyCache = {};
+const flyoutEl = document.getElementById('globalFlyout');
+
+function positionFlyout(card) {
+  const rect = card.getBoundingClientRect();
+  const flyoutW = 250;
+  const gap = 8;
+  // Prefer right side; if it overflows viewport, use left
+  let left = rect.right + gap;
+  if (left + flyoutW > window.innerWidth) {
+    left = rect.left - flyoutW - gap;
+  }
+  // Vertical: align top of flyout with top of card, clamp to viewport
+  let top = rect.top;
+  if (top + 320 > window.innerHeight) {
+    top = Math.max(8, window.innerHeight - 328);
+  }
+  flyoutEl.style.left = left + 'px';
+  flyoutEl.style.top = top + 'px';
+}
 
 function showFlyout(card, itemKey, embyId) {
   clearTimeout(flyoutTimer);
-  // Close any existing
-  if (activeFlyoutCard && activeFlyoutCard !== card) {
-    const prev = activeFlyoutCard.querySelector('.flyout');
-    if (prev) prev.classList.remove('show');
-  }
 
   flyoutTimer = setTimeout(async () => {
-    const flyout = card.querySelector('.flyout');
-    if (!flyout) return;
-    flyout.classList.add('show');
+    flyoutEl.innerHTML = '<div class="loading"><span class="spinner"></span> Loading history...</div>';
+    positionFlyout(card);
+    flyoutEl.classList.add('show');
     activeFlyoutCard = card;
 
     if (historyCache[itemKey]) {
-      renderFlyout(flyout, historyCache[itemKey], embyId);
+      renderFlyout(historyCache[itemKey], embyId);
       return;
     }
 
@@ -660,9 +666,9 @@ function showFlyout(card, itemKey, embyId) {
       const r = await fetch(API + `/api/rewatch/${currentUser}/history/${encodeURIComponent(itemKey)}`);
       const data = await r.json();
       historyCache[itemKey] = data;
-      renderFlyout(flyout, data, embyId);
+      renderFlyout(data, embyId);
     } catch (e) {
-      flyout.innerHTML = '<div style="color:var(--red);font-size:0.78rem;">Failed to load history</div>';
+      flyoutEl.innerHTML = '<div style="color:var(--red);font-size:0.78rem;">Failed to load history</div>';
     }
   }, 300);
 }
@@ -670,18 +676,25 @@ function showFlyout(card, itemKey, embyId) {
 function hideFlyout(card) {
   clearTimeout(flyoutTimer);
   flyoutTimer = setTimeout(() => {
-    const flyout = card.querySelector('.flyout');
-    if (flyout) flyout.classList.remove('show');
+    flyoutEl.classList.remove('show');
     if (activeFlyoutCard === card) activeFlyoutCard = null;
   }, 200);
 }
 
-function renderFlyout(flyout, data, embyId) {
+// Keep flyout open when mouse moves onto it
+flyoutEl.addEventListener('mouseenter', () => clearTimeout(flyoutTimer));
+flyoutEl.addEventListener('mouseleave', () => {
+  flyoutTimer = setTimeout(() => {
+    flyoutEl.classList.remove('show');
+    activeFlyoutCard = null;
+  }, 200);
+});
+
+function renderFlyout(data, embyId) {
   if (!data || (!data.watches?.length && !data.play_count)) {
-    flyout.innerHTML = '<div style="color:var(--text-dim);font-size:0.78rem;">No watch history found</div>';
-    // Still show play button if we have an emby_id
+    flyoutEl.innerHTML = '<div style="color:var(--text-dim);font-size:0.78rem;">No watch history found</div>';
     if (embyId) {
-      flyout.innerHTML += renderPlayButton(embyId);
+      flyoutEl.innerHTML += renderPlayButton(embyId);
     }
     return;
   }
@@ -708,7 +721,7 @@ function renderFlyout(flyout, data, embyId) {
     html += renderPlayButton(embyId);
   }
 
-  flyout.innerHTML = html;
+  flyoutEl.innerHTML = html;
 }
 
 function renderPlayButton(embyId) {
@@ -729,13 +742,9 @@ async function dismissItem(itemKey) {
 
 // ── Mobile touch support ──
 document.addEventListener('click', (e) => {
-  // Close flyout if clicking outside a card
-  if (!e.target.closest('.poster-card')) {
-    if (activeFlyoutCard) {
-      const f = activeFlyoutCard.querySelector('.flyout');
-      if (f) f.classList.remove('show');
-      activeFlyoutCard = null;
-    }
+  if (!e.target.closest('.poster-card') && !e.target.closest('#globalFlyout')) {
+    flyoutEl.classList.remove('show');
+    activeFlyoutCard = null;
   }
 });
 
