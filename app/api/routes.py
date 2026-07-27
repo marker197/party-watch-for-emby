@@ -2552,6 +2552,70 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             # Always try MDBList history (independent of Trakt scrobble state)
             asyncio.create_task(_mdblist_add_to_history())
 
+        # ── Persistent watch history (local DB) ──────────────────────────
+        # Record every completed watch for rewatch suggestions & stats.
+        # For PlaybackStop: only if progress >= 80% (actually watched).
+        # For MarkPlayed: always (user explicitly marked it).
+        should_record = is_mark_played
+        if is_play_stop:
+            try:
+                should_record = _calc_progress() >= 80
+            except Exception:
+                should_record = True  # err on the side of recording
+
+        if should_record:
+            try:
+                from app.models.schema import WatchHistory
+                provider_ids = item_data.get("ProviderIds", {})
+                runtime_ticks = item_data.get("RunTimeTicks", 0) or 0
+                runtime_min = int(runtime_ticks / 600_000_000) if runtime_ticks else None
+
+                wh_item_type = "episode" if item_type_raw == "Episode" else "movie"
+                wh_series = item_data.get("SeriesName") if item_type_raw == "Episode" else None
+                wh_season = item_data.get("ParentIndexNumber") if item_type_raw == "Episode" else None
+                wh_episode = item_data.get("IndexNumber") if item_type_raw == "Episode" else None
+
+                # For episodes, get series-level provider IDs
+                wh_imdb = provider_ids.get("Imdb", "") or ""
+                wh_tmdb = str(provider_ids.get("Tmdb", "")) if provider_ids.get("Tmdb") else ""
+                wh_tvdb = str(provider_ids.get("Tvdb", "")) if provider_ids.get("Tvdb") else ""
+                wh_trakt = ""
+
+                if item_type_raw == "Episode":
+                    series_ids = await _resolve_series_ids()
+                    wh_imdb = wh_imdb or str(series_ids.get("imdb", ""))
+                    wh_tmdb = wh_tmdb or str(series_ids.get("tmdb", ""))
+                    wh_tvdb = wh_tvdb or str(series_ids.get("tvdb", ""))
+
+                now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+                entry = WatchHistory(
+                    user_id=user.id,
+                    emby_id=emby_item_id,
+                    item_type=wh_item_type,
+                    title=item_name,
+                    series_name=wh_series,
+                    season_number=wh_season,
+                    episode_number=wh_episode,
+                    imdb_id=wh_imdb or None,
+                    tmdb_id=wh_tmdb or None,
+                    trakt_id=wh_trakt or None,
+                    tvdb_id=wh_tvdb or None,
+                    watched_at=now_naive,
+                    runtime_minutes=runtime_min,
+                    source="webhook",
+                )
+                db.add(entry)
+                await db.commit()
+                log.debug("webhook.watch_history_recorded", user_id=user.id,
+                          title=display_name, item_type=wh_item_type)
+            except Exception as e:
+                await db.rollback()
+                # IntegrityError from unique constraint = duplicate, not an error
+                if "uq_watch_history_user_item_time" in str(e):
+                    log.debug("webhook.watch_history_duplicate", title=display_name)
+                else:
+                    log.warning("webhook.watch_history_failed", error=str(e)[:200])
+
     # ── library.new / item.added → check smart queue for missing items ─────
     if is_library_event and item_type_raw in ("Movie", "Episode", "Series"):
         try:
@@ -7373,3 +7437,481 @@ async def update_rewatch_settings(
             db.add(AppSetting(key=f"rewatch_settings:{user_id}", value=_json.dumps(settings_data)))
         await db.commit()
     return {"status": "ok", **settings_data}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Watch History — persistent local record
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/watch-history/{user_id}")
+async def get_watch_history(
+    user_id: int,
+    limit: int = 50,
+    offset: int = 0,
+    item_type: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return paginated watch history for a user."""
+    from app.models.schema import WatchHistory
+    q = select(WatchHistory).where(WatchHistory.user_id == user_id)
+    if item_type:
+        q = q.where(WatchHistory.item_type == item_type)
+    q = q.order_by(WatchHistory.watched_at.desc()).offset(offset).limit(limit)
+
+    count_q = select(func.count(WatchHistory.id)).where(WatchHistory.user_id == user_id)
+    if item_type:
+        count_q = count_q.where(WatchHistory.item_type == item_type)
+
+    rows = (await db.execute(q)).scalars().all()
+    total = (await db.execute(count_q)).scalar() or 0
+
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "emby_id": r.emby_id,
+                "item_type": r.item_type,
+                "title": r.title,
+                "series_name": r.series_name,
+                "season_number": r.season_number,
+                "episode_number": r.episode_number,
+                "imdb_id": r.imdb_id,
+                "tmdb_id": r.tmdb_id,
+                "watched_at": r.watched_at.isoformat() if r.watched_at else None,
+                "runtime_minutes": r.runtime_minutes,
+                "source": r.source,
+            }
+            for r in rows
+        ],
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    }
+
+
+@router.get("/api/watch-history/{user_id}/item/{item_key:path}")
+async def get_item_watch_history(
+    user_id: int,
+    item_key: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all watch events for a specific item (rewatch flyout).
+
+    item_key formats: 'emby:xxx', 'imdb:ttxxx', 'trakt:123'
+    """
+    from app.models.schema import WatchHistory
+    from sqlalchemy import or_
+
+    if ":" not in item_key:
+        return {"watches": [], "play_count": 0}
+
+    provider, value = item_key.split(":", 1)
+    filters = [WatchHistory.user_id == user_id]
+
+    if provider == "emby":
+        filters.append(WatchHistory.emby_id == value)
+    elif provider == "imdb":
+        filters.append(WatchHistory.imdb_id == value)
+    elif provider == "tmdb":
+        filters.append(WatchHistory.tmdb_id == value)
+    elif provider == "trakt":
+        filters.append(WatchHistory.trakt_id == value)
+    elif provider == "tvdb":
+        filters.append(WatchHistory.tvdb_id == value)
+    else:
+        return {"watches": [], "play_count": 0}
+
+    rows = (await db.execute(
+        select(WatchHistory).where(*filters).order_by(WatchHistory.watched_at.desc())
+    )).scalars().all()
+
+    return {
+        "watches": [
+            {"date": r.watched_at.strftime("%Y-%m-%d %H:%M") if r.watched_at else "", "source": r.source}
+            for r in rows
+        ],
+        "play_count": len(rows),
+    }
+
+
+@router.get("/api/watch-history/{user_id}/stats")
+async def get_watch_history_stats(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregated stats from local watch history — no API calls needed."""
+    from app.models.schema import WatchHistory
+    from sqlalchemy import extract, case, distinct
+
+    base = WatchHistory.user_id == user_id
+
+    # Total counts
+    total_watches = (await db.execute(select(func.count(WatchHistory.id)).where(base))).scalar() or 0
+    total_movies = (await db.execute(
+        select(func.count(WatchHistory.id)).where(base, WatchHistory.item_type == "movie")
+    )).scalar() or 0
+    total_episodes = (await db.execute(
+        select(func.count(WatchHistory.id)).where(base, WatchHistory.item_type == "episode")
+    )).scalar() or 0
+
+    # Total hours watched
+    total_minutes = (await db.execute(
+        select(func.coalesce(func.sum(WatchHistory.runtime_minutes), 0)).where(base)
+    )).scalar() or 0
+    total_hours = round(total_minutes / 60, 1)
+
+    # Unique titles (movies) and series
+    unique_movies = (await db.execute(
+        select(func.count(distinct(WatchHistory.title))).where(base, WatchHistory.item_type == "movie")
+    )).scalar() or 0
+    unique_series = (await db.execute(
+        select(func.count(distinct(WatchHistory.series_name))).where(
+            base, WatchHistory.item_type == "episode", WatchHistory.series_name.isnot(None)
+        )
+    )).scalar() or 0
+
+    # Most rewatched movies (top 10)
+    most_rewatched_q = (
+        select(
+            WatchHistory.title,
+            WatchHistory.emby_id,
+            WatchHistory.imdb_id,
+            func.count(WatchHistory.id).label("plays"),
+            func.max(WatchHistory.watched_at).label("last_watched"),
+        )
+        .where(base, WatchHistory.item_type == "movie")
+        .group_by(WatchHistory.title, WatchHistory.emby_id, WatchHistory.imdb_id)
+        .having(func.count(WatchHistory.id) > 1)
+        .order_by(func.count(WatchHistory.id).desc())
+        .limit(10)
+    )
+    most_rewatched = [
+        {"title": r.title, "emby_id": r.emby_id, "imdb_id": r.imdb_id,
+         "plays": r.plays, "last_watched": r.last_watched.isoformat() if r.last_watched else None}
+        for r in (await db.execute(most_rewatched_q)).all()
+    ]
+
+    # Most watched series (by episode count)
+    most_watched_series_q = (
+        select(
+            WatchHistory.series_name,
+            func.count(WatchHistory.id).label("episodes_watched"),
+            func.coalesce(func.sum(WatchHistory.runtime_minutes), 0).label("total_minutes"),
+        )
+        .where(base, WatchHistory.item_type == "episode", WatchHistory.series_name.isnot(None))
+        .group_by(WatchHistory.series_name)
+        .order_by(func.count(WatchHistory.id).desc())
+        .limit(10)
+    )
+    most_watched_series = [
+        {"series_name": r.series_name, "episodes_watched": r.episodes_watched,
+         "total_hours": round(r.total_minutes / 60, 1)}
+        for r in (await db.execute(most_watched_series_q)).all()
+    ]
+
+    # Watches per month (last 12 months)
+    twelve_months_ago = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=365)
+    monthly_q = (
+        select(
+            extract("year", WatchHistory.watched_at).label("year"),
+            extract("month", WatchHistory.watched_at).label("month"),
+            func.count(WatchHistory.id).label("count"),
+            func.coalesce(func.sum(WatchHistory.runtime_minutes), 0).label("minutes"),
+        )
+        .where(base, WatchHistory.watched_at >= twelve_months_ago)
+        .group_by("year", "month")
+        .order_by("year", "month")
+    )
+    monthly = [
+        {"year": int(r.year), "month": int(r.month), "count": r.count,
+         "hours": round(r.minutes / 60, 1)}
+        for r in (await db.execute(monthly_q)).all()
+    ]
+
+    # Day-of-week distribution
+    dow_q = (
+        select(
+            extract("dow", WatchHistory.watched_at).label("dow"),
+            func.count(WatchHistory.id).label("count"),
+        )
+        .where(base)
+        .group_by("dow")
+        .order_by("dow")
+    )
+    day_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    dow_raw = {int(r.dow): r.count for r in (await db.execute(dow_q)).all()}
+    by_day_of_week = [{"day": day_names[i], "count": dow_raw.get(i, 0)} for i in range(7)]
+
+    # Viewing streak (consecutive days)
+    all_dates_q = (
+        select(func.distinct(func.date_trunc("day", WatchHistory.watched_at)).label("d"))
+        .where(base)
+        .order_by(func.date_trunc("day", WatchHistory.watched_at))
+    )
+    all_dates = [(await db.execute(all_dates_q)).scalars().all()]
+    current_streak = 0
+    max_streak = 0
+    if all_dates and all_dates[0]:
+        dates_list = sorted(set(d.date() if hasattr(d, "date") else d for d in all_dates[0]))
+        if dates_list:
+            streak = 1
+            for i in range(1, len(dates_list)):
+                if (dates_list[i] - dates_list[i-1]).days == 1:
+                    streak += 1
+                else:
+                    max_streak = max(max_streak, streak)
+                    streak = 1
+            max_streak = max(max_streak, streak)
+
+            # Current streak
+            today = datetime.now(timezone.utc).date()
+            if dates_list[-1] >= today - timedelta(days=1):
+                current_streak = 1
+                for i in range(len(dates_list) - 2, -1, -1):
+                    if (dates_list[i+1] - dates_list[i]).days == 1:
+                        current_streak += 1
+                    else:
+                        break
+
+    return {
+        "total_watches": total_watches,
+        "total_movies": total_movies,
+        "total_episodes": total_episodes,
+        "total_hours": total_hours,
+        "unique_movies": unique_movies,
+        "unique_series": unique_series,
+        "most_rewatched": most_rewatched,
+        "most_watched_series": most_watched_series,
+        "monthly": monthly,
+        "by_day_of_week": by_day_of_week,
+        "current_streak": current_streak,
+        "max_streak": max_streak,
+    }
+
+
+@router.post("/api/watch-history/{user_id}/backfill")
+async def backfill_watch_history(
+    user_id: int,
+    _user: User = Depends(get_current_user),
+):
+    """One-time import of watch history from Trakt, MDBList, and Emby.
+
+    Runs in-request (not background) so the caller sees the result.
+    Deduplicates via unique constraint — safe to run multiple times.
+    """
+    require_user_ownership(_user.id, user_id, "watch_history_backfill")
+
+    from app.models.schema import WatchHistory
+    import structlog
+    log = structlog.get_logger()
+
+    async with async_session_ctx() as db:
+        user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        added = {"trakt": 0, "mdblist": 0, "emby": 0}
+        skipped = {"trakt": 0, "mdblist": 0, "emby": 0}
+
+        # ── 1. Trakt (richest — individual timestamps) ────────────────
+        if user.trakt_access_token:
+            try:
+                from app.utils.trakt_client import TraktClient
+                trakt = TraktClient(
+                    access_token=user.trakt_access_token,
+                    refresh_token=user.trakt_refresh_token,
+                    token_expires=user.trakt_token_expires,
+                )
+                try:
+                    for kind in ("movies", "episodes"):
+                        history = await trakt.get_history(kind, limit=50000)
+                        for entry in history:
+                            watched_at = entry.get("watched_at", "")
+                            if not watched_at:
+                                continue
+                            try:
+                                dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
+                                dt_naive = dt.replace(tzinfo=None)
+                            except (ValueError, TypeError):
+                                continue
+
+                            if kind == "movies":
+                                item = entry.get("movie", {})
+                                ids = item.get("ids", {})
+                                runtime = item.get("runtime")
+                                wh = WatchHistory(
+                                    user_id=user.id,
+                                    item_type="movie",
+                                    title=item.get("title", ""),
+                                    imdb_id=ids.get("imdb") or None,
+                                    tmdb_id=str(ids.get("tmdb")) if ids.get("tmdb") else None,
+                                    trakt_id=str(ids.get("trakt")) if ids.get("trakt") else None,
+                                    tvdb_id=None,
+                                    watched_at=dt_naive,
+                                    runtime_minutes=runtime,
+                                    source="backfill_trakt",
+                                )
+                            else:
+                                ep = entry.get("episode", {})
+                                show = entry.get("show", {})
+                                show_ids = show.get("ids", {})
+                                ep_ids = ep.get("ids", {})
+                                runtime = ep.get("runtime") or show.get("runtime")
+                                wh = WatchHistory(
+                                    user_id=user.id,
+                                    item_type="episode",
+                                    title=ep.get("title", ""),
+                                    series_name=show.get("title"),
+                                    season_number=ep.get("season"),
+                                    episode_number=ep.get("number"),
+                                    imdb_id=show_ids.get("imdb") or None,
+                                    tmdb_id=str(show_ids.get("tmdb")) if show_ids.get("tmdb") else None,
+                                    trakt_id=str(ep_ids.get("trakt")) if ep_ids.get("trakt") else None,
+                                    tvdb_id=str(show_ids.get("tvdb")) if show_ids.get("tvdb") else None,
+                                    watched_at=dt_naive,
+                                    runtime_minutes=runtime,
+                                    source="backfill_trakt",
+                                )
+
+                            try:
+                                db.add(wh)
+                                await db.flush()
+                                added["trakt"] += 1
+                            except Exception:
+                                await db.rollback()
+                                skipped["trakt"] += 1
+                    await db.commit()
+                finally:
+                    await trakt.close()
+            except Exception as e:
+                log.warning("backfill.trakt_failed", error=str(e)[:200])
+                await db.rollback()
+
+        # ── 2. MDBList (last watched date + plays count) ──────────────
+        try:
+            r = await get_redis()
+            raw_key = await r.get("mdblist_api_key")
+            if raw_key:
+                from app.utils.mdblist_client import MDBListClient
+                key = raw_key if isinstance(raw_key, str) else raw_key.decode()
+                mdb = MDBListClient(api_key=key)
+                try:
+                    watched_data = await mdb.get_watched()
+                    for kind, wh_type in (("movies", "movie"), ("shows", "show")):
+                        for entry in watched_data.get(kind, []):
+                            watched_at = entry.get("watched_at") or entry.get("last_watched_at", "")
+                            if not watched_at:
+                                continue
+                            try:
+                                dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
+                                dt_naive = dt.replace(tzinfo=None)
+                            except (ValueError, TypeError):
+                                continue
+
+                            ids = entry.get("ids", {})
+                            # MDBList only gives last watched date, not individual plays
+                            wh = WatchHistory(
+                                user_id=user.id,
+                                item_type=wh_type if wh_type == "movie" else "episode",
+                                title=entry.get("title", ""),
+                                imdb_id=ids.get("imdb") or None,
+                                tmdb_id=str(ids.get("tmdb")) if ids.get("tmdb") else None,
+                                trakt_id=str(ids.get("trakt")) if ids.get("trakt") else None,
+                                tvdb_id=str(ids.get("tvdb")) if ids.get("tvdb") else None,
+                                watched_at=dt_naive,
+                                source="backfill_mdblist",
+                            )
+                            try:
+                                db.add(wh)
+                                await db.flush()
+                                added["mdblist"] += 1
+                            except Exception:
+                                await db.rollback()
+                                skipped["mdblist"] += 1
+                    await db.commit()
+                finally:
+                    await mdb.close()
+        except Exception as e:
+            log.warning("backfill.mdblist_failed", error=str(e)[:200])
+            await db.rollback()
+
+        # ── 3. Emby (LastPlayedDate only, one date per item) ──────────
+        if user.emby_user_id:
+            try:
+                emby = EmbyClient()
+                try:
+                    for emby_type in ("Movie", "Episode"):
+                        start = 0
+                        batch = 500
+                        while True:
+                            resp = await emby.get_items(
+                                user_id=user.emby_user_id,
+                                item_type=emby_type,
+                                filters="IsPlayed",
+                                fields="ProviderIds,UserData,UserDataLastPlayedDate,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber",
+                                limit=batch,
+                                start_index=start,
+                            )
+                            items = resp.get("Items", []) if isinstance(resp, dict) else resp
+                            if not items:
+                                break
+
+                            for item in items:
+                                ud = item.get("UserData", {})
+                                last_played = ud.get("LastPlayedDate", "")
+                                if not last_played:
+                                    start += batch
+                                    continue
+                                try:
+                                    dt = datetime.fromisoformat(last_played.replace("Z", "+00:00"))
+                                    dt_naive = dt.replace(tzinfo=None)
+                                except (ValueError, TypeError):
+                                    continue
+
+                                pids = item.get("ProviderIds", {})
+                                runtime_ticks = item.get("RunTimeTicks", 0) or 0
+                                runtime_min = int(runtime_ticks / 600_000_000) if runtime_ticks else None
+
+                                wh = WatchHistory(
+                                    user_id=user.id,
+                                    emby_id=item.get("Id"),
+                                    item_type="episode" if emby_type == "Episode" else "movie",
+                                    title=item.get("Name", ""),
+                                    series_name=item.get("SeriesName") if emby_type == "Episode" else None,
+                                    season_number=item.get("ParentIndexNumber") if emby_type == "Episode" else None,
+                                    episode_number=item.get("IndexNumber") if emby_type == "Episode" else None,
+                                    imdb_id=pids.get("Imdb") or None,
+                                    tmdb_id=str(pids.get("Tmdb")) if pids.get("Tmdb") else None,
+                                    tvdb_id=str(pids.get("Tvdb")) if pids.get("Tvdb") else None,
+                                    watched_at=dt_naive,
+                                    runtime_minutes=runtime_min,
+                                    source="backfill_emby",
+                                )
+                                try:
+                                    db.add(wh)
+                                    await db.flush()
+                                    added["emby"] += 1
+                                except Exception:
+                                    await db.rollback()
+                                    skipped["emby"] += 1
+
+                            if len(items) < batch:
+                                break
+                            start += batch
+                    await db.commit()
+                finally:
+                    await emby.close()
+            except Exception as e:
+                log.warning("backfill.emby_failed", error=str(e)[:200])
+                await db.rollback()
+
+    total_added = sum(added.values())
+    total_skipped = sum(skipped.values())
+    log.info("backfill.complete", user_id=user_id, added=added, skipped=skipped)
+    return {
+        "status": "ok",
+        "added": added,
+        "skipped_duplicates": skipped,
+        "total_added": total_added,
+        "total_skipped": total_skipped,
+    }

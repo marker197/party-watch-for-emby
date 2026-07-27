@@ -117,19 +117,17 @@ async def lifespan(app: FastAPI):
     await init_db()
     log.info("suite.db_ready")
 
-    # One-time: update alembic_version after migration squash (remove next session)
+    # One-time: update alembic_version after migration squash
     try:
         async with async_session() as db:
             result = await db.execute(sa_text("SELECT version_num FROM alembic_version LIMIT 1"))
             row = result.first()
-            if row and row[0] not in ("001_initial", "002_rewatch"):
+            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history"):
                 # Pre-squash revision — jump to current head
-                await db.execute(sa_text("UPDATE alembic_version SET version_num = '002_rewatch'"))
+                await db.execute(sa_text("UPDATE alembic_version SET version_num = '003_watch_history'"))
                 await db.commit()
-                log.info("suite.alembic_version_updated", old=row[0], new="002_rewatch")
-            elif row and row[0] == "001_initial":
-                # Needs 002 migration — let Alembic handle it on next CMD run
-                pass
+                log.info("suite.alembic_version_updated", old=row[0], new="003_watch_history")
+            # Let Alembic CMD run any pending upgrades (001→002→003)
     except Exception as e:
         log.warning("suite.alembic_version_check_skipped", error=str(e))
 

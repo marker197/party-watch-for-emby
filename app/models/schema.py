@@ -339,6 +339,43 @@ class DismissedHealthItem(Base):
     user = relationship("User", foreign_keys=[user_id])
 
 
+# ---------------------------------------------------------------------------
+# Persistent Watch History
+# ---------------------------------------------------------------------------
+
+class WatchHistory(Base):
+    """Every completed watch event — permanent local record.
+
+    Populated by:
+      - Webhooks (PlaybackStop ≥80%, ItemMarkPlayed)
+      - One-time backfill from Trakt / MDBList / Emby
+    """
+    __tablename__ = "watch_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    emby_id = Column(String(64), nullable=True)
+    item_type = Column(String(32), nullable=False)  # movie | episode
+    title = Column(String(512))
+    series_name = Column(String(512), nullable=True)
+    season_number = Column(Integer, nullable=True)
+    episode_number = Column(Integer, nullable=True)
+    imdb_id = Column(String(32), nullable=True)
+    tmdb_id = Column(String(32), nullable=True)
+    trakt_id = Column(String(32), nullable=True)
+    tvdb_id = Column(String(32), nullable=True)
+    watched_at = Column(DateTime, nullable=False, index=True)
+    runtime_minutes = Column(Integer, nullable=True)
+    source = Column(String(32), nullable=False, default="webhook")  # webhook | backfill_trakt | backfill_mdblist | backfill_emby
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    user = relationship("User", foreign_keys=[user_id])
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "emby_id", "watched_at", name="uq_watch_history_user_item_time"),
+    )
+
+
 class DismissedRewatchItem(Base):
     """Items dismissed from the Rewatch Recommender."""
     __tablename__ = "dismissed_rewatch_items"

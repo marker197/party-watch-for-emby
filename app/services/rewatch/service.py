@@ -187,31 +187,35 @@ class RewatchRecommender:
         return results
 
     async def get_item_history(self, user_id: int, item_id: str) -> dict:
-        """Lazy-load full watch history for a single item (hover flyout).
+        """Return full watch history for a single item (hover flyout).
 
-        Combines all three sources (Trakt + MDBList + Emby), deduplicates
-        dates within ±1 day tolerance, and notes unrecorded watches from
-        Emby PlayCount.
+        Tries local watch_history DB first (instant, no API calls).
+        Falls back to API sources if DB is empty (pre-backfill).
 
         Returns: {"watches": [{"date": str, "source": str}],
                   "play_count": int, "note": str|None}
         """
         r = await get_redis()
-        cache_key = f"{self.CACHE_PREFIX}:history_v2:{user_id}:{item_id}"
+        cache_key = f"{self.CACHE_PREFIX}:history_v3:{user_id}:{item_id}"
         raw = await r.get(cache_key)
         if raw:
             return json.loads(raw)
 
-        # Pull from all available sources
+        # Try local DB first (populated by webhooks + backfill)
+        db_result = await self._history_from_db(user_id, item_id)
+        if db_result and db_result.get("watches"):
+            await r.set(cache_key, json.dumps(db_result), ex=self.CACHE_TTL)
+            return db_result
+
+        # Fallback: API sources (for pre-backfill state)
         trakt_result = await self._history_from_trakt(user_id, item_id)
         mdblist_result = await self._history_from_mdblist(user_id, item_id)
         emby_result = await self._history_from_emby(user_id, item_id)
 
         log.debug("rewatch.history_sources", user_id=user_id, item_id=item_id,
-                  trakt=bool(trakt_result), mdblist=bool(mdblist_result),
+                  db=False, trakt=bool(trakt_result), mdblist=bool(mdblist_result),
                   emby=bool(emby_result))
 
-        # Merge all watches into one list
         all_watches: list[dict] = []
         if trakt_result and trakt_result.get("watches"):
             all_watches.extend(trakt_result["watches"])
@@ -220,18 +224,12 @@ class RewatchRecommender:
         if emby_result and emby_result.get("watches"):
             all_watches.extend(emby_result["watches"])
 
-        # Deduplicate: if two entries are within ±1 day, keep the one with
-        # more precision (Trakt typically has HH:MM, Emby just date)
         deduped = self._deduplicate_watches(all_watches)
-
-        # Sort newest first
         deduped.sort(key=lambda w: w["date"], reverse=True)
 
-        # Check PlayCount from Emby and MDBList for unrecorded watches
         emby_play_count = emby_result.get("play_count", 0) if emby_result else 0
         mdblist_play_count = mdblist_result.get("play_count", 0) if mdblist_result else 0
         best_play_count = max(emby_play_count, mdblist_play_count)
-
         total_known = len(deduped)
         note = None
         if best_play_count > total_known and total_known > 0:
@@ -239,17 +237,58 @@ class RewatchRecommender:
             note = f"{extra} additional watch{'es' if extra != 1 else ''} (dates unknown)"
         elif best_play_count > 1 and total_known == 0:
             note = f"Watched {best_play_count} times (no dates recorded)"
-
         play_count = max(best_play_count, total_known)
 
-        result = {
-            "watches": deduped,
-            "play_count": play_count,
-            "note": note,
-        }
-
+        result = {"watches": deduped, "play_count": play_count, "note": note}
         await r.set(cache_key, json.dumps(result), ex=self.CACHE_TTL)
         return result
+
+    async def _history_from_db(self, user_id: int, item_id: str) -> dict | None:
+        """Query local watch_history table for a single item."""
+        from app.utils.database import async_session
+        from sqlalchemy import select
+
+        try:
+            from app.models.schema import WatchHistory
+        except ImportError:
+            return None
+
+        if ":" not in item_id:
+            return None
+        provider, value = item_id.split(":", 1)
+
+        try:
+            async with async_session() as db:
+                q = select(WatchHistory).where(WatchHistory.user_id == user_id)
+                if provider == "emby":
+                    q = q.where(WatchHistory.emby_id == value)
+                elif provider == "imdb":
+                    q = q.where(WatchHistory.imdb_id == value)
+                elif provider == "tmdb":
+                    q = q.where(WatchHistory.tmdb_id == value)
+                elif provider == "trakt":
+                    q = q.where(WatchHistory.trakt_id == value)
+                elif provider == "tvdb":
+                    q = q.where(WatchHistory.tvdb_id == value)
+                else:
+                    return None
+
+                q = q.order_by(WatchHistory.watched_at.desc())
+                rows = (await db.execute(q)).scalars().all()
+
+            if not rows:
+                return None
+
+            watches = [
+                {"date": r.watched_at.strftime("%Y-%m-%d %H:%M") if r.watched_at else "",
+                 "source": r.source or "db"}
+                for r in rows
+            ]
+            return {"watches": watches, "play_count": len(watches), "note": None}
+        except Exception as e:
+            log.debug("rewatch.db_history_failed", user_id=user_id,
+                      item_id=item_id, error=str(e)[:120])
+            return None
 
     @staticmethod
     def _deduplicate_watches(watches: list[dict]) -> list[dict]:
@@ -475,25 +514,33 @@ class RewatchRecommender:
 
         mdb = await self._build_mdblist_client()
         if not mdb:
+            log.debug("rewatch.mdblist_skipped", user_id=user_id, reason="no_api_key")
             return []
 
         try:
-            # Fetch watched history and ratings in parallel
+            # Fetch watched history and ratings
             watched_data = await mdb.get_watched()
             ratings_data = await mdb.get_ratings()
 
-            # Build ratings lookup: (provider, id) -> rating
+            log.debug("rewatch.mdblist_raw", user_id=user_id,
+                      watched_movies=len(watched_data.get("movies", [])),
+                      watched_shows=len(watched_data.get("shows", [])),
+                      rated_movies=len(ratings_data.get("movies", []) if isinstance(ratings_data, dict) else []),
+                      rated_shows=len(ratings_data.get("shows", []) if isinstance(ratings_data, dict) else []))
+
+            # Build ratings lookup: (provider:id) -> rating
             rating_lookup: dict[str, float] = {}
-            for kind in ("movies", "shows"):
-                for item in ratings_data.get(kind, []):
-                    r_val = item.get("rating")
-                    if r_val is None:
-                        continue
-                    ids = item.get("ids", {})
-                    for prov in ("imdb", "tmdb", "trakt", "mdblist"):
-                        pid = ids.get(prov)
-                        if pid:
-                            rating_lookup[f"{prov}:{pid}"] = float(r_val)
+            if isinstance(ratings_data, dict):
+                for kind in ("movies", "shows"):
+                    for item in ratings_data.get(kind, []):
+                        r_val = item.get("rating")
+                        if r_val is None:
+                            continue
+                        ids = item.get("ids", {})
+                        for prov in ("imdb", "tmdb", "trakt", "mdblist"):
+                            pid = ids.get(prov)
+                            if pid:
+                                rating_lookup[f"{prov}:{pid}"] = float(r_val)
 
             candidates = []
             for kind, item_type in (("movies", "movie"), ("shows", "show")):
@@ -533,8 +580,23 @@ class RewatchRecommender:
                             rating = rating_lookup[key_str]
                             break
 
-                    if rating is None or rating < min_rating:
+                    # Fallback: check for rating in watched entry itself
+                    if rating is None:
+                        rating = entry.get("rating")
+
+                    # Fallback: use Emby CommunityRating via library cache
+                    if rating is None:
+                        cached_item = None
+                        if imdb_id:
+                            cached_item = await LibraryCache.find_by_provider_id("Imdb", imdb_id)
+                        if not cached_item and tmdb_id:
+                            cached_item = await LibraryCache.find_by_provider_id("Tmdb", tmdb_id)
+                        if cached_item:
+                            rating = cached_item.get("community_rating")
+
+                    if rating is None or float(rating) < min_rating:
                         continue
+                    rating = float(rating)
 
                     # Resolve Emby ID from library cache
                     emby_id = None
@@ -607,22 +669,27 @@ class RewatchRecommender:
         emby = EmbyClient()
         try:
             # Fetch played movies
-            movies = await emby.get_items(
+            resp_movies = await emby.get_items(
                 user_id=user.emby_user_id,
-                item_types="Movie",
+                item_type="Movie",
                 filters="IsPlayed",
                 fields="ProviderIds,Genres,ProductionYear,UserData,UserDataLastPlayedDate",
                 limit=5000,
             )
+            movies = resp_movies.get("Items", []) if isinstance(resp_movies, dict) else resp_movies
 
             # Fetch played series
-            shows = await emby.get_items(
+            resp_shows = await emby.get_items(
                 user_id=user.emby_user_id,
-                item_types="Series",
+                item_type="Series",
                 filters="IsPlayed",
                 fields="ProviderIds,Genres,ProductionYear,UserData,UserDataLastPlayedDate",
                 limit=5000,
             )
+            shows = resp_shows.get("Items", []) if isinstance(resp_shows, dict) else resp_shows
+
+            log.debug("rewatch.emby_items", user_id=user_id,
+                      movies=len(movies), shows=len(shows))
 
             candidates = []
             for item in (movies + shows):
