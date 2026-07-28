@@ -7644,15 +7644,16 @@ async def get_watch_history_stats(
 
     # Viewing streak (consecutive days)
     all_dates_q = (
-        select(func.distinct(func.date_trunc("day", WatchHistory.watched_at)).label("d"))
+        select(func.date_trunc("day", WatchHistory.watched_at).label("d"))
         .where(base)
+        .group_by(func.date_trunc("day", WatchHistory.watched_at))
         .order_by(func.date_trunc("day", WatchHistory.watched_at))
     )
-    all_dates = [(await db.execute(all_dates_q)).scalars().all()]
+    date_rows = (await db.execute(all_dates_q)).scalars().all()
     current_streak = 0
     max_streak = 0
-    if all_dates and all_dates[0]:
-        dates_list = sorted(set(d.date() if hasattr(d, "date") else d for d in all_dates[0]))
+    if date_rows:
+        dates_list = sorted(set(d.date() if hasattr(d, "date") else d for d in date_rows))
         if dates_list:
             streak = 1
             for i in range(1, len(dates_list)):
