@@ -7702,6 +7702,7 @@ async def backfill_watch_history(
     require_user_ownership(_user.id, user_id, "watch_history_backfill")
 
     from app.models.schema import WatchHistory
+    from sqlalchemy import or_, and_
     import structlog
     log = structlog.get_logger()
 
@@ -7710,8 +7711,39 @@ async def backfill_watch_history(
         if not user:
             raise HTTPException(404, "User not found")
 
+        # ── Clean up duplicates from prior buggy runs ─────────────────
+        # NULL emby_id made the unique constraint ineffective.
+        # Keep the oldest row per (user_id, item_type, title, watched_at).
+        from sqlalchemy import text as sa_text
+        cleanup_q = sa_text("""
+            DELETE FROM watch_history
+            WHERE id NOT IN (
+                SELECT MIN(id)
+                FROM watch_history
+                WHERE user_id = :uid
+                GROUP BY user_id, item_type, COALESCE(title, ''), watched_at
+            )
+            AND user_id = :uid
+        """)
+        result = await db.execute(cleanup_q, {"uid": user_id})
+        dupes_removed = result.rowcount
+        if dupes_removed:
+            await db.commit()
+            log.info("backfill.duplicates_cleaned", user_id=user_id, removed=dupes_removed)
+
         added = {"trakt": 0, "mdblist": 0, "emby": 0}
         skipped = {"trakt": 0, "mdblist": 0, "emby": 0}
+
+        async def _exists(watched_at_naive, title_val, item_type_val) -> bool:
+            """Code-level dedup: check if a matching row already exists."""
+            q = select(func.count(WatchHistory.id)).where(
+                WatchHistory.user_id == user_id,
+                WatchHistory.watched_at == watched_at_naive,
+                WatchHistory.item_type == item_type_val,
+                WatchHistory.title == (title_val or ""),
+            )
+            c = (await db.execute(q)).scalar() or 0
+            return c > 0
 
         # ── 1. Trakt (richest — individual timestamps) ────────────────
         if user.trakt_access_token:
@@ -7779,9 +7811,12 @@ async def backfill_watch_history(
                                     )
 
                                 try:
-                                    db.add(wh)
-                                    await db.flush()
-                                    added["trakt"] += 1
+                                    if await _exists(dt_naive, wh.title, wh.item_type):
+                                        skipped["trakt"] += 1
+                                    else:
+                                        db.add(wh)
+                                        await db.flush()
+                                        added["trakt"] += 1
                                 except Exception:
                                     await db.rollback()
                                     skipped["trakt"] += 1
@@ -7831,9 +7866,14 @@ async def backfill_watch_history(
                                 source="backfill_mdblist",
                             )
                             try:
-                                db.add(wh)
-                                await db.flush()
-                                added["mdblist"] += 1
+                                wh_title = entry.get("title", "")
+                                wh_type = wh_type if wh_type == "movie" else "episode"
+                                if await _exists(dt_naive, wh_title, wh_type):
+                                    skipped["mdblist"] += 1
+                                else:
+                                    db.add(wh)
+                                    await db.flush()
+                                    added["mdblist"] += 1
                             except Exception:
                                 await db.rollback()
                                 skipped["mdblist"] += 1
@@ -7897,9 +7937,14 @@ async def backfill_watch_history(
                                     source="backfill_emby",
                                 )
                                 try:
-                                    db.add(wh)
-                                    await db.flush()
-                                    added["emby"] += 1
+                                    wh_title = item.get("Name", "")
+                                    wh_type = "episode" if emby_type == "Episode" else "movie"
+                                    if await _exists(dt_naive, wh_title, wh_type):
+                                        skipped["emby"] += 1
+                                    else:
+                                        db.add(wh)
+                                        await db.flush()
+                                        added["emby"] += 1
                                 except Exception:
                                     await db.rollback()
                                     skipped["emby"] += 1
@@ -7916,11 +7961,13 @@ async def backfill_watch_history(
 
     total_added = sum(added.values())
     total_skipped = sum(skipped.values())
-    log.info("backfill.complete", user_id=user_id, added=added, skipped=skipped)
+    log.info("backfill.complete", user_id=user_id, added=added, skipped=skipped,
+             duplicates_cleaned=dupes_removed)
     return {
         "status": "ok",
         "added": added,
         "skipped_duplicates": skipped,
+        "duplicates_cleaned": dupes_removed,
         "total_added": total_added,
         "total_skipped": total_skipped,
     }

@@ -705,7 +705,6 @@ function renderFlyout(data, embyId) {
     html += data.watches.map(w =>
       `<div class="history-entry">
         <span class="date">${esc(w.date)}</span>
-        <span class="source">${esc(w.source)}</span>
       </div>`
     ).join('');
   }
