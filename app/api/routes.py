@@ -4282,6 +4282,16 @@ async def get_guide_page():
         return "<h1>Page not found</h1>"
 
 
+@router.get("/watch-history", response_class=HTMLResponse)
+async def get_watch_history_page():
+    """Serve the Watch History timeline page."""
+    try:
+        with open("frontend/templates/watch_history.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Page not found</h1>"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Continue Watching Audit
 # ═══════════════════════════════════════════════════════════════════════════
@@ -7499,6 +7509,105 @@ async def get_watch_history(
         "total": total,
         "offset": offset,
         "limit": limit,
+    }
+
+
+@router.get("/api/watch-history/{user_id}/by-date")
+async def get_watch_history_by_date(
+    user_id: int,
+    before: str | None = None,
+    item_type: str | None = None,
+    days: int = 30,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return watch history grouped by date for the timeline page.
+
+    Items watched multiple times on the same day are collapsed into one
+    entry with a play_count.  Paginated by date: pass ``before=YYYY-MM-DD``
+    to fetch the next page.
+    """
+    from app.models.schema import WatchHistory
+    from sqlalchemy import cast, Date, text
+    from collections import OrderedDict
+
+    filters = [WatchHistory.user_id == user_id]
+    if item_type and item_type in ("movie", "episode"):
+        filters.append(WatchHistory.item_type == item_type)
+    if before:
+        try:
+            before_date = datetime.strptime(before, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(400, "before must be YYYY-MM-DD")
+        filters.append(cast(WatchHistory.watched_at, Date) < before_date)
+
+    # Pull rows within the window, ordered by watched_at desc
+    q = (
+        select(WatchHistory)
+        .where(*filters)
+        .order_by(WatchHistory.watched_at.desc())
+        .limit(days * 20)  # generous upper bound
+    )
+    rows = (await db.execute(q)).scalars().all()
+
+    # Group by date, dedup within each day
+    day_map: OrderedDict[str, dict] = OrderedDict()
+    for r in rows:
+        if not r.watched_at:
+            continue
+        date_str = r.watched_at.strftime("%Y-%m-%d")
+        if date_str not in day_map:
+            if len(day_map) >= days:
+                break
+            day_map[date_str] = {}
+
+        # Dedup key: emby_id if available, else composite
+        if r.emby_id:
+            dedup_key = r.emby_id
+        else:
+            dedup_key = f"{r.title or ''}|{r.series_name or ''}|{r.season_number}|{r.episode_number}"
+
+        bucket = day_map[date_str]
+        if dedup_key in bucket:
+            bucket[dedup_key]["play_count"] += 1
+        else:
+            bucket[dedup_key] = {
+                "emby_id": r.emby_id,
+                "item_type": r.item_type,
+                "title": r.title,
+                "series_name": r.series_name,
+                "season_number": r.season_number,
+                "episode_number": r.episode_number,
+                "imdb_id": r.imdb_id,
+                "play_count": 1,
+            }
+
+    # Build response
+    result_days = []
+    last_date = None
+    for date_str, items_dict in day_map.items():
+        result_days.append({
+            "date": date_str,
+            "items": list(items_dict.values()),
+        })
+        last_date = date_str
+
+    # Compute next_before cursor
+    next_before = None
+    if last_date and len(day_map) >= days:
+        next_before = last_date
+
+    # Total unique dates for this user
+    total_q = select(func.count(distinct(cast(WatchHistory.watched_at, Date)))).where(
+        WatchHistory.user_id == user_id
+    )
+    total_days = (await db.execute(total_q)).scalar() or 0
+
+    return {
+        "days": result_days,
+        "next_before": next_before,
+        "total_days": total_days,
+        "emby_url": os.getenv("EMBY_URL", ""),
+        "emby_api_key": os.getenv("EMBY_API_KEY", ""),
     }
 
 
