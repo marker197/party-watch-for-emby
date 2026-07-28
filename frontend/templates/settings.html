@@ -885,6 +885,7 @@
     let currentProvider = 'trakt';
 
     async function init() {
+      await resolveUserId();
       await loadIntegrationProvider();
       loadSettings();
       loadRadarrServers();
