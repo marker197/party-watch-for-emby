@@ -626,7 +626,7 @@
   <div class="section">
     <span class="section-anchor" id="rewatch-history"></span>
     <h2>Watch History Flyout</h2>
-    <p>Hover over a card (or tap on mobile) to see a flyout panel showing your full watch history for that item — every recorded watch date, ordered newest first. Data comes from Trakt if available, falling back to Emby's LastPlayedDate and PlayCount. If Emby only knows the play count, the flyout says "Watched 3 times" with the most recent date.</p>
+    <p>Hover over a card (or tap on mobile) to see a flyout panel showing your full watch history for that item — every recorded watch date, ordered newest first. Data comes from the local watch history database for instant loading, with fallbacks to Trakt and Emby if the item hasn't been backfilled yet.</p>
   </div>
 
   <div class="section">
@@ -638,6 +638,7 @@
       <p><strong>Minimum months since last watch</strong> — how long ago you must have watched something before it becomes eligible (default: 12 months).</p>
       <p><strong>Seasonal suggestions</strong> — when enabled, genre-matched items get a scoring boost based on the current month.</p>
     </div>
+    <div class="tip">If the rewatch page shows no suggestions, try lowering the minimum rating to 7 and minimum months to 6 in Settings. The defaults are conservative — most people need to adjust them once.</div>
   </div>
 
 </div>
@@ -646,30 +647,37 @@
 <!-- PAGE: STATS -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page" id="page-stats" data-sections="stats-overview,stats-top-people,stats-fun,stats-trends,stats-queue-feedback">
+<div class="page" id="page-stats" data-sections="stats-overview,stats-top-people,stats-fun,stats-rewatched,stats-trends,stats-queue-feedback">
 
   <h1 class="page-title">📊 Stats</h1>
-  <p class="page-intro">Your watching statistics and history at a glance.</p>
+  <p class="page-intro">Your watching statistics powered by the local watch history database — no external API calls needed. Stats load instantly and update automatically when you watch something new.</p>
 
   <div class="section">
     <span class="section-anchor" id="stats-overview"></span>
     <h2>Overview Tab</h2>
-    <p>A user selector at the top lets you pick which linked account to view. The overview shows summary stats for total hours watched, items completed, average rating, and current streak.</p>
-    <p>Below the stats row, two charts sit side by side — a genre breakdown (pie or bar chart of watch time by genre) and a monthly watch history (bar chart showing hours watched per month).</p>
+    <p>A user selector at the top lets you pick which linked account to view. Summary cards show hours watched this week, this month, this year, and all time, plus total items and average items per watching day.</p>
+    <p>Below the summary, four chart pairs sit in rows: a daily watch-time bar chart (last 30 days) paired with a genre breakdown doughnut, then peak watching hours paired with a movies vs TV split doughnut.</p>
+    <div class="tip">The genre chart requires genres to be populated on your watch history entries. After your first watch history import, run <span class="btn-label">🎭 Backfill Genres</span> in Settings to fill them in. New watches recorded via webhooks get genres automatically.</div>
   </div>
 
   <div class="section">
     <span class="section-anchor" id="stats-top-people"></span>
-    <h2>Top People &amp; Studios</h2>
-    <p>Leaderboard-style lists showing your most watched actors, directors, studios, networks, and shows. Each entry shows how many items you've watched featuring that person or studio.</p>
-    <p>Hover over any entry to see a details popup with their full filmography from your library, sorted by your rating.</p>
+    <h2>Top People, Studios &amp; Networks</h2>
+    <p>Leaderboard-style ranked lists showing your most watched actors, directors, studios, and networks. Each entry shows how many items you've watched featuring that person or studio. Top shows are ranked by unique episode count — duplicate entries from overlapping backfill sources are deduplicated automatically.</p>
+    <p>Hover over any actor or director entry to see a details popup listing their full filmography from your library.</p>
   </div>
 
   <div class="section">
     <span class="section-anchor" id="stats-fun"></span>
     <h2>Fun Stats</h2>
-    <p>A collection of interesting stats about your watching habits: longest binge session, longest watch streak, favourite day of the week, busiest month, and more.</p>
-    <p>A day-of-week bar chart shows which days you watch the most. Hover over any bar to see the exact count.</p>
+    <p>A collection of interesting stats about your watching habits: favourite day of the week, longest watch streak (with date range), biggest binge day (with item list on hover), total unique movies and shows watched, longest movie, and how many days you've been tracking.</p>
+    <p>A day-of-week bar chart shows which days you watch the most.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="stats-rewatched"></span>
+    <h2>Most Rewatched Movies</h2>
+    <p>A ranked list of movies you've watched more than once, ordered by play count. Each entry shows the title, number of plays, last watched date, and an IMDb link. Items without a title are filtered out automatically.</p>
   </div>
 
   <div class="section">
@@ -677,13 +685,13 @@
     <h2>Trends Tab</h2>
     <p>Two visualisations for longer-term patterns:</p>
     <p><strong>Year-over-Year</strong> — a line chart with one line per year, overlaid on the same Jan–Dec axis. Makes it easy to compare whether you're watching more or less than previous years.</p>
-    <p><strong>Activity Heatmap</strong> — a GitHub-style grid showing watch activity by day. Darker cells mean more items watched. Hover over any cell to see the date, item count, and hours. A legend at the bottom shows the intensity scale.</p>
+    <p><strong>Activity Heatmap</strong> — a GitHub-style grid showing watch activity by day over the last 12 months. Darker cells mean more items watched. Hover over any cell to see the date, item count, and hours. A legend at the bottom shows the intensity scale.</p>
   </div>
 
   <div class="section">
     <span class="section-anchor" id="stats-queue-feedback"></span>
     <h2>Queue Feedback Tab</h2>
-    <p>Shows how well the Smart Queue's recommendations are working. A table lists recently recommended items with their source, score, and whether you played them or not. "Played" items are marked green; items you ignored stay grey.</p>
+    <p>Shows how well the Smart Queue's recommendations are working. Summary cards show total recommended, played, play rate, and period. A source play-rate chart and current weights chart sit side by side, followed by a table of recent recommendations with their source, score, and whether you played them.</p>
     <p>This data feeds back into the Smart Queue's weight-learning algorithm — over time, it adjusts which sources (watchlist, trending, calendar) it prioritises based on what you actually watch.</p>
   </div>
 
@@ -693,7 +701,7 @@
 <!-- PAGE: SETTINGS -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page" id="page-settings" data-sections="set-provider,set-mdblist,set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-trakt-import,set-danger">
+<div class="page" id="page-settings" data-sections="set-provider,set-mdblist,set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-trakt-import,set-watch-history,set-danger">
 
   <h1 class="page-title">⚙️ Settings</h1>
   <p class="page-intro">Configure connections, features, schedules, and integrations.</p>
@@ -791,6 +799,17 @@
     <span class="section-anchor" id="set-trakt-import"></span>
     <h2>Trakt List Import</h2>
     <p>Displays your personal Trakt lists. Click <span class="btn-label">Import to Emby</span> next to any list to create an Emby playlist from it. Items are matched against your library cache — unmatched items are reported.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-watch-history"></span>
+    <h2>Watch History</h2>
+    <p>The suite keeps a permanent local record of every completed watch. New watches are recorded automatically via Emby webhooks. Two one-time import buttons handle your existing history:</p>
+    <div class="feature">
+      <p><strong>📥 Import Watch History</strong> — pulls your complete watch history from Trakt (individual timestamps), MDBList (watched dates), and Emby (LastPlayedDate) into the local database. Duplicates are automatically skipped. Safe to re-run.</p>
+      <p><strong>🎭 Backfill Genres</strong> — populates genre data for all imported watch history entries by querying Emby. Needed for the genre breakdown chart on the Stats page. New webhook watches get genres automatically — this button is only for backfilled data.</p>
+    </div>
+    <div class="tip">After first install: run Import Watch History first, then Backfill Genres. The Stats page and Rewatch Recommender both use this local data.</div>
   </div>
 
   <div class="section">
@@ -980,13 +999,14 @@
     'rewatch-history':'Watch History Flyout','rewatch-settings':'Settings',
     // Stats
     'stats-overview':'Overview','stats-top-people':'Top People & Studios',
-    'stats-fun':'Fun Stats','stats-trends':'Trends','stats-queue-feedback':'Queue Feedback',
+    'stats-fun':'Fun Stats','stats-rewatched':'Most Rewatched',
+    'stats-trends':'Trends','stats-queue-feedback':'Queue Feedback',
     // Settings
     'set-provider':'Integration Provider','set-mdblist':'MDBList',
     'set-emby':'Emby','set-toggles':'Feature Toggles','set-queue-opts':'Queue Options',
     'set-blocklist':'Blocklist','set-scheduler':'Scheduler','set-backup':'Backup',
     'set-radarr':'Radarr','set-sonarr':'Sonarr','set-sabnzbd':'SABnzbd','set-watchlist-sync':'Watchlist Sync',
-    'set-tmdb':'TMDB','set-trakt-import':'Trakt Import','set-danger':'Danger Zone',
+    'set-tmdb':'TMDB','set-trakt-import':'Trakt Import','set-watch-history':'Watch History','set-danger':'Danger Zone',
     // Watch Party
     'wp-overview':'Overview','wp-create':'Create','wp-lobby':'Create Lobby',
     'wp-pick-together':'Pick Together','wp-join':'Join',
