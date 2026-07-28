@@ -8030,6 +8030,7 @@ async def backfill_watch_history_genres(
     require_user_ownership(_user.id, user_id, "watch_history_genres_backfill")
     import structlog
     log = structlog.get_logger()
+    from app.models.schema import WatchHistory
 
     async with async_session_ctx() as db:
         user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
