@@ -7643,13 +7643,13 @@ async def get_watch_history_stats(
     by_day_of_week = [{"day": day_names[i], "count": dow_raw.get(i, 0)} for i in range(7)]
 
     # Viewing streak (consecutive days)
-    all_dates_q = (
-        select(func.date_trunc("day", WatchHistory.watched_at).label("d"))
-        .where(base)
-        .group_by(func.date_trunc("day", WatchHistory.watched_at))
-        .order_by(func.date_trunc("day", WatchHistory.watched_at))
+    from sqlalchemy import text as sa_text_stats
+    streak_q = sa_text_stats(
+        "SELECT date_trunc('day', watched_at) AS d "
+        "FROM watch_history WHERE user_id = :uid "
+        "GROUP BY d ORDER BY d"
     )
-    date_rows = (await db.execute(all_dates_q)).scalars().all()
+    date_rows = (await db.execute(streak_q, {"uid": user_id})).scalars().all()
     current_streak = 0
     max_streak = 0
     if date_rows:
