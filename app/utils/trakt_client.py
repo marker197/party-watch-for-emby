@@ -473,10 +473,10 @@ class TraktClient:
 
     # -- Watch history -------------------------------------------------------
 
-    async def get_history(self, kind: str = "all", limit: int = 100) -> list[dict]:
+    async def get_history(self, kind: str = "all", limit: int = 100, page: int = 1) -> list[dict]:
         return await self._get(
             f"/users/me/history/{kind}",
-            params={"limit": limit},
+            params={"limit": limit, "page": page},
         )
 
     async def get_watched_episode_ids(self, max_pages: int = 20) -> set[str]:

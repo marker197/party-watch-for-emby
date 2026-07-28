@@ -504,6 +504,18 @@
       <button class="btn btn-blue" id="saveRewatchSettings" style="width: 100%; margin-top: 12px;" onclick="saveRewatchSettings()">💾 Save Rewatch Settings</button>
     </div>
 
+    <!-- Watch History -->
+    <div class="section">
+      <h2>📜 Watch History</h2>
+      <p style="color:var(--text-dim);font-size:0.83rem;margin-bottom:14px;">
+        Import your full watch history from Trakt, MDBList, and Emby into the local database.
+        Run once after first install — safe to re-run (duplicates are skipped).
+        New watches are recorded automatically via webhooks after this.
+      </p>
+      <div id="backfillStatus" style="display:none;margin-bottom:12px;padding:10px 14px;border-radius:6px;font-size:0.83rem;"></div>
+      <button class="btn btn-blue" id="btnBackfill" style="width:100%;" onclick="runBackfill()">📥 Import Watch History</button>
+    </div>
+
     <!-- Smart Queue Options -->
     <div class="section">
       <h2>🎯 Smart Queue Options</h2>
@@ -2398,6 +2410,53 @@
           setTimeout(() => { btn.textContent = '💾 Save Rewatch Settings'; }, 2000);
         }
       } catch(e) { console.error('saveRewatchSettings failed:', e); }
+    }
+
+    async function runBackfill() {
+      const btn = document.getElementById('btnBackfill');
+      const status = document.getElementById('backfillStatus');
+      try {
+        const ur = await fetch('/auth/users');
+        const users = await ur.json();
+        if (!users.length) return;
+        const uid = users[0].id;
+
+        btn.disabled = true;
+        btn.textContent = '⏳ Importing… (this may take a minute)';
+        status.style.display = 'none';
+
+        const r = await fetch(`/api/watch-history/${uid}/backfill`, { method: 'POST' });
+        const data = await r.json();
+
+        if (r.ok) {
+          const a = data.added || {};
+          const s = data.skipped_duplicates || {};
+          status.style.display = 'block';
+          status.style.background = 'rgba(0,184,148,0.12)';
+          status.style.border = '1px solid rgba(0,184,148,0.3)';
+          status.style.color = 'var(--green)';
+          status.innerHTML = `✅ Import complete — <strong>${data.total_added}</strong> watches added`
+            + `<br><span style="color:var(--text-dim)">Trakt: ${a.trakt||0} added, ${s.trakt||0} skipped`
+            + ` · MDBList: ${a.mdblist||0} added, ${s.mdblist||0} skipped`
+            + ` · Emby: ${a.emby||0} added, ${s.emby||0} skipped</span>`;
+          btn.textContent = '📥 Import Watch History (re-run)';
+        } else {
+          status.style.display = 'block';
+          status.style.background = 'rgba(225,112,85,0.12)';
+          status.style.border = '1px solid rgba(225,112,85,0.3)';
+          status.style.color = 'var(--red)';
+          status.textContent = `⚠ Import failed: ${data.detail || 'Unknown error'}`;
+          btn.textContent = '📥 Import Watch History';
+        }
+      } catch(e) {
+        status.style.display = 'block';
+        status.style.background = 'rgba(225,112,85,0.12)';
+        status.style.border = '1px solid rgba(225,112,85,0.3)';
+        status.style.color = 'var(--red)';
+        status.textContent = `⚠ Error: ${e.message}`;
+        btn.textContent = '📥 Import Watch History';
+      }
+      btn.disabled = false;
     }
 
     init();

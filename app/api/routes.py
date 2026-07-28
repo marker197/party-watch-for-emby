@@ -7724,62 +7724,71 @@ async def backfill_watch_history(
                 )
                 try:
                     for kind in ("movies", "episodes"):
-                        history = await trakt.get_history(kind, limit=50000)
-                        for entry in history:
-                            watched_at = entry.get("watched_at", "")
-                            if not watched_at:
-                                continue
-                            try:
-                                dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
-                                dt_naive = dt.replace(tzinfo=None)
-                            except (ValueError, TypeError):
-                                continue
+                        page = 1
+                        per_page = 500
+                        while page <= 50:  # safety cap
+                            history = await trakt.get_history(kind, limit=per_page, page=page)
+                            if not history:
+                                break
+                            for entry in history:
+                                watched_at = entry.get("watched_at", "")
+                                if not watched_at:
+                                    continue
+                                try:
+                                    dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
+                                    dt_naive = dt.replace(tzinfo=None)
+                                except (ValueError, TypeError):
+                                    continue
 
-                            if kind == "movies":
-                                item = entry.get("movie", {})
-                                ids = item.get("ids", {})
-                                runtime = item.get("runtime")
-                                wh = WatchHistory(
-                                    user_id=user.id,
-                                    item_type="movie",
-                                    title=item.get("title", ""),
-                                    imdb_id=ids.get("imdb") or None,
-                                    tmdb_id=str(ids.get("tmdb")) if ids.get("tmdb") else None,
-                                    trakt_id=str(ids.get("trakt")) if ids.get("trakt") else None,
-                                    tvdb_id=None,
-                                    watched_at=dt_naive,
-                                    runtime_minutes=runtime,
-                                    source="backfill_trakt",
-                                )
-                            else:
-                                ep = entry.get("episode", {})
-                                show = entry.get("show", {})
-                                show_ids = show.get("ids", {})
-                                ep_ids = ep.get("ids", {})
-                                runtime = ep.get("runtime") or show.get("runtime")
-                                wh = WatchHistory(
-                                    user_id=user.id,
-                                    item_type="episode",
-                                    title=ep.get("title", ""),
-                                    series_name=show.get("title"),
-                                    season_number=ep.get("season"),
-                                    episode_number=ep.get("number"),
-                                    imdb_id=show_ids.get("imdb") or None,
-                                    tmdb_id=str(show_ids.get("tmdb")) if show_ids.get("tmdb") else None,
-                                    trakt_id=str(ep_ids.get("trakt")) if ep_ids.get("trakt") else None,
-                                    tvdb_id=str(show_ids.get("tvdb")) if show_ids.get("tvdb") else None,
-                                    watched_at=dt_naive,
-                                    runtime_minutes=runtime,
-                                    source="backfill_trakt",
-                                )
+                                if kind == "movies":
+                                    item = entry.get("movie", {})
+                                    ids = item.get("ids", {})
+                                    runtime = item.get("runtime")
+                                    wh = WatchHistory(
+                                        user_id=user.id,
+                                        item_type="movie",
+                                        title=item.get("title", ""),
+                                        imdb_id=ids.get("imdb") or None,
+                                        tmdb_id=str(ids.get("tmdb")) if ids.get("tmdb") else None,
+                                        trakt_id=str(ids.get("trakt")) if ids.get("trakt") else None,
+                                        tvdb_id=None,
+                                        watched_at=dt_naive,
+                                        runtime_minutes=runtime,
+                                        source="backfill_trakt",
+                                    )
+                                else:
+                                    ep = entry.get("episode", {})
+                                    show = entry.get("show", {})
+                                    show_ids = show.get("ids", {})
+                                    ep_ids = ep.get("ids", {})
+                                    runtime = ep.get("runtime") or show.get("runtime")
+                                    wh = WatchHistory(
+                                        user_id=user.id,
+                                        item_type="episode",
+                                        title=ep.get("title", ""),
+                                        series_name=show.get("title"),
+                                        season_number=ep.get("season"),
+                                        episode_number=ep.get("number"),
+                                        imdb_id=show_ids.get("imdb") or None,
+                                        tmdb_id=str(show_ids.get("tmdb")) if show_ids.get("tmdb") else None,
+                                        trakt_id=str(ep_ids.get("trakt")) if ep_ids.get("trakt") else None,
+                                        tvdb_id=str(show_ids.get("tvdb")) if show_ids.get("tvdb") else None,
+                                        watched_at=dt_naive,
+                                        runtime_minutes=runtime,
+                                        source="backfill_trakt",
+                                    )
 
-                            try:
-                                db.add(wh)
-                                await db.flush()
-                                added["trakt"] += 1
-                            except Exception:
-                                await db.rollback()
-                                skipped["trakt"] += 1
+                                try:
+                                    db.add(wh)
+                                    await db.flush()
+                                    added["trakt"] += 1
+                                except Exception:
+                                    await db.rollback()
+                                    skipped["trakt"] += 1
+
+                            if len(history) < per_page:
+                                break  # last page
+                            page += 1
                     await db.commit()
                 finally:
                     await trakt.close()
