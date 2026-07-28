@@ -10,7 +10,7 @@ import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -8061,9 +8061,8 @@ async def backfill_watch_history_genres(
                 chunk = missing_ids[i:i + 50]
                 try:
                     items = await emby.get_items_by_ids(
-                        user_id=user.emby_user_id,
                         item_ids=chunk,
-                        fields="Genres",
+                        user_id=user.emby_user_id,
                     )
                 except Exception as e:
                     log.warning("genre_backfill.emby_batch_failed", error=str(e)[:120])
@@ -8106,35 +8105,34 @@ async def backfill_watch_history_genres(
         title_updated = 0
 
         if no_emby_titles:
-            # Search Emby for each title and grab genres
-            for title in no_emby_titles[:200]:  # cap to avoid hammering
-                try:
-                    results = await emby.search_items(
-                        user_id=user.emby_user_id,
-                        query=title,
-                        item_type="Movie",
-                        fields="Genres",
-                        limit=1,
-                    )
-                    if results:
-                        genres_list = results[0].get("Genres", [])
-                        if genres_list:
-                            genres_str = ",".join(genres_list)
-                            from sqlalchemy import update as sa_update
-                            await db.execute(
-                                sa_update(WatchHistory)
-                                .where(
-                                    WatchHistory.user_id == user_id,
-                                    WatchHistory.title == title,
-                                    or_(WatchHistory.genres.is_(None), WatchHistory.genres == ""),
+            emby2 = EmbyClient()
+            try:
+                for title in no_emby_titles[:200]:  # cap to avoid hammering
+                    try:
+                        results = await emby2.search_items(
+                            term=title,
+                            item_type="Movie",
+                        )
+                        if results:
+                            genres_list = results[0].get("Genres", [])
+                            if genres_list:
+                                genres_str = ",".join(genres_list)
+                                from sqlalchemy import update as sa_update
+                                await db.execute(
+                                    sa_update(WatchHistory)
+                                    .where(
+                                        WatchHistory.user_id == user_id,
+                                        WatchHistory.title == title,
+                                        or_(WatchHistory.genres.is_(None), WatchHistory.genres == ""),
+                                    )
+                                    .values(genres=genres_str)
                                 )
-                                .values(genres=genres_str)
-                            )
-                            title_updated += 1
-                except Exception:
-                    continue
-            await db.commit()
-            await emby.close()
+                                title_updated += 1
+                    except Exception:
+                        continue
+                await db.commit()
+            finally:
+                await emby2.close()
 
         # Invalidate stats cache
         try:
