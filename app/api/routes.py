@@ -7735,17 +7735,6 @@ async def backfill_watch_history(
         added = {"trakt": 0, "mdblist": 0, "emby": 0}
         skipped = {"trakt": 0, "mdblist": 0, "emby": 0}
 
-        async def _exists(watched_at_naive, title_val, item_type_val) -> bool:
-            """Code-level dedup: check if a matching row already exists."""
-            q = select(func.count(WatchHistory.id)).where(
-                WatchHistory.user_id == user_id,
-                WatchHistory.watched_at == watched_at_naive,
-                WatchHistory.item_type == item_type_val,
-                WatchHistory.title == (title_val or ""),
-            )
-            c = (await db.execute(q)).scalar() or 0
-            return c > 0
-
         # ── 1. Trakt (richest — individual timestamps) ────────────────
         if user.trakt_access_token:
             try:
@@ -7756,13 +7745,32 @@ async def backfill_watch_history(
                     token_expires=user.trakt_token_expires,
                 )
                 try:
+                    # Pre-load existing keys into a set for fast dedup
+                    existing_q = select(
+                        WatchHistory.item_type, WatchHistory.title, WatchHistory.watched_at
+                    ).where(WatchHistory.user_id == user_id)
+                    existing_rows = (await db.execute(existing_q)).all()
+                    existing_keys = {
+                        (r.item_type, r.title or "", r.watched_at)
+                        for r in existing_rows
+                    }
+                    log.debug("backfill.existing_loaded", count=len(existing_keys))
+
                     for kind in ("movies", "episodes"):
                         page = 1
                         per_page = 500
-                        while page <= 50:  # safety cap
+                        kind_added = 0
+                        kind_skipped = 0
+                        while page <= 50:
                             history = await trakt.get_history(kind, limit=per_page, page=page)
                             if not history:
+                                log.debug("backfill.trakt_page_empty", kind=kind, page=page)
                                 break
+
+                            log.debug("backfill.trakt_page", kind=kind, page=page,
+                                      items=len(history))
+
+                            batch = []
                             for entry in history:
                                 watched_at = entry.get("watched_at", "")
                                 if not watched_at:
@@ -7776,29 +7784,39 @@ async def backfill_watch_history(
                                 if kind == "movies":
                                     item = entry.get("movie", {})
                                     ids = item.get("ids", {})
-                                    runtime = item.get("runtime")
-                                    wh = WatchHistory(
+                                    title = item.get("title", "")
+                                    key = ("movie", title, dt_naive)
+                                    if key in existing_keys:
+                                        kind_skipped += 1
+                                        continue
+                                    existing_keys.add(key)
+                                    batch.append(WatchHistory(
                                         user_id=user.id,
                                         item_type="movie",
-                                        title=item.get("title", ""),
+                                        title=title,
                                         imdb_id=ids.get("imdb") or None,
                                         tmdb_id=str(ids.get("tmdb")) if ids.get("tmdb") else None,
                                         trakt_id=str(ids.get("trakt")) if ids.get("trakt") else None,
                                         tvdb_id=None,
                                         watched_at=dt_naive,
-                                        runtime_minutes=runtime,
+                                        runtime_minutes=item.get("runtime"),
                                         source="backfill_trakt",
-                                    )
+                                    ))
                                 else:
                                     ep = entry.get("episode", {})
                                     show = entry.get("show", {})
                                     show_ids = show.get("ids", {})
                                     ep_ids = ep.get("ids", {})
-                                    runtime = ep.get("runtime") or show.get("runtime")
-                                    wh = WatchHistory(
+                                    title = ep.get("title", "")
+                                    key = ("episode", title, dt_naive)
+                                    if key in existing_keys:
+                                        kind_skipped += 1
+                                        continue
+                                    existing_keys.add(key)
+                                    batch.append(WatchHistory(
                                         user_id=user.id,
                                         item_type="episode",
-                                        title=ep.get("title", ""),
+                                        title=title,
                                         series_name=show.get("title"),
                                         season_number=ep.get("season"),
                                         episode_number=ep.get("number"),
@@ -7807,25 +7825,23 @@ async def backfill_watch_history(
                                         trakt_id=str(ep_ids.get("trakt")) if ep_ids.get("trakt") else None,
                                         tvdb_id=str(show_ids.get("tvdb")) if show_ids.get("tvdb") else None,
                                         watched_at=dt_naive,
-                                        runtime_minutes=runtime,
+                                        runtime_minutes=ep.get("runtime") or show.get("runtime"),
                                         source="backfill_trakt",
-                                    )
+                                    ))
 
-                                try:
-                                    if await _exists(dt_naive, wh.title, wh.item_type):
-                                        skipped["trakt"] += 1
-                                    else:
-                                        db.add(wh)
-                                        await db.flush()
-                                        added["trakt"] += 1
-                                except Exception:
-                                    await db.rollback()
-                                    skipped["trakt"] += 1
+                            if batch:
+                                db.add_all(batch)
+                                await db.commit()
+                                kind_added += len(batch)
 
                             if len(history) < per_page:
-                                break  # last page
+                                break
                             page += 1
-                    await db.commit()
+
+                        added["trakt"] += kind_added
+                        skipped["trakt"] += kind_skipped
+                        log.info("backfill.trakt_kind_done", kind=kind,
+                                 added=kind_added, skipped=kind_skipped, pages=page)
                 finally:
                     await trakt.close()
             except Exception as e:
@@ -7833,6 +7849,13 @@ async def backfill_watch_history(
                 await db.rollback()
 
         # ── 2. MDBList (last watched date + plays count) ──────────────
+        # Re-load existing keys (Trakt may have added new ones)
+        existing_rows = (await db.execute(
+            select(WatchHistory.item_type, WatchHistory.title, WatchHistory.watched_at)
+            .where(WatchHistory.user_id == user_id)
+        )).all()
+        existing_keys = {(r.item_type, r.title or "", r.watched_at) for r in existing_rows}
+
         try:
             r = await get_redis()
             raw_key = await r.get("mdblist_api_key")
@@ -7842,6 +7865,7 @@ async def backfill_watch_history(
                 mdb = MDBListClient(api_key=key)
                 try:
                     watched_data = await mdb.get_watched()
+                    batch = []
                     for kind, wh_type in (("movies", "movie"), ("shows", "show")):
                         for entry in watched_data.get(kind, []):
                             watched_at = entry.get("watched_at") or entry.get("last_watched_at", "")
@@ -7853,32 +7877,30 @@ async def backfill_watch_history(
                             except (ValueError, TypeError):
                                 continue
 
+                            title = entry.get("title", "")
+                            it = wh_type if wh_type == "movie" else "episode"
+                            k = (it, title, dt_naive)
+                            if k in existing_keys:
+                                skipped["mdblist"] += 1
+                                continue
+                            existing_keys.add(k)
+
                             ids = entry.get("ids", {})
-                            # MDBList only gives last watched date, not individual plays
-                            wh = WatchHistory(
+                            batch.append(WatchHistory(
                                 user_id=user.id,
-                                item_type=wh_type if wh_type == "movie" else "episode",
-                                title=entry.get("title", ""),
+                                item_type=it,
+                                title=title,
                                 imdb_id=ids.get("imdb") or None,
                                 tmdb_id=str(ids.get("tmdb")) if ids.get("tmdb") else None,
                                 trakt_id=str(ids.get("trakt")) if ids.get("trakt") else None,
                                 tvdb_id=str(ids.get("tvdb")) if ids.get("tvdb") else None,
                                 watched_at=dt_naive,
                                 source="backfill_mdblist",
-                            )
-                            try:
-                                wh_title = entry.get("title", "")
-                                wh_type = wh_type if wh_type == "movie" else "episode"
-                                if await _exists(dt_naive, wh_title, wh_type):
-                                    skipped["mdblist"] += 1
-                                else:
-                                    db.add(wh)
-                                    await db.flush()
-                                    added["mdblist"] += 1
-                            except Exception:
-                                await db.rollback()
-                                skipped["mdblist"] += 1
-                    await db.commit()
+                            ))
+                    if batch:
+                        db.add_all(batch)
+                        await db.commit()
+                    added["mdblist"] = len(batch)
                 finally:
                     await mdb.close()
         except Exception as e:
@@ -7892,25 +7914,25 @@ async def backfill_watch_history(
                 try:
                     for emby_type in ("Movie", "Episode"):
                         start = 0
-                        batch = 500
+                        page_size = 500
                         while True:
                             resp = await emby.get_items(
                                 user_id=user.emby_user_id,
                                 item_type=emby_type,
                                 filters="IsPlayed",
                                 fields="ProviderIds,UserData,UserDataLastPlayedDate,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber",
-                                limit=batch,
+                                limit=page_size,
                                 start_index=start,
                             )
                             items = resp.get("Items", []) if isinstance(resp, dict) else resp
                             if not items:
                                 break
 
+                            batch = []
                             for item in items:
                                 ud = item.get("UserData", {})
                                 last_played = ud.get("LastPlayedDate", "")
                                 if not last_played:
-                                    start += batch
                                     continue
                                 try:
                                     dt = datetime.fromisoformat(last_played.replace("Z", "+00:00"))
@@ -7918,15 +7940,23 @@ async def backfill_watch_history(
                                 except (ValueError, TypeError):
                                     continue
 
+                                title = item.get("Name", "")
+                                it = "episode" if emby_type == "Episode" else "movie"
+                                k = (it, title, dt_naive)
+                                if k in existing_keys:
+                                    skipped["emby"] += 1
+                                    continue
+                                existing_keys.add(k)
+
                                 pids = item.get("ProviderIds", {})
                                 runtime_ticks = item.get("RunTimeTicks", 0) or 0
                                 runtime_min = int(runtime_ticks / 600_000_000) if runtime_ticks else None
 
-                                wh = WatchHistory(
+                                batch.append(WatchHistory(
                                     user_id=user.id,
                                     emby_id=item.get("Id"),
-                                    item_type="episode" if emby_type == "Episode" else "movie",
-                                    title=item.get("Name", ""),
+                                    item_type=it,
+                                    title=title,
                                     series_name=item.get("SeriesName") if emby_type == "Episode" else None,
                                     season_number=item.get("ParentIndexNumber") if emby_type == "Episode" else None,
                                     episode_number=item.get("IndexNumber") if emby_type == "Episode" else None,
@@ -7936,24 +7966,16 @@ async def backfill_watch_history(
                                     watched_at=dt_naive,
                                     runtime_minutes=runtime_min,
                                     source="backfill_emby",
-                                )
-                                try:
-                                    wh_title = item.get("Name", "")
-                                    wh_type = "episode" if emby_type == "Episode" else "movie"
-                                    if await _exists(dt_naive, wh_title, wh_type):
-                                        skipped["emby"] += 1
-                                    else:
-                                        db.add(wh)
-                                        await db.flush()
-                                        added["emby"] += 1
-                                except Exception:
-                                    await db.rollback()
-                                    skipped["emby"] += 1
+                                ))
 
-                            if len(items) < batch:
+                            if batch:
+                                db.add_all(batch)
+                                await db.commit()
+                                added["emby"] += len(batch)
+
+                            if len(items) < page_size:
                                 break
-                            start += batch
-                    await db.commit()
+                            start += page_size
                 finally:
                     await emby.close()
             except Exception as e:
