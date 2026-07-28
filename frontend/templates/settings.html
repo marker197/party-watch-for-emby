@@ -2368,10 +2368,8 @@
     async function loadRewatchSettings() {
       // Need a user ID — use first linked user
       try {
-        const ur = await fetch('/auth/users');
-        const users = await ur.json();
-        if (!users.length) return;
-        const uid = users[0].id;
+        if (!currentUserId) return;
+        const uid = currentUserId;
         const r = await fetch(`/api/rewatch/${uid}/settings`);
         const s = await r.json();
         document.getElementById('rewatchMinRating').value = s.min_rating || 8;
@@ -2390,10 +2388,8 @@
 
     async function saveRewatchSettings() {
       try {
-        const ur = await fetch('/auth/users');
-        const users = await ur.json();
-        if (!users.length) return;
-        const uid = users[0].id;
+        if (!currentUserId) return;
+        const uid = currentUserId;
         const payload = {
           min_rating: parseInt(document.getElementById('rewatchMinRating').value) || 8,
           min_months: parseInt(document.getElementById('rewatchMinMonths').value) || 12,
@@ -2416,10 +2412,8 @@
       const btn = document.getElementById('btnBackfill');
       const status = document.getElementById('backfillStatus');
       try {
-        const ur = await fetch('/auth/users');
-        const users = await ur.json();
-        if (!users.length) return;
-        const uid = users[0].id;
+        if (!currentUserId) { status.style.display = 'block'; status.textContent = '⚠ No user selected'; return; }
+        const uid = currentUserId;
 
         btn.disabled = true;
         btn.textContent = '⏳ Importing… (this may take a minute)';
