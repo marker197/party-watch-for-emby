@@ -172,17 +172,31 @@ class WatchStatsService:
             entry = heatmap_map.get(d, {"count": 0, "hours": 0})
             heatmap_data.append({"date": d, **entry})
 
-        # ── Top shows (by episode count) ──
+        # ── Top shows (by distinct episode count) ──
+        # Group by series + season + episode to avoid counting duplicates
+        # from overlapping backfill sources.
         top_shows_q = (
             select(
                 WatchHistory.series_name,
-                func.count(WatchHistory.id).label("eps"),
+                func.count(distinct(
+                    func.concat(
+                        WatchHistory.series_name, ':',
+                        func.coalesce(WatchHistory.season_number, 0), ':',
+                        func.coalesce(WatchHistory.episode_number, 0),
+                    )
+                )).label("eps"),
                 func.coalesce(func.sum(WatchHistory.runtime_minutes), 0).label("mins"),
             )
             .where(base, WatchHistory.item_type == "episode",
                    WatchHistory.series_name.isnot(None))
             .group_by(WatchHistory.series_name)
-            .order_by(func.count(WatchHistory.id).desc())
+            .order_by(func.count(distinct(
+                func.concat(
+                    WatchHistory.series_name, ':',
+                    func.coalesce(WatchHistory.season_number, 0), ':',
+                    func.coalesce(WatchHistory.episode_number, 0),
+                )
+            )).desc())
             .limit(15)
         )
         top_shows = [
@@ -190,14 +204,13 @@ class WatchStatsService:
             for r in (await db.execute(top_shows_q)).all()
         ]
 
-        # ── Top networks — not available in watch_history, leave empty ──
-        # (Emby people endpoint handles actors/directors/studios)
-        top_networks = []
+        # ── Top networks (from Emby played series) ──
+        top_networks = await self._fetch_networks(user)
 
         # ── Fun stats ──
         fun_stats = await self._build_fun_stats(db, uid, now, total_items, watching_days_count)
 
-        # ── NEW: Most rewatched (movies with 2+ plays) ──
+        # ── NEW: Most rewatched (movies with 2+ plays, title must exist) ──
         most_rewatched_q = (
             select(
                 WatchHistory.title,
@@ -205,7 +218,8 @@ class WatchStatsService:
                 func.count(WatchHistory.id).label("plays"),
                 func.max(WatchHistory.watched_at).label("last_watched"),
             )
-            .where(base, WatchHistory.item_type == "movie")
+            .where(base, WatchHistory.item_type == "movie",
+                   WatchHistory.title.isnot(None), WatchHistory.title != "")
             .group_by(WatchHistory.title, WatchHistory.imdb_id)
             .having(func.count(WatchHistory.id) > 1)
             .order_by(func.count(WatchHistory.id).desc())
@@ -443,6 +457,37 @@ class WatchStatsService:
     # ------------------------------------------------------------------
     # Emby people/studios (unchanged — still queries Emby)
     # ------------------------------------------------------------------
+
+    async def _fetch_networks(self, user: User) -> list[dict]:
+        """Query Emby for played Series and extract Studios (networks)."""
+        if not user.emby_user_id:
+            return []
+
+        network_counts: dict[str, int] = defaultdict(int)
+        emby = EmbyClient()
+        try:
+            resp = await emby.get_items(
+                user_id=user.emby_user_id,
+                fields="Studios",
+                filters="IsPlayed",
+                item_type="Series",
+                recursive=True,
+                limit=5000,
+            )
+            for item in resp.get("Items", []):
+                for studio in item.get("Studios", []):
+                    sname = studio.get("Name") if isinstance(studio, dict) else studio
+                    if sname:
+                        network_counts[sname] += 1
+        except Exception:
+            log.warning("watch_stats.networks_failed", user_id=user.id)
+        finally:
+            await emby.close()
+
+        return [
+            {"name": n, "count": c}
+            for n, c in sorted(network_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        ]
 
     async def _fetch_emby_people(self, user: User) -> dict:
         """Query Emby for played items' People and Studios metadata."""
