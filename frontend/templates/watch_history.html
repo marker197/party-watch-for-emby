@@ -64,7 +64,6 @@
       padding: 8px 14px; border-radius: 8px; font-size: 0.88rem; min-width: 180px;
     }
 
-    /* Filter toggles */
     .filter-bar {
       display: flex; gap: 8px; margin-bottom: 28px; flex-wrap: wrap; align-items: center;
     }
@@ -81,7 +80,6 @@
       margin-left: auto; font-size: 0.85rem; color: var(--text-dim);
     }
 
-    /* Date groups */
     .date-group { margin-bottom: 32px; }
     .date-label {
       font-size: 0.88rem; font-weight: 600; color: var(--text-dim);
@@ -92,7 +90,6 @@
       display: flex; gap: 14px; flex-wrap: wrap;
     }
 
-    /* Item cards */
     .history-item { width: 130px; cursor: default; }
     .thumb-wrap {
       position: relative; width: 130px; height: 195px;
@@ -101,12 +98,19 @@
     }
     .thumb-wrap img {
       width: 100%; height: 100%; object-fit: cover;
-      display: block;
+      display: block; opacity: 0; transition: opacity 0.25s;
     }
+    .thumb-wrap img.loaded { opacity: 1; }
     .thumb-placeholder {
       width: 100%; height: 100%;
       display: flex; align-items: center; justify-content: center;
       font-size: 2rem; color: var(--text-dim); background: var(--surface);
+      flex-direction: column; gap: 6px; padding: 12px; text-align: center;
+    }
+    .thumb-placeholder .ph-title {
+      font-size: 0.7rem; color: var(--text-dim); line-height: 1.3;
+      display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+      overflow: hidden; word-break: break-word;
     }
     .play-count-badge {
       position: absolute; top: 6px; right: 6px;
@@ -124,7 +128,6 @@
       font-size: 0.72rem; color: var(--text-dim); margin-top: 2px;
     }
 
-    /* Loading / empty */
     .loading { text-align: center; padding: 48px 0; color: var(--text-dim); font-size: 0.92rem; }
     .load-more-wrap { text-align: center; padding: 20px 0; }
     .load-more-btn {
@@ -135,7 +138,6 @@
     .load-more-btn:hover { background: var(--surface-hover); }
     .load-more-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    /* Theme toggle */
     .theme-toggle {
       margin-left: auto; padding: 6px 14px; border-radius: 8px;
       background: var(--surface); border: 1px solid var(--border);
@@ -179,7 +181,6 @@
   <div class="filter-bar">
     <button class="filter-btn active" data-type="all" onclick="setFilter('all', this)">All</button>
     <button class="filter-btn" data-type="movie" onclick="setFilter('movie', this)">Movies</button>
-    <button class="filter-btn" data-type="series" onclick="setFilter('series', this)">Series</button>
     <button class="filter-btn" data-type="episode" onclick="setFilter('episode', this)">Episodes</button>
     <span class="total-count" id="totalCount"></span>
   </div>
@@ -225,50 +226,93 @@ function resetAndLoad() {
 
 function imgUrl(embyId) {
   if (!embyId || !embyUrl) return '';
-  return `${embyUrl}/Items/${embyId}/Images/Primary?maxWidth=200&api_key=${embyApiKey}`;
+  return embyUrl + '/Items/' + embyId + '/Images/Primary?maxWidth=200&api_key=' + embyApiKey;
 }
 
 function formatDate(dateStr) {
   const d = new Date(dateStr + 'T12:00:00');
   const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-  return `${days[d.getDay()]} ${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+  return days[d.getDay()] + ' ' + d.getDate() + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
 }
 
 function itemLabel(item) {
-  if (item.item_type === 'movie') {
-    return { title: item.title || 'Unknown', sub: 'Movie' };
-  }
+  const sn = item.season_number != null ? String(item.season_number).padStart(2, '0') : null;
+  const en = item.episode_number != null ? String(item.episode_number).padStart(2, '0') : null;
+
   if (item.item_type === 'episode') {
-    const sn = item.season_number != null ? String(item.season_number).padStart(2, '0') : '??';
-    const en = item.episode_number != null ? String(item.episode_number).padStart(2, '0') : '??';
-    const seriesName = item.series_name || 'Unknown Series';
-    return { title: item.title || seriesName, sub: `${seriesName} S${sn} E${en}` };
+    const series = item.series_name || '';
+    const epCode = (sn && en) ? ('S' + sn + ' E' + en) : '';
+    const displayTitle = series || item.title || '';
+    const sub = epCode ? (series ? series + ' ' + epCode : epCode) : series;
+    return { title: displayTitle, sub: sub };
   }
-  return { title: item.title || 'Unknown', sub: item.item_type || '' };
+  return { title: item.title || '', sub: 'Movie' };
 }
 
 function renderItem(item) {
   const url = imgUrl(item.emby_id);
   const label = itemLabel(item);
-  const badge = item.play_count > 1 ? `<span class="play-count-badge">${item.play_count}×</span>` : '';
-  const imgHtml = url
-    ? `<img src="${esc(url)}" alt="${esc(label.title)}" loading="lazy" onerror="this.outerHTML='<div class=\\'thumb-placeholder\\'>${item.item_type==='movie'?'🎬':'📺'}</div>'">`
-    : `<div class="thumb-placeholder">${item.item_type === 'movie' ? '🎬' : '📺'}</div>`;
+  if (!label.title) return '';
+  const badge = item.play_count > 1 ? '<span class="play-count-badge">' + item.play_count + '\u00d7</span>' : '';
+  const icon = item.item_type === 'movie' ? '🎬' : '📺';
+  const phTitle = esc(label.title);
 
-  return `<div class="history-item">
-    <div class="thumb-wrap">${imgHtml}${badge}</div>
-    <div class="item-title">${esc(label.title)}</div>
-    <div class="item-subtitle">${esc(label.sub)}</div>
-  </div>`;
+  let imgHtml;
+  if (url) {
+    imgHtml = '<img data-src="' + esc(url) + '" alt="' + phTitle + '">'
+            + '<div class="thumb-placeholder">'
+            + '<span>' + icon + '</span>'
+            + '<span class="ph-title">' + phTitle + '</span></div>';
+  } else {
+    imgHtml = '<div class="thumb-placeholder">'
+            + '<span>' + icon + '</span>'
+            + '<span class="ph-title">' + phTitle + '</span></div>';
+  }
+
+  return '<div class="history-item">'
+    + '<div class="thumb-wrap">' + imgHtml + badge + '</div>'
+    + '<div class="item-title">' + esc(label.title) + '</div>'
+    + '<div class="item-subtitle">' + esc(label.sub) + '</div>'
+    + '</div>';
 }
 
 function renderDay(day) {
-  const itemsHtml = day.items.map(renderItem).join('');
-  return `<div class="date-group">
-    <div class="date-label">${esc(formatDate(day.date))}</div>
-    <div class="date-items">${itemsHtml}</div>
-  </div>`;
+  const itemsHtml = day.items.map(renderItem).filter(Boolean).join('');
+  if (!itemsHtml) return '';
+  return '<div class="date-group">'
+    + '<div class="date-label">' + esc(formatDate(day.date)) + '</div>'
+    + '<div class="date-items">' + itemsHtml + '</div>'
+    + '</div>';
+}
+
+/* ── Intersection Observer for lazy-loading images ── */
+const imgObserver = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (entry.isIntersecting) {
+      const img = entry.target;
+      const src = img.getAttribute('data-src');
+      if (src) {
+        img.src = src;
+        img.removeAttribute('data-src');
+        img.onload = function() {
+          this.classList.add('loaded');
+          const ph = this.parentElement.querySelector('.thumb-placeholder');
+          if (ph) ph.style.display = 'none';
+        };
+        img.onerror = function() {
+          this.style.display = 'none';
+        };
+      }
+      imgObserver.unobserve(img);
+    }
+  }
+}, { rootMargin: '200px' });
+
+function observeNewImages() {
+  document.querySelectorAll('.thumb-wrap img[data-src]').forEach(img => {
+    imgObserver.observe(img);
+  });
 }
 
 async function loadHistory() {
@@ -279,21 +323,20 @@ async function loadHistory() {
   const btn = document.getElementById('loadMoreBtn');
 
   if (!nextBefore) {
-    loadingEl.textContent = 'Loading history…';
+    loadingEl.textContent = 'Loading history\u2026';
     loadingEl.style.display = 'block';
   }
   btn.disabled = true;
-  btn.textContent = 'Loading…';
+  btn.textContent = 'Loading\u2026';
 
   try {
-    let url = `/api/watch-history/${currentUserId}/by-date?days=30`;
-    if (nextBefore) url += `&before=${nextBefore}`;
+    let url = '/api/watch-history/' + currentUserId + '/by-date?days=30';
+    if (nextBefore) url += '&before=' + nextBefore;
     if (currentFilter === 'movie') url += '&item_type=movie';
     else if (currentFilter === 'episode') url += '&item_type=episode';
-    else if (currentFilter === 'series') url += '&item_type=episode';
 
     const r = await fetch(url);
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
 
     embyUrl = data.emby_url || '';
@@ -302,86 +345,36 @@ async function loadHistory() {
 
     const timeline = document.getElementById('timeline');
 
-    if (currentFilter === 'series') {
-      // For "Series" filter we fetched episodes but group/display by series
-      for (const day of data.days) {
-        const seriesMap = {};
-        for (const item of day.items) {
-          const key = item.series_name || item.title || 'Unknown';
-          if (!seriesMap[key]) {
-            seriesMap[key] = {
-              emby_id: null,
-              item_type: 'episode',
-              title: key,
-              series_name: key,
-              season_number: null,
-              episode_number: null,
-              imdb_id: item.imdb_id,
-              play_count: 0,
-              _episodes: [],
-            };
-          }
-          seriesMap[key].play_count += item.play_count;
-          seriesMap[key]._episodes.push(item);
-          // Use the first episode's series emby_id attempt — we'll look up series image
-          if (!seriesMap[key].emby_id && item.emby_id) {
-            seriesMap[key].emby_id = item.emby_id;
-          }
-        }
-        const grouped = Object.values(seriesMap).map(s => {
-          const epCount = s._episodes.length;
-          if (epCount === 1) {
-            const ep = s._episodes[0];
-            return { ...ep, title: s.series_name };
-          }
-          return {
-            ...s,
-            item_type: 'episode',
-            title: s.series_name,
-            series_name: s.series_name,
-            season_number: null,
-            episode_number: null,
-            play_count: epCount,
-          };
-        });
-        if (grouped.length > 0) {
-          timeline.insertAdjacentHTML('beforeend', renderDay({ date: day.date, items: grouped }));
-        }
-      }
-    } else {
-      for (const day of data.days) {
-        if (day.items.length > 0) {
-          timeline.insertAdjacentHTML('beforeend', renderDay(day));
-        }
-      }
+    for (const day of data.days) {
+      const html = renderDay(day);
+      if (html) timeline.insertAdjacentHTML('beforeend', html);
     }
 
-    // Total count
-    document.getElementById('totalCount').textContent = `${data.total_days} days with watches`;
+    observeNewImages();
+
+    document.getElementById('totalCount').textContent = data.total_days + ' days with watches';
 
     loadingEl.style.display = 'none';
     loadMoreWrap.style.display = nextBefore ? 'block' : 'none';
     btn.disabled = false;
     btn.textContent = 'Load more';
 
-    if (data.days.length === 0 && !nextBefore && !document.getElementById('timeline').innerHTML.trim()) {
+    if (data.days.length === 0 && !nextBefore && !timeline.innerHTML.trim()) {
       loadingEl.textContent = 'No watch history found.';
       loadingEl.style.display = 'block';
     }
 
   } catch (e) {
     console.error(e);
-    loadingEl.textContent = `Error loading history: ${e.message}`;
-    loadingEl.style.display = 'block';
+    document.getElementById('loadingMsg').textContent = 'Error: ' + e.message;
+    document.getElementById('loadingMsg').style.display = 'block';
     btn.disabled = false;
     btn.textContent = 'Retry';
   }
   isLoading = false;
 }
 
-function loadMore() {
-  loadHistory();
-}
+function loadMore() { loadHistory(); }
 
 async function loadUsers() {
   try {
@@ -390,7 +383,7 @@ async function loadUsers() {
     const linked = users.filter(u => u.linked);
     const sel = document.getElementById('userSelect');
     sel.innerHTML = linked.map(u =>
-      `<option value="${u.id}">${esc(u.emby_username || u.emby_user_id)}</option>`
+      '<option value="' + u.id + '">' + esc(u.emby_username || u.emby_user_id) + '</option>'
     ).join('');
     if (linked.length > 0) {
       sel.value = linked[0].id;

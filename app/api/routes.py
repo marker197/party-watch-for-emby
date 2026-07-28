@@ -7523,11 +7523,16 @@ async def get_watch_history_by_date(
     """Return watch history grouped by date for the timeline page.
 
     Items watched multiple times on the same day are collapsed into one
-    entry with a play_count.  Paginated by date: pass ``before=YYYY-MM-DD``
-    to fetch the next page.
+    entry with a play_count.  Dedup uses a normalised key built from
+    item_type + title (or series+season+episode for episodes) so that
+    rows from different backfill sources (webhook / trakt / emby) that
+    describe the same logical watch merge correctly.
+
+    Items without an ``emby_id`` (Trakt backfill) are resolved against
+    the Redis library cache so images can be served.
     """
     from app.models.schema import WatchHistory
-    from sqlalchemy import cast, Date, text
+    from sqlalchemy import cast, Date
     from collections import OrderedDict
 
     filters = [WatchHistory.user_id == user_id]
@@ -7540,16 +7545,28 @@ async def get_watch_history_by_date(
             raise HTTPException(400, "before must be YYYY-MM-DD")
         filters.append(cast(WatchHistory.watched_at, Date) < before_date)
 
-    # Pull rows within the window, ordered by watched_at desc
     q = (
         select(WatchHistory)
         .where(*filters)
         .order_by(WatchHistory.watched_at.desc())
-        .limit(days * 20)  # generous upper bound
+        .limit(days * 25)
     )
     rows = (await db.execute(q)).scalars().all()
 
-    # Group by date, dedup within each day
+    # ── Normalised dedup key ────────────────────────────────────────
+    def _dedup_key(r):
+        """Build a stable key that merges rows from different sources."""
+        if r.item_type == "episode":
+            series = (r.series_name or "").strip().lower()
+            sn = r.season_number if r.season_number is not None else -1
+            en = r.episode_number if r.episode_number is not None else -1
+            return f"ep|{series}|{sn}|{en}"
+        # movie — prefer imdb_id, fall back to normalised title
+        if r.imdb_id:
+            return f"mov|imdb:{r.imdb_id}"
+        return f"mov|{(r.title or '').strip().lower()}"
+
+    # ── Group by date, dedup within each day ────────────────────────
     day_map: OrderedDict[str, dict] = OrderedDict()
     for r in rows:
         if not r.watched_at:
@@ -7560,17 +7577,20 @@ async def get_watch_history_by_date(
                 break
             day_map[date_str] = {}
 
-        # Dedup key: emby_id if available, else composite
-        if r.emby_id:
-            dedup_key = r.emby_id
-        else:
-            dedup_key = f"{r.title or ''}|{r.series_name or ''}|{r.season_number}|{r.episode_number}"
-
+        key = _dedup_key(r)
         bucket = day_map[date_str]
-        if dedup_key in bucket:
-            bucket[dedup_key]["play_count"] += 1
+        if key in bucket:
+            bucket[key]["play_count"] += 1
+            # Prefer the row that has an emby_id (for images)
+            if r.emby_id and not bucket[key]["emby_id"]:
+                bucket[key]["emby_id"] = r.emby_id
+            # Prefer non-empty title / series_name
+            if r.title and not bucket[key]["title"]:
+                bucket[key]["title"] = r.title
+            if r.series_name and not bucket[key]["series_name"]:
+                bucket[key]["series_name"] = r.series_name
         else:
-            bucket[dedup_key] = {
+            bucket[key] = {
                 "emby_id": r.emby_id,
                 "item_type": r.item_type,
                 "title": r.title,
@@ -7578,25 +7598,49 @@ async def get_watch_history_by_date(
                 "season_number": r.season_number,
                 "episode_number": r.episode_number,
                 "imdb_id": r.imdb_id,
+                "tmdb_id": r.tmdb_id,
+                "tvdb_id": r.tvdb_id,
                 "play_count": 1,
             }
 
-    # Build response
+    # ── Resolve missing emby_ids from library cache ─────────────────
+    items_needing_id: list[dict] = []
+    for _date_str, bucket in day_map.items():
+        for item in bucket.values():
+            if not item["emby_id"]:
+                items_needing_id.append(item)
+
+    if items_needing_id:
+        for item in items_needing_id:
+            resolved = None
+            # Try provider IDs first (fast Redis lookup)
+            if item.get("imdb_id"):
+                resolved = await LibraryCache.find_by_provider_id("Imdb", item["imdb_id"])
+            if not resolved and item.get("tmdb_id"):
+                resolved = await LibraryCache.find_by_provider_id("Tmdb", item["tmdb_id"])
+            if not resolved and item.get("tvdb_id"):
+                resolved = await LibraryCache.find_by_provider_id("Tvdb", item["tvdb_id"])
+            # Fall back to title search
+            if not resolved:
+                search_title = item.get("series_name") or item.get("title")
+                if search_title:
+                    resolved = await LibraryCache.find_by_title(search_title)
+            if resolved:
+                item["emby_id"] = resolved.get("emby_id") or resolved.get("Id")
+
+    # ── Build response ──────────────────────────────────────────────
     result_days = []
     last_date = None
     for date_str, items_dict in day_map.items():
-        result_days.append({
-            "date": date_str,
-            "items": list(items_dict.values()),
-        })
+        day_items = [v for v in items_dict.values() if v.get("title") or v.get("series_name")]
+        if day_items:
+            result_days.append({"date": date_str, "items": day_items})
         last_date = date_str
 
-    # Compute next_before cursor
     next_before = None
     if last_date and len(day_map) >= days:
         next_before = last_date
 
-    # Total unique dates for this user
     total_q = select(func.count(distinct(cast(WatchHistory.watched_at, Date)))).where(
         WatchHistory.user_id == user_id
     )
