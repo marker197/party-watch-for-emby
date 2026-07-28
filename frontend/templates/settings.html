@@ -2088,8 +2088,8 @@
         const r = await fetch('/auth/users');
         const users = await r.json();
         if (Array.isArray(users) && users.length > 0) {
-          // Pick the first user with a linked Trakt account (has a username)
-          const linked = users.find(u => u.trakt_username) || users[0];
+          // Pick the first user with a linked Trakt account (has active token)
+          const linked = users.find(u => u.linked) || users.find(u => u.trakt_username) || users[0];
           currentUserId = linked.id;
         }
       } catch(e) {}
