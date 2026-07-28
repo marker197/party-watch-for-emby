@@ -7758,7 +7758,7 @@ async def backfill_watch_history(
 
                     for kind in ("movies", "episodes"):
                         page = 1
-                        per_page = 500
+                        per_page = 250  # Trakt caps at 250 per page
                         kind_added = 0
                         kind_skipped = 0
                         while page <= 50:
