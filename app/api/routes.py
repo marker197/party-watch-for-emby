@@ -2588,6 +2588,12 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     wh_tvdb = wh_tvdb or str(series_ids.get("tvdb", ""))
 
                 now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+                # Genres: from item or its series (for episodes)
+                wh_genres_list = item_data.get("Genres") or []
+                if not wh_genres_list and item_type_raw == "Episode":
+                    wh_genres_list = item_data.get("SeriesGenres") or []
+                wh_genres = ",".join(wh_genres_list) if wh_genres_list else None
+
                 entry = WatchHistory(
                     user_id=user.id,
                     emby_id=emby_item_id,
@@ -2602,12 +2608,19 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     tvdb_id=wh_tvdb or None,
                     watched_at=now_naive,
                     runtime_minutes=runtime_min,
+                    genres=wh_genres,
                     source="webhook",
                 )
                 db.add(entry)
                 await db.commit()
                 log.debug("webhook.watch_history_recorded", user_id=user.id,
                           title=display_name, item_type=wh_item_type)
+                # Invalidate stats cache so next load reflects the new watch
+                try:
+                    _r = await get_redis()
+                    await _r.delete(f"watch_stats_v5:{user.id}")
+                except Exception:
+                    pass
             except Exception as e:
                 await db.rollback()
                 # IntegrityError from unique constraint = duplicate, not an error
@@ -7986,6 +7999,14 @@ async def backfill_watch_history(
     total_skipped = sum(skipped.values())
     log.info("backfill.complete", user_id=user_id, added=added, skipped=skipped,
              duplicates_cleaned=dupes_removed)
+
+    # Invalidate stats cache so new data shows immediately
+    try:
+        r = await get_redis()
+        await r.delete(f"watch_stats_v5:{user_id}")
+    except Exception:
+        pass
+
     return {
         "status": "ok",
         "added": added,
@@ -7994,3 +8015,139 @@ async def backfill_watch_history(
         "total_added": total_added,
         "total_skipped": total_skipped,
     }
+
+
+@router.post("/api/watch-history/{user_id}/backfill-genres")
+async def backfill_watch_history_genres(
+    user_id: int,
+    _user: User = Depends(get_current_user),
+):
+    """Populate the genres column for existing watch_history rows from Emby.
+
+    Queries Emby for each unique emby_id that has no genres set,
+    then batch-updates the rows.  Safe to run multiple times.
+    """
+    require_user_ownership(_user.id, user_id, "watch_history_genres_backfill")
+    import structlog
+    log = structlog.get_logger()
+
+    async with async_session_ctx() as db:
+        user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if not user or not user.emby_user_id:
+            raise HTTPException(404, "User not found or no Emby user linked")
+
+        # Find rows missing genres
+        from sqlalchemy import or_
+        missing_q = (
+            select(distinct(WatchHistory.emby_id))
+            .where(
+                WatchHistory.user_id == user_id,
+                WatchHistory.emby_id.isnot(None),
+                or_(WatchHistory.genres.is_(None), WatchHistory.genres == ""),
+            )
+        )
+        missing_ids = [r for r in (await db.execute(missing_q)).scalars().all() if r]
+
+        if not missing_ids:
+            return {"status": "ok", "updated": 0, "message": "All rows already have genres"}
+
+        log.info("genre_backfill.start", user_id=user_id, missing_items=len(missing_ids))
+
+        emby = EmbyClient()
+        updated = 0
+        try:
+            # Batch fetch from Emby in chunks of 50
+            for i in range(0, len(missing_ids), 50):
+                chunk = missing_ids[i:i + 50]
+                try:
+                    items = await emby.get_items_by_ids(
+                        user_id=user.emby_user_id,
+                        item_ids=chunk,
+                        fields="Genres",
+                    )
+                except Exception as e:
+                    log.warning("genre_backfill.emby_batch_failed", error=str(e)[:120])
+                    continue
+
+                for item in items:
+                    emby_id = item.get("Id")
+                    genres_list = item.get("Genres", [])
+                    if not emby_id or not genres_list:
+                        continue
+                    genres_str = ",".join(genres_list)
+
+                    from sqlalchemy import update as sa_update
+                    await db.execute(
+                        sa_update(WatchHistory)
+                        .where(
+                            WatchHistory.user_id == user_id,
+                            WatchHistory.emby_id == emby_id,
+                            or_(WatchHistory.genres.is_(None), WatchHistory.genres == ""),
+                        )
+                        .values(genres=genres_str)
+                    )
+                    updated += 1
+
+                await db.commit()
+        finally:
+            await emby.close()
+
+        # Also try to fill rows without emby_id using library cache title match
+        no_emby_q = (
+            select(distinct(WatchHistory.title))
+            .where(
+                WatchHistory.user_id == user_id,
+                WatchHistory.emby_id.is_(None),
+                or_(WatchHistory.genres.is_(None), WatchHistory.genres == ""),
+                WatchHistory.title.isnot(None),
+            )
+        )
+        no_emby_titles = [r for r in (await db.execute(no_emby_q)).scalars().all() if r]
+        title_updated = 0
+
+        if no_emby_titles:
+            # Search Emby for each title and grab genres
+            for title in no_emby_titles[:200]:  # cap to avoid hammering
+                try:
+                    results = await emby.search_items(
+                        user_id=user.emby_user_id,
+                        query=title,
+                        item_type="Movie",
+                        fields="Genres",
+                        limit=1,
+                    )
+                    if results:
+                        genres_list = results[0].get("Genres", [])
+                        if genres_list:
+                            genres_str = ",".join(genres_list)
+                            from sqlalchemy import update as sa_update
+                            await db.execute(
+                                sa_update(WatchHistory)
+                                .where(
+                                    WatchHistory.user_id == user_id,
+                                    WatchHistory.title == title,
+                                    or_(WatchHistory.genres.is_(None), WatchHistory.genres == ""),
+                                )
+                                .values(genres=genres_str)
+                            )
+                            title_updated += 1
+                except Exception:
+                    continue
+            await db.commit()
+            await emby.close()
+
+        # Invalidate stats cache
+        try:
+            r = await get_redis()
+            await r.delete(f"watch_stats_v5:{user_id}")
+        except Exception:
+            pass
+
+        log.info("genre_backfill.complete", user_id=user_id,
+                 by_emby_id=updated, by_title=title_updated)
+        return {
+            "status": "ok",
+            "updated_by_emby_id": updated,
+            "updated_by_title": title_updated,
+            "total_updated": updated + title_updated,
+        }

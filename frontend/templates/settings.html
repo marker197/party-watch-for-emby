@@ -513,7 +513,9 @@
         New watches are recorded automatically via webhooks after this.
       </p>
       <div id="backfillStatus" style="display:none;margin-bottom:12px;padding:10px 14px;border-radius:6px;font-size:0.83rem;"></div>
-      <button class="btn btn-blue" id="btnBackfill" style="width:100%;" onclick="runBackfill()">📥 Import Watch History</button>
+      <button class="btn btn-blue" id="btnBackfill" style="width:100%;margin-bottom:8px;" onclick="runBackfill()">📥 Import Watch History</button>
+      <button class="btn" id="btnGenreBackfill" style="width:100%;background:var(--surface-hover);border:1px solid var(--border);" onclick="runGenreBackfill()">🎭 Backfill Genres (for Stats)</button>
+      <div id="genreBackfillStatus" style="display:none;margin-top:8px;padding:10px 14px;border-radius:6px;font-size:0.83rem;"></div>
     </div>
 
     <!-- Smart Queue Options -->
@@ -2450,6 +2452,46 @@
         status.style.color = 'var(--red)';
         status.textContent = `⚠ Error: ${e.message}`;
         btn.textContent = '📥 Import Watch History';
+      }
+      btn.disabled = false;
+    }
+
+    async function runGenreBackfill() {
+      const btn = document.getElementById('btnGenreBackfill');
+      const status = document.getElementById('genreBackfillStatus');
+      try {
+        if (!currentUserId) { status.style.display = 'block'; status.textContent = '⚠ No user selected'; return; }
+        const uid = currentUserId;
+
+        btn.disabled = true;
+        btn.textContent = '⏳ Backfilling genres…';
+        status.style.display = 'none';
+
+        const r = await fetch(`/api/watch-history/${uid}/backfill-genres`, { method: 'POST' });
+        const data = await r.json();
+
+        if (r.ok) {
+          status.style.display = 'block';
+          status.style.background = 'rgba(0,184,148,0.12)';
+          status.style.border = '1px solid rgba(0,184,148,0.3)';
+          status.style.color = 'var(--green)';
+          status.textContent = `✅ Genre backfill complete — ${data.total_updated} items updated`;
+          btn.textContent = '🎭 Backfill Genres (re-run)';
+        } else {
+          status.style.display = 'block';
+          status.style.background = 'rgba(225,112,85,0.12)';
+          status.style.border = '1px solid rgba(225,112,85,0.3)';
+          status.style.color = 'var(--red)';
+          status.textContent = `⚠ Failed: ${data.detail || 'Unknown error'}`;
+          btn.textContent = '🎭 Backfill Genres (for Stats)';
+        }
+      } catch(e) {
+        status.style.display = 'block';
+        status.style.background = 'rgba(225,112,85,0.12)';
+        status.style.border = '1px solid rgba(225,112,85,0.3)';
+        status.style.color = 'var(--red)';
+        status.textContent = `⚠ Error: ${e.message}`;
+        btn.textContent = '🎭 Backfill Genres (for Stats)';
       }
       btn.disabled = false;
     }

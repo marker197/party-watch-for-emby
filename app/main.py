@@ -122,12 +122,12 @@ async def lifespan(app: FastAPI):
         async with async_session() as db:
             result = await db.execute(sa_text("SELECT version_num FROM alembic_version LIMIT 1"))
             row = result.first()
-            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history"):
+            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres"):
                 # Pre-squash revision — jump to current head
-                await db.execute(sa_text("UPDATE alembic_version SET version_num = '003_watch_history'"))
+                await db.execute(sa_text("UPDATE alembic_version SET version_num = '004_watch_history_genres'"))
                 await db.commit()
-                log.info("suite.alembic_version_updated", old=row[0], new="003_watch_history")
-            # Let Alembic CMD run any pending upgrades (001→002→003)
+                log.info("suite.alembic_version_updated", old=row[0], new="004_watch_history_genres")
+            # Let Alembic CMD run any pending upgrades (001→002→003→004)
     except Exception as e:
         log.warning("suite.alembic_version_check_skipped", error=str(e))
 

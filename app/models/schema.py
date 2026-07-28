@@ -366,6 +366,7 @@ class WatchHistory(Base):
     tvdb_id = Column(String(32), nullable=True)
     watched_at = Column(DateTime, nullable=False, index=True)
     runtime_minutes = Column(Integer, nullable=True)
+    genres = Column(Text, nullable=True)  # comma-separated genre list
     source = Column(String(32), nullable=False, default="webhook")  # webhook | backfill_trakt | backfill_mdblist | backfill_emby
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
