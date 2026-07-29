@@ -6554,7 +6554,8 @@ async def play_on_session(request: Request, db: AsyncSession = Depends(get_db), 
         )
         # Some Emby clients (macOS, web) ignore StartPositionTicks on
         # the initial PlayNow command.  A follow-up Seek after a short
-        # delay forces them to jump to the correct position.
+        # delay forces them to jump to the correct position, then
+        # Unpause ensures playback continues automatically.
         if start_position_ticks:
             import asyncio
             await asyncio.sleep(1.5)
@@ -6562,6 +6563,8 @@ async def play_on_session(request: Request, db: AsyncSession = Depends(get_db), 
                 await emby.send_play_state_command(
                     session_id, "Seek", seek_ticks=int(start_position_ticks),
                 )
+                await asyncio.sleep(0.3)
+                await emby.send_play_state_command(session_id, "Unpause")
             except Exception:
                 pass  # best-effort — play already started
         return {"status": "playing", "emby_id": emby_item_id}
