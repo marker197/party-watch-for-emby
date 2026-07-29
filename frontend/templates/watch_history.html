@@ -214,8 +214,6 @@ function esc(s) { if (!s && s !== 0) return ''; return String(s).replace(/&/g,'&
 let currentUserId = null;
 let currentFilter = 'all';
 let nextBefore = null;
-let embyUrl = '';
-let embyApiKey = '';
 let isLoading = false;
 
 function toggleSuiteTheme() {
@@ -240,8 +238,8 @@ function resetAndLoad() {
 }
 
 function imgUrl(embyId, imageType) {
-  if (!embyId || !embyUrl) return '';
-  return embyUrl + '/Items/' + embyId + '/Images/' + imageType + '?maxWidth=400&api_key=' + embyApiKey;
+  if (!embyId) return '';
+  return '/api/emby/image/' + embyId + '/' + imageType + '?maxWidth=400';
 }
 
 function formatDate(dateStr) {
@@ -391,8 +389,6 @@ async function loadHistory() {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     var data = await r.json();
 
-    embyUrl = data.emby_url || '';
-    embyApiKey = data.emby_api_key || '';
     nextBefore = data.next_before;
 
     var timeline = document.getElementById('timeline');

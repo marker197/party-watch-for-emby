@@ -27,6 +27,26 @@ from app.security.auth import get_current_user, require_user_ownership, issue_to
 
 from app.services.smart_queue.service import SmartQueueService
 from app.middleware.rate_limit import limiter, LIMITS
+from fastapi.responses import Response
+import re
+
+# ── Pydantic models for validated payloads ──────────────────────────────
+class RewatchSettings(BaseModel):
+    """Validated rewatch recommender settings."""
+    min_rating: int = Field(default=8, ge=1, le=10)
+    min_months: int = Field(default=12, ge=1, le=120)
+    seasonal: bool = True
+
+
+# ── item_key format validation ──────────────────────────────────────────
+_ITEM_KEY_RE = re.compile(r"^(emby|imdb|tmdb|trakt|tvdb):[A-Za-z0-9_-]+$")
+
+
+def _validate_item_key(item_key: str) -> str:
+    """Validate item_key path parameter format (provider:value)."""
+    if not _ITEM_KEY_RE.match(item_key):
+        raise HTTPException(400, "item_key must be provider:value (e.g. imdb:tt1234567)")
+    return item_key
 from app.services.ml_predictor.service import MLPredictorService
 from app.services.universe_discovery.service import UniverseDiscoveryService
 from app.services.watch_party.service import WatchPartyService
@@ -7378,8 +7398,10 @@ _rewatch_svc = RewatchRecommender()
 async def get_rewatch_suggestions(
     user_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Return cached rewatch suggestions for a user."""
+    require_user_ownership(current_user.id, user_id, "rewatch")
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(404, "User not found")
@@ -7418,8 +7440,11 @@ async def get_rewatch_item_history(
     user_id: int,
     item_key: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Lazy-load watch history for hover flyout."""
+    require_user_ownership(current_user.id, user_id, "rewatch_history")
+    _validate_item_key(item_key)
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(404, "User not found")
@@ -7427,8 +7452,12 @@ async def get_rewatch_item_history(
 
 
 @router.get("/api/rewatch/{user_id}/settings")
-async def get_rewatch_settings(user_id: int):
+async def get_rewatch_settings(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+):
     """Read rewatch recommender settings for a user."""
+    require_user_ownership(current_user.id, user_id, "rewatch_settings")
     import json as _json
     r = await get_redis()
     raw = await r.get(f"rewatch:settings:{user_id}")
@@ -7440,18 +7469,14 @@ async def get_rewatch_settings(user_id: int):
 @router.put("/api/rewatch/{user_id}/settings")
 async def update_rewatch_settings(
     user_id: int,
-    payload: dict,
+    payload: RewatchSettings,
     _user: User = Depends(get_current_user),
 ):
     """Save rewatch recommender settings."""
     import json as _json
     require_user_ownership(_user.id, user_id, "rewatch_settings")
     r = await get_redis()
-    settings_data = {
-        "min_rating": int(payload.get("min_rating", 8)),
-        "min_months": int(payload.get("min_months", 12)),
-        "seasonal": bool(payload.get("seasonal", True)),
-    }
+    settings_data = payload.model_dump()
     await r.set(f"rewatch:settings:{user_id}", _json.dumps(settings_data))
     # Also persist to DB for durability
     from app.models.schema import AppSetting
@@ -7468,6 +7493,52 @@ async def update_rewatch_settings(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Emby Image Proxy — avoids exposing EMBY_API_KEY to the browser
+# ═══════════════════════════════════════════════════════════════════════════
+
+_IMAGE_TYPE_RE = re.compile(r"^(Primary|Thumb|Backdrop|Banner|Logo|Art|Disc|Box|BoxRear|Screenshot)$")
+
+
+@router.get("/api/emby/image/{item_id}/{image_type}")
+async def proxy_emby_image(
+    item_id: str,
+    image_type: str,
+    maxWidth: int = 400,
+):
+    """Proxy Emby item images so the frontend never sees the API key."""
+    if not _IMAGE_TYPE_RE.match(image_type):
+        raise HTTPException(400, "Invalid image type")
+    if not re.match(r"^[A-Za-z0-9]+$", item_id):
+        raise HTTPException(400, "Invalid item ID")
+    maxWidth = max(50, min(maxWidth, 1920))
+
+    emby_url = os.getenv("EMBY_URL", "")
+    emby_key = os.getenv("EMBY_API_KEY", "")
+    if not emby_url or not emby_key:
+        raise HTTPException(503, "Emby not configured")
+
+    import httpx
+    url = f"{emby_url}/Items/{item_id}/Images/{image_type}?maxWidth={maxWidth}&api_key={emby_key}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+        if resp.status_code == 404:
+            raise HTTPException(404, "Image not found")
+        if resp.status_code != 200:
+            raise HTTPException(502, "Emby returned an error")
+        content_type = resp.headers.get("content-type", "image/jpeg")
+        return Response(
+            content=resp.content,
+            media_type=content_type,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    except httpx.TimeoutException:
+        raise HTTPException(504, "Emby image request timed out")
+    except httpx.RequestError:
+        raise HTTPException(502, "Could not reach Emby server")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Watch History — persistent local record
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -7478,8 +7549,10 @@ async def get_watch_history(
     offset: int = 0,
     item_type: str | None = None,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Return paginated watch history for a user."""
+    require_user_ownership(current_user.id, user_id, "watch_history")
     from app.models.schema import WatchHistory
     q = select(WatchHistory).where(WatchHistory.user_id == user_id)
     if item_type:
@@ -7524,6 +7597,7 @@ async def get_watch_history_by_date(
     item_type: str | None = None,
     days: int = 30,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Return watch history grouped by date for the timeline page.
 
@@ -7669,8 +7743,6 @@ async def get_watch_history_by_date(
         "days": result_days,
         "next_before": next_before,
         "total_days": total_days,
-        "emby_url": os.getenv("EMBY_URL", ""),
-        "emby_api_key": os.getenv("EMBY_API_KEY", ""),
     }
 
 
@@ -7679,16 +7751,16 @@ async def get_item_watch_history(
     user_id: int,
     item_key: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Return all watch events for a specific item (rewatch flyout).
 
     item_key formats: 'emby:xxx', 'imdb:ttxxx', 'trakt:123'
     """
+    require_user_ownership(current_user.id, user_id, "watch_history_item")
+    _validate_item_key(item_key)
     from app.models.schema import WatchHistory
     from sqlalchemy import or_
-
-    if ":" not in item_key:
-        return {"watches": [], "play_count": 0}
 
     provider, value = item_key.split(":", 1)
     filters = [WatchHistory.user_id == user_id]
@@ -7723,8 +7795,10 @@ async def get_item_watch_history(
 async def get_watch_history_stats(
     user_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Aggregated stats from local watch history — no API calls needed."""
+    require_user_ownership(current_user.id, user_id, "watch_history_stats")
     from app.models.schema import WatchHistory
     from sqlalchemy import extract, case, distinct
 
@@ -7876,7 +7950,9 @@ async def get_watch_history_stats(
 
 
 @router.post("/api/watch-history/{user_id}/backfill")
+@limiter.limit(LIMITS["heavy"])
 async def backfill_watch_history(
+    request: Request,
     user_id: int,
     _user: User = Depends(get_current_user),
 ):
@@ -7887,6 +7963,13 @@ async def backfill_watch_history(
     """
     require_user_ownership(_user.id, user_id, "watch_history_backfill")
 
+    # Concurrency guard — only one backfill per user at a time
+    r = await get_redis()
+    lock_key = f"backfill_lock:{user_id}"
+    acquired = await r.set(lock_key, "1", ex=600, nx=True)  # 10-min TTL
+    if not acquired:
+        raise HTTPException(409, "A backfill is already running for this user. Please wait.")
+
     from app.models.schema import WatchHistory
     from sqlalchemy import or_, and_
     import structlog
@@ -7895,6 +7978,7 @@ async def backfill_watch_history(
     async with async_session_ctx() as db:
         user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
         if not user:
+            await r.delete(lock_key)
             raise HTTPException(404, "User not found")
 
         # ── Clean up duplicates from prior buggy runs ─────────────────
@@ -8178,6 +8262,9 @@ async def backfill_watch_history(
         await r.delete(f"watch_stats_v5:{user_id}")
     except Exception:
         pass
+
+    # Release concurrency lock
+    await r.delete(lock_key)
 
     return {
         "status": "ok",
