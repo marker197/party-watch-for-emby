@@ -23,7 +23,6 @@
       --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       /* Card dimensions — base for 1440px, scales via clamp */
       --card-w: clamp(240px, 23vw, 340px);
-      --card-h: clamp(162px, 15.5vw, 230px);
     }
 
     body.light-mode {
@@ -89,10 +88,10 @@
       display: flex; gap: 14px; flex-wrap: wrap;
     }
 
-    /* ── Card: landscape thumbnail ── */
+    /* ── Card: landscape 16:9 thumbnail ── */
     .history-item { width: var(--card-w); cursor: default; }
     .thumb-wrap {
-      position: relative; width: var(--card-w); height: var(--card-h);
+      position: relative; width: var(--card-w); aspect-ratio: 16 / 9;
       border-radius: 8px; overflow: hidden;
       background: var(--surface); border: 1px solid var(--border);
     }
