@@ -2588,39 +2588,52 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     wh_tvdb = wh_tvdb or str(series_ids.get("tvdb", ""))
 
                 now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
-                # Genres: from item or its series (for episodes)
-                wh_genres_list = item_data.get("Genres") or []
-                if not wh_genres_list and item_type_raw == "Episode":
-                    wh_genres_list = item_data.get("SeriesGenres") or []
-                wh_genres = ",".join(wh_genres_list) if wh_genres_list else None
 
-                entry = WatchHistory(
-                    user_id=user.id,
-                    emby_id=emby_item_id,
-                    item_type=wh_item_type,
-                    title=item_name,
-                    series_name=wh_series,
-                    season_number=wh_season,
-                    episode_number=wh_episode,
-                    imdb_id=wh_imdb or None,
-                    tmdb_id=wh_tmdb or None,
-                    trakt_id=wh_trakt or None,
-                    tvdb_id=wh_tvdb or None,
-                    watched_at=now_naive,
-                    runtime_minutes=runtime_min,
-                    genres=wh_genres,
-                    source="webhook",
-                )
-                db.add(entry)
-                await db.commit()
-                log.debug("webhook.watch_history_recorded", user_id=user.id,
-                          title=display_name, item_type=wh_item_type)
-                # Invalidate stats cache so next load reflects the new watch
-                try:
-                    _r = await get_redis()
-                    await _r.delete(f"watch_stats_v5:{user.id}")
-                except Exception:
-                    pass
+                # ── Same-day dedup: skip if this emby_id already logged today ──
+                from sqlalchemy import cast, Date
+                existing = (await db.execute(
+                    select(WatchHistory.id).where(
+                        WatchHistory.user_id == user.id,
+                        WatchHistory.emby_id == emby_item_id,
+                        cast(WatchHistory.watched_at, Date) == now_naive.date(),
+                    ).limit(1)
+                )).scalar()
+                if existing:
+                    log.debug("webhook.watch_history_sameday_skip", title=display_name)
+                else:
+                    # Genres: from item or its series (for episodes)
+                    wh_genres_list = item_data.get("Genres") or []
+                    if not wh_genres_list and item_type_raw == "Episode":
+                        wh_genres_list = item_data.get("SeriesGenres") or []
+                    wh_genres = ",".join(wh_genres_list) if wh_genres_list else None
+
+                    entry = WatchHistory(
+                        user_id=user.id,
+                        emby_id=emby_item_id,
+                        item_type=wh_item_type,
+                        title=item_name,
+                        series_name=wh_series,
+                        season_number=wh_season,
+                        episode_number=wh_episode,
+                        imdb_id=wh_imdb or None,
+                        tmdb_id=wh_tmdb or None,
+                        trakt_id=wh_trakt or None,
+                        tvdb_id=wh_tvdb or None,
+                        watched_at=now_naive,
+                        runtime_minutes=runtime_min,
+                        genres=wh_genres,
+                        source="webhook",
+                    )
+                    db.add(entry)
+                    await db.commit()
+                    log.debug("webhook.watch_history_recorded", user_id=user.id,
+                              title=display_name, item_type=wh_item_type)
+                    # Invalidate stats cache so next load reflects the new watch
+                    try:
+                        _r = await get_redis()
+                        await _r.delete(f"watch_stats_v5:{user.id}")
+                    except Exception:
+                        pass
             except Exception as e:
                 await db.rollback()
                 # IntegrityError from unique constraint = duplicate, not an error
