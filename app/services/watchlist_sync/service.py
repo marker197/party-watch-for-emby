@@ -26,6 +26,7 @@ from sqlalchemy import select
 from app.models.schema import User
 from app.utils.database import async_session
 from app.utils.redis_cache import get_redis
+from app.utils.secure_redis import secure_get, secure_set
 from app.utils.trakt_client import TraktClient
 
 log = structlog.get_logger()
@@ -135,7 +136,7 @@ class WatchlistSyncService:
         """Build an MDBListClient using the stored API key, or None if not configured."""
         from app.utils.mdblist_client import MDBListClient
         r = await get_redis()
-        raw = await r.get("mdblist_api_key")
+        raw = await secure_get("mdblist_api_key")
         key = (raw if isinstance(raw, str) else raw.decode()) if raw else ""
         if not key:
             log.debug("watchlist_sync.mdblist.no_api_key")
@@ -403,7 +404,7 @@ class WatchlistSyncService:
         movies_added = 0
         movies_failed = 0
         if movies_to_add:
-            raw = await r.get("radarr_servers")
+            raw = await secure_get("radarr_servers")
             if raw:
                 servers = _json.loads(raw)
                 if servers:
@@ -456,7 +457,7 @@ class WatchlistSyncService:
         shows_added = 0
         shows_failed = 0
         if shows_to_add:
-            raw = await r.get("sonarr_servers")
+            raw = await secure_get("sonarr_servers")
             if raw:
                 servers = _json.loads(raw)
                 if servers:
@@ -561,7 +562,7 @@ class WatchlistSyncService:
         missing_tvdb: list[int] = []
 
         # --- Radarr ---
-        raw = await r.get("radarr_servers")
+        raw = await secure_get("radarr_servers")
         if raw:
             for srv in _json.loads(raw):
                 client = None
@@ -585,7 +586,7 @@ class WatchlistSyncService:
                         await client.close()
 
         # --- Sonarr ---
-        raw = await r.get("sonarr_servers")
+        raw = await secure_get("sonarr_servers")
         if raw:
             for srv in _json.loads(raw):
                 client = None
@@ -632,7 +633,7 @@ class WatchlistSyncService:
         radarr_tmdb: set[int] = set()
         sonarr_tvdb: set[int] = set()
 
-        raw = await r.get("radarr_servers")
+        raw = await secure_get("radarr_servers")
         if raw:
             for srv in _json.loads(raw):
                 client = None
@@ -653,7 +654,7 @@ class WatchlistSyncService:
                     if client:
                         await client.close()
 
-        raw = await r.get("sonarr_servers")
+        raw = await secure_get("sonarr_servers")
         if raw:
             for srv in _json.loads(raw):
                 client = None
@@ -689,7 +690,7 @@ class WatchlistSyncService:
         mapping: dict[int, int] = {}
         tvdb_set = set(tvdb_ids)
 
-        raw = await r.get("sonarr_servers")
+        raw = await secure_get("sonarr_servers")
         if raw:
             for srv in _json.loads(raw):
                 client = None

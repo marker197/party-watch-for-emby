@@ -34,6 +34,7 @@ from app.config import settings
 from app.utils.logging import setup_logging, security_log
 from app.utils.database import init_db, get_db, async_session
 from app.utils.redis_cache import close_redis
+from app.utils.secure_redis import secure_get, secure_set, migrate_plaintext_secrets
 from app.api.routes import router
 from app.api.monitoring_routes import router as monitoring_router
 from app.api.phase5_routes import router as phase5_router
@@ -53,13 +54,44 @@ scheduler = AsyncIOScheduler()
 class SecurityAuditMiddleware:
     """Log all HTTP requests for security audit trail.
 
+    Also injects:
+      - Security response headers (M3)
+      - CSRF double-submit cookie protection (M11)
+
     Implemented as a pure ASGI middleware instead of BaseHTTPMiddleware
     because BaseHTTPMiddleware breaks Starlette sub-app mounts (the
     Socket.IO ASGIApp mounted at /ws would 404 on every request).
     """
 
+    # Paths exempt from CSRF (webhooks, health, auth device-code polling, image proxy)
+    _CSRF_EXEMPT = frozenset({"/webhook/emby", "/health", "/api/auth/poll",
+                              "/api/auth/device-code"})
+    _CSRF_EXEMPT_PREFIXES = ("/api/emby/image/",)
+
+    # Security headers injected on every HTTP response
+    _SECURITY_HEADERS = [
+        (b"x-content-type-options", b"nosniff"),
+        (b"x-frame-options", b"DENY"),
+        (b"x-xss-protection", b"1; mode=block"),
+        (b"referrer-policy", b"strict-origin-when-cross-origin"),
+        (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+        (b"content-security-policy",
+         b"default-src 'self'; "
+         b"script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.socket.io; "
+         b"style-src 'self' 'unsafe-inline'; "
+         b"img-src 'self' data: blob:; "
+         b"connect-src 'self' ws: wss:; "
+         b"font-src 'self'; "
+         b"frame-ancestors 'none'"),
+    ]
+
     def __init__(self, app):
         self.app = app
+
+    def _is_csrf_exempt(self, path: str) -> bool:
+        if path in self._CSRF_EXEMPT:
+            return True
+        return any(path.startswith(p) for p in self._CSRF_EXEMPT_PREFIXES)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket"):
@@ -72,12 +104,64 @@ class SecurityAuditMiddleware:
         client = scope.get("client") or ("unknown", 0)
         client_ip = client[0] if client else "unknown"
 
+        # ── CSRF double-submit cookie check ────────────────────────
+        # State-changing methods require X-CSRF-Token header to match
+        # the csrf_token cookie.  GET/HEAD/OPTIONS are safe methods.
+        if (scope["type"] == "http"
+                and method in ("POST", "PUT", "DELETE", "PATCH")
+                and not self._is_csrf_exempt(path)):
+            headers_raw = dict(scope.get("headers", []))
+            cookie_header = headers_raw.get(b"cookie", b"").decode()
+            csrf_cookie = ""
+            for pair in cookie_header.split(";"):
+                pair = pair.strip()
+                if pair.startswith("csrf_token="):
+                    csrf_cookie = pair.split("=", 1)[1]
+                    break
+            csrf_header = headers_raw.get(b"x-csrf-token", b"").decode()
+            if not csrf_cookie or csrf_cookie != csrf_header:
+                import json as _cjson
+                body = _cjson.dumps({"detail": "CSRF token missing or invalid"}).encode()
+                await send({
+                    "type": "http.response.start",
+                    "status": 403,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        *self._SECURITY_HEADERS,
+                    ],
+                })
+                await send({"type": "http.response.body", "body": body})
+                security_log.warning("csrf_rejected", path=path, client=client_ip)
+                return
+
         status_code = 0
 
         async def send_wrapper(message):
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message.get("status", 0)
+                # Inject security headers
+                hdrs = list(message.get("headers", []))
+                hdrs.extend(self._SECURITY_HEADERS)
+                # Always set CSRF cookie (overwrites any stale HttpOnly
+                # cookie from earlier deployments)
+                if scope["type"] == "http":
+                    import secrets as _secrets
+                    # Read existing token from request cookie if present
+                    req_headers = dict(scope.get("headers", []))
+                    cookie_hdr = req_headers.get(b"cookie", b"").decode()
+                    existing_token = ""
+                    for pair in cookie_hdr.split(";"):
+                        pair = pair.strip()
+                        if pair.startswith("csrf_token="):
+                            existing_token = pair.split("=", 1)[1]
+                            break
+                    token = existing_token or _secrets.token_hex(32)
+                    hdrs.append((
+                        b"set-cookie",
+                        f"csrf_token={token}; Path=/; SameSite=Lax".encode(),
+                    ))
+                message = {**message, "headers": hdrs}
             await send(message)
 
         try:
@@ -136,6 +220,14 @@ async def lifespan(app: FastAPI):
 
     # Seed Redis with durable settings from DB (survives Redis restarts)
     await _seed_redis_from_db()
+
+    # Encrypt any plaintext secrets already in Redis (one-time migration)
+    try:
+        migrated = await migrate_plaintext_secrets()
+        if migrated:
+            log.info("suite.secrets_encrypted", count=migrated)
+    except Exception as e:
+        log.warning("suite.secret_migration_failed", error=str(e))
 
     # One-time migration: move dismissed lists and drift data from Redis to DB
     await _migrate_redis_to_db()
@@ -268,7 +360,7 @@ app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 @app.get("/")
 async def dashboard(request: Request):
     # Check if first-run setup is needed
-    from app.utils.redis_cache import get_redis as _get_redis
+    from app.utils.redis_cache import get_redis
     from fastapi.responses import RedirectResponse
     try:
         r = await _get_redis()
@@ -358,6 +450,7 @@ async def _seed_redis_from_db():
     """
     from app.models.schema import AppSetting
     from app.utils.redis_cache import get_redis
+    from app.utils.secure_redis import SECRET_KEYS
     _KEYS = ("radarr_servers", "sonarr_servers", "sabnzbd_servers", "auto_send_settings")
     try:
         r = await get_redis()
@@ -370,7 +463,10 @@ async def _seed_redis_from_db():
                     select(AppSetting).where(AppSetting.key == key)
                 )).scalar_one_or_none()
                 if row and row.value:
-                    await r.set(key, row.value)
+                    if key in SECRET_KEYS:
+                        await secure_set(key, row.value)
+                    else:
+                        await r.set(key, row.value)
                     log.info("suite.redis_seeded_from_db", key=key)
     except Exception as e:
         log.warning("suite.redis_seed_skipped", error=str(e)[:200])
@@ -531,7 +627,7 @@ async def run_heartbeat():
             await trakt.close()
 
     # --- Radarr (0..N servers from Redis config) ---
-    raw_servers = await r.get("radarr_servers")
+    raw_servers = await secure_get("radarr_servers")
     if raw_servers:
         from app.utils.radarr_client import RadarrClient
         servers = _json.loads(raw_servers)
@@ -553,7 +649,7 @@ async def run_heartbeat():
                 }), ex=600)
 
     # --- Sonarr (0..N servers from Redis config) ---
-    raw_sonarr = await r.get("sonarr_servers")
+    raw_sonarr = await secure_get("sonarr_servers")
     if raw_sonarr:
         from app.utils.sonarr_client import SonarrClient
         sonarr_servers = _json.loads(raw_sonarr)
@@ -575,7 +671,7 @@ async def run_heartbeat():
                 }), ex=600)
 
     # --- SABnzbd (0..N servers from Redis config) ---
-    raw_sab = await r.get("sabnzbd_servers")
+    raw_sab = await secure_get("sabnzbd_servers")
     if raw_sab:
         from app.utils.sabnzbd_client import SabnzbdClient
         sab_servers = _json.loads(raw_sab)
@@ -597,7 +693,7 @@ async def run_heartbeat():
                 }), ex=600)
 
     # --- MDBList (optional, only if API key configured) ---
-    mdb_key = await r.get("mdblist_api_key")
+    mdb_key = await secure_get("mdblist_api_key")
     if mdb_key:
         from app.utils.mdblist_client import MDBListClient
         mdb_key_str = mdb_key if isinstance(mdb_key, str) else mdb_key.decode()
@@ -631,7 +727,7 @@ async def check_trakt_tokens():
     Skips entirely if Trakt is not an active integration provider.
     """
     # Check if Trakt is enabled
-    from app.utils.redis_cache import get_redis as _get_redis
+    from app.utils.redis_cache import get_redis
     try:
         r = await _get_redis()
         provider = await r.get("integration_provider")
@@ -897,7 +993,7 @@ def _register_jobs():
     if settings.ssl_domain:
         async def check_ssl_certificate():
             from app.api.routes import _check_ssl_cert
-            from app.utils.redis_cache import get_redis as _get_redis
+            from app.utils.redis_cache import get_redis
             result = await _check_ssl_cert(settings.ssl_domain)
             r = await _get_redis()
             await r.set("ssl:cert_status", _json.dumps(result))

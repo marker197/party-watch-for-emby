@@ -27,6 +27,7 @@ from app.utils.trakt_client import TraktClient
 from app.utils.emby_client import EmbyClient
 from app.utils.library_cache import LibraryCache
 from app.utils.redis_cache import cache_get, cache_set
+from app.utils.secure_redis import secure_get, secure_set
 from app.utils.database import async_session
 
 log = structlog.get_logger()
@@ -754,7 +755,7 @@ class SmartQueueService:
                 from app.utils.radarr_client import RadarrClient
                 from app.utils.redis_cache import get_redis
                 r = await get_redis()
-                raw_servers = await r.get("radarr_servers")
+                raw_servers = await secure_get("radarr_servers")
                 if raw_servers:
                     servers = json.loads(raw_servers)
                     if servers:
@@ -788,7 +789,7 @@ class SmartQueueService:
                 from app.utils.sonarr_client import SonarrClient
                 from app.utils.redis_cache import get_redis
                 r = await get_redis()
-                raw_servers = await r.get("sonarr_servers")
+                raw_servers = await secure_get("sonarr_servers")
                 if raw_servers:
                     servers = json.loads(raw_servers)
                     if servers:

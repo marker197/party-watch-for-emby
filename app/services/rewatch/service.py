@@ -28,6 +28,7 @@ from typing import Optional
 import structlog
 
 from app.utils.redis_cache import get_redis
+from app.utils.secure_redis import secure_get, secure_set
 
 log = structlog.get_logger()
 
@@ -499,7 +500,7 @@ class RewatchRecommender:
         """Build an MDBListClient using the stored API key, or None."""
         from app.utils.mdblist_client import MDBListClient
         r = await get_redis()
-        raw = await r.get("mdblist_api_key")
+        raw = await secure_get("mdblist_api_key")
         if not raw:
             return None
         key = raw if isinstance(raw, str) else raw.decode()
@@ -985,10 +986,10 @@ class RewatchRecommender:
     # ------------------------------------------------------------------
 
     def _poster_url(self, emby_id: str | None) -> str:
-        """Construct Emby poster image URL."""
-        if not emby_id or not self._emby_url:
+        """Construct proxied poster image URL (avoids exposing Emby API key)."""
+        if not emby_id:
             return ""
-        return f"{self._emby_url}/Items/{emby_id}/Images/Primary?maxWidth=300&api_key={self._emby_key}"
+        return f"/api/emby/image/{emby_id}/Primary?maxWidth=300"
 
     async def _load_dismissed(self, user_id: int) -> set[str]:
         """Load dismissed item keys from DB."""

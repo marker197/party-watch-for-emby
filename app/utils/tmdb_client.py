@@ -11,6 +11,7 @@ import httpx
 import structlog
 
 from app.utils.redis_cache import get_redis
+from app.utils.secure_redis import secure_get, secure_set
 
 log = structlog.get_logger()
 
@@ -82,7 +83,7 @@ async def _get_api_key() -> str | None:
     """Read the TMDB API key from Redis."""
     try:
         r = await get_redis()
-        key = await r.get("tmdb_api_key")
+        key = await secure_get("tmdb_api_key")
         return key if key else None
     except Exception:
         return None

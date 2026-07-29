@@ -24,6 +24,7 @@ from app.utils.trakt_client import TraktClient
 from app.utils.emby_client import EmbyClient
 from app.utils.library_cache import LibraryCache
 from app.utils.redis_cache import get_redis
+from app.utils.secure_redis import secure_get, secure_set
 from app.utils.tmdb_client import get_movie_release_dates as _tmdb_release_dates
 from app.utils.database import async_session
 from sqlalchemy import select
@@ -173,7 +174,7 @@ class AiringAlertsService:
         result: dict = {"movies": {}, "sonarr_calendar": {}}
 
         # --- Radarr calendar (upcoming movie releases) ---
-        raw = await r.get("radarr_servers")
+        raw = await secure_get("radarr_servers")
         if raw:
             from app.utils.radarr_client import RadarrClient
             for srv in _json.loads(raw):
@@ -208,7 +209,7 @@ class AiringAlertsService:
                         await client.close()
 
         # --- Sonarr calendar (upcoming episodes) ---
-        raw = await r.get("sonarr_servers")
+        raw = await secure_get("sonarr_servers")
         if raw:
             from app.utils.sonarr_client import SonarrClient
             for srv in _json.loads(raw):
@@ -260,7 +261,7 @@ class AiringAlertsService:
         import json as _json
 
         r = await get_redis()
-        raw = await r.get("radarr_servers")
+        raw = await secure_get("radarr_servers")
         if not raw:
             return []
 

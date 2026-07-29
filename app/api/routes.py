@@ -21,6 +21,7 @@ from app.utils.trakt_client import TraktClient
 from app.utils.library_cache import LibraryCache
 from app.utils.emby_client import EmbyClient
 from app.utils.redis_cache import get_redis
+from app.utils.secure_redis import secure_get, secure_set
 
 # ✅ SECURITY: Import auth module
 from app.security.auth import get_current_user, require_user_ownership, issue_tokens
@@ -3594,7 +3595,7 @@ async def get_radarr_servers(db: AsyncSession = Depends(get_db)):
     """Return configured Radarr servers (Redis → DB fallback). API keys masked."""
     import json as _json
     r = await get_redis()
-    raw = await r.get("radarr_servers")
+    raw = await secure_get("radarr_servers")
     if not raw:
         raw = (await _get_setting(db, "radarr_servers", ""))
     if not raw:
@@ -3632,7 +3633,7 @@ async def save_radarr_servers(payload: dict, db: AsyncSession = Depends(get_db),
             clean.append(srv)
     encoded = _json.dumps(clean)
     r = await get_redis()
-    await r.set("radarr_servers", encoded)
+    await secure_set("radarr_servers", encoded)
     await _put_setting(db, "radarr_servers", encoded)
     await db.commit()
     # Invalidate download-queue cache so the next poll picks up changes
@@ -3690,7 +3691,7 @@ async def add_to_radarr(payload: dict, _user: User = Depends(get_current_user)):
         raise HTTPException(400, "No movies provided")
 
     r = await get_redis()
-    raw = await r.get("radarr_servers")
+    raw = await secure_get("radarr_servers")
     if not raw:
         raise HTTPException(400, "No Radarr servers configured — add one in Settings")
     servers = _json.loads(raw)
@@ -3733,7 +3734,7 @@ async def get_sonarr_servers(db: AsyncSession = Depends(get_db)):
     """Return configured Sonarr servers (Redis → DB fallback). API keys masked."""
     import json as _json
     r = await get_redis()
-    raw = await r.get("sonarr_servers")
+    raw = await secure_get("sonarr_servers")
     if not raw:
         raw = (await _get_setting(db, "sonarr_servers", ""))
     if not raw:
@@ -3771,7 +3772,7 @@ async def save_sonarr_servers(payload: dict, db: AsyncSession = Depends(get_db),
             clean.append(srv)
     encoded = _json.dumps(clean)
     r = await get_redis()
-    await r.set("sonarr_servers", encoded)
+    await secure_set("sonarr_servers", encoded)
     await _put_setting(db, "sonarr_servers", encoded)
     await db.commit()
     # Invalidate download-queue cache so the next poll picks up changes
@@ -3829,7 +3830,7 @@ async def add_to_sonarr(payload: dict, _user: User = Depends(get_current_user)):
         raise HTTPException(400, "No shows provided")
 
     r = await get_redis()
-    raw = await r.get("sonarr_servers")
+    raw = await secure_get("sonarr_servers")
     if not raw:
         raise HTTPException(400, "No Sonarr servers configured — add one in Settings")
     servers = _json.loads(raw)
@@ -4159,7 +4160,7 @@ async def connection_status():
             result[svc] = {"status": "unknown", "checked_at": None}
     # Radarr — may have 0, 1, or 2 servers
     radarr_list = []
-    raw_servers = await r.get("radarr_servers")
+    raw_servers = await secure_get("radarr_servers")
     if raw_servers:
         servers = _json.loads(raw_servers)
         for i, _srv in enumerate(servers):
@@ -4173,7 +4174,7 @@ async def connection_status():
     result["radarr"] = radarr_list
     # Sonarr — may have 0, 1, or 2 servers
     sonarr_list = []
-    raw_sonarr = await r.get("sonarr_servers")
+    raw_sonarr = await secure_get("sonarr_servers")
     if raw_sonarr:
         sonarr_servers = _json.loads(raw_sonarr)
         for i, _srv in enumerate(sonarr_servers):
@@ -4187,7 +4188,7 @@ async def connection_status():
     result["sonarr"] = sonarr_list
     # SABnzbd — may have 0, 1, or 2 servers
     sab_list = []
-    raw_sab = await r.get("sabnzbd_servers")
+    raw_sab = await secure_get("sabnzbd_servers")
     if raw_sab:
         sab_servers = _json.loads(raw_sab)
         for i, _srv in enumerate(sab_servers):
@@ -4205,7 +4206,7 @@ async def connection_status():
         result["mdblist"] = _json.loads(raw_mdb)
     else:
         # Check if key is configured at all
-        mdb_key = await r.get("mdblist_api_key")
+        mdb_key = await secure_get("mdblist_api_key")
         if mdb_key:
             result["mdblist"] = {"status": "unknown", "checked_at": None}
     # Integration provider
@@ -4501,7 +4502,7 @@ async def get_availability():
     failed_servers: list[str] = []
 
     # --- Radarr movies ---
-    raw_radarr = await r.get("radarr_servers")
+    raw_radarr = await secure_get("radarr_servers")
     if raw_radarr:
         radarr_servers = _json.loads(raw_radarr)
         for srv in radarr_servers:
@@ -4540,7 +4541,7 @@ async def get_availability():
                 log.warning("availability.radarr_failed", server=srv.get("name"), error=str(e)[:120])
 
     # --- Sonarr series ---
-    raw_sonarr = await r.get("sonarr_servers")
+    raw_sonarr = await secure_get("sonarr_servers")
     if raw_sonarr:
         sonarr_servers = _json.loads(raw_sonarr)
         for srv in sonarr_servers:
@@ -4642,7 +4643,7 @@ async def get_download_queue():
     downloads: list[dict] = []
 
     # --- Radarr queues ---
-    raw_radarr = await r.get("radarr_servers")
+    raw_radarr = await secure_get("radarr_servers")
     if raw_radarr:
         for srv in _json.loads(raw_radarr):
             client = None
@@ -4657,7 +4658,7 @@ async def get_download_queue():
                     await client.close()
 
     # --- Sonarr queues ---
-    raw_sonarr = await r.get("sonarr_servers")
+    raw_sonarr = await secure_get("sonarr_servers")
     if raw_sonarr:
         for srv in _json.loads(raw_sonarr):
             client = None
@@ -4676,7 +4677,7 @@ async def get_download_queue():
     # SABnzbd instances, then overlay real-time progress onto the
     # Radarr/Sonarr items matched by downloadId.
     sab_lookup: dict[str, dict] = {}
-    raw_sab = await r.get("sabnzbd_servers")
+    raw_sab = await secure_get("sabnzbd_servers")
     if raw_sab:
         from app.utils.sabnzbd_client import SabnzbdClient
         for srv in _json.loads(raw_sab):
@@ -4732,7 +4733,7 @@ async def get_download_progress():
     """
     import json as _json
     r = await get_redis()
-    raw_sab = await r.get("sabnzbd_servers")
+    raw_sab = await secure_get("sabnzbd_servers")
     if not raw_sab:
         return {"slots": {}, "count": 0}
 
@@ -4783,7 +4784,7 @@ async def get_sabnzbd_servers():
     """Read configured SABnzbd servers from Redis."""
     import json as _json
     r = await get_redis()
-    raw = await r.get("sabnzbd_servers")
+    raw = await secure_get("sabnzbd_servers")
     servers = _json.loads(raw) if raw else []
     # Mask API keys
     masked = []
@@ -4805,7 +4806,7 @@ async def save_sabnzbd_servers(request: Request, _user: User = Depends(get_curre
     r = await get_redis()
 
     # Resolve masked keys — if a key looks masked, keep the existing one
-    raw_existing = await r.get("sabnzbd_servers")
+    raw_existing = await secure_get("sabnzbd_servers")
     existing = _json.loads(raw_existing) if raw_existing else []
 
     for i, srv in enumerate(servers):
@@ -4814,7 +4815,7 @@ async def save_sabnzbd_servers(request: Request, _user: User = Depends(get_curre
             srv["api_key"] = existing[i].get("api_key", key)
 
     encoded = _json.dumps(servers)
-    await r.set("sabnzbd_servers", encoded)
+    await secure_set("sabnzbd_servers", encoded)
 
     # Persist to DB (survives Redis restarts)
     async with async_session_ctx() as db:
@@ -4844,7 +4845,7 @@ async def test_sabnzbd(request: Request, _user: User = Depends(get_current_user)
     # find the real key from the saved server config by matching URL
     if "****" in api_key:
         r = await get_redis()
-        raw_existing = await r.get("sabnzbd_servers")
+        raw_existing = await secure_get("sabnzbd_servers")
         if raw_existing:
             for srv in _json.loads(raw_existing):
                 if srv.get("url", "").rstrip("/") == url.rstrip("/"):
@@ -4927,11 +4928,11 @@ async def update_watchlist_sync_settings(payload: dict, db: AsyncSession = Depen
 async def get_tmdb_key(db: AsyncSession = Depends(get_db)):
     """Return whether a TMDB API key is configured (never returns the key itself)."""
     r = await get_redis()
-    raw = await r.get("tmdb_api_key")
+    raw = await secure_get("tmdb_api_key")
     if not raw:
         raw = await _get_setting(db, "tmdb_api_key", "")
         if raw:
-            await r.set("tmdb_api_key", raw)
+            await secure_set("tmdb_api_key", raw)
     return {"configured": bool(raw)}
 
 
@@ -4942,7 +4943,7 @@ async def save_tmdb_key(payload: dict, db: AsyncSession = Depends(get_db), _user
     key = (payload.get("api_key") or "").strip()
     r = await get_redis()
     if key:
-        await r.set("tmdb_api_key", key)
+        await secure_set("tmdb_api_key", key)
         await _put_setting(db, "tmdb_api_key", key)
         await db.commit()
         # Clear any cached empty provider results from before the key was set
@@ -5176,13 +5177,13 @@ async def import_trakt_list(payload: dict, _user: User = Depends(get_current_use
 async def _get_mdblist_key(db: AsyncSession | None = None) -> str:
     """Return the configured MDBList API key from Redis (fast) or DB fallback."""
     r = await get_redis()
-    raw = await r.get("mdblist_api_key")
+    raw = await secure_get("mdblist_api_key")
     if raw:
         return raw if isinstance(raw, str) else raw.decode()
     if db:
         raw = await _get_setting(db, "mdblist_api_key", "")
         if raw:
-            await r.set("mdblist_api_key", raw)
+            await secure_set("mdblist_api_key", raw)
         return raw or ""
     return ""
 
@@ -5200,7 +5201,7 @@ async def save_mdblist_key(payload: dict, db: AsyncSession = Depends(get_db), _u
     key = (payload.get("api_key") or "").strip()
     r = await get_redis()
     if key:
-        await r.set("mdblist_api_key", key)
+        await secure_set("mdblist_api_key", key)
         await _put_setting(db, "mdblist_api_key", key)
         await db.commit()
         return {"status": "ok", "configured": True}
@@ -5972,7 +5973,7 @@ async def get_arr_library():
     r = await get_redis()
 
     # --- Radarr ---
-    raw_radarr = await r.get("radarr_servers")
+    raw_radarr = await secure_get("radarr_servers")
     if raw_radarr:
         from app.utils.radarr_client import RadarrClient
         for srv in _json.loads(raw_radarr):
@@ -5991,7 +5992,7 @@ async def get_arr_library():
                 log.warning("arr_library.radarr_failed", server=srv.get("name"), error=str(e)[:120])
 
     # --- Sonarr ---
-    raw_sonarr = await r.get("sonarr_servers")
+    raw_sonarr = await secure_get("sonarr_servers")
     if raw_sonarr:
         from app.utils.sonarr_client import SonarrClient
         for srv in _json.loads(raw_sonarr):
@@ -6367,7 +6368,7 @@ async def get_recently_arrived():
     arrived_shows: list[dict] = []
 
     # --- Radarr ---
-    raw_radarr = await r.get("radarr_servers")
+    raw_radarr = await secure_get("radarr_servers")
     if raw_radarr:
         for srv in _json.loads(raw_radarr):
             try:
@@ -6396,7 +6397,7 @@ async def get_recently_arrived():
                 log.warning("recently_arrived.radarr_failed", error=str(e)[:120])
 
     # --- Sonarr ---
-    raw_sonarr = await r.get("sonarr_servers")
+    raw_sonarr = await secure_get("sonarr_servers")
     if raw_sonarr:
         for srv in _json.loads(raw_sonarr):
             try:
@@ -8127,7 +8128,7 @@ async def backfill_watch_history(
 
         try:
             r = await get_redis()
-            raw_key = await r.get("mdblist_api_key")
+            raw_key = await secure_get("mdblist_api_key")
             if raw_key:
                 from app.utils.mdblist_client import MDBListClient
                 key = raw_key if isinstance(raw_key, str) else raw_key.decode()

@@ -19,6 +19,7 @@ from app.models.schema import User, AppSetting
 from app.utils.trakt_client import TraktClient
 from app.utils.emby_client import EmbyClient
 from app.utils.redis_cache import get_redis
+from app.utils.secure_redis import secure_get, secure_set
 from app.utils.database import async_session
 
 log = structlog.get_logger()
@@ -635,7 +636,7 @@ class ScrobbleAuditService:
         """Return the configured MDBList API key from Redis."""
         try:
             r = await get_redis()
-            raw = await r.get("mdblist_api_key")
+            raw = await secure_get("mdblist_api_key")
             if raw:
                 return raw if isinstance(raw, str) else raw.decode()
         except Exception:
@@ -647,7 +648,7 @@ class ScrobbleAuditService:
         """Create an MDBListClient using the stored API key."""
         from app.utils.mdblist_client import MDBListClient
         r = await get_redis()
-        raw = await r.get("mdblist_api_key")
+        raw = await secure_get("mdblist_api_key")
         if not raw:
             return None
         key = raw if isinstance(raw, str) else raw.decode()
