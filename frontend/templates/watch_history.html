@@ -292,7 +292,7 @@ function renderItem(item) {
   // Progress bar + time remaining for partial watches
   let progressHtml = '';
   const prog = item.progress;
-  if (prog !== null && prog !== undefined && prog < 100) {
+  if (prog !== null && prog !== undefined && prog < 95) {
     const timeLeft = formatTimeLeft(item.runtime_minutes, prog);
     const timeLabel = timeLeft || (prog + '%');
     progressHtml = '<div class="progress-wrap">'
