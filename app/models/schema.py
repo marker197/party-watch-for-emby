@@ -367,6 +367,7 @@ class WatchHistory(Base):
     watched_at = Column(DateTime, nullable=False, index=True)
     runtime_minutes = Column(Integer, nullable=True)
     genres = Column(Text, nullable=True)  # comma-separated genre list
+    progress = Column(Integer, nullable=True)  # playback progress 0-100 at time of recording
     source = Column(String(32), nullable=False, default="webhook")  # webhook | backfill_trakt | backfill_mdblist | backfill_emby
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 

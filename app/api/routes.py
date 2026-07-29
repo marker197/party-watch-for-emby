@@ -2553,15 +2553,17 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             asyncio.create_task(_mdblist_add_to_history())
 
         # ── Persistent watch history (local DB) ──────────────────────────
-        # Record every completed watch for rewatch suggestions & stats.
-        # For PlaybackStop: only if progress >= 80% (actually watched).
-        # For MarkPlayed: always (user explicitly marked it).
-        should_record = is_mark_played
+        # Record every PlaybackStop regardless of progress (the history
+        # page shows partial watches too, with a % badge).
+        # ItemMarkPlayed is skipped: Emby fires it alongside PlaybackStop,
+        # and the two arrive near-simultaneously causing duplicate rows.
+        should_record = is_play_stop
+        wh_progress = None
         if is_play_stop:
             try:
-                should_record = _calc_progress() >= 80
+                wh_progress = int(_calc_progress())
             except Exception:
-                should_record = True  # err on the side of recording
+                wh_progress = None
 
         if should_record:
             try:
@@ -2589,51 +2591,41 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
                 now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
 
-                # ── Same-day dedup: skip if this emby_id already logged today ──
-                from sqlalchemy import cast, Date
-                existing = (await db.execute(
-                    select(WatchHistory.id).where(
-                        WatchHistory.user_id == user.id,
-                        WatchHistory.emby_id == emby_item_id,
-                        cast(WatchHistory.watched_at, Date) == now_naive.date(),
-                    ).limit(1)
-                )).scalar()
-                if existing:
-                    log.debug("webhook.watch_history_sameday_skip", title=display_name)
-                else:
-                    # Genres: from item or its series (for episodes)
-                    wh_genres_list = item_data.get("Genres") or []
-                    if not wh_genres_list and item_type_raw == "Episode":
-                        wh_genres_list = item_data.get("SeriesGenres") or []
-                    wh_genres = ",".join(wh_genres_list) if wh_genres_list else None
+                # Genres: from item or its series (for episodes)
+                wh_genres_list = item_data.get("Genres") or []
+                if not wh_genres_list and item_type_raw == "Episode":
+                    wh_genres_list = item_data.get("SeriesGenres") or []
+                wh_genres = ",".join(wh_genres_list) if wh_genres_list else None
 
-                    entry = WatchHistory(
-                        user_id=user.id,
-                        emby_id=emby_item_id,
-                        item_type=wh_item_type,
-                        title=item_name,
-                        series_name=wh_series,
-                        season_number=wh_season,
-                        episode_number=wh_episode,
-                        imdb_id=wh_imdb or None,
-                        tmdb_id=wh_tmdb or None,
-                        trakt_id=wh_trakt or None,
-                        tvdb_id=wh_tvdb or None,
-                        watched_at=now_naive,
-                        runtime_minutes=runtime_min,
-                        genres=wh_genres,
-                        source="webhook",
-                    )
-                    db.add(entry)
-                    await db.commit()
-                    log.debug("webhook.watch_history_recorded", user_id=user.id,
-                              title=display_name, item_type=wh_item_type)
-                    # Invalidate stats cache so next load reflects the new watch
-                    try:
-                        _r = await get_redis()
-                        await _r.delete(f"watch_stats_v5:{user.id}")
-                    except Exception:
-                        pass
+                entry = WatchHistory(
+                    user_id=user.id,
+                    emby_id=emby_item_id,
+                    item_type=wh_item_type,
+                    title=item_name,
+                    series_name=wh_series,
+                    season_number=wh_season,
+                    episode_number=wh_episode,
+                    imdb_id=wh_imdb or None,
+                    tmdb_id=wh_tmdb or None,
+                    trakt_id=wh_trakt or None,
+                    tvdb_id=wh_tvdb or None,
+                    watched_at=now_naive,
+                    runtime_minutes=runtime_min,
+                    genres=wh_genres,
+                    progress=wh_progress,
+                    source="webhook",
+                )
+                db.add(entry)
+                await db.commit()
+                log.debug("webhook.watch_history_recorded", user_id=user.id,
+                          title=display_name, item_type=wh_item_type,
+                          progress=wh_progress)
+                # Invalidate stats cache so next load reflects the new watch
+                try:
+                    _r = await get_redis()
+                    await _r.delete(f"watch_stats_v5:{user.id}")
+                except Exception:
+                    pass
             except Exception as e:
                 await db.rollback()
                 # IntegrityError from unique constraint = duplicate, not an error
@@ -7602,6 +7594,11 @@ async def get_watch_history_by_date(
                 bucket[key]["title"] = r.title
             if r.series_name and not bucket[key]["series_name"]:
                 bucket[key]["series_name"] = r.series_name
+            # Keep highest progress
+            rp = r.progress if r.progress is not None else 0
+            bp = bucket[key]["progress"] if bucket[key]["progress"] is not None else 0
+            if rp > bp:
+                bucket[key]["progress"] = r.progress
         else:
             bucket[key] = {
                 "emby_id": r.emby_id,
@@ -7613,6 +7610,7 @@ async def get_watch_history_by_date(
                 "imdb_id": r.imdb_id,
                 "tmdb_id": r.tmdb_id,
                 "tvdb_id": r.tvdb_id,
+                "progress": r.progress,
                 "play_count": 1,
             }
 
