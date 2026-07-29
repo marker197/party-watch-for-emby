@@ -245,6 +245,7 @@
   <a class="page-link" data-page="taste-profile"><span class="icon">🎓</span> Taste Profile</a>
   <a class="page-link" data-page="rewatch"><span class="icon">🔁</span> Rewatch</a>
   <a class="page-link" data-page="stats"><span class="icon">📊</span> Stats</a>
+  <a class="page-link" data-page="watch-history"><span class="icon">📜</span> Watch History</a>
   <a class="page-link" data-page="settings"><span class="icon">⚙️</span> Settings</a>
   <a class="page-link" data-page="watch-party"><span class="icon">👥</span> Watch Party</a>
   <a class="page-link" data-page="library-health"><span class="icon">🏥</span> Library Health</a>
@@ -351,6 +352,7 @@
       <div class="feature-name"><span class="emoji">🔍</span> Scrobble Audit</div>
       <p>Finds items played in Emby but missing from your watch history. When both Trakt and MDBList are active, the audit checks both services and merges the results. Backfilling pushes to whichever providers are active.</p>
       <p><span class="btn-label">Run Audit</span> compares your Emby played items and shows gaps. Each item gets a Backfill button; <span class="btn-label">Backfill All</span> fixes everything at once.</p>
+      <p>Shows are compared episode by episode, so a series you've only partly watched still gets audited — any individual episode missing from Trakt is flagged, whether or not the series is complete.</p>
     </div>
 
     <span class="section-anchor" id="taste-drift"></span>
@@ -425,7 +427,7 @@
   <div class="section">
     <span class="section-anchor" id="nav-bar"></span>
     <h2>Navigation Bar</h2>
-    <p>The dark bar across the top of every page links to Dashboard, Lists, Predictions, Taste Profile, Stats, Library Health, Settings, Watch Party, and this Guide. The theme toggle in the top-right switches between dark and light mode.</p>
+    <p>The dark bar across the top of every page links to Dashboard, Lists, Predictions, Taste Profile, Rewatch, Stats, Watch History, Library Health, Settings, Watch Party, and this Guide. The theme toggle in the top-right switches between dark and light mode.</p>
   </div>
 
 </div>
@@ -693,6 +695,63 @@
     <h2>Queue Feedback Tab</h2>
     <p>Shows how well the Smart Queue's recommendations are working. Summary cards show total recommended, played, play rate, and period. A source play-rate chart and current weights chart sit side by side, followed by a table of recent recommendations with their source, score, and whether you played them.</p>
     <p>This data feeds back into the Smart Queue's weight-learning algorithm — over time, it adjusts which sources (watchlist, trending, calendar) it prioritises based on what you actually watch.</p>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: WATCH HISTORY -->
+<!-- ════════════════════════════════════════════════════════════════════ -->
+
+<div class="page" id="page-watch-history" data-sections="wh-overview,wh-filters,wh-cards,wh-progress,wh-images,wh-paging">
+
+  <h1 class="page-title">📜 Watch History</h1>
+  <p class="page-intro">A visual timeline of everything you've watched, grouped by date. Works like the history view on Trakt or MDBList, but built from your local watch history database with thumbnails pulled straight from your Emby server.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="wh-overview"></span>
+    <h2>Overview</h2>
+    <p>Each date that has watch activity gets its own row, newest first. Under the date heading, every item watched that day appears as a landscape thumbnail card. Dates with no activity are skipped entirely.</p>
+    <p>A user selector at the top lets you switch between linked accounts.</p>
+    <div class="tip">This page reads from the same local <code>watch_history</code> table that powers the Stats page and Rewatch Recommender. If your history looks sparse, run <span class="btn-label">📥 Import Watch History</span> in Settings.</div>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wh-filters"></span>
+    <h2>Filters</h2>
+    <p>Three buttons at the top control what's shown:</p>
+    <p><strong>All</strong> — everything you've watched.</p>
+    <p><strong>Movies</strong> — movies only.</p>
+    <p><strong>Episodes</strong> — TV episodes only.</p>
+    <p>Switching filters reloads the timeline from the most recent date.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wh-cards"></span>
+    <h2>Item Cards</h2>
+    <p>Movies show the film title with "Movie" underneath. Episodes show the series name with the episode code below it, formatted as <em>Series Name S01 E03</em>.</p>
+    <p>If you watched the same item more than once on the same day, it appears once with a count badge in the top-right corner — <span class="btn-label">2×</span>, <span class="btn-label">3×</span>, and so on.</p>
+    <div class="tip">Duplicate entries from overlapping sources (webhook plus backfill) are merged automatically, so a single watch won't be double-counted.</div>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wh-progress"></span>
+    <h2>Partial Watches</h2>
+    <p>The timeline shows everything you started, not just what you finished. Items you didn't complete display an orange progress bar along the bottom of the thumbnail, filled to represent how much you watched, with the time remaining shown above it — for example "23 min left" or "1h 12m left".</p>
+    <p>Anything under 2% watched is filtered out, so accidental opens don't clutter the timeline.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wh-images"></span>
+    <h2>Thumbnails</h2>
+    <p>Images come directly from your Emby server over the local network. Movies use their landscape thumb image; episodes use their own episode screenshot rather than the series poster.</p>
+    <p>Images load lazily as you scroll, so opening a long history doesn't fire hundreds of requests at once. If an image is missing, the card falls back to an icon with the title.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wh-paging"></span>
+    <h2>Loading More</h2>
+    <p>The page loads 30 days of history at a time. A <span class="btn-label">Load more</span> button at the bottom fetches the next 30 days going further back. The button disappears once you reach the end of your history.</p>
   </div>
 
 </div>
@@ -1001,6 +1060,9 @@
     'stats-overview':'Overview','stats-top-people':'Top People & Studios',
     'stats-fun':'Fun Stats','stats-rewatched':'Most Rewatched',
     'stats-trends':'Trends','stats-queue-feedback':'Queue Feedback',
+    // Watch History
+    'wh-overview':'Overview','wh-filters':'Filters','wh-cards':'Item Cards',
+    'wh-progress':'Partial Watches','wh-images':'Thumbnails','wh-paging':'Loading More',
     // Settings
     'set-provider':'Integration Provider','set-mdblist':'MDBList',
     'set-emby':'Emby','set-toggles':'Feature Toggles','set-queue-opts':'Queue Options',
