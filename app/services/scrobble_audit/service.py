@@ -562,10 +562,15 @@ class ScrobbleAuditService:
     async def _get_partial_series(
         self, emby: EmbyClient, user_id: str,
     ) -> list[dict]:
-        """Fetch series that have been started (InProgress) but not fully played.
+        """Fetch series that have at least one played episode.
 
-        This catches shows where the user has watched some episodes but Emby
-        doesn't mark the series-level item as Played.
+        The ``IsPlayed`` filter only returns fully-completed series.
+        ``IsResumable`` only returns series with an episode paused mid-playback.
+        Neither catches the common case: some episodes watched, none paused,
+        series not fully complete.
+
+        Instead, fetch ALL series and filter client-side to those with
+        ``UnplayedItemCount < total`` (i.e. at least one episode played).
         """
         items: list[dict] = []
         start = 0
@@ -574,14 +579,19 @@ class ScrobbleAuditService:
             resp = await emby.get_items(
                 user_id=user_id,
                 item_type="Series",
-                fields="ProviderIds,ProductionYear,DateCreated,UserDataLastPlayedDate",
-                filters="IsResumable",
+                fields="ProviderIds,ProductionYear,DateCreated,UserDataLastPlayedDate,RecursiveItemCount,UserDataUnplayedItemCount",
                 sort_by="DatePlayed",
                 sort_order="Descending",
                 limit=batch,
                 start_index=start,
             )
-            items.extend(resp.get("Items", []))
+            for s in resp.get("Items", []):
+                ud = s.get("UserData", {})
+                total = s.get("RecursiveItemCount", 0)
+                unplayed = ud.get("UnplayedItemCount", total)
+                # Has at least one played episode
+                if total > 0 and unplayed < total:
+                    items.append(s)
             if start + batch >= resp.get("TotalRecordCount", 0):
                 break
             start += batch
