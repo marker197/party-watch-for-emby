@@ -7611,8 +7611,16 @@ async def get_watch_history_by_date(
                 "tmdb_id": r.tmdb_id,
                 "tvdb_id": r.tvdb_id,
                 "progress": r.progress,
+                "runtime_minutes": r.runtime_minutes,
                 "play_count": 1,
             }
+
+    # ── Filter out items with <2% progress (accidental opens) ───────
+    for _date_str, bucket in list(day_map.items()):
+        to_remove = [k for k, v in bucket.items()
+                     if v.get("progress") is not None and v["progress"] < 2]
+        for k in to_remove:
+            del bucket[k]
 
     # ── Resolve missing emby_ids from library cache ─────────────────
     items_needing_id: list[dict] = []

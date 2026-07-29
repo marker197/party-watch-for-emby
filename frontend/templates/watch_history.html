@@ -21,6 +21,9 @@
       --blue: #74b9ff;
       --radius: 10px;
       --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      /* Card dimensions — base for 1440px, scales via clamp */
+      --card-w: clamp(240px, 23vw, 340px);
+      --card-h: clamp(162px, 15.5vw, 230px);
     }
 
     body.light-mode {
@@ -50,7 +53,6 @@
       gap: 16px;
       flex-wrap: wrap;
     }
-
     .header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
 
     .container { max-width: 1200px; margin: 0 auto; padding: 28px 32px; }
@@ -76,6 +78,7 @@
     .filter-btn.active {
       background: var(--accent); color: #fff; border-color: var(--accent);
     }
+
     .date-group { margin-bottom: 32px; }
     .date-label {
       font-size: 0.88rem; font-weight: 600; color: var(--text-dim);
@@ -86,9 +89,10 @@
       display: flex; gap: 14px; flex-wrap: wrap;
     }
 
-    .history-item { width: 130px; cursor: default; }
+    /* ── Card: landscape thumbnail ── */
+    .history-item { width: var(--card-w); cursor: default; }
     .thumb-wrap {
-      position: relative; width: 130px; height: 195px;
+      position: relative; width: var(--card-w); height: var(--card-h);
       border-radius: 8px; overflow: hidden;
       background: var(--surface); border: 1px solid var(--border);
     }
@@ -104,8 +108,8 @@
       flex-direction: column; gap: 6px; padding: 12px; text-align: center;
     }
     .thumb-placeholder .ph-title {
-      font-size: 0.7rem; color: var(--text-dim); line-height: 1.3;
-      display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+      font-size: 0.78rem; color: var(--text-dim); line-height: 1.3;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
       overflow: hidden; word-break: break-word;
     }
     .play-count-badge {
@@ -115,27 +119,30 @@
       padding: 2px 7px; border-radius: 5px;
       line-height: 1.3;
     }
-    .progress-badge {
+
+    /* ── Progress bar + time remaining ── */
+    .progress-wrap {
       position: absolute; bottom: 0; left: 0; right: 0;
-      height: 20px; display: flex; align-items: center;
-      justify-content: center; font-size: 0.68rem; font-weight: 600;
-      color: #fff; background: rgba(0,0,0,0.7);
     }
-    .progress-bar-bg {
-      position: absolute; bottom: 0; left: 0; height: 3px;
-      background: rgba(255,255,255,0.2); right: 0;
+    .progress-time {
+      font-size: 0.68rem; font-weight: 600; color: #fff;
+      padding: 2px 8px; text-align: right;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.8);
     }
-    .progress-bar-fill {
-      position: absolute; bottom: 0; left: 0; height: 3px;
-      background: var(--orange);
+    .progress-track {
+      height: 4px; background: rgba(255,255,255,0.2);
     }
+    .progress-fill {
+      height: 100%; background: var(--orange);
+    }
+
     .item-title {
-      margin-top: 6px; font-size: 0.78rem; color: var(--text);
+      margin-top: 6px; font-size: 0.82rem; color: var(--text);
       line-height: 1.35; overflow: hidden;
-      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
     }
     .item-subtitle {
-      font-size: 0.72rem; color: var(--text-dim); margin-top: 2px;
+      font-size: 0.74rem; color: var(--text-dim); margin-top: 2px;
     }
 
     .loading { text-align: center; padding: 48px 0; color: var(--text-dim); font-size: 0.92rem; }
@@ -233,9 +240,9 @@ function resetAndLoad() {
   loadHistory();
 }
 
-function imgUrl(embyId) {
+function imgUrl(embyId, imageType) {
   if (!embyId || !embyUrl) return '';
-  return embyUrl + '/Items/' + embyId + '/Images/Primary?maxWidth=200&api_key=' + embyApiKey;
+  return embyUrl + '/Items/' + embyId + '/Images/' + imageType + '?maxWidth=400&api_key=' + embyApiKey;
 }
 
 function formatDate(dateStr) {
@@ -243,6 +250,17 @@ function formatDate(dateStr) {
   const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   return days[d.getDay()] + ' ' + d.getDate() + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
+}
+
+function formatTimeLeft(runtimeMin, progress) {
+  if (!runtimeMin || progress == null) return '';
+  const left = Math.round(runtimeMin * (100 - progress) / 100);
+  if (left >= 60) {
+    const h = Math.floor(left / 60);
+    const m = left % 60;
+    return h + 'h ' + m + 'm left';
+  }
+  return left + ' min left';
 }
 
 function itemLabel(item) {
@@ -260,25 +278,35 @@ function itemLabel(item) {
 }
 
 function renderItem(item) {
-  const url = imgUrl(item.emby_id);
   const label = itemLabel(item);
   if (!label.title) return '';
+
+  // Movies use Thumb, episodes use Primary
+  const imgType = item.item_type === 'movie' ? 'Thumb' : 'Primary';
+  const url = imgUrl(item.emby_id, imgType);
+  // Fallback: if movie Thumb fails, try Primary
+  const fallbackUrl = item.item_type === 'movie' ? imgUrl(item.emby_id, 'Primary') : '';
+
   const badge = item.play_count > 1 ? '<span class="play-count-badge">' + item.play_count + '\u00d7</span>' : '';
   const icon = item.item_type === 'movie' ? '🎬' : '📺';
   const phTitle = esc(label.title);
 
-  // Progress overlay for partial watches
+  // Progress bar + time remaining for partial watches
   let progressHtml = '';
   const prog = item.progress;
   if (prog !== null && prog !== undefined && prog < 100) {
-    progressHtml = '<div class="progress-bar-bg"></div>'
-                 + '<div class="progress-bar-fill" style="width:' + prog + '%"></div>'
-                 + '<div class="progress-badge">' + prog + '%</div>';
+    const timeLeft = formatTimeLeft(item.runtime_minutes, prog);
+    const timeLabel = timeLeft || (prog + '%');
+    progressHtml = '<div class="progress-wrap">'
+                 + '<div class="progress-time">' + timeLabel + '</div>'
+                 + '<div class="progress-track"><div class="progress-fill" style="width:' + prog + '%"></div></div>'
+                 + '</div>';
   }
 
   let imgHtml;
   if (url) {
-    imgHtml = '<img data-src="' + esc(url) + '" alt="' + phTitle + '">'
+    const fbAttr = fallbackUrl ? ' data-fallback="' + esc(fallbackUrl) + '"' : '';
+    imgHtml = '<img data-src="' + esc(url) + '"' + fbAttr + ' alt="' + phTitle + '">'
             + '<div class="thumb-placeholder">'
             + '<span>' + icon + '</span>'
             + '<span class="ph-title">' + phTitle + '</span></div>';
@@ -304,8 +332,8 @@ function renderDay(day) {
     + '</div>';
 }
 
-/* ── Intersection Observer for lazy-loading images ── */
-const imgObserver = new IntersectionObserver((entries) => {
+/* ── IntersectionObserver: lazy-load images ── */
+const imgObserver = new IntersectionObserver(function(entries) {
   for (const entry of entries) {
     if (entry.isIntersecting) {
       const img = entry.target;
@@ -319,7 +347,14 @@ const imgObserver = new IntersectionObserver((entries) => {
           if (ph) ph.style.display = 'none';
         };
         img.onerror = function() {
-          this.style.display = 'none';
+          // Try fallback (movie Thumb → Primary)
+          const fb = this.getAttribute('data-fallback');
+          if (fb) {
+            this.removeAttribute('data-fallback');
+            this.src = fb;
+          } else {
+            this.style.display = 'none';
+          }
         };
       }
       imgObserver.unobserve(img);
@@ -328,7 +363,7 @@ const imgObserver = new IntersectionObserver((entries) => {
 }, { rootMargin: '200px' });
 
 function observeNewImages() {
-  document.querySelectorAll('.thumb-wrap img[data-src]').forEach(img => {
+  document.querySelectorAll('.thumb-wrap img[data-src]').forEach(function(img) {
     imgObserver.observe(img);
   });
 }
@@ -336,9 +371,9 @@ function observeNewImages() {
 async function loadHistory() {
   if (isLoading || !currentUserId) return;
   isLoading = true;
-  const loadingEl = document.getElementById('loadingMsg');
-  const loadMoreWrap = document.getElementById('loadMoreWrap');
-  const btn = document.getElementById('loadMoreBtn');
+  var loadingEl = document.getElementById('loadingMsg');
+  var loadMoreWrap = document.getElementById('loadMoreWrap');
+  var btn = document.getElementById('loadMoreBtn');
 
   if (!nextBefore) {
     loadingEl.textContent = 'Loading history\u2026';
@@ -348,23 +383,23 @@ async function loadHistory() {
   btn.textContent = 'Loading\u2026';
 
   try {
-    let url = '/api/watch-history/' + currentUserId + '/by-date?days=30';
+    var url = '/api/watch-history/' + currentUserId + '/by-date?days=30';
     if (nextBefore) url += '&before=' + nextBefore;
     if (currentFilter === 'movie') url += '&item_type=movie';
     else if (currentFilter === 'episode') url += '&item_type=episode';
 
-    const r = await fetch(url);
+    var r = await fetch(url);
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
+    var data = await r.json();
 
     embyUrl = data.emby_url || '';
     embyApiKey = data.emby_api_key || '';
     nextBefore = data.next_before;
 
-    const timeline = document.getElementById('timeline');
+    var timeline = document.getElementById('timeline');
 
-    for (const day of data.days) {
-      const html = renderDay(day);
+    for (var i = 0; i < data.days.length; i++) {
+      var html = renderDay(data.days[i]);
       if (html) timeline.insertAdjacentHTML('beforeend', html);
     }
 
@@ -382,8 +417,8 @@ async function loadHistory() {
 
   } catch (e) {
     console.error(e);
-    document.getElementById('loadingMsg').textContent = 'Error: ' + e.message;
-    document.getElementById('loadingMsg').style.display = 'block';
+    loadingEl.textContent = 'Error: ' + e.message;
+    loadingEl.style.display = 'block';
     btn.disabled = false;
     btn.textContent = 'Retry';
   }
@@ -394,13 +429,13 @@ function loadMore() { loadHistory(); }
 
 async function loadUsers() {
   try {
-    const r = await fetch('/auth/users');
-    const users = await r.json();
-    const linked = users.filter(u => u.linked);
-    const sel = document.getElementById('userSelect');
-    sel.innerHTML = linked.map(u =>
-      '<option value="' + u.id + '">' + esc(u.emby_username || u.emby_user_id) + '</option>'
-    ).join('');
+    var r = await fetch('/auth/users');
+    var users = await r.json();
+    var linked = users.filter(function(u) { return u.linked; });
+    var sel = document.getElementById('userSelect');
+    sel.innerHTML = linked.map(function(u) {
+      return '<option value="' + u.id + '">' + esc(u.emby_username || u.emby_user_id) + '</option>';
+    }).join('');
     if (linked.length > 0) {
       sel.value = linked[0].id;
       resetAndLoad();
