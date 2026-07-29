@@ -429,6 +429,9 @@ class EmbyClient:
 
         POST /Sessions/{id}/Playing with PlayCommand=PlayNow
 
+        ItemIds and PlayCommand go as query parameters.
+        StartPositionTicks must be in the JSON body for Emby to honour it.
+
         The ControllingUserId tells Emby who is issuing the remote command.
         Without it, some Emby clients silently ignore the play command even
         though the server returns 204.  Setting it to the session's own
@@ -437,12 +440,15 @@ class EmbyClient:
         params: dict[str, Any] = {
             "ItemIds": item_id,
             "PlayCommand": "PlayNow",
-            "StartPositionTicks": start_position_ticks,
         }
         if controlling_user_id:
             params["ControllingUserId"] = controlling_user_id
+        body: dict[str, Any] = {}
+        if start_position_ticks:
+            body["StartPositionTicks"] = int(start_position_ticks)
         await self._post(
             f"/Sessions/{session_id}/Playing",
+            body=body or None,
             params=params,
         )
 
