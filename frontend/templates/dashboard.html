@@ -192,6 +192,8 @@
   .log-area .entry { margin-bottom: 4px; }
   .log-area .entry.ok { color: var(--green); }
   .log-area .entry.err { color: var(--red); }
+  .log-area .entry.mdblist { color: #3D7ABD; }
+  .log-area .entry.trakt-ok { color: #9F42C6; }
 
   /* Auth section */
   .auth-section {
@@ -2550,7 +2552,11 @@ async function dashboardPoll() {
           else if (m.includes('cache') || m.includes('Cache')) icon = '💾';
           else if (e.cat === 'trakt') icon = '🔄';
           else if (e.cat === 'webhook') icon = '📡';
-          const cls = m.startsWith('✓') ? 'ok' : (m.startsWith('✗') || m.startsWith('⚠')) ? 'err' : '';
+          let cls = '';
+          if (m.includes('Synced to MDBList')) cls = 'mdblist';
+          else if (m.startsWith('✓ Trakt scrobbled') || m.includes('Synced to Trakt')) cls = 'trakt-ok';
+          else if (m.startsWith('✓')) cls = 'ok';
+          else if (m.startsWith('✗') || m.startsWith('⚠')) cls = 'err';
           return `<div class="entry ${cls}"><span style="opacity:0.45;font-size:0.78rem;">${e.ts.split(' ')[1]}</span>  ${icon} ${esc(m)}</div>`;
         }).join('');
         el.innerHTML = clientHtml + apiHtml;
@@ -3280,7 +3286,11 @@ function init() {
       else if (e.cat === 'trakt') icon = '🔄';
       else if (e.cat === 'webhook') icon = '📡';
       const ts = (e.ts || '').split(' ')[1] || '';
-      const cls = m.startsWith('✓') ? 'ok' : (m.startsWith('✗') || m.startsWith('⚠')) ? 'err' : '';
+      let cls = '';
+      if (m.includes('Synced to MDBList')) cls = 'mdblist';
+      else if (m.startsWith('✓ Trakt scrobbled') || m.includes('Synced to Trakt')) cls = 'trakt-ok';
+      else if (m.startsWith('✓')) cls = 'ok';
+      else if (m.startsWith('✗') || m.startsWith('⚠')) cls = 'err';
       const div = document.createElement('div');
       div.className = 'entry ' + cls;
       div.innerHTML = `<span style="opacity:0.45;font-size:0.78rem;">${ts}</span>  ${icon} ${esc(m)}`;
