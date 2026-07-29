@@ -206,11 +206,11 @@ async def lifespan(app: FastAPI):
         async with async_session() as db:
             result = await db.execute(sa_text("SELECT version_num FROM alembic_version LIMIT 1"))
             row = result.first()
-            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres", "005_watch_history_progress"):
+            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres", "005_watch_history_progress", "006_dedup_watch_history"):
                 # Pre-squash revision — jump to current head
-                await db.execute(sa_text("UPDATE alembic_version SET version_num = '005_watch_history_progress'"))
+                await db.execute(sa_text("UPDATE alembic_version SET version_num = '006_dedup_watch_history'"))
                 await db.commit()
-                log.info("suite.alembic_version_updated", old=row[0], new="005_watch_history_progress")
+                log.info("suite.alembic_version_updated", old=row[0], new="006_dedup_watch_history")
             # Let Alembic CMD run any pending upgrades (001→002→003→004→005)
     except Exception as e:
         log.warning("suite.alembic_version_check_skipped", error=str(e))
@@ -231,6 +231,19 @@ async def lifespan(app: FastAPI):
 
     # One-time migration: move dismissed lists and drift data from Redis to DB
     await _migrate_redis_to_db()
+
+    # One-time: invalidate watch stats cache after dedup migration so
+    # corrected totals (without duplicate runtime inflation) show immediately.
+    try:
+        _r = await get_redis()
+        if not await _r.get("dedup_stats_invalidated"):
+            keys = await _r.keys("watch_stats_v5:*")
+            if keys:
+                await _r.delete(*keys)
+                log.info("suite.dedup_stats_cache_cleared", keys=len(keys))
+            await _r.set("dedup_stats_invalidated", "1")
+    except Exception:
+        pass
 
     # Scheduler
     _register_jobs()

@@ -2589,6 +2589,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         if should_record:
             try:
                 from app.models.schema import WatchHistory
+                from sqlalchemy import cast, Date as SADate
                 provider_ids = item_data.get("ProviderIds", {})
                 runtime_ticks = item_data.get("RunTimeTicks", 0) or 0
                 runtime_min = int(runtime_ticks / 600_000_000) if runtime_ticks else None
@@ -2618,29 +2619,61 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     wh_genres_list = item_data.get("SeriesGenres") or []
                 wh_genres = ",".join(wh_genres_list) if wh_genres_list else None
 
-                entry = WatchHistory(
-                    user_id=user.id,
-                    emby_id=emby_item_id,
-                    item_type=wh_item_type,
-                    title=item_name,
-                    series_name=wh_series,
-                    season_number=wh_season,
-                    episode_number=wh_episode,
-                    imdb_id=wh_imdb or None,
-                    tmdb_id=wh_tmdb or None,
-                    trakt_id=wh_trakt or None,
-                    tvdb_id=wh_tvdb or None,
-                    watched_at=now_naive,
-                    runtime_minutes=runtime_min,
-                    genres=wh_genres,
-                    progress=wh_progress,
-                    source="webhook",
-                )
-                db.add(entry)
-                await db.commit()
-                log.debug("webhook.watch_history_recorded", user_id=user.id,
-                          title=display_name, item_type=wh_item_type,
-                          progress=wh_progress)
+                # ── Same-day dedup: update existing row if this item
+                #    was already recorded today, instead of inserting a
+                #    duplicate.  One row per (user, item, calendar day).
+                existing_today = None
+                if emby_item_id:
+                    existing_today = (await db.execute(
+                        select(WatchHistory).where(
+                            WatchHistory.user_id == user.id,
+                            WatchHistory.emby_id == emby_item_id,
+                            cast(WatchHistory.watched_at, SADate) == now_naive.date(),
+                        )
+                    )).scalar_one_or_none()
+
+                if existing_today:
+                    # Update timestamp and progress on the existing row
+                    existing_today.watched_at = now_naive
+                    if wh_progress is not None:
+                        existing_today.progress = wh_progress
+                    # Fill in any provider IDs that were missing
+                    if not existing_today.imdb_id and (wh_imdb or None):
+                        existing_today.imdb_id = wh_imdb or None
+                    if not existing_today.tmdb_id and (wh_tmdb or None):
+                        existing_today.tmdb_id = wh_tmdb or None
+                    if not existing_today.tvdb_id and (wh_tvdb or None):
+                        existing_today.tvdb_id = wh_tvdb or None
+                    if not existing_today.genres and wh_genres:
+                        existing_today.genres = wh_genres
+                    await db.commit()
+                    log.debug("webhook.watch_history_updated", user_id=user.id,
+                              title=display_name, item_type=wh_item_type,
+                              progress=wh_progress)
+                else:
+                    entry = WatchHistory(
+                        user_id=user.id,
+                        emby_id=emby_item_id,
+                        item_type=wh_item_type,
+                        title=item_name,
+                        series_name=wh_series,
+                        season_number=wh_season,
+                        episode_number=wh_episode,
+                        imdb_id=wh_imdb or None,
+                        tmdb_id=wh_tmdb or None,
+                        trakt_id=wh_trakt or None,
+                        tvdb_id=wh_tvdb or None,
+                        watched_at=now_naive,
+                        runtime_minutes=runtime_min,
+                        genres=wh_genres,
+                        progress=wh_progress,
+                        source="webhook",
+                    )
+                    db.add(entry)
+                    await db.commit()
+                    log.debug("webhook.watch_history_recorded", user_id=user.id,
+                              title=display_name, item_type=wh_item_type,
+                              progress=wh_progress)
                 # Invalidate stats cache so next load reflects the new watch
                 try:
                     _r = await get_redis()
