@@ -297,8 +297,19 @@
   <div class="section">
     <span class="section-anchor" id="cache"></span>
     <h2>Cache &amp; Library</h2>
-    <p>Shows cache statistics (total keys, hit rate, last rebuild) and a count of movies and series in your library.</p>
-    <p><span class="btn-label">Rebuild Cache</span> re-indexes your Emby library into Redis. Runs nightly but can be triggered manually.</p>
+    <p>Shows cache statistics and a count of movies and series in your Emby library.</p>
+
+    <div class="feature">
+      <div class="feature-name">Cached Keys</div>
+      <p>The number of items indexed in Redis from your Emby library. Each movie and series gets its own cache entry, keyed by provider ID (IMDB, TMDB, TVDB) and title. Features like the Smart Queue, watch history, and universe discovery look items up here instead of calling the Emby API every time.</p>
+    </div>
+
+    <div class="feature">
+      <div class="feature-name">Hit Rate</div>
+      <p>The percentage of cache lookups that found a matching item. A hit rate below 100% is normal — misses happen whenever a feature looks up an item that isn't in your Emby library, such as Trakt trending content you don't own, watchlist items you haven't acquired yet, or backfilled watch history entries for things you've since deleted. These misses don't indicate a problem.</p>
+    </div>
+
+    <p><span class="btn-label">Rebuild Cache</span> re-indexes your Emby library into Redis. Runs nightly but can be triggered manually after adding a lot of content.</p>
   </div>
 
   <div class="section">
