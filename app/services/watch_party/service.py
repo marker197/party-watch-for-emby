@@ -993,7 +993,8 @@ _sio_watch_party_svc = WatchPartyService()
 
 @sio.event
 async def connect(sid, environ, auth=None):
-    log.debug("ws.connect", sid=sid, auth=auth)
+    if auth:
+        log.debug("ws.connect", sid=sid, auth=auth)
 
 
 @sio.event
