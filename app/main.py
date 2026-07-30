@@ -943,6 +943,53 @@ def _register_jobs():
     )
     log.info("scheduler.job_added", job="trakt_list_sync", cron=trakt_list_cron)
 
+    # Premiere notifications — daily at 8 AM (notify about today's premieres/finales)
+    premiere_notify_cron = "0 8 * * *"
+    _job_crons["premiere_notify"] = premiere_notify_cron
+
+    async def _run_premiere_notify():
+        async def _do():
+            from app.utils.notification_client import notify, _load_config
+            # Only run if premiere notifications are enabled
+            config = await _load_config()
+            if not config.get("events", {}).get("premiere", False):
+                return
+            if not config.get("services"):
+                return
+            from app.services.airing_alerts.service import AiringAlertsService
+            from app.utils.database import async_session as _async_session
+            async with _async_session() as db:
+                user = (await db.execute(
+                    select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+                )).scalars().first()
+            if not user:
+                return
+            svc = AiringAlertsService()
+            result = await svc.get_airing_soon(user, days=1)
+            episodes = result.get("episodes", [])
+            today_premieres = [e for e in episodes if e.get("is_premiere") and e.get("days_until_air", 99) == 0]
+            today_finales = [e for e in episodes if e.get("is_finale") and e.get("days_until_air", 99) == 0]
+            parts = []
+            if today_premieres:
+                names = [e.get("title", "?") for e in today_premieres[:3]]
+                parts.append("Premieres: " + ", ".join(names)
+                             + (f" +{len(today_premieres)-3}" if len(today_premieres) > 3 else ""))
+            if today_finales:
+                names = [e.get("title", "?") for e in today_finales[:3]]
+                parts.append("Finales: " + ", ".join(names)
+                             + (f" +{len(today_finales)-3}" if len(today_finales) > 3 else ""))
+            if parts:
+                notify("premiere", "📅 Airing Today", " · ".join(parts))
+        await _tracked_job("premiere_notify", _do)
+
+    scheduler.add_job(
+        _run_premiere_notify,
+        CronTrigger(**_parse_cron(premiere_notify_cron)),
+        id="premiere_notify",
+        replace_existing=True,
+    )
+    log.info("scheduler.job_added", job="premiere_notify", cron=premiere_notify_cron)
+
     # Library cache rebuild — daily at 1:30 AM (before smart queue at 2 AM)
     async def rebuild_library_cache():
         from app.utils.library_cache import LibraryCache

@@ -771,7 +771,7 @@
 <!-- PAGE: SETTINGS -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page" id="page-settings" data-sections="set-provider,set-mdblist,set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-trakt-import,set-watch-history,set-danger">
+<div class="page" id="page-settings" data-sections="set-provider,set-mdblist,set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-trakt-import,set-watch-history,set-notifications,set-danger">
 
   <h1 class="page-title">⚙️ Settings</h1>
   <p class="page-intro">Configure connections, features, schedules, and integrations.</p>
@@ -880,6 +880,28 @@
       <p><strong>🎭 Backfill Genres</strong> — populates genre data for all imported watch history entries by querying Emby. Needed for the genre breakdown chart on the Stats page. New webhook watches get genres automatically — this button is only for backfilled data.</p>
     </div>
     <div class="tip">After first install: run Import Watch History first, then Backfill Genres. The Stats page and Rewatch Recommender both use this local data.</div>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="set-notifications"></span>
+    <h2>Notifications</h2>
+    <p>Send alerts to Discord, Gotify, or any webhook endpoint when events happen. Configure up to 5 services.</p>
+    <div class="feature">
+      <div class="feature-name"><span class="emoji">🔔</span> Service Types</div>
+      <p><strong>Discord</strong> — paste a Discord channel webhook URL. Notifications appear as rich embeds with timestamps.</p>
+      <p><strong>Gotify</strong> — enter your Gotify server URL and an app token. Notifications are pushed at priority 5.</p>
+      <p><strong>Webhook</strong> — any HTTP endpoint. Receives a JSON POST with event, title, message, timestamp, and source fields.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-name"><span class="emoji">⚡</span> Event Triggers</div>
+      <p><strong>Scrobble</strong> — fires when a watch is synced to Trakt or MDBList. Off by default to avoid noise.</p>
+      <p><strong>Arrival</strong> — fires when new content appears in your library via Radarr or Sonarr.</p>
+      <p><strong>Premiere</strong> — fires daily at 8 AM for shows premiering or reaching their finale today.</p>
+      <p><strong>Download</strong> — fires when a download completes and is detected by the webhook handler.</p>
+      <p><strong>Prediction</strong> — fires after ML training when items score 8.5+ with high confidence. Off by default.</p>
+      <p><strong>System</strong> — fires on errors like token refresh failures so you can re-link before things break.</p>
+    </div>
+    <div class="tip">Use the Test button next to each service to verify it's working before saving. Notifications are fire-and-forget — they never block playback or scrobbling.</div>
   </div>
 
   <div class="section">
@@ -1079,7 +1101,7 @@
     'set-emby':'Emby','set-toggles':'Feature Toggles','set-queue-opts':'Queue Options',
     'set-blocklist':'Blocklist','set-scheduler':'Scheduler','set-backup':'Backup',
     'set-radarr':'Radarr','set-sonarr':'Sonarr','set-sabnzbd':'SABnzbd','set-watchlist-sync':'Watchlist Sync',
-    'set-tmdb':'TMDB','set-trakt-import':'Trakt Import','set-watch-history':'Watch History','set-danger':'Danger Zone',
+    'set-tmdb':'TMDB','set-trakt-import':'Trakt Import','set-watch-history':'Watch History','set-notifications':'Notifications','set-danger':'Danger Zone',
     // Watch Party
     'wp-overview':'Overview','wp-create':'Create','wp-lobby':'Create Lobby',
     'wp-pick-together':'Pick Together','wp-join':'Join',

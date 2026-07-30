@@ -2889,6 +2889,10 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                             log.info("webhook.recently_arrived_added",
                                      title=arrived_item["title"],
                                      type=arrived_item["type"])
+                            # Notify download arrival
+                            from app.utils.notification_client import notify
+                            notify("download", "⬇️ Download Complete",
+                                   arrived_item.get("title", "Unknown"))
 
                         # Clear the result cache so the dashboard picks it up
                         await _r.delete("recently_arrived_result_v1")
@@ -3019,8 +3023,27 @@ async def _activity_log(message: str, category: str = "general"):
             await sio.emit("activity_entry", entry_dict)
         except Exception:
             pass
+        # Fire notification if message matches an enabled event type
+        _maybe_notify(message)
     except Exception:
         pass  # logging should never crash the request
+
+
+def _maybe_notify(message: str) -> None:
+    """Pattern-match activity log messages to notification event types.
+    Fire-and-forget — never blocks, never crashes."""
+    from app.utils.notification_client import notify
+    msg = message.strip()
+    # Scrobble completions
+    if msg.startswith("✓ Trakt scrobbled:") or msg.startswith("✓ Synced to Trakt:"):
+        title = msg.split(":", 1)[1].strip() if ":" in msg else msg
+        notify("scrobble", "🎬 Scrobbled", title)
+    elif msg.startswith("✓ Synced to MDBList:"):
+        title = msg.split(":", 1)[1].strip() if ":" in msg else msg
+        notify("scrobble", "🎬 MDBList Sync", title)
+    # System errors
+    elif "failed" in msg.lower() and ("token" in msg.lower() or "error" in msg.lower()):
+        notify("system", "⚠️ System Alert", msg)
 
 
 
@@ -4898,6 +4921,116 @@ async def test_sabnzbd(request: Request, _user: User = Depends(get_current_user)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Notifications (Discord / Gotify / Webhook)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/notifications/config")
+async def get_notification_config(db: AsyncSession = Depends(get_db)):
+    """Return notification config. Gotify tokens are masked."""
+    import json as _json
+    from app.utils.notification_client import DEFAULT_EVENTS, EVENT_TYPES
+    raw = await secure_get("notifications_config")
+    if not raw:
+        raw = await _get_setting(db, "notifications_config", "")
+    if not raw:
+        return {"services": [], "events": dict(DEFAULT_EVENTS), "event_types": EVENT_TYPES}
+    try:
+        config = _json.loads(raw)
+        for svc in config.get("services", []):
+            if svc.get("token"):
+                svc["token"] = _mask_api_key(svc["token"])
+        config["event_types"] = EVENT_TYPES
+        return config
+    except Exception:
+        return {"services": [], "events": dict(DEFAULT_EVENTS), "event_types": EVENT_TYPES}
+
+
+@router.put("/api/notifications/config")
+async def save_notification_config(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """Save notification config (services + event toggles)."""
+    import json as _json
+    services = payload.get("services", [])[:5]  # max 5 services
+
+    # Resolve masked tokens from existing config
+    try:
+        existing_raw = await secure_get("notifications_config")
+        if existing_raw:
+            existing = _json.loads(existing_raw)
+            existing_tokens = {}
+            for svc in existing.get("services", []):
+                if svc.get("url") and svc.get("token"):
+                    existing_tokens[svc["url"]] = svc["token"]
+            for svc in services:
+                token = svc.get("token", "")
+                if token and _is_masked(token):
+                    real = existing_tokens.get(svc.get("url", ""), "")
+                    if real:
+                        svc["token"] = real
+                    else:
+                        svc.pop("token", None)
+    except Exception:
+        pass
+
+    clean = []
+    for svc in services:
+        if svc.get("url"):
+            clean.append({
+                "name": svc.get("name", "Webhook"),
+                "type": svc.get("type", "webhook"),
+                "url": svc["url"].rstrip("/"),
+                "token": svc.get("token", ""),
+                "enabled": svc.get("enabled", True),
+            })
+
+    events = payload.get("events", {})
+    from app.utils.notification_client import DEFAULT_EVENTS
+    clean_events = {}
+    for key in DEFAULT_EVENTS:
+        clean_events[key] = bool(events.get(key, DEFAULT_EVENTS[key]))
+
+    config = {"services": clean, "events": clean_events}
+    encoded = _json.dumps(config)
+    await secure_set("notifications_config", encoded)
+    await _put_setting(db, "notifications_config", encoded)
+    await db.commit()
+    return {"status": "ok", "services": len(clean)}
+
+
+@router.post("/api/notifications/test")
+async def test_notification(
+    payload: dict,
+    _user: User = Depends(get_current_user),
+):
+    """Send a test notification to a single service."""
+    from app.utils.notification_client import test_service
+    svc_type = payload.get("type", "webhook")
+    url = payload.get("url", "")
+    token = payload.get("token", "")
+    if not url:
+        return {"status": "error", "message": "URL required"}
+    # Resolve masked token
+    if token and _is_masked(token):
+        import json as _json
+        try:
+            existing_raw = await secure_get("notifications_config")
+            if existing_raw:
+                existing = _json.loads(existing_raw)
+                for svc in existing.get("services", []):
+                    if svc.get("url", "").rstrip("/") == url.rstrip("/") and svc.get("token"):
+                        token = svc["token"]
+                        break
+        except Exception:
+            pass
+    service = {"type": svc_type, "url": url, "token": token, "name": "Test"}
+    result = await test_service(service)
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Watchlist Sync (Radarr/Sonarr → Trakt Watchlist)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -6493,14 +6626,26 @@ async def get_recently_arrived():
 
     # Add new arrivals with timestamp (dedup by id)
     existing_ids = {(i.get("type"), str(i.get("id", ""))) for i in existing_items}
+    new_arrival_names: list[str] = []
     for m in arrived_movies:
         key = ("movie", str(m.get("tmdb_id", "")))
         if key not in existing_ids:
             existing_items.append({**m, "id": m.get("tmdb_id"), "arrived_at": now_ts})
+            new_arrival_names.append(m.get("title", "Unknown movie"))
     for s in arrived_shows:
         key = ("show", str(s.get("tvdb_id", "")))
         if key not in existing_ids:
             existing_items.append({**s, "id": s.get("tvdb_id"), "arrived_at": now_ts})
+            new_arrival_names.append(s.get("title", "Unknown show"))
+
+    # Notify for new arrivals
+    if new_arrival_names:
+        from app.utils.notification_client import notify
+        if len(new_arrival_names) == 1:
+            notify("arrival", "📥 New Arrival", new_arrival_names[0])
+        else:
+            notify("arrival", f"📥 {len(new_arrival_names)} New Arrivals",
+                   ", ".join(new_arrival_names[:5]))
 
     # Persist with 48hr TTL (items self-expire at 24hr via filter above)
     try:

@@ -833,6 +833,39 @@
       </div>
     </div>
 
+    <!-- Notifications -->
+    <div class="section">
+      <h2>🔔 Notifications <span id="badgeNotify" class="conn-badge unknown" onclick="refreshStatus()" title="Click to refresh"><span class="dot"></span> —</span></h2>
+      <p style="color:var(--text-dim);margin-bottom:16px;">Send alerts to Discord, Gotify, or any webhook endpoint when things happen. Configure up to 5 services and choose which events trigger notifications.</p>
+
+      <div id="notifyServices">
+        <div class="form-group notify-svc" data-idx="0">
+          <label>Service 1</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <select class="notify-type" style="min-width:110px;padding:8px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;">
+              <option value="discord">Discord</option>
+              <option value="gotify">Gotify</option>
+              <option value="webhook">Webhook</option>
+            </select>
+            <input type="text" class="notify-name" placeholder="Name" style="flex:1;min-width:100px;" />
+            <input type="text" class="notify-url" placeholder="Webhook URL" style="flex:3;min-width:200px;" />
+            <input type="password" class="notify-token" placeholder="Token (Gotify only)" style="flex:1;min-width:120px;display:none;" />
+            <button class="btn btn-blue" style="padding:8px 12px;font-size:0.78rem;" onclick="testNotifySvc(0)">Test</button>
+          </div>
+          <span class="notify-status" style="font-size:0.78rem;margin-top:4px;display:block;"></span>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" id="addNotifySvcBtn" onclick="addNotifySvc()">+ Add Service</button>
+        <button class="btn btn-blue" onclick="saveNotifyConfig()">💾 Save Notification Settings</button>
+      </div>
+
+      <h3 style="margin-top:24px;margin-bottom:12px;font-size:0.88rem;color:var(--accent-light);">Event Triggers</h3>
+      <p style="color:var(--text-dim);font-size:0.82rem;margin-bottom:12px;">Choose which events send notifications.</p>
+      <div id="notifyEvents"></div>
+    </div>
+
     <!-- Danger Zone -->
     <div class="section danger-zone">
       <h2>⚠️ Danger Zone</h2>
@@ -901,6 +934,7 @@
       loadRewatchSettings();
       loadTmdbSettings();
       loadMdblistSettings();
+      loadNotifyConfig();
       loadConnectionStatus();
       setupEventListeners();
     }
@@ -1957,6 +1991,167 @@
         });
         const d = await r.json();
         showNotification(`SABnzbd servers saved (${d.servers} server${d.servers !== 1 ? 's' : ''})`);
+      } catch(e) { showNotification('Failed to save: ' + e.message); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Notifications
+    // ═══════════════════════════════════════════════════════════════════
+
+    let _notifyEventTypes = {};
+
+    async function loadNotifyConfig() {
+      try {
+        const r = await fetch('/api/notifications/config');
+        const data = await r.json();
+        _notifyEventTypes = data.event_types || {};
+        const services = data.services || [];
+        const events = data.events || {};
+
+        // Render service rows
+        const container = document.getElementById('notifyServices');
+        container.innerHTML = '';
+        if (services.length === 0) {
+          _renderNotifySvcRow(container, 0, {});
+        } else {
+          services.forEach((svc, i) => _renderNotifySvcRow(container, i, svc));
+        }
+        _updateAddNotifyBtn();
+
+        // Render event toggles
+        const evContainer = document.getElementById('notifyEvents');
+        evContainer.innerHTML = '';
+        for (const [key, desc] of Object.entries(_notifyEventTypes)) {
+          const active = events[key] || false;
+          evContainer.innerHTML += `
+            <div class="toggle-group" style="margin-bottom:8px;">
+              <div class="toggle-label">
+                <span class="title">${_notifyEventEmoji(key)} ${key.charAt(0).toUpperCase() + key.slice(1)}</span>
+                <span class="desc">${desc}</span>
+              </div>
+              <div class="toggle-switch notify-event-toggle ${active ? 'active' : ''}" data-event="${key}"
+                   onclick="this.classList.toggle('active')"></div>
+            </div>`;
+        }
+
+        // Badge
+        const enabled = services.filter(s => s.enabled !== false);
+        if (enabled.length > 0) {
+          setBadge('badgeNotify', 'ok', enabled.length + ' service' + (enabled.length > 1 ? 's' : ''));
+        } else {
+          setBadge('badgeNotify', 'unknown', 'not configured');
+        }
+      } catch(e) {
+        console.warn('Failed to load notification config:', e);
+        setBadge('badgeNotify', 'unknown', 'not configured');
+        // Render one empty row
+        const container = document.getElementById('notifyServices');
+        container.innerHTML = '';
+        _renderNotifySvcRow(container, 0, {});
+      }
+    }
+
+    function _notifyEventEmoji(key) {
+      const map = {scrobble:'🎬', arrival:'📥', premiere:'📅', download:'⬇️', prediction:'🤖', system:'⚠️'};
+      return map[key] || '🔔';
+    }
+
+    function _renderNotifySvcRow(container, idx, svc) {
+      const type = svc.type || 'discord';
+      const showToken = type === 'gotify';
+      const div = document.createElement('div');
+      div.className = 'form-group notify-svc';
+      div.dataset.idx = idx;
+      div.innerHTML = `
+        <label>Service ${idx + 1}</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <select class="notify-type" style="min-width:110px;padding:8px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;"
+                  onchange="notifyTypeChanged(${idx})">
+            <option value="discord" ${type==='discord'?'selected':''}>Discord</option>
+            <option value="gotify" ${type==='gotify'?'selected':''}>Gotify</option>
+            <option value="webhook" ${type==='webhook'?'selected':''}>Webhook</option>
+          </select>
+          <input type="text" class="notify-name" placeholder="Name" value="${svc.name||''}" style="flex:1;min-width:100px;" />
+          <input type="text" class="notify-url" placeholder="${type==='discord'?'Discord Webhook URL':type==='gotify'?'Gotify Server URL':'Webhook URL'}"
+                 value="${svc.url||''}" style="flex:3;min-width:200px;" />
+          <input type="password" class="notify-token" placeholder="Gotify Token"
+                 value="${svc.token||''}" style="flex:1;min-width:120px;${showToken?'':'display:none;'}" />
+          <button class="btn btn-blue" style="padding:8px 12px;font-size:0.78rem;" onclick="testNotifySvc(${idx})">Test</button>
+        </div>
+        <span class="notify-status" style="font-size:0.78rem;margin-top:4px;display:block;"></span>`;
+      container.appendChild(div);
+    }
+
+    function notifyTypeChanged(idx) {
+      const row = document.querySelectorAll('.notify-svc')[idx];
+      if (!row) return;
+      const type = row.querySelector('.notify-type').value;
+      const tokenInput = row.querySelector('.notify-token');
+      const urlInput = row.querySelector('.notify-url');
+      tokenInput.style.display = type === 'gotify' ? '' : 'none';
+      urlInput.placeholder = type === 'discord' ? 'Discord Webhook URL' : type === 'gotify' ? 'Gotify Server URL' : 'Webhook URL';
+    }
+
+    function addNotifySvc() {
+      const container = document.getElementById('notifyServices');
+      const count = container.querySelectorAll('.notify-svc').length;
+      if (count >= 5) return;
+      _renderNotifySvcRow(container, count, {});
+      _updateAddNotifyBtn();
+    }
+
+    function _updateAddNotifyBtn() {
+      const count = document.querySelectorAll('.notify-svc').length;
+      const btn = document.getElementById('addNotifySvcBtn');
+      if (btn) btn.style.display = count >= 5 ? 'none' : '';
+    }
+
+    async function testNotifySvc(idx) {
+      const row = document.querySelectorAll('.notify-svc')[idx];
+      if (!row) return;
+      const type = row.querySelector('.notify-type').value;
+      const url = row.querySelector('.notify-url').value.trim();
+      const token = row.querySelector('.notify-token').value.trim();
+      const status = row.querySelector('.notify-status');
+      if (!url) { status.textContent = '⚠ URL required'; status.style.color = 'var(--orange)'; return; }
+      status.textContent = 'Testing…'; status.style.color = 'var(--text-dim)';
+      try {
+        const r = await fetch('/api/notifications/test', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({type, url, token}),
+        });
+        const d = await r.json();
+        if (d.status === 'ok') {
+          status.textContent = '✅ Notification sent'; status.style.color = 'var(--green)';
+        } else {
+          status.textContent = '⚠ ' + (d.message || 'Failed'); status.style.color = 'var(--red)';
+        }
+      } catch(e) { status.textContent = '⚠ ' + e.message; status.style.color = 'var(--red)'; }
+    }
+
+    async function saveNotifyConfig() {
+      const services = [];
+      document.querySelectorAll('.notify-svc').forEach(row => {
+        const type = row.querySelector('.notify-type').value;
+        const name = row.querySelector('.notify-name').value.trim();
+        const url = row.querySelector('.notify-url').value.trim();
+        const token = row.querySelector('.notify-token').value.trim();
+        if (url) {
+          services.push({type, name: name || type.charAt(0).toUpperCase()+type.slice(1), url, token, enabled: true});
+        }
+      });
+      const events = {};
+      document.querySelectorAll('.notify-event-toggle').forEach(el => {
+        events[el.dataset.event] = el.classList.contains('active');
+      });
+      try {
+        const r = await fetch('/api/notifications/config', {
+          method: 'PUT', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({services, events}),
+        });
+        const d = await r.json();
+        showNotification(`Notification settings saved (${d.services} service${d.services !== 1 ? 's' : ''})`);
+        loadNotifyConfig();
       } catch(e) { showNotification('Failed to save: ' + e.message); }
     }
 

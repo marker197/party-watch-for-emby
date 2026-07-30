@@ -544,6 +544,18 @@ class MLPredictorService:
 
         log.info("ml_predictor.predictions_saved", user=user.emby_username, count=len(predictions))
 
+        # Notify for high-confidence high-score predictions
+        try:
+            from app.utils.notification_client import notify
+            top = [p for p in predictions if p["predicted_rating"] >= 8.5 and p["confidence"] >= 0.6]
+            if top:
+                top.sort(key=lambda p: p["predicted_rating"], reverse=True)
+                names = [f"{p['title']} ({p['predicted_rating']:.1f})" for p in top[:3]]
+                notify("prediction", "🤖 High-Score Predictions",
+                       ", ".join(names) + (f" +{len(top)-3} more" if len(top) > 3 else ""))
+        except Exception:
+            pass
+
     def _item_to_features(self, item: dict, feature_names: list[str]) -> np.ndarray | None:
         try:
             year = item.get("ProductionYear", 2000) or 2000
