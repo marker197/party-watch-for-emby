@@ -280,6 +280,29 @@
       <p><strong>None</strong> — disables external scrobbling. The suite still works for library management, downloads, and local features.</p>
     </div>
     <p>You can change this at any time from the Settings page under "Integration Provider".</p>
+
+    <h3 style="margin-top:20px;">Emby Webhook</h3>
+    <p>The suite needs an Emby webhook to receive playback events for scrobbling, activity logging, and the smart queue feedback loop.</p>
+    <div class="feature">
+      <p><strong>1.</strong> In Emby, go to <strong>Settings → Notifications → Webhooks</strong> (or Server → Webhooks on some versions).</p>
+      <p><strong>2.</strong> Add a new webhook with URL: <code style="background:var(--surface-hover);padding:2px 6px;border-radius:4px;">http://YOUR-SUITE-IP:8000/webhook/emby</code></p>
+      <p><strong>3.</strong> Enable the following events:</p>
+      <p style="margin-left:16px;"><strong>Library</strong> — New media added, Media removed</p>
+      <p style="margin-left:16px;"><strong>Playback</strong> — Start, Pause, Unpause, Stop</p>
+      <p style="margin-left:16px;"><strong>Users</strong> — Mark Played</p>
+      <p><strong>4.</strong> Test by playing something briefly in Emby — the activity log on the dashboard should show the event.</p>
+    </div>
+    <div class="tip">Library → New media added is used for real-time arrival detection and library cache updates. Without it, new content only appears after the nightly cache rebuild. Media removed keeps the library cache and Trakt watchlist in sync when you delete items.</div>
+
+    <h3 style="margin-top:20px;">Sonarr Webhook (optional)</h3>
+    <p>Connecting Sonarr's webhook gives episode-level import tracking on the Airing Soon card and grab/import events in the activity log.</p>
+    <div class="feature">
+      <p><strong>1.</strong> In Sonarr, go to <strong>Settings → Connect → +</strong> and choose <strong>Webhook</strong>.</p>
+      <p><strong>2.</strong> Set the URL to: <code style="background:var(--surface-hover);padding:2px 6px;border-radius:4px;">http://YOUR-SUITE-IP:8000/webhook/sonarr/</code></p>
+      <p><strong>3.</strong> Enable: <strong>On File Import</strong>, <strong>On Import Complete</strong>, and optionally <strong>On Series Add</strong> (cosmetic activity log entry only).</p>
+      <p><strong>4.</strong> Click <strong>Test</strong> in Sonarr — the activity log should show "Sonarr test webhook received".</p>
+    </div>
+    <div class="tip">The Emby webhook already handles arrival detection for both movies and shows. The Sonarr webhook adds the green "Imported" badge on individual episodes in Airing Soon and the grab/import distinction in the activity log.</div>
   </div>
 
   <div class="section">
