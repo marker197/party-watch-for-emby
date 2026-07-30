@@ -1,15 +1,16 @@
-"""Airing Soon — Season Finale / Premiere Alerts (shows) + Watchlist Release Alerts (movies).
+"""Airing Soon — Season Finale / Premiere Alerts (shows) + Release Alerts (movies).
 
-Cross-references Trakt's calendar endpoints — upcoming episodes for shows the
-user follows, season/series premieres, and release dates for watchlisted
-movies — with the Emby library so the dashboard can surface a single
-"Airing Soon" feed with premiere/finale badges and a days-until-air
-countdown, covering both shows and movies.
+Primary data source is Sonarr (shows) and Radarr (movies) calendars — these
+always run regardless of integration provider. When Trakt is active in
+settings and the user has a linked account, Trakt's personal calendar is
+layered on top for additional coverage (shows the user follows on Trakt but
+hasn't added to Sonarr, watchlisted movies not in Radarr, and season finale
+detection).
 
 Release dates are sourced with a priority cascade:
   1. Radarr / Sonarr (primary — most accurate for items in arr)
   2. TMDB /movie/{id}/release_dates (second — broad coverage, typed releases)
-  3. Trakt /releases/{country} (last resort)
+  3. Trakt /releases/{country} (last resort, only if Trakt is active)
 """
 
 from __future__ import annotations
@@ -40,6 +41,9 @@ class AiringAlertsService:
         sorted by days_until_air, plus upcoming digital/physical releases for
         movies missing in Radarr.
 
+        Sonarr/Radarr calendars are the primary data source. Trakt calendar
+        is layered on top only when the integration provider includes Trakt.
+
         Returns:
             {
                 "items": [...],                   # main airing feed
@@ -47,23 +51,27 @@ class AiringAlertsService:
                                                   # digital/physical dates in window
             }
         """
-        if not user.trakt_access_token:
-            return {"items": [], "upcoming_home_releases": []}
+        # Determine whether Trakt is active
+        from app.api.routes import _get_active_providers
+        providers = await _get_active_providers()
+        use_trakt = "trakt" in providers and bool(user.trakt_access_token)
 
-        async def on_token_refresh(access, refresh, expires):
-            async with async_session() as db:
-                u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.trakt_access_token = access
-                u.trakt_refresh_token = refresh
-                u.trakt_token_expires = expires
-                await db.commit()
+        trakt: TraktClient | None = None
+        if use_trakt:
+            async def on_token_refresh(access, refresh, expires):
+                async with async_session() as db:
+                    u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
+                    u.trakt_access_token = access
+                    u.trakt_refresh_token = refresh
+                    u.trakt_token_expires = expires
+                    await db.commit()
 
-        trakt = TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=on_token_refresh,
-        )
+            trakt = TraktClient(
+                access_token=user.trakt_access_token,
+                refresh_token=user.trakt_refresh_token,
+                token_expires=user.trakt_token_expires,
+                token_refresh_callback=on_token_refresh,
+            )
 
         try:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -71,7 +79,7 @@ class AiringAlertsService:
             # Determine server country for release-date lookups
             server_country = await self._get_server_country()
 
-            # Build arr release date index from live calendar data
+            # Build arr release date index from live calendar data (always primary)
             arr_dates = await self._build_arr_release_index(today, days)
 
             results = []
@@ -95,7 +103,8 @@ class AiringAlertsService:
                 "upcoming_home_releases": home_releases,
             }
         finally:
-            await trakt.close()
+            if trakt:
+                await trakt.close()
 
     # ------------------------------------------------------------------
     # Streaming provider enrichment (TMDB)
@@ -197,6 +206,8 @@ class AiringAlertsService:
                                 "theatrical": theatrical,
                                 "digital": digital,
                                 "physical": physical,
+                                "title": m.get("title", ""),
+                                "has_file": m.get("has_file", False),
                             }
                     log.debug("arr_release_index.radarr_calendar_loaded",
                               server=srv.get("name"),
@@ -327,28 +338,30 @@ class AiringAlertsService:
     # Shows
     # ------------------------------------------------------------------
 
-    async def _get_show_alerts(self, trakt: TraktClient, today: str, days: int,
+    async def _get_show_alerts(self, trakt: TraktClient | None, today: str, days: int,
                               user: User | None = None,
                               arr_dates: dict | None = None) -> list[dict]:
-        try:
-            upcoming = await trakt.get_my_shows(start_date=today, days=days)
-        except Exception as e:
-            log.warning("airing_alerts.my_shows_failed", error=str(e)[:200])
-            upcoming = []
-
-        try:
-            premieres = await trakt.get_my_premieres(start_date=today, days=days)
-        except Exception as e:
-            log.warning("airing_alerts.premieres_failed", error=str(e)[:200])
-            premieres = []
-
-        # Key by (show trakt id, season, episode) to dedupe between the
-        # two calendar calls — premieres also show up in get_my_shows.
+        # ── Trakt calendar (optional — only if enabled) ──
         merged: dict[tuple, dict] = {}
-        for entry in upcoming:
-            self._merge_entry(merged, entry, is_premiere_source=False)
-        for entry in premieres:
-            self._merge_entry(merged, entry, is_premiere_source=True)
+        if trakt:
+            try:
+                upcoming = await trakt.get_my_shows(start_date=today, days=days)
+            except Exception as e:
+                log.warning("airing_alerts.my_shows_failed", error=str(e)[:200])
+                upcoming = []
+
+            try:
+                premieres = await trakt.get_my_premieres(start_date=today, days=days)
+            except Exception as e:
+                log.warning("airing_alerts.premieres_failed", error=str(e)[:200])
+                premieres = []
+
+            # Key by (show trakt id, season, episode) to dedupe between the
+            # two calendar calls — premieres also show up in get_my_shows.
+            for entry in upcoming:
+                self._merge_entry(merged, entry, is_premiere_source=False)
+            for entry in premieres:
+                self._merge_entry(merged, entry, is_premiere_source=True)
 
         sonarr_cal = (arr_dates or {}).get("sonarr_calendar", {})
 
@@ -387,7 +400,7 @@ class AiringAlertsService:
 
             is_premiere = entry["is_premiere"] or episode.get("number") == 1
             is_finale = False
-            if not is_premiere and show_trakt_id:
+            if not is_premiere and show_trakt_id and trakt:
                 is_finale = await self._is_season_finale(trakt, show_trakt_id, episode)
 
             in_library, emby_item_id = await self._match_in_library(show)
@@ -644,34 +657,101 @@ class AiringAlertsService:
     # Movies (watchlist releases)
     # ------------------------------------------------------------------
 
-    async def _get_movie_alerts(self, trakt: TraktClient, today: str, days: int,
+    async def _get_movie_alerts(self, trakt: TraktClient | None, today: str, days: int,
                                country: str = "us",
                                arr_dates: dict | None = None) -> list[dict]:
-        try:
-            releases = await trakt.get_my_movies(start_date=today, days=days)
-        except Exception as e:
-            log.warning("airing_alerts.my_movies_failed", error=str(e)[:200])
-            releases = []
-
         radarr_movies = (arr_dates or {}).get("movies", {})
 
+        # ── Trakt movie calendar (optional) ──
+        trakt_releases = []
+        if trakt:
+            try:
+                trakt_releases = await trakt.get_my_movies(start_date=today, days=days)
+            except Exception as e:
+                log.warning("airing_alerts.my_movies_failed", error=str(e)[:200])
+
         results = []
-        seen: set[str] = set()
-        for entry in releases:
+        seen_tmdb: set[str] = set()
+        seen_trakt: set[str] = set()
+
+        # ── Pass 1: Radarr calendar movies (primary) ──
+        today_date = datetime.now(timezone.utc).date()
+        for tmdb_id_str, dates in radarr_movies.items():
+            # Pick the most relevant upcoming date
+            best_date = None
+            for date_key in ("digital", "physical", "theatrical"):
+                d = dates.get(date_key)
+                if d and _date_in_window(d, today_date, days):
+                    if best_date is None or d < best_date:
+                        best_date = d
+            if not best_date:
+                continue
+
+            days_until = self._days_until(best_date)
+            # Try to find in library by TMDB ID
+            match = await LibraryCache.find_by_provider_id("Tmdb", tmdb_id_str)
+            in_library = match is not None
+            emby_item_id = match.get("emby_id") if match else None
+            title = match.get("title", "") if match else ""
+
+            # Enrich title from Radarr calendar data if not in library cache
+            if not title:
+                title = dates.get("title", "")
+
+            seen_tmdb.add(tmdb_id_str)
+
+            results.append({
+                "media_type": "movie",
+                "title": title,
+                "trakt_id": None,
+                "tmdb_id": int(tmdb_id_str) if tmdb_id_str.isdigit() else None,
+                "imdb_id": None,
+                "season": None,
+                "episode": None,
+                "episode_title": None,
+                "air_date": best_date,
+                "days_until_air": days_until,
+                "is_premiere": True,
+                "is_finale": False,
+                "in_library": in_library,
+                "emby_item_id": emby_item_id,
+                "year": None,
+                "theatrical_release": dates.get("theatrical"),
+                "digital_release": dates.get("digital"),
+                "physical_release": dates.get("physical"),
+                "release_source": "radarr",
+            })
+
+        # ── Pass 2: Trakt movie calendar (supplements — adds titles, IDs, and
+        #    movies not in Radarr) ──
+        for entry in trakt_releases:
             movie = entry.get("movie", {})
             movie_trakt_id = str(movie.get("ids", {}).get("trakt", ""))
-            if movie_trakt_id and movie_trakt_id in seen:
-                continue
-            seen.add(movie_trakt_id)
+            movie_tmdb_id = movie.get("ids", {}).get("tmdb")
 
-            # Movie calendar entries use "released" (date only), not
-            # "first_aired" (datetime) like the show calendar entries.
+            if movie_trakt_id and movie_trakt_id in seen_trakt:
+                continue
+            seen_trakt.add(movie_trakt_id)
+
+            # If already covered by Radarr pass, enrich instead of adding duplicate
+            if movie_tmdb_id and str(movie_tmdb_id) in seen_tmdb:
+                for r in results:
+                    if r.get("tmdb_id") == movie_tmdb_id:
+                        if not r["title"]:
+                            r["title"] = movie.get("title", "")
+                        if not r["trakt_id"]:
+                            r["trakt_id"] = movie_trakt_id
+                        if not r["imdb_id"]:
+                            r["imdb_id"] = movie.get("ids", {}).get("imdb")
+                        if not r["year"]:
+                            r["year"] = movie.get("year")
+                        break
+                continue
+
             release_date = entry.get("released")
             days_until = self._days_until(release_date)
 
             in_library, emby_item_id = await self._match_in_library(movie)
-
-            movie_tmdb_id = movie.get("ids", {}).get("tmdb")
 
             # Fetch typed release dates (theatrical / digital / physical)
             theatrical, digital, physical, release_source = await self._get_release_dates(
@@ -690,7 +770,7 @@ class AiringAlertsService:
                 "episode_title": None,
                 "air_date": release_date,
                 "days_until_air": days_until,
-                "is_premiere": True,   # release-date alert — always the "premiere" for a movie
+                "is_premiere": True,
                 "is_finale": False,
                 "in_library": in_library,
                 "emby_item_id": emby_item_id,
@@ -703,20 +783,21 @@ class AiringAlertsService:
         return results
 
     async def _get_release_dates(
-        self, trakt: TraktClient, movie_trakt_id: str,
+        self, trakt: TraktClient | None, movie_trakt_id: str,
         tmdb_id: int | None = None,
         country: str = "us",
         arr_movies: dict | None = None,
     ) -> tuple[str | None, str | None, str | None, str]:
         """Return (theatrical, digital, physical, source) for a movie.
 
-        Priority: Radarr → TMDB → Trakt.
+        Priority: Radarr → TMDB → Trakt (if available).
         Cached 24h per movie+country.
         """
-        if not movie_trakt_id:
+        if not movie_trakt_id and not tmdb_id:
             return None, None, None, ""
 
-        cache_key = f"airing_alerts:releases:{movie_trakt_id}:{country}_v2"
+        cache_id = movie_trakt_id or str(tmdb_id)
+        cache_key = f"airing_alerts:releases:{cache_id}:{country}_v2"
         try:
             r = await get_redis()
             cached = await r.get(cache_key)
@@ -761,7 +842,7 @@ class AiringAlertsService:
                     source = "tmdb"
 
         # ── Tier 3: Trakt (last resort for any still-missing dates) ──
-        if not theatrical or not digital:
+        if trakt and movie_trakt_id and (not theatrical or not digital):
             trakt_theatrical, trakt_digital = await self._get_trakt_releases(
                 trakt, movie_trakt_id, country,
             )
