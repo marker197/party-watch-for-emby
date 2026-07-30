@@ -64,9 +64,9 @@ class SecurityAuditMiddleware:
     """
 
     # Paths exempt from CSRF (webhooks, health, auth device-code polling, image proxy)
-    _CSRF_EXEMPT = frozenset({"/webhook/emby", "/health", "/api/auth/poll",
+    _CSRF_EXEMPT = frozenset({"/health", "/api/auth/poll",
                               "/api/auth/device-code"})
-    _CSRF_EXEMPT_PREFIXES = ("/api/emby/image/",)
+    _CSRF_EXEMPT_PREFIXES = ("/webhook/", "/api/emby/image/")
 
     # Security headers injected on every HTTP response
     _SECURITY_HEADERS = [
