@@ -103,9 +103,10 @@ class TraktClient:
                 # Update local state
                 self._token = token_data["access_token"]
                 self._refresh_token = token_data["refresh_token"]
-                self._token_expires = datetime.now(timezone.utc) + timedelta(
+                # Strip tzinfo — DB column is TIMESTAMP WITHOUT TIME ZONE
+                self._token_expires = (datetime.now(timezone.utc) + timedelta(
                     seconds=token_data.get("expires_in", 7776000)
-                )
+                )).replace(tzinfo=None)
                 
                 # Notify caller to persist to database
                 if self._token_refresh_callback:
@@ -140,9 +141,10 @@ class TraktClient:
             token_data = await self.refresh_token(self._refresh_token)
             self._token = token_data["access_token"]
             self._refresh_token = token_data["refresh_token"]
-            self._token_expires = datetime.now(timezone.utc) + timedelta(
+            # Strip tzinfo — DB column is TIMESTAMP WITHOUT TIME ZONE
+            self._token_expires = (datetime.now(timezone.utc) + timedelta(
                 seconds=token_data.get("expires_in", 7776000)
-            )
+            )).replace(tzinfo=None)
             if self._token_refresh_callback:
                 await self._token_refresh_callback(
                     self._token, self._refresh_token, self._token_expires
