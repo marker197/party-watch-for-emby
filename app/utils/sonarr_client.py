@@ -229,7 +229,8 @@ class SonarrClient:
             end:   ISO date string (e.g. "2026-08-15")
 
         Returns normalised list of upcoming episodes with air dates,
-        series TVDB ID, season/episode numbers, and file status.
+        series TVDB ID, season/episode numbers, file status, and
+        season_episode_count (for finale detection).
         """
         try:
             data = await self._get(
@@ -242,14 +243,25 @@ class SonarrClient:
                 ep_title = ep.get("title", "")
                 if ep_title.startswith("Spoiler: "):
                     ep_title = ep_title[9:]
+
+                # Extract total episode count for this season from series data
+                season_ep_count = None
+                season_num = ep.get("seasonNumber")
+                for s in (series.get("seasons") or []):
+                    if s.get("seasonNumber") == season_num:
+                        stats = s.get("statistics") or {}
+                        season_ep_count = stats.get("totalEpisodeCount") or stats.get("episodeCount")
+                        break
+
                 result.append({
                     "tvdb_id": series.get("tvdbId"),
                     "series_title": series.get("title", ""),
-                    "season": ep.get("seasonNumber"),
+                    "season": season_num,
                     "episode": ep.get("episodeNumber"),
                     "episode_title": ep_title,
                     "air_date_utc": ep.get("airDateUtc"),
                     "has_file": ep.get("hasFile", False),
+                    "season_episode_count": season_ep_count,
                 })
             return result
         except Exception as e:

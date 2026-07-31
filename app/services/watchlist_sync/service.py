@@ -1,6 +1,6 @@
 """Watchlist Sync Service.
 
-Bi-directional sync between Radarr/Sonarr and Trakt/MDBList watchlists:
+Bi-directional sync between Radarr/Sonarr and Simkl/MDBList watchlists:
 
 1. **Arr → Watchlist**: Reads missing (monitored, no file) movies/series from
    Radarr/Sonarr, compares against the user's watchlist(s), adds any items
@@ -13,7 +13,7 @@ Bi-directional sync between Radarr/Sonarr and Trakt/MDBList watchlists:
 
 Both directions are independently toggleable via the watchlist_sync_settings
 stored in Redis/DB.  Which provider(s) are synced depends on the configured
-integration_provider setting (trakt, mdblist, both, or none).
+integration_provider setting (simkl, mdblist, both, or none).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from app.models.schema import User
 from app.utils.database import async_session
 from app.utils.redis_cache import get_redis
 from app.utils.secure_redis import secure_get, secure_set
-from app.utils.trakt_client import TraktClient
+from app.utils.simkl_client import SimklClient
 
 log = structlog.get_logger()
 
@@ -35,7 +35,7 @@ SETTINGS_KEY = "watchlist_sync_settings"
 
 
 class WatchlistSyncService:
-    """Bi-directional sync: Radarr/Sonarr ↔ Trakt/MDBList watchlist."""
+    """Bi-directional sync: Radarr/Sonarr ↔ Simkl/MDBList watchlist."""
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -58,10 +58,10 @@ class WatchlistSyncService:
                  providers=sorted(providers))
 
         async with async_session() as db:
-            # Users with Trakt tokens OR any linked user when MDBList-only
-            if "trakt" in providers:
+            # Users with Simkl tokens OR any linked user when MDBList-only
+            if "simkl" in providers:
                 users = (await db.execute(
-                    select(User).where(User.trakt_access_token.isnot(None))
+                    select(User).where(User.simkl_access_token.isnot(None))
                 )).scalars().all()
             else:
                 # MDBList-only mode: use all users (MDBList uses API key, not per-user tokens)
@@ -85,16 +85,16 @@ class WatchlistSyncService:
 
         settings = await self._get_settings()
 
-        # ---------- Trakt ----------
-        if "trakt" in providers and user.trakt_access_token:
-            trakt = await self._build_trakt_client(user)
+        # ---------- Simkl ----------
+        if "simkl" in providers and user.simkl_access_token:
+            simkl = await self._build_simkl_client(user)
             try:
                 if settings.get("arr_to_watchlist"):
-                    await self._arr_to_trakt_watchlist(user, trakt)
+                    await self._arr_to_simkl_watchlist(user, simkl)
                 if settings.get("watchlist_to_arr"):
-                    await self._trakt_watchlist_to_arr(user, trakt)
+                    await self._simkl_watchlist_to_arr(user, simkl)
             finally:
-                await trakt.close()
+                await simkl.close()
 
         # ---------- MDBList ----------
         if "mdblist" in providers:
@@ -113,22 +113,20 @@ class WatchlistSyncService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def _build_trakt_client(user: User) -> TraktClient:
+    async def _build_simkl_client(user: User) -> SimklClient:
         async def on_token_refresh(access, refresh, expires):
             async with async_session() as db:
                 u = (await db.execute(
                     select(User).where(User.id == user.id)
                 )).scalar_one()
-                u.trakt_access_token = access
-                u.trakt_refresh_token = refresh
-                u.trakt_token_expires = expires
+                u.simkl_access_token = access
+                
+                u.simkl_token_expires = expires
                 await db.commit()
 
-        return TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=on_token_refresh,
+        return SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
         )
 
     @staticmethod
@@ -147,17 +145,17 @@ class WatchlistSyncService:
     # Direction 1: Arr → Watchlist
     # ==================================================================
 
-    async def _arr_to_trakt_watchlist(self, user: User, trakt: TraktClient):
-        """Send missing Radarr/Sonarr items to Trakt watchlist (with dupe check)."""
+    async def _arr_to_simkl_watchlist(self, user: User, simkl: SimklClient):
+        """Send missing Radarr/Sonarr items to Simkl watchlist (with dupe check)."""
         missing_tmdb, missing_tvdb = await self._get_arr_missing_ids()
 
         if not missing_tmdb and not missing_tvdb:
-            log.info("watchlist_sync.arr_to_trakt.nothing_missing", user_id=user.id)
+            log.info("watchlist_sync.arr_to_simkl.nothing_missing", user_id=user.id)
             return
 
-        # Fetch current Trakt watchlist for dupe check
-        wl_movies = await trakt.get_watchlist(kind="movies")
-        wl_shows = await trakt.get_watchlist(kind="shows")
+        # Fetch current Simkl watchlist for dupe check
+        wl_movies = await simkl.get_watchlist(kind="movies")
+        wl_shows = await simkl.get_watchlist(kind="shows")
 
         wl_tmdb_ids: set[int] = set()
         for item in (wl_movies or []):
@@ -184,25 +182,25 @@ class WatchlistSyncService:
         ]
 
         if not movies_to_add and not shows_to_add:
-            log.info("watchlist_sync.arr_to_trakt.all_on_watchlist",
+            log.info("watchlist_sync.arr_to_simkl.all_on_watchlist",
                      user_id=user.id,
                      missing_movies=len(missing_tmdb),
                      missing_shows=len(missing_tvdb))
             return
 
-        log.info("watchlist_sync.arr_to_trakt.adding",
+        log.info("watchlist_sync.arr_to_simkl.adding",
                  user_id=user.id,
                  movies=len(movies_to_add),
                  shows=len(shows_to_add))
 
-        result = await trakt.add_to_watchlist(
+        result = await simkl.add_to_watchlist(
             movies=movies_to_add or None,
             shows=shows_to_add or None,
         )
 
         added = result.get("added", {})
         existing = result.get("existing", {})
-        log.info("watchlist_sync.arr_to_trakt.done",
+        log.info("watchlist_sync.arr_to_simkl.done",
                  user_id=user.id,
                  movies_added=added.get("movies", 0),
                  shows_added=added.get("shows", 0),
@@ -296,10 +294,10 @@ class WatchlistSyncService:
     # Direction 2: Watchlist → Arr
     # ==================================================================
 
-    async def _trakt_watchlist_to_arr(self, user: User, trakt: TraktClient):
-        """Add Trakt watchlist items to Radarr/Sonarr if not already there."""
-        wl_movies = await trakt.get_watchlist(kind="movies")
-        wl_shows = await trakt.get_watchlist(kind="shows")
+    async def _simkl_watchlist_to_arr(self, user: User, simkl: SimklClient):
+        """Add Simkl watchlist items to Radarr/Sonarr if not already there."""
+        wl_movies = await simkl.get_watchlist(kind="movies")
+        wl_shows = await simkl.get_watchlist(kind="shows")
 
         wl_movie_map: dict[int, dict] = {}
         for item in (wl_movies or []):
@@ -316,12 +314,12 @@ class WatchlistSyncService:
                 wl_show_map[tvdb] = show
 
         if not wl_movie_map and not wl_show_map:
-            log.info("watchlist_sync.trakt_to_arr.empty_watchlist", user_id=user.id)
+            log.info("watchlist_sync.simkl_to_arr.empty_watchlist", user_id=user.id)
             return
 
         await self._add_to_arr(
             user, wl_movie_map, wl_show_map,
-            log_prefix="watchlist_sync.trakt_to_arr",
+            log_prefix="watchlist_sync.simkl_to_arr",
         )
 
     async def _mdblist_watchlist_to_arr(self, user: User, mdb):
@@ -537,13 +535,13 @@ class WatchlistSyncService:
 
     @staticmethod
     async def _get_active_providers() -> set[str]:
-        """Return set of active integration providers, e.g. {'trakt', 'mdblist'}."""
+        """Return set of active integration providers, e.g. {'simkl', 'mdblist'}."""
         r = await get_redis()
         raw = await r.get("integration_provider")
-        provider = (raw if isinstance(raw, str) else raw.decode()) if raw else "trakt"
+        provider = (raw if isinstance(raw, str) else raw.decode()) if raw else "simkl"
         if provider == "both":
-            return {"trakt", "mdblist"}
-        if provider in ("trakt", "mdblist"):
+            return {"simkl", "mdblist"}
+        if provider in ("simkl", "mdblist"):
             return {provider}
         return set()  # "none"
 

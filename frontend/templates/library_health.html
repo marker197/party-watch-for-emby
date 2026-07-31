@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Library Health - Emby-Trakt Suite</title>
+  <title>Library Health - Emby-Simkl Suite</title>
   <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
   <style>
     :root {
@@ -81,7 +81,7 @@
 <script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
 
 <nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
+    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
     <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
     <a href="/lists" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📋 Lists</a>
     <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
@@ -168,7 +168,7 @@ async function runScan() {
   const status = document.getElementById('scanStatus');
   btn.disabled = true;
   btn.textContent = '⏳ Scanning…';
-  status.textContent = 'This may take a minute — checking Trakt history against your library…';
+  status.textContent = 'This may take a minute — checking Simkl history against your library…';
 
   const content = document.getElementById('content');
 
@@ -290,7 +290,7 @@ function renderMissing(title, items, type) {
   html += '<th>Last Watched</th><th></th><th></th></tr></thead><tbody>';
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
-    const itemId = it.imdb_id || it.tmdb_id || it.tvdb_id || it.trakt_id || '';
+    const itemId = it.imdb_id || it.tmdb_id || it.tvdb_id || it.simkl_id || '';
     const link = it.imdb_id ? '<a class="imdb-link" href="https://www.imdb.com/title/' + escapeHtml(it.imdb_id) + '/" target="_blank">' + escapeHtml(it.title) + '</a>' : escapeHtml(it.title);
     html += '<tr><td>' + link + '</td><td>' + (it.year || '') + '</td>';
     if (type === 'show') html += '<td>' + (it.episodes_watched || '') + '</td>';
@@ -306,9 +306,9 @@ function renderMissing(title, items, type) {
 }
 
 function renderSequels(items) {
-  if (!items.length) return '<div class="section"><h2>🔗 Trakt Suggestions <span class="count">(0)</span></h2><div class="empty">No missing related movies found!</div></div>';
+  if (!items.length) return '<div class="section"><h2>🔗 Simkl Suggestions <span class="count">(0)</span></h2><div class="empty">No missing related movies found!</div></div>';
 
-  let html = '<div class="section"><h2>🔗 Trakt Suggestions <span class="count">(' + items.length + ')</span></h2>';
+  let html = '<div class="section"><h2>🔗 Simkl Suggestions <span class="count">(' + items.length + ')</span></h2>';
   html += '<table class="item-table"><thead><tr><th>Missing Title</th><th>Year</th><th>Related To</th><th>Your Rating</th><th></th></tr></thead><tbody>';
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
@@ -398,7 +398,7 @@ function removeRowAndUpdateCount(btn) {
         if (!lbl) continue;
         if ((txt.includes('Movies') && lbl.textContent.includes('Movies'))
          || (txt.includes('Shows') && lbl.textContent.includes('Shows'))
-         || (txt.includes('Trakt Suggestions') && lbl.textContent.includes('Related'))) {
+         || (txt.includes('Simkl Suggestions') && lbl.textContent.includes('Related'))) {
           stat.querySelector('.val').textContent = remaining;
         }
       }

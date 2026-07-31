@@ -1,16 +1,16 @@
 """Airing Soon — Season Finale / Premiere Alerts (shows) + Release Alerts (movies).
 
 Primary data source is Sonarr (shows) and Radarr (movies) calendars — these
-always run regardless of integration provider. When Trakt is active in
-settings and the user has a linked account, Trakt's personal calendar is
-layered on top for additional coverage (shows the user follows on Trakt but
+always run regardless of integration provider. When Simkl is active in
+settings and the user has a linked account, Simkl's personal calendar is
+layered on top for additional coverage (shows the user follows on Simkl but
 hasn't added to Sonarr, watchlisted movies not in Radarr, and season finale
 detection).
 
 Release dates are sourced with a priority cascade:
   1. Radarr / Sonarr (primary — most accurate for items in arr)
   2. TMDB /movie/{id}/release_dates (second — broad coverage, typed releases)
-  3. Trakt /releases/{country} (last resort, only if Trakt is active)
+  3. Simkl /releases/{country} (last resort, only if Simkl is active)
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from datetime import datetime, timezone, timedelta
 import structlog
 
 from app.models.schema import User
-from app.utils.trakt_client import TraktClient
+from app.utils.simkl_client import SimklClient
 from app.utils.emby_client import EmbyClient
 from app.utils.library_cache import LibraryCache
 from app.utils.redis_cache import get_redis
@@ -41,8 +41,8 @@ class AiringAlertsService:
         sorted by days_until_air, plus upcoming digital/physical releases for
         movies missing in Radarr.
 
-        Sonarr/Radarr calendars are the primary data source. Trakt calendar
-        is layered on top only when the integration provider includes Trakt.
+        Sonarr/Radarr calendars are the primary data source. Simkl calendar
+        is layered on top only when the integration provider includes Simkl.
 
         Returns:
             {
@@ -51,26 +51,24 @@ class AiringAlertsService:
                                                   # digital/physical dates in window
             }
         """
-        # Determine whether Trakt is active
+        # Determine whether Simkl is active
         from app.api.routes import _get_active_providers
         providers = await _get_active_providers()
-        use_trakt = "trakt" in providers and bool(user.trakt_access_token)
+        use_simkl = "simkl" in providers and bool(user.simkl_access_token)
 
-        trakt: TraktClient | None = None
-        if use_trakt:
+        simkl: SimklClient | None = None
+        if use_simkl:
             async def on_token_refresh(access, refresh, expires):
                 async with async_session() as db:
                     u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
-                    u.trakt_access_token = access
-                    u.trakt_refresh_token = refresh
-                    u.trakt_token_expires = expires
+                    u.simkl_access_token = access
+                    
+                    u.simkl_token_expires = expires
                     await db.commit()
 
-            trakt = TraktClient(
-                access_token=user.trakt_access_token,
-                refresh_token=user.trakt_refresh_token,
-                token_expires=user.trakt_token_expires,
-                token_refresh_callback=on_token_refresh,
+            simkl = SimklClient(
+                access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
             )
 
         try:
@@ -84,10 +82,10 @@ class AiringAlertsService:
 
             results = []
             results.extend(await self._get_show_alerts(
-                trakt, today, days, user=user, arr_dates=arr_dates,
+                simkl, today, days, user=user, arr_dates=arr_dates,
             ))
             results.extend(await self._get_movie_alerts(
-                trakt, today, days, country=server_country, arr_dates=arr_dates,
+                simkl, today, days, country=server_country, arr_dates=arr_dates,
             ))
             results.sort(key=lambda r: (r["days_until_air"] if r["days_until_air"] is not None else 9999))
 
@@ -103,8 +101,8 @@ class AiringAlertsService:
                 "upcoming_home_releases": home_releases,
             }
         finally:
-            if trakt:
-                await trakt.close()
+            if simkl:
+                await simkl.close()
 
     # ------------------------------------------------------------------
     # Streaming provider enrichment (TMDB)
@@ -244,6 +242,7 @@ class AiringAlertsService:
                             "air_date_utc": ep.get("air_date_utc"),
                             "episode_title": ep.get("episode_title", ""),
                             "series_title": ep.get("series_title", ""),
+                            "season_episode_count": ep.get("season_episode_count"),
                         })
                     log.debug("arr_release_index.sonarr_calendar_loaded",
                               server=srv.get("name"),
@@ -338,25 +337,25 @@ class AiringAlertsService:
     # Shows
     # ------------------------------------------------------------------
 
-    async def _get_show_alerts(self, trakt: TraktClient | None, today: str, days: int,
+    async def _get_show_alerts(self, simkl: SimklClient | None, today: str, days: int,
                               user: User | None = None,
                               arr_dates: dict | None = None) -> list[dict]:
-        # ── Trakt calendar (optional — only if enabled) ──
+        # ── Simkl calendar (optional — only if enabled) ──
         merged: dict[tuple, dict] = {}
-        if trakt:
+        if simkl:
             try:
-                upcoming = await trakt.get_my_shows(start_date=today, days=days)
+                upcoming = await simkl.get_my_shows(start_date=today, days=days)
             except Exception as e:
                 log.warning("airing_alerts.my_shows_failed", error=str(e)[:200])
                 upcoming = []
 
             try:
-                premieres = await trakt.get_my_premieres(start_date=today, days=days)
+                premieres = await simkl.get_my_premieres(start_date=today, days=days)
             except Exception as e:
                 log.warning("airing_alerts.premieres_failed", error=str(e)[:200])
                 premieres = []
 
-            # Key by (show trakt id, season, episode) to dedupe between the
+            # Key by (show simkl id, season, episode) to dedupe between the
             # two calendar calls — premieres also show up in get_my_shows.
             for entry in upcoming:
                 self._merge_entry(merged, entry, is_premiere_source=False)
@@ -367,22 +366,22 @@ class AiringAlertsService:
 
         results = []
         # Track shows with finales for binge planner
-        finale_shows: dict[str, dict] = {}  # trakt_id → {days_until, season, emby_item_id}
+        finale_shows: dict[str, dict] = {}  # simkl_id → {days_until, season, emby_item_id}
 
-        # Track which (tvdb, season, episode) combos Trakt already covered
-        trakt_covered: set[tuple] = set()
+        # Track which (tvdb, season, episode) combos Simkl already covered
+        simkl_covered: set[tuple] = set()
 
         for key, entry in merged.items():
             show = entry["show"]
             episode = entry["episode"]
-            show_trakt_id = str(show.get("ids", {}).get("trakt", ""))
+            show_simkl_id = str(show.get("ids", {}).get("simkl", ""))
             show_tvdb_id = show.get("ids", {}).get("tvdb")
 
             days_until = self._days_until(entry.get("first_aired"))
             air_date = entry.get("first_aired")
 
             # Cross-reference with Sonarr calendar for more accurate air date
-            release_source = "trakt"
+            release_source = "simkl"
             if show_tvdb_id and str(show_tvdb_id) in sonarr_cal:
                 sonarr_ep = _find_sonarr_episode(
                     sonarr_cal[str(show_tvdb_id)],
@@ -400,30 +399,45 @@ class AiringAlertsService:
 
             is_premiere = entry["is_premiere"] or episode.get("number") == 1
             is_finale = False
-            if not is_premiere and show_trakt_id and trakt:
-                is_finale = await self._is_season_finale(trakt, show_trakt_id, episode)
+            if not is_premiere and episode.get("number"):
+                # Try Sonarr season episode count first (works without Simkl)
+                sonarr_finale = False
+                if show_tvdb_id and str(show_tvdb_id) in sonarr_cal:
+                    sonarr_ep = _find_sonarr_episode(
+                        sonarr_cal[str(show_tvdb_id)],
+                        episode.get("season"),
+                        episode.get("number"),
+                    )
+                    if sonarr_ep:
+                        sec = sonarr_ep.get("season_episode_count")
+                        if sec and episode.get("number") == sec:
+                            sonarr_finale = True
+                if sonarr_finale:
+                    is_finale = True
+                elif show_simkl_id and simkl:
+                    is_finale = await self._is_season_finale(simkl, show_simkl_id, episode)
 
             in_library, emby_item_id = await self._match_in_library(show)
             # Shows already in the library always surface. For shows NOT
             # in the library, only surface premieres (new seasons / series
-            # premieres) — these are shows the user follows on Trakt but
+            # premieres) — these are shows the user follows on Simkl but
             # doesn't have yet, and they want to know about the premiere
             # so they can grab them (same rationale as movie alerts).
             # Regular mid-season episodes for non-library shows are
             # skipped — Smart Queue's calendar source handles discovery.
             if not in_library and not is_premiere:
-                # Don't mark as trakt_covered so the Sonarr-only fallback
+                # Don't mark as simkl_covered so the Sonarr-only fallback
                 # can still pick it up (Sonarr may have better ID matching)
                 continue
 
             # Mark as covered ONLY when we're actually including the episode
             if show_tvdb_id:
-                trakt_covered.add((str(show_tvdb_id), episode.get("season"), episode.get("number")))
+                simkl_covered.add((str(show_tvdb_id), episode.get("season"), episode.get("number")))
 
             result = {
                 "media_type": "show",
                 "title": show.get("title", ""),
-                "trakt_id": show_trakt_id,
+                "simkl_id": show_simkl_id,
                 "tvdb_id": show_tvdb_id,
                 "tmdb_id": show.get("ids", {}).get("tmdb"),
                 "imdb_id": show.get("ids", {}).get("imdb"),
@@ -443,7 +457,7 @@ class AiringAlertsService:
             results.append(result)
 
             if is_finale and days_until is not None and emby_item_id:
-                finale_shows[show_trakt_id] = {
+                finale_shows[show_simkl_id] = {
                     "days_until": days_until,
                     "season": episode.get("season"),
                     "emby_item_id": emby_item_id,
@@ -451,13 +465,13 @@ class AiringAlertsService:
                 }
 
         # ── Sonarr-only episodes: add episodes from Sonarr calendar ──
-        # that Trakt didn't return (e.g. shows in Sonarr but not followed
-        # on Trakt, or episodes Trakt's calendar missed).
+        # that Simkl didn't return (e.g. shows in Sonarr but not followed
+        # on Simkl, or episodes Simkl's calendar missed).
         for tvdb_id_str, episodes in sonarr_cal.items():
             for ep in episodes:
                 ep_key = (tvdb_id_str, ep.get("season"), ep.get("episode"))
-                if ep_key in trakt_covered:
-                    continue  # Already handled via Trakt
+                if ep_key in simkl_covered:
+                    continue  # Already handled via Simkl
 
                 air_date = ep.get("air_date_utc")
                 days_until = self._days_until(air_date)
@@ -479,10 +493,17 @@ class AiringAlertsService:
                 if ep.get("episode") == 1:
                     is_premiere = True
 
+                # Finale detection from Sonarr season episode count
+                is_finale = False
+                if not is_premiere and ep.get("episode"):
+                    sec = ep.get("season_episode_count")
+                    if sec and ep.get("episode") == sec:
+                        is_finale = True
+
                 results.append({
                     "media_type": "show",
                     "title": series_title,
-                    "trakt_id": None,
+                    "simkl_id": None,
                     "tvdb_id": int(tvdb_id_str) if tvdb_id_str.isdigit() else None,
                     "tmdb_id": None,
                     "imdb_id": None,
@@ -492,7 +513,7 @@ class AiringAlertsService:
                     "air_date": air_date,
                     "days_until_air": days_until,
                     "is_premiere": is_premiere,
-                    "is_finale": False,
+                    "is_finale": is_finale,
                     "in_library": in_library,
                     "emby_item_id": emby_item_id,
                     "year": None,
@@ -500,13 +521,23 @@ class AiringAlertsService:
                     "release_source": "sonarr",
                 })
 
+                # Track Sonarr-only finales for binge planner (key by tvdb: prefix)
+                if is_finale and days_until is not None and emby_item_id:
+                    finale_key = f"tvdb:{tvdb_id_str}"
+                    finale_shows[finale_key] = {
+                        "days_until": days_until,
+                        "season": ep.get("season"),
+                        "emby_item_id": emby_item_id,
+                        "title": series_title,
+                    }
+
         # ── Binge planner: compute catch-up info for shows with finales ──
         if finale_shows and user and user.emby_user_id:
             binge_plans = await self._compute_binge_plans(
                 finale_shows, merged, user.emby_user_id,
             )
             for r in results:
-                tid = r.get("trakt_id", "")
+                tid = r.get("simkl_id", "")
                 if tid in binge_plans:
                     r["binge_plan"] = binge_plans[tid]
 
@@ -516,15 +547,15 @@ class AiringAlertsService:
     def _merge_entry(merged: dict, entry: dict, is_premiere_source: bool) -> None:
         show = entry.get("show", {})
         episode = entry.get("episode", {})
-        show_trakt_id = str(show.get("ids", {}).get("trakt", ""))
-        key = (show_trakt_id, episode.get("season"), episode.get("number"))
+        show_simkl_id = str(show.get("ids", {}).get("simkl", ""))
+        key = (show_simkl_id, episode.get("season"), episode.get("number"))
         if key not in merged:
             merged[key] = {"show": show, "episode": episode, "first_aired": entry.get("first_aired"),
                            "is_premiere": is_premiere_source}
         elif is_premiere_source:
             merged[key]["is_premiere"] = True
 
-    async def _is_season_finale(self, trakt: TraktClient, show_trakt_id: str, episode: dict) -> bool:
+    async def _is_season_finale(self, simkl: SimklClient, show_simkl_id: str, episode: dict) -> bool:
         """An episode is a season finale if its number equals that season's
         total episode_count. Result is cached per-show for 24h since season
         episode counts don't change once a season airs."""
@@ -533,17 +564,17 @@ class AiringAlertsService:
         if season_num is None or ep_num is None:
             return False
 
-        cache_key = f"airing_alerts:seasons:{show_trakt_id}"
+        cache_key = f"airing_alerts:seasons:{show_simkl_id}"
         try:
             r = await get_redis()
             cached = await r.get(cache_key)
             if cached:
                 seasons = json.loads(cached)
             else:
-                seasons = await trakt.get_show_seasons(show_trakt_id)
+                seasons = await simkl.get_show_seasons(show_simkl_id)
                 await r.setex(cache_key, SEASON_INFO_CACHE_TTL, json.dumps(seasons))
         except Exception:
-            log.warning("airing_alerts.season_lookup_failed", show_trakt_id=show_trakt_id)
+            log.warning("airing_alerts.season_lookup_failed", show_simkl_id=show_simkl_id)
             return False
 
         for season in seasons or []:
@@ -567,7 +598,7 @@ class AiringAlertsService:
         unwatched episodes the user needs to get through and the daily
         pace required.
 
-        Returns {trakt_id: binge_plan_dict}.
+        Returns {simkl_id: binge_plan_dict}.
         """
         plans: dict[str, dict] = {}
 
@@ -587,7 +618,7 @@ class AiringAlertsService:
             finally:
                 await emby.close()
 
-        for trakt_id, info in finale_shows.items():
+        for simkl_id, info in finale_shows.items():
             eid = info["emby_item_id"]
             item = emby_data.get(eid)
             if not item:
@@ -602,8 +633,8 @@ class AiringAlertsService:
             finale_season = info["season"]
             episodes_airing_before = 0
             for key, entry in merged_entries.items():
-                entry_trakt_id = str(entry["show"].get("ids", {}).get("trakt", ""))
-                if entry_trakt_id != trakt_id:
+                entry_simkl_id = str(entry["show"].get("ids", {}).get("simkl", ""))
+                if entry_simkl_id != simkl_id:
                     continue
                 ep = entry["episode"]
                 ep_season = ep.get("season")
@@ -618,7 +649,7 @@ class AiringAlertsService:
             days_left = max(info["days_until"], 1)  # avoid /0
 
             if total_to_watch <= 0:
-                plans[trakt_id] = {
+                plans[simkl_id] = {
                     "status": "caught_up",
                     "total_to_watch": 0,
                     "days_until_finale": info["days_until"],
@@ -636,7 +667,7 @@ class AiringAlertsService:
                 else:
                     difficulty = "marathon"
 
-                plans[trakt_id] = {
+                plans[simkl_id] = {
                     "status": "behind",
                     "total_to_watch": total_to_watch,
                     "unwatched_available": unwatched_in_library,
@@ -657,22 +688,22 @@ class AiringAlertsService:
     # Movies (watchlist releases)
     # ------------------------------------------------------------------
 
-    async def _get_movie_alerts(self, trakt: TraktClient | None, today: str, days: int,
+    async def _get_movie_alerts(self, simkl: SimklClient | None, today: str, days: int,
                                country: str = "us",
                                arr_dates: dict | None = None) -> list[dict]:
         radarr_movies = (arr_dates or {}).get("movies", {})
 
-        # ── Trakt movie calendar (optional) ──
-        trakt_releases = []
-        if trakt:
+        # ── Simkl movie calendar (optional) ──
+        simkl_releases = []
+        if simkl:
             try:
-                trakt_releases = await trakt.get_my_movies(start_date=today, days=days)
+                simkl_releases = await simkl.get_my_movies(start_date=today, days=days)
             except Exception as e:
                 log.warning("airing_alerts.my_movies_failed", error=str(e)[:200])
 
         results = []
         seen_tmdb: set[str] = set()
-        seen_trakt: set[str] = set()
+        seen_simkl: set[str] = set()
 
         # ── Pass 1: Radarr calendar movies (primary) ──
         today_date = datetime.now(timezone.utc).date()
@@ -703,7 +734,7 @@ class AiringAlertsService:
             results.append({
                 "media_type": "movie",
                 "title": title,
-                "trakt_id": None,
+                "simkl_id": None,
                 "tmdb_id": int(tmdb_id_str) if tmdb_id_str.isdigit() else None,
                 "imdb_id": None,
                 "season": None,
@@ -722,16 +753,16 @@ class AiringAlertsService:
                 "release_source": "radarr",
             })
 
-        # ── Pass 2: Trakt movie calendar (supplements — adds titles, IDs, and
+        # ── Pass 2: Simkl movie calendar (supplements — adds titles, IDs, and
         #    movies not in Radarr) ──
-        for entry in trakt_releases:
+        for entry in simkl_releases:
             movie = entry.get("movie", {})
-            movie_trakt_id = str(movie.get("ids", {}).get("trakt", ""))
+            movie_simkl_id = str(movie.get("ids", {}).get("simkl", ""))
             movie_tmdb_id = movie.get("ids", {}).get("tmdb")
 
-            if movie_trakt_id and movie_trakt_id in seen_trakt:
+            if movie_simkl_id and movie_simkl_id in seen_simkl:
                 continue
-            seen_trakt.add(movie_trakt_id)
+            seen_simkl.add(movie_simkl_id)
 
             # If already covered by Radarr pass, enrich instead of adding duplicate
             if movie_tmdb_id and str(movie_tmdb_id) in seen_tmdb:
@@ -739,8 +770,8 @@ class AiringAlertsService:
                     if r.get("tmdb_id") == movie_tmdb_id:
                         if not r["title"]:
                             r["title"] = movie.get("title", "")
-                        if not r["trakt_id"]:
-                            r["trakt_id"] = movie_trakt_id
+                        if not r["simkl_id"]:
+                            r["simkl_id"] = movie_simkl_id
                         if not r["imdb_id"]:
                             r["imdb_id"] = movie.get("ids", {}).get("imdb")
                         if not r["year"]:
@@ -755,14 +786,14 @@ class AiringAlertsService:
 
             # Fetch typed release dates (theatrical / digital / physical)
             theatrical, digital, physical, release_source = await self._get_release_dates(
-                trakt, movie_trakt_id, movie_tmdb_id, country=country,
+                simkl, movie_simkl_id, movie_tmdb_id, country=country,
                 arr_movies=radarr_movies,
             )
 
             results.append({
                 "media_type": "movie",
                 "title": movie.get("title", ""),
-                "trakt_id": movie_trakt_id,
+                "simkl_id": movie_simkl_id,
                 "tmdb_id": movie_tmdb_id,
                 "imdb_id": movie.get("ids", {}).get("imdb"),
                 "season": None,
@@ -783,20 +814,20 @@ class AiringAlertsService:
         return results
 
     async def _get_release_dates(
-        self, trakt: TraktClient | None, movie_trakt_id: str,
+        self, simkl: SimklClient | None, movie_simkl_id: str,
         tmdb_id: int | None = None,
         country: str = "us",
         arr_movies: dict | None = None,
     ) -> tuple[str | None, str | None, str | None, str]:
         """Return (theatrical, digital, physical, source) for a movie.
 
-        Priority: Radarr → TMDB → Trakt (if available).
+        Priority: Radarr → TMDB → Simkl (if available).
         Cached 24h per movie+country.
         """
-        if not movie_trakt_id and not tmdb_id:
+        if not movie_simkl_id and not tmdb_id:
             return None, None, None, ""
 
-        cache_id = movie_trakt_id or str(tmdb_id)
+        cache_id = movie_simkl_id or str(tmdb_id)
         cache_key = f"airing_alerts:releases:{cache_id}:{country}_v2"
         try:
             r = await get_redis()
@@ -841,23 +872,23 @@ class AiringAlertsService:
                 if not source:
                     source = "tmdb"
 
-        # ── Tier 3: Trakt (last resort for any still-missing dates) ──
-        if trakt and movie_trakt_id and (not theatrical or not digital):
-            trakt_theatrical, trakt_digital = await self._get_trakt_releases(
-                trakt, movie_trakt_id, country,
+        # ── Tier 3: Simkl (last resort for any still-missing dates) ──
+        if simkl and movie_simkl_id and (not theatrical or not digital):
+            simkl_theatrical, simkl_digital = await self._get_simkl_releases(
+                simkl, movie_simkl_id, country,
             )
-            if not theatrical and trakt_theatrical:
-                theatrical = trakt_theatrical
+            if not theatrical and simkl_theatrical:
+                theatrical = simkl_theatrical
                 if not source:
-                    source = "trakt"
-            if not digital and trakt_digital:
-                digital = trakt_digital
+                    source = "simkl"
+            if not digital and simkl_digital:
+                digital = simkl_digital
                 if not source:
-                    source = "trakt"
+                    source = "simkl"
 
         # Resolve source label when only lower tiers contributed
         if not source and (theatrical or digital or physical):
-            source = "trakt"
+            source = "simkl"
 
         # Cache result (even if all None — avoids re-fetching for movies
         # that genuinely have no typed releases)
@@ -870,10 +901,10 @@ class AiringAlertsService:
 
         return theatrical, digital, physical, source
 
-    async def _get_trakt_releases(
-        self, trakt: TraktClient, movie_trakt_id: str, country: str,
+    async def _get_simkl_releases(
+        self, simkl: SimklClient, movie_simkl_id: str, country: str,
     ) -> tuple[str | None, str | None]:
-        """Fetch theatrical + digital dates from Trakt /releases/{country}.
+        """Fetch theatrical + digital dates from Simkl /releases/{country}.
 
         Uses server country first, falls back to US.
         """
@@ -886,10 +917,10 @@ class AiringAlertsService:
 
         for c in countries:
             try:
-                releases = await trakt.get_movie_releases(movie_trakt_id, country=c)
+                releases = await simkl.get_movie_releases(movie_simkl_id, country=c)
             except Exception:
                 log.debug("airing_alerts.releases_fetch_failed",
-                          movie_trakt_id=movie_trakt_id, country=c)
+                          movie_simkl_id=movie_simkl_id, country=c)
                 continue
 
             for rel in releases or []:
@@ -961,11 +992,11 @@ class AiringAlertsService:
 
     @staticmethod
     async def _match_in_library(item: dict) -> tuple[bool, str | None]:
-        """Cross-check a Trakt show/movie object against the Emby library
+        """Cross-check a Simkl show/movie object against the Emby library
         via provider IDs, falling back to title+year matching."""
         ids = item.get("ids", {})
-        for provider_type, trakt_key in [("Tvdb", "tvdb"), ("Tmdb", "tmdb"), ("Imdb", "imdb")]:
-            pid = ids.get(trakt_key)
+        for provider_type, simkl_key in [("Tvdb", "tvdb"), ("Tmdb", "tmdb"), ("Imdb", "imdb")]:
+            pid = ids.get(simkl_key)
             if pid:
                 cached = await LibraryCache.find_by_provider_id(provider_type, str(pid))
                 if cached:

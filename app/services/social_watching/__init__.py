@@ -1,5 +1,3 @@
-"""Social Watching service package."""
+"""Social Watching service package — orphaned, pending removal."""
 
-from app.services.social_watching.service import SocialWatchingService
-
-__all__ = ["SocialWatchingService"]
+__all__ = []

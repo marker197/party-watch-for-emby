@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Emby-Trakt Suite — User Guide</title>
+<title>Emby-Simkl Suite — User Guide</title>
 <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
 <style>
   :root {
@@ -233,7 +233,7 @@
 
 <nav class="sidebar" id="sidebar">
   <div class="sidebar-brand">
-    <div class="title">Emby-Trakt Suite</div>
+    <div class="title">Emby-Simkl Suite</div>
     <div class="subtitle">User Guide v2.1.1</div>
     <a href="/" style="display:inline-block;margin-top:10px;font-size:0.78rem;color:var(--accent-light);text-decoration:none;padding:4px 10px;border:1px solid var(--border);border-radius:5px;" onmouseover="this.style.background='var(--surface-hover)'" onmouseout="this.style.background='transparent'">← Back to Dashboard</a>
   </div>
@@ -264,7 +264,7 @@
 <!-- PAGE: DASHBOARD -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page active" id="page-dashboard" data-sections="first-run,status-bar,cache,link-trakt,smart-queue,ml-predictor,universes-card,airing-soon,scrobble-audit,taste-drift,continue-watching,new-coming-soon,active-downloads,watchlist-sync,scheduler,ssl-cert,activity-log,nav-bar">
+<div class="page active" id="page-dashboard" data-sections="first-run,status-bar,cache,link-simkl,smart-queue,ml-predictor,universes-card,airing-soon,scrobble-audit,taste-drift,continue-watching,new-coming-soon,active-downloads,watchlist-sync,scheduler,ssl-cert,activity-log,nav-bar">
 
   <h1 class="page-title">Dashboard</h1>
   <p class="page-intro">Everything on the main dashboard — what each section does and how to use it. If this is your first time running the suite, start with First-Run Setup below.</p>
@@ -274,7 +274,7 @@
     <h2>First-Run Setup</h2>
     <p>The first time you start the suite, a setup page asks you to pick your integration provider. This controls which services the suite talks to for scrobbling, watchlists, and watch history.</p>
     <div class="feature">
-      <p><strong>Trakt</strong> — uses Trakt.tv for all scrobbling, history, ratings, and watchlist features. Link your Trakt account afterwards.</p>
+      <p><strong>Simkl</strong> — uses Simkl.tv for all scrobbling, history, ratings, and watchlist features. Link your Simkl account afterwards.</p>
       <p><strong>MDBList</strong> — uses MDBList.com instead. Enter your MDBList API key on the Settings page.</p>
       <p><strong>Both</strong> — scrobbles and syncs to both services at the same time.</p>
       <p><strong>None</strong> — disables external scrobbling. The suite still works for library management, downloads, and local features.</p>
@@ -292,7 +292,7 @@
       <p style="margin-left:16px;"><strong>Users</strong> — Mark Played</p>
       <p><strong>4.</strong> Test by playing something briefly in Emby — the activity log on the dashboard should show the event.</p>
     </div>
-    <div class="tip">Library → New media added is used for real-time arrival detection and library cache updates. Without it, new content only appears after the nightly cache rebuild. Media removed keeps the library cache and Trakt watchlist in sync when you delete items.</div>
+    <div class="tip">Library → New media added is used for real-time arrival detection and library cache updates. Without it, new content only appears after the nightly cache rebuild. Media removed keeps the library cache and Simkl watchlist in sync when you delete items.</div>
 
     <h3 style="margin-top:20px;">Sonarr Webhook (optional)</h3>
     <p>Connecting Sonarr's webhook gives episode-level import tracking on the Airing Soon card and grab/import events in the activity log.</p>
@@ -311,7 +311,7 @@
     <p>The dropdown at the top lets you pick which linked Emby user to view the dashboard for. All cards update for the selected user.</p>
     <div class="feature">
       <p><strong>API</strong> — whether the suite's backend is reachable.</p>
-      <p><strong>Linked Users</strong> — how many Emby accounts have a Trakt account connected.</p>
+      <p><strong>Linked Users</strong> — how many Emby accounts have a Simkl account connected.</p>
       <p><strong>Active Parties</strong> — Watch Party sessions currently running. Hover to see codes and members.</p>
       <p><strong>Library Cache</strong> — how many items are indexed. If 0, hit Rebuild Cache below.</p>
     </div>
@@ -329,16 +329,16 @@
 
     <div class="feature">
       <div class="feature-name">Hit Rate</div>
-      <p>The percentage of cache lookups that found a matching item. A hit rate below 100% is normal — misses happen whenever a feature looks up an item that isn't in your Emby library, such as Trakt trending content you don't own, watchlist items you haven't acquired yet, or backfilled watch history entries for things you've since deleted. These misses don't indicate a problem.</p>
+      <p>The percentage of cache lookups that found a matching item. A hit rate below 100% is normal — misses happen whenever a feature looks up an item that isn't in your Emby library, such as Simkl trending content you don't own, watchlist items you haven't acquired yet, or backfilled watch history entries for things you've since deleted. These misses don't indicate a problem.</p>
     </div>
 
     <p><span class="btn-label">Rebuild Cache</span> re-indexes your Emby library into Redis. Runs nightly but can be triggered manually after adding a lot of content.</p>
   </div>
 
   <div class="section">
-    <span class="section-anchor" id="link-trakt"></span>
-    <h2>Link Trakt Account</h2>
-    <p>Used during initial setup when Trakt is your chosen provider. Enter your Emby User ID and username, click <span class="btn-label">Get Code</span>, then follow the on-screen instructions to authorise via Trakt. You won't need this again unless you add a new user.</p>
+    <span class="section-anchor" id="link-simkl"></span>
+    <h2>Link Simkl Account</h2>
+    <p>Used during initial setup when Simkl is your chosen provider. Enter your Emby User ID and username, click <span class="btn-label">Get Code</span>, then follow the on-screen instructions to authorise via Simkl. You won't need this again unless you add a new user.</p>
     <p>If you're using MDBList only, skip this section — just enter your API key in Settings instead.</p>
   </div>
 
@@ -351,7 +351,7 @@
 
     <div class="feature">
       <div class="feature-name"><span class="emoji">🎯</span> Smart Watch Queue</div>
-      <p>Builds a personalised list of what to watch next. Pulls from your Trakt or MDBList watchlist, trending content, and calendar data, then cross-references against your Emby library. Items are ranked by weighted score.</p>
+      <p>Builds a personalised list of what to watch next. Pulls from your Simkl or MDBList watchlist, trending content, and calendar data, then cross-references against your Emby library. Items are ranked by weighted score.</p>
       <p><span class="btn-label">Refresh Now</span> rebuilds the queue immediately (normally runs daily at 2 AM).</p>
       <p><span class="btn-label">View Queue</span> opens the full queue table. Each row shows title, score, source, and library status.</p>
       <p>Items not in your library show a Radarr or Sonarr button to send them to download.</p>
@@ -361,7 +361,7 @@
     <span class="section-anchor" id="ml-predictor"></span>
     <div class="feature">
       <div class="feature-name"><span class="emoji">🤖</span> ML Rating Predictor</div>
-      <p>Trains a model on your Trakt rating history, then predicts what score you'd give every unwatched item.</p>
+      <p>Trains a model on your Simkl rating history, then predicts what score you'd give every unwatched item.</p>
       <p><span class="btn-label">Train Model</span> kicks off training (also runs weekly). <span class="btn-label">View Predictions</span> opens the Predictions page.</p>
     </div>
 
@@ -378,15 +378,15 @@
       <p>Upcoming episodes and movies for the next 30 days, from Sonarr and Radarr calendars. Premieres and finales are flagged. Binge plans show how many episodes per day to catch up before a finale.</p>
       <p>Streaming logos appear when a TMDB key is configured. An "Upcoming Digital / Physical Releases" section shows monitored movies with approaching home release dates.</p>
       <p>Each item shows a status badge. When Sonarr sends a webhook on import complete, episodes that have just arrived show a green "Imported" badge. Otherwise you'll see "In Sonarr" or "In Radarr" if the item is being monitored.</p>
-      <p>Opening Airing Soon triggers a background watchlist sync (at most once every 30 minutes). This pushes any missing Radarr/Sonarr items to your Trakt or MDBList watchlist so they appear here.</p>
+      <p>Opening Airing Soon triggers a background watchlist sync (at most once every 30 minutes). This pushes any missing Radarr/Sonarr items to your Simkl or MDBList watchlist so they appear here.</p>
     </div>
 
     <span class="section-anchor" id="scrobble-audit"></span>
     <div class="feature">
       <div class="feature-name"><span class="emoji">🔍</span> Scrobble Audit</div>
-      <p>Finds items played in Emby but missing from your watch history. When both Trakt and MDBList are active, the audit checks both services and merges the results. Backfilling pushes to whichever providers are active.</p>
+      <p>Finds items played in Emby but missing from your watch history. When both Simkl and MDBList are active, the audit checks both services and merges the results. Backfilling pushes to whichever providers are active.</p>
       <p><span class="btn-label">Run Audit</span> compares your Emby played items and shows gaps. Each item gets a Backfill button; <span class="btn-label">Backfill All</span> fixes everything at once.</p>
-      <p>Shows are compared episode by episode, so a series you've only partly watched still gets audited — any individual episode missing from Trakt is flagged, whether or not the series is complete.</p>
+      <p>Shows are compared episode by episode, so a series you've only partly watched still gets audited — any individual episode missing from Simkl is flagged, whether or not the series is complete.</p>
     </div>
 
     <span class="section-anchor" id="taste-drift"></span>
@@ -401,8 +401,8 @@
       <p>Lists partially watched movies and in-progress shows. Each item shows a progress bar, time since last watched, and an IMDb link.</p>
       <h3>Play button</h3>
       <p>Starts playback on your Emby device. One device plays immediately; multiple devices show a picker. Shows with multiple in-progress episodes show an episode picker first. Playback resumes from where you left off.</p>
-      <h3>Trakt Sync</h3>
-      <p><span class="btn-label">🔄 Trakt Sync</span> compares Emby resume points with Trakt. Flags out-of-sync items and stale entries (>30 days). Delete stale Trakt entries with the ✕ button.</p>
+      <h3>Simkl Sync</h3>
+      <p><span class="btn-label">🔄 Simkl Sync</span> compares Emby resume points with Simkl. Flags out-of-sync items and stale entries (>30 days). Delete stale Simkl entries with the ✕ button.</p>
     </div>
 
     <span class="section-anchor" id="new-coming-soon"></span>
@@ -427,7 +427,7 @@
   <div class="section">
     <span class="section-anchor" id="watchlist-sync"></span>
     <h2>Watchlist Sync</h2>
-    <p>Bi-directional sync between Radarr/Sonarr and your Trakt or MDBList watchlist. When both providers are active, it syncs to both.</p>
+    <p>Bi-directional sync between Radarr/Sonarr and your Simkl or MDBList watchlist. When both providers are active, it syncs to both.</p>
     <div class="feature">
       <p><strong>Arr → Watchlist</strong> — takes items that are monitored but don't have files yet, and adds them to your watchlist. This means they show up in Airing Soon and your smart queue.</p>
       <p><strong>Watchlist → Arr</strong> — takes items from your watchlist and adds them to Radarr or Sonarr if they're not already there.</p>
@@ -453,7 +453,7 @@
   <div class="section">
     <span class="section-anchor" id="activity-log"></span>
     <h2>Activity Log</h2>
-    <p>Live feed of suite activity at the bottom of the page. When both Trakt and MDBList are active, you'll see separate entries for each provider's scrobbles. Filter by All, Webhook, Trakt, MDBList, Playback, or General. Updates every 30 seconds.</p>
+    <p>Live feed of suite activity at the bottom of the page. When both Simkl and MDBList are active, you'll see separate entries for each provider's scrobbles. Filter by All, Webhook, Simkl, MDBList, Playback, or General. Updates every 30 seconds.</p>
   </div>
 
   <hr class="divider">
@@ -548,7 +548,7 @@
   <div class="section">
     <span class="section-anchor" id="pred-overview"></span>
     <h2>Overview</h2>
-    <p>This page shows what the ML model thinks you'd rate each unwatched item, sorted from highest to lowest predicted score. The model trains on your Trakt rating history and learns your preferences for genres, directors, actors, eras, and more.</p>
+    <p>This page shows what the ML model thinks you'd rate each unwatched item, sorted from highest to lowest predicted score. The model trains on your Simkl rating history and learns your preferences for genres, directors, actors, eras, and more.</p>
     <p><span class="btn-label">🔄 Retrain Model</span> kicks off a fresh training run using your latest ratings.</p>
     <p>Two tabs switch between <strong>Top Predictions</strong> (the item cards) and <strong>Insights</strong> (genre-level analysis).</p>
   </div>
@@ -574,7 +574,7 @@
   <div class="section">
     <span class="section-anchor" id="pred-insights"></span>
     <h2>Insights Tab</h2>
-    <p>Switch to the Insights tab to see genre-level cards showing the delta between your average rating and Trakt's community average for each genre. Positive deltas mean you rate that genre higher than most people.</p>
+    <p>Switch to the Insights tab to see genre-level cards showing the delta between your average rating and Simkl's community average for each genre. Positive deltas mean you rate that genre higher than most people.</p>
   </div>
 
 </div>
@@ -591,8 +591,8 @@
   <div class="section">
     <span class="section-anchor" id="taste-overview"></span>
     <h2>Overview</h2>
-    <p>This page analyses your entire Trakt rating history to show how you rate compared to the crowd. It identifies biases, hidden gems, and genres you might be overlooking.</p>
-    <p><span class="btn-label">🔄 Refresh Analysis</span> re-runs the analysis against your latest Trakt data.</p>
+    <p>This page analyses your entire Simkl rating history to show how you rate compared to the crowd. It identifies biases, hidden gems, and genres you might be overlooking.</p>
+    <p><span class="btn-label">🔄 Refresh Analysis</span> re-runs the analysis against your latest Simkl data.</p>
     <p>Summary stats at the top show your total ratings, average score, and which genres and eras you lean toward.</p>
   </div>
 
@@ -605,7 +605,7 @@
   <div class="section">
     <span class="section-anchor" id="taste-genres"></span>
     <h2>Genre Breakdown</h2>
-    <p>Two views — a horizontal bar chart of your top 10 genres by average rating, and a scrollable list of every genre with your average score, count, and bias score. The bias score compares your rating to the Trakt community average: positive means you rate that genre higher than most.</p>
+    <p>Two views — a horizontal bar chart of your top 10 genres by average rating, and a scrollable list of every genre with your average score, count, and bias score. The bias score compares your rating to the Simkl community average: positive means you rate that genre higher than most.</p>
     <p>A search box filters the genre list by name.</p>
   </div>
 
@@ -647,7 +647,7 @@
   <div class="section">
     <span class="section-anchor" id="rewatch-overview"></span>
     <h2>How It Works</h2>
-    <p>The recommender pulls your watch history and ratings from Trakt (preferred), MDBList, or Emby as a fallback. It builds a pool of items you rated 8 or higher that you watched at least 12 months ago, then ranks them using four scoring factors: your rating, how long since you last watched (staleness), whether the item matches the current season (horror in October, holiday films in December), and whether you watched it around this same date in a prior year (anniversary rewatch).</p>
+    <p>The recommender pulls your watch history and ratings from Simkl (preferred), MDBList, or Emby as a fallback. It builds a pool of items you rated 8 or higher that you watched at least 12 months ago, then ranks them using four scoring factors: your rating, how long since you last watched (staleness), whether the item matches the current season (horror in October, holiday films in December), and whether you watched it around this same date in a prior year (anniversary rewatch).</p>
     <p>The suggestions rebuild automatically every day at 2:15 AM and are cached for 24 hours. Use the <span class="btn-label">🔄 Refresh</span> button to force an immediate rebuild.</p>
   </div>
 
@@ -662,7 +662,7 @@
   <div class="section">
     <span class="section-anchor" id="rewatch-history"></span>
     <h2>Watch History Flyout</h2>
-    <p>Hover over a card (or tap on mobile) to see a flyout panel showing your full watch history for that item — every recorded watch date, ordered newest first. Data comes from the local watch history database for instant loading, with fallbacks to Trakt and Emby if the item hasn't been backfilled yet.</p>
+    <p>Hover over a card (or tap on mobile) to see a flyout panel showing your full watch history for that item — every recorded watch date, ordered newest first. Data comes from the local watch history database for instant loading, with fallbacks to Simkl and Emby if the item hasn't been backfilled yet.</p>
   </div>
 
   <div class="section">
@@ -740,7 +740,7 @@
 <div class="page" id="page-watch-history" data-sections="wh-overview,wh-filters,wh-cards,wh-progress,wh-images,wh-paging">
 
   <h1 class="page-title">📜 Watch History</h1>
-  <p class="page-intro">A visual timeline of everything you've watched, grouped by date. Works like the history view on Trakt or MDBList, but built from your local watch history database with thumbnails pulled straight from your Emby server.</p>
+  <p class="page-intro">A visual timeline of everything you've watched, grouped by date. Works like the history view on Simkl or MDBList, but built from your local watch history database with thumbnails pulled straight from your Emby server.</p>
 
   <div class="section">
     <span class="section-anchor" id="wh-overview"></span>
@@ -794,7 +794,7 @@
 <!-- PAGE: SETTINGS -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page" id="page-settings" data-sections="set-provider,set-mdblist,set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-trakt-import,set-watch-history,set-notifications,set-danger">
+<div class="page" id="page-settings" data-sections="set-provider,set-mdblist,set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-simkl-import,set-watch-history,set-notifications,set-danger">
 
   <h1 class="page-title">⚙️ Settings</h1>
   <p class="page-intro">Configure connections, features, schedules, and integrations.</p>
@@ -802,15 +802,15 @@
   <div class="section">
     <span class="section-anchor" id="set-provider"></span>
     <h2>Integration Provider</h2>
-    <p>Choose which services the suite uses for scrobbling, watch history, and watchlists. Options are Trakt, MDBList, Both, or None. Changing this controls which sections appear below and which services receive your playback data.</p>
-    <p>When set to "Both", every playback event scrobbles to Trakt and MDBList simultaneously. Watchlist sync, scrobble audit, and history all work with whichever providers are active.</p>
+    <p>Choose which services the suite uses for scrobbling, watch history, and watchlists. Options are Simkl, MDBList, Both, or None. Changing this controls which sections appear below and which services receive your playback data.</p>
+    <p>When set to "Both", every playback event scrobbles to Simkl and MDBList simultaneously. Watchlist sync, scrobble audit, and history all work with whichever providers are active.</p>
   </div>
 
   <div class="section">
     <span class="section-anchor" id="set-mdblist"></span>
     <h2>MDBList</h2>
     <p>Only shown when MDBList is selected as a provider. Enter your MDBList API key (found on your MDBList account page) and save.</p>
-    <p><span class="btn-label">Sync New</span> pushes your Trakt watch history and ratings to MDBList since the last sync (delta sync). <span class="btn-label">Full Re-sync</span> pushes everything from scratch. <span class="btn-label">Check Status</span> compares the two services and shows how many items are missing from MDBList.</p>
+    <p><span class="btn-label">Sync New</span> pushes your Simkl watch history and ratings to MDBList since the last sync (delta sync). <span class="btn-label">Full Re-sync</span> pushes everything from scratch. <span class="btn-label">Check Status</span> compares the two services and shows how many items are missing from MDBList.</p>
     <div class="tip">MDBList scrobbling only works for movies — their API doesn't support TV episode scrobble. TV episodes are tracked via history sync instead, which fires when playback stops.</div>
   </div>
 
@@ -869,14 +869,14 @@
     <h2>SABnzbd Integration</h2>
     <p>Connect up to two SABnzbd servers for real-time download progress on the Active Downloads card. When configured, SABnzbd replaces the stale progress numbers from Radarr/Sonarr with live data straight from the download client.</p>
     <p>Enter the SABnzbd URL and API key for each server. The API key is found in SABnzbd's web UI under Config → General → API Key. Click <span class="btn-label">Test</span> to verify the connection, then save.</p>
-    <p>The connection badge next to the section header shows live status. SABnzbd is checked every 5 minutes alongside Emby, Trakt, Radarr, and Sonarr.</p>
+    <p>The connection badge next to the section header shows live status. SABnzbd is checked every 5 minutes alongside Emby, Simkl, Radarr, and Sonarr.</p>
     <div class="tip">SABnzbd is optional. Without it, the Active Downloads card still works using progress data from Radarr/Sonarr — it just updates less frequently.</div>
   </div>
 
   <div class="section">
     <span class="section-anchor" id="set-watchlist-sync"></span>
     <h2>Watchlist Sync</h2>
-    <p>Bi-directional sync between your download managers and your Trakt or MDBList watchlist. When both providers are active, items are synced to both. Two independent toggles:</p>
+    <p>Bi-directional sync between your download managers and your Simkl or MDBList watchlist. When both providers are active, items are synced to both. Two independent toggles:</p>
     <p><strong>Arr → Watchlist</strong> — syncs monitored-but-missing Radarr/Sonarr items to your watchlist so they appear in Airing Soon.</p>
     <p><strong>Watchlist → Arr</strong> — auto-adds watchlist items to Radarr/Sonarr (uses first configured server).</p>
     <p>Runs at startup, daily at 2:30 AM, and in the background when you open Airing Soon.</p>
@@ -889,9 +889,9 @@
   </div>
 
   <div class="section">
-    <span class="section-anchor" id="set-trakt-import"></span>
-    <h2>Trakt List Import</h2>
-    <p>Displays your personal Trakt lists. Click <span class="btn-label">Import to Emby</span> next to any list to create an Emby playlist from it. Items are matched against your library cache — unmatched items are reported.</p>
+    <span class="section-anchor" id="set-simkl-import"></span>
+    <h2>Simkl List Import</h2>
+    <p>Displays your personal Simkl lists. Click <span class="btn-label">Import to Emby</span> next to any list to create an Emby playlist from it. Items are matched against your library cache — unmatched items are reported.</p>
   </div>
 
   <div class="section">
@@ -899,7 +899,7 @@
     <h2>Watch History</h2>
     <p>The suite keeps a permanent local record of every completed watch. New watches are recorded automatically via Emby webhooks. Two one-time import buttons handle your existing history:</p>
     <div class="feature">
-      <p><strong>📥 Import Watch History</strong> — pulls your complete watch history from Trakt (individual timestamps), MDBList (watched dates), and Emby (LastPlayedDate) into the local database. Duplicates are automatically skipped. Safe to re-run.</p>
+      <p><strong>📥 Import Watch History</strong> — pulls your complete watch history from Simkl (individual timestamps), MDBList (watched dates), and Emby (LastPlayedDate) into the local database. Duplicates are automatically skipped. Safe to re-run.</p>
       <p><strong>🎭 Backfill Genres</strong> — populates genre data for all imported watch history entries by querying Emby. Needed for the genre breakdown chart on the Stats page. New webhook watches get genres automatically — this button is only for backfilled data.</p>
     </div>
     <div class="tip">After first install: run Import Watch History first, then Backfill Genres. The Stats page and Rewatch Recommender both use this local data.</div>
@@ -917,7 +917,7 @@
     </div>
     <div class="feature">
       <div class="feature-name"><span class="emoji">⚡</span> Event Triggers</div>
-      <p><strong>Scrobble</strong> — fires when a watch is synced to Trakt or MDBList. Off by default to avoid noise.</p>
+      <p><strong>Scrobble</strong> — fires when a watch is synced to Simkl or MDBList. Off by default to avoid noise.</p>
       <p><strong>Arrival</strong> — fires when new content appears in your library via Radarr or Sonarr.</p>
       <p><strong>Premiere</strong> — fires daily at 8 AM for shows premiering or reaching their finale today.</p>
       <p><strong>Download</strong> — fires when a download completes and is detected by the webhook handler.</p>
@@ -933,7 +933,7 @@
     <p>Three destructive actions, each requiring confirmation:</p>
     <div class="feature">
       <p><strong>Clear Cache</strong> — removes all cached library data. Rebuilt on next sync.</p>
-      <p><strong>Reset OAuth Credentials</strong> — disconnects all Trakt accounts. Must re-authenticate.</p>
+      <p><strong>Reset OAuth Credentials</strong> — disconnects all Simkl accounts. Must re-authenticate.</p>
       <p><strong>Factory Reset</strong> — erases all data, settings, and models. Starts from scratch.</p>
     </div>
   </div>
@@ -1019,12 +1019,12 @@
 <div class="page" id="page-library-health" data-sections="health-overview,health-incomplete,health-movies-missing,health-shows-missing,health-suggestions,health-dismiss,health-radarr-sonarr,health-scan">
 
   <h1 class="page-title">🏥 Library Health</h1>
-  <p class="page-intro">Find gaps in your library — shows you've started but not finished, things you've watched on Trakt that aren't in Emby, and related movies you might want to grab.</p>
+  <p class="page-intro">Find gaps in your library — shows you've started but not finished, things you've watched on Simkl that aren't in Emby, and related movies you might want to grab.</p>
 
   <div class="section">
     <span class="section-anchor" id="health-overview"></span>
     <h2>Overview</h2>
-    <p>The Library Health page compares your Trakt watch history against your Emby library to spot anything that's out of sync or missing. Pick a user from the dropdown at the top, then click <span class="btn-label">🔍 Run Scan</span> to start. The scan checks three things: incomplete series, watched items not in your library, and related movies you might like. Results are cached for 6 hours so the page loads instantly if you come back.</p>
+    <p>The Library Health page compares your Simkl watch history against your Emby library to spot anything that's out of sync or missing. Pick a user from the dropdown at the top, then click <span class="btn-label">🔍 Run Scan</span> to start. The scan checks three things: incomplete series, watched items not in your library, and related movies you might like. Results are cached for 6 hours so the page loads instantly if you come back.</p>
     <p>A row of summary cards at the top shows the total count for each category at a glance.</p>
   </div>
 
@@ -1037,7 +1037,7 @@
   <div class="section">
     <span class="section-anchor" id="health-movies-missing"></span>
     <h2>Watched Movies Not in Library</h2>
-    <p>Movies that appear in your Trakt watch history but aren't in your Emby library. These are things you've watched somewhere else — in a cinema, on a streaming service, or on a previous server — that aren't currently in your collection. Each row shows the title, year, and when you last watched it.</p>
+    <p>Movies that appear in your Simkl watch history but aren't in your Emby library. These are things you've watched somewhere else — in a cinema, on a streaming service, or on a previous server — that aren't currently in your collection. Each row shows the title, year, and when you last watched it.</p>
   </div>
 
   <div class="section">
@@ -1048,8 +1048,8 @@
 
   <div class="section">
     <span class="section-anchor" id="health-suggestions"></span>
-    <h2>Trakt Suggestions</h2>
-    <p>For every movie you rated 8 or higher on Trakt, the scan checks Trakt's "related movies" list and flags any that aren't in your library. Each row shows the suggested title, what it's related to, and the rating you gave the original. Good for discovering sequels, prequels, and similar films you might have missed.</p>
+    <h2>Simkl Suggestions</h2>
+    <p>For every movie you rated 8 or higher on Simkl, the scan checks Simkl's "related movies" list and flags any that aren't in your library. Each row shows the suggested title, what it's related to, and the rating you gave the original. Good for discovering sequels, prequels, and similar films you might have missed.</p>
   </div>
 
   <div class="section">
@@ -1091,7 +1091,7 @@
   const labels = {
     // Dashboard
     'first-run':'🚀 First-Run Setup',
-    'status-bar':'📡 Status Bar','cache':'🗄️ Cache & Library','link-trakt':'🔗 Link Trakt',
+    'status-bar':'📡 Status Bar','cache':'🗄️ Cache & Library','link-simkl':'🔗 Link Simkl',
     'smart-queue':'🎯 Smart Queue','ml-predictor':'🤖 ML Predictor','universes-card':'🌌 Universes',
     'airing-soon':'📅 Airing Soon','scrobble-audit':'🔍 Scrobble Audit','taste-drift':'📊 Taste Drift',
     'continue-watching':'⏸️ Continue Watching','new-coming-soon':'📥 New & Coming Soon',
@@ -1124,7 +1124,7 @@
     'set-emby':'Emby','set-toggles':'Feature Toggles','set-queue-opts':'Queue Options',
     'set-blocklist':'Blocklist','set-scheduler':'Scheduler','set-backup':'Backup',
     'set-radarr':'Radarr','set-sonarr':'Sonarr','set-sabnzbd':'SABnzbd','set-watchlist-sync':'Watchlist Sync',
-    'set-tmdb':'TMDB','set-trakt-import':'Trakt Import','set-watch-history':'Watch History','set-notifications':'Notifications','set-danger':'Danger Zone',
+    'set-tmdb':'TMDB','set-simkl-import':'Simkl Import','set-watch-history':'Watch History','set-notifications':'Notifications','set-danger':'Danger Zone',
     // Watch Party
     'wp-overview':'Overview','wp-create':'Create','wp-lobby':'Create Lobby',
     'wp-pick-together':'Pick Together','wp-join':'Join',

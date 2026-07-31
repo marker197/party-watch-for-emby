@@ -2,9 +2,9 @@
 
 Scans:
   1. Incomplete series — shows in your library with unwatched episodes
-  2. Trakt watched, not in library — movies/shows in Trakt history but
+  2. Simkl watched, not in library — movies/shows in Simkl history but
      missing from Emby
-  3. Highly rated missing sequels — movies you rated 8+ whose Trakt-related
+  3. Highly rated missing sequels — movies you rated 8+ whose Simkl-related
      films aren't in your library
 
 Results are cached in Redis for 6 hours. A manual or scheduled scan
@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 import structlog
 
-from app.utils.trakt_client import TraktClient
+from app.utils.simkl_client import SimklClient
 from app.utils.emby_client import EmbyClient
 from app.utils.library_cache import LibraryCache
 from app.utils.redis_cache import get_redis
@@ -58,9 +58,9 @@ class LibraryHealthService:
             "scanned_at": start.isoformat(),
         }
 
-        trakt = await self._get_trakt_client(user)
-        if not trakt:
-            report["error"] = "No Trakt account linked"
+        simkl = await self._get_simkl_client(user)
+        if not simkl:
+            report["error"] = "No Simkl account linked"
             return report
 
         emby = EmbyClient()
@@ -70,16 +70,16 @@ class LibraryHealthService:
                 emby, user.emby_user_id,
             )
 
-            # ── 2. Trakt watched, not in library ───────────────────────
+            # ── 2. Simkl watched, not in library ───────────────────────
             movies_missing, shows_missing = await self._scan_watched_not_in_library(
-                trakt,
+                simkl,
             )
             report["watched_not_in_library"]["movies"] = movies_missing[:100]
             report["watched_not_in_library"]["shows"] = shows_missing[:100]
 
             # ── 3. Missing sequels for highly rated movies ─────────────
             report["missing_sequels"] = await self._scan_missing_sequels(
-                trakt,
+                simkl,
             )
 
             # ── Summary ────────────────────────────────────────────────
@@ -103,7 +103,7 @@ class LibraryHealthService:
             report["error"] = str(e)[:200]
         finally:
             await emby.close()
-            await trakt.close()
+            await simkl.close()
 
         # Cache
         try:
@@ -186,21 +186,21 @@ class LibraryHealthService:
         results.sort(key=lambda x: x["completion_pct"], reverse=True)
         return results
 
-    # ── Scan: Trakt watched not in library ──────────────────────────────
+    # ── Scan: Simkl watched not in library ──────────────────────────────
 
     async def _scan_watched_not_in_library(
-        self, trakt: TraktClient,
+        self, simkl: SimklClient,
     ) -> tuple[list[dict], list[dict]]:
-        """Find items in Trakt watched history that aren't in the Emby library."""
+        """Find items in Simkl watched history that aren't in the Emby library."""
 
         missing_movies: list[dict] = []
         missing_shows: list[dict] = []
 
         # Movies
         try:
-            watched_movies = await trakt.get_watched(kind="movies")
+            watched_movies = await simkl.get_watched(kind="movies")
         except Exception as e:
-            log.warning("library_health.trakt_movies_failed", error=str(e)[:120])
+            log.warning("library_health.simkl_movies_failed", error=str(e)[:120])
             watched_movies = []
 
         for entry in watched_movies:
@@ -217,16 +217,16 @@ class LibraryHealthService:
                     "year": year,
                     "imdb_id": ids.get("imdb"),
                     "tmdb_id": ids.get("tmdb"),
-                    "trakt_id": ids.get("trakt"),
+                    "simkl_id": ids.get("simkl"),
                     "plays": entry.get("plays", 1),
                     "last_watched": entry.get("last_watched_at", ""),
                 })
 
         # Shows
         try:
-            watched_shows = await trakt.get_watched(kind="shows")
+            watched_shows = await simkl.get_watched(kind="shows")
         except Exception as e:
-            log.warning("library_health.trakt_shows_failed", error=str(e)[:120])
+            log.warning("library_health.simkl_shows_failed", error=str(e)[:120])
             watched_shows = []
 
         for entry in watched_shows:
@@ -248,7 +248,7 @@ class LibraryHealthService:
                     "imdb_id": ids.get("imdb"),
                     "tmdb_id": ids.get("tmdb"),
                     "tvdb_id": ids.get("tvdb"),
-                    "trakt_id": ids.get("trakt"),
+                    "simkl_id": ids.get("simkl"),
                     "plays": entry.get("plays", 1),
                     "episodes_watched": ep_count,
                     "last_watched": entry.get("last_watched_at", ""),
@@ -263,13 +263,13 @@ class LibraryHealthService:
     # ── Scan: missing sequels ───────────────────────────────────────────
 
     async def _scan_missing_sequels(
-        self, trakt: TraktClient, min_rating: int = 8, max_lookups: int = 30,
+        self, simkl: SimklClient, min_rating: int = 8, max_lookups: int = 30,
     ) -> list[dict]:
-        """For movies you rated 8+, check if Trakt's related movies are in your library."""
+        """For movies you rated 8+, check if Simkl's related movies are in your library."""
         results: list[dict] = []
 
         try:
-            ratings = await trakt.get_user_ratings(kind="movies")
+            ratings = await simkl.get_user_ratings(kind="movies")
         except Exception as e:
             log.warning("library_health.ratings_failed", error=str(e)[:120])
             return results
@@ -282,7 +282,7 @@ class LibraryHealthService:
         ]
         _random.shuffle(high_rated)
 
-        # Limit lookups to avoid hammering Trakt
+        # Limit lookups to avoid hammering Simkl
         lookups_done = 0
         for entry in high_rated:
             if lookups_done >= max_lookups:
@@ -290,12 +290,12 @@ class LibraryHealthService:
 
             movie = entry.get("movie", {})
             ids = movie.get("ids", {})
-            trakt_id = ids.get("trakt")
-            if not trakt_id:
+            simkl_id = ids.get("simkl")
+            if not simkl_id:
                 continue
 
             try:
-                related = await trakt.get_related("movies", str(trakt_id), limit=5)
+                related = await simkl.get_related("movies", str(simkl_id), limit=5)
                 lookups_done += 1
             except Exception:
                 continue
@@ -315,7 +315,7 @@ class LibraryHealthService:
                         "year": rel_year,
                         "imdb_id": rel_ids.get("imdb"),
                         "tmdb_id": rel_ids.get("tmdb"),
-                        "trakt_id": rel_ids.get("trakt"),
+                        "simkl_id": rel_ids.get("simkl"),
                         "related_to": movie.get("title", ""),
                         "your_rating": entry.get("rating"),
                     })
@@ -357,7 +357,7 @@ class LibraryHealthService:
 
         def _item_id(item: dict) -> str:
             """Return the best identifier for an item."""
-            for key in ("imdb_id", "tmdb_id", "tvdb_id", "trakt_id"):
+            for key in ("imdb_id", "tmdb_id", "tvdb_id", "simkl_id"):
                 v = item.get(key)
                 if v:
                     return str(v)
@@ -373,7 +373,7 @@ class LibraryHealthService:
         report["watched_not_in_library"]["movies"] = movies
         report["watched_not_in_library"]["shows"] = shows
 
-        # Filter missing_sequels (Trakt Suggestions) — dismissed as type "movie"
+        # Filter missing_sequels (Simkl Suggestions) — dismissed as type "movie"
         sequels = report.get("missing_sequels", [])
         sequels = [s for s in sequels if ("movie", _item_id(s)) not in dismissed]
         report["missing_sequels"] = sequels
@@ -392,9 +392,9 @@ class LibraryHealthService:
 
         return report
 
-    async def _get_trakt_client(self, user: User) -> TraktClient | None:
-        """Build an authenticated TraktClient with token refresh callback."""
-        if not user.trakt_access_token:
+    async def _get_simkl_client(self, user: User) -> SimklClient | None:
+        """Build an authenticated SimklClient with token refresh callback."""
+        if not user.simkl_access_token:
             return None
 
         async def _on_refresh(access, refresh, expires):
@@ -402,14 +402,13 @@ class LibraryHealthService:
                 u = (await db.execute(
                     select(User).where(User.id == user.id)
                 )).scalar_one()
-                u.trakt_access_token = access
-                u.trakt_refresh_token = refresh
-                u.trakt_token_expires = expires
+                u.simkl_access_token = access
+                
+                u.simkl_token_expires = expires
                 await db.commit()
 
-        return TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=_on_refresh,
+        return SimklClient(
+            access_token=user.simkl_access_token,
+            
+            token_expires=user.simkl_token_expires,
         )

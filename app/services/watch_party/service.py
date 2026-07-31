@@ -3,7 +3,7 @@
 Manages watch parties:
   - Party CRUD (create / join / leave / end)
   - Real-time playback sync via WebSocket
-  - Trakt checkin on start, scrobble on finish
+  - Simkl checkin on start, scrobble on finish
   - State persistence in Redis for fast reads, Postgres for history
 """
 
@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.schema import WatchParty, WatchPartyParticipant, WatchPartyReaction, WatchPartyComment, User
-from app.utils.trakt_client import TraktClient
+from app.utils.simkl_client import SimklClient
 from app.utils.emby_client import EmbyClient
 from app.utils.redis_cache import get_redis
 from app.utils.database import async_session
@@ -61,7 +61,7 @@ class WatchPartyService:
         
         If emby_item_id is None, creates a lobby-only party where the item
         will be set later via Pick Together.
-        Automatically checkin to Trakt when party starts with an item.
+        Automatically checkin to Simkl when party starts with an item.
         """
         code = _generate_code()
 
@@ -114,9 +114,9 @@ class WatchPartyService:
         })
         await r.expire(f"party:{code}", 86400)
         
-        # Trakt checkin when party created with an item
-        if item and host_user and host_user.trakt_access_token:
-            await self._trakt_checkin(host_user, item)
+        # Simkl checkin when party created with an item
+        if item and host_user and host_user.simkl_access_token:
+            await self._simkl_checkin(host_user, item)
 
         log.info("watch_party.created", code=code, title=title, host_id=host_user_id)
         return {"code": code, "party_id": party_id, "title": title}
@@ -193,7 +193,7 @@ class WatchPartyService:
         }
 
     async def end_party(self, code: str):
-        """End a watch party: stop playback on all devices, scrobble to Trakt."""
+        """End a watch party: stop playback on all devices, scrobble to Simkl."""
         r = await get_redis()
         state = await r.hgetall(f"party:{code}")
         if not state:
@@ -224,9 +224,9 @@ class WatchPartyService:
                         if user.emby_user_id:
                             participant_emby_ids.add(user.emby_user_id)
 
-                        # Trakt scrobble
-                        if user.trakt_access_token:
-                            await self._trakt_scrobble_stop(user, party.emby_item_id, position)
+                        # Simkl scrobble
+                        if user.simkl_access_token:
+                            await self._simkl_scrobble_stop(user, party.emby_item_id, position)
 
             # Update database
             await db.execute(
@@ -236,10 +236,10 @@ class WatchPartyService:
             )
             await db.commit()
 
-        # NEW: Post a summary comment to Trakt (reactions + participant count)
+        # NEW: Post a summary comment to Simkl (reactions + participant count)
         # via the host's account, before the Redis state is torn down.
         if party:
-            await self._post_party_summary_to_trakt(party, len(participants))
+            await self._post_party_summary_to_simkl(party, len(participants))
 
         # Stop playback on all participant Emby sessions
         stopped = 0
@@ -279,12 +279,12 @@ class WatchPartyService:
         try:
             async with async_session() as db:
                 rows = (await db.execute(
-                    select(User.emby_username, User.trakt_username)
+                    select(User.emby_username, User.simkl_username)
                     .join(WatchPartyParticipant, WatchPartyParticipant.user_id == User.id)
                     .where(WatchPartyParticipant.party_id == party_id)
                 )).all()
                 participants = [
-                    r.emby_username or r.trakt_username or "Unknown"
+                    r.emby_username or r.simkl_username or "Unknown"
                     for r in rows
                 ]
         except Exception:
@@ -316,12 +316,12 @@ class WatchPartyService:
                     try:
                         async with async_session() as db:
                             rows = (await db.execute(
-                                select(User.emby_username, User.trakt_username)
+                                select(User.emby_username, User.simkl_username)
                                 .join(WatchPartyParticipant, WatchPartyParticipant.user_id == User.id)
                                 .where(WatchPartyParticipant.party_id == int(party_id))
                             )).all()
                             participants = [
-                                r.emby_username or r.trakt_username or "Unknown"
+                                r.emby_username or r.simkl_username or "Unknown"
                                 for r in rows
                             ]
                     except Exception:
@@ -347,7 +347,7 @@ class WatchPartyService:
             result = []
             for party in rows:
                 participants = (await db.execute(
-                    select(User.emby_username, User.trakt_username)
+                    select(User.emby_username, User.simkl_username)
                     .join(WatchPartyParticipant, WatchPartyParticipant.user_id == User.id)
                     .where(WatchPartyParticipant.party_id == party.id)
                 )).all()
@@ -357,67 +357,65 @@ class WatchPartyService:
                     "status": party.status,
                     "ended_at": party.ended_at.isoformat() if party.ended_at else None,
                     "participants": [
-                        r.emby_username or r.trakt_username or "Unknown"
+                        r.emby_username or r.simkl_username or "Unknown"
                         for r in participants
                     ],
                 })
         return result
 
     # -----------------------------------------------------------------------
-    # Trakt Integration
+    # Simkl Integration
     # -----------------------------------------------------------------------
 
-    async def _trakt_checkin(self, user: User, emby_item: dict) -> None:
-        """Checkin to Trakt when party starts."""
-        if not user.trakt_access_token:
+    async def _simkl_checkin(self, user: User, emby_item: dict) -> None:
+        """Checkin to Simkl when party starts."""
+        if not user.simkl_access_token:
             return
         
         try:
-            trakt = TraktClient(
-                access_token=user.trakt_access_token,
-                refresh_token=user.trakt_refresh_token,
-                token_expires=user.trakt_token_expires,
-                token_refresh_callback=self._make_token_callback(user),
+            simkl = SimklClient(
+                access_token=user.simkl_access_token,
+                
+                token_expires=user.simkl_token_expires,
             )
             
-            # Build Trakt item payload from Emby item
+            # Build Simkl item payload from Emby item
             item_type = emby_item.get("Type", "Movie").lower()
-            trakt_id = None
+            simkl_id = None
             
-            # Extract Trakt ID from Emby's provider IDs
+            # Extract Simkl ID from Emby's provider IDs
             provider_ids = emby_item.get("ProviderIds", {})
             if item_type == "movie":
-                trakt_id = provider_ids.get("Tmdb")
-                if trakt_id:
-                    payload = {"movie": {"ids": {"tmdb": int(trakt_id)}}}
+                simkl_id = provider_ids.get("Tmdb")
+                if simkl_id:
+                    payload = {"movie": {"ids": {"tmdb": int(simkl_id)}}}
             else:  # episode or series
-                trakt_id = provider_ids.get("Tvdb")
-                if trakt_id:
-                    payload = {"show": {"ids": {"tvdb": int(trakt_id)}}}
+                simkl_id = provider_ids.get("Tvdb")
+                if simkl_id:
+                    payload = {"show": {"ids": {"tvdb": int(simkl_id)}}}
             
-            if not trakt_id:
-                log.warning("watch_party.trakt_checkin_failed", reason="no_trakt_id", item=emby_item.get("Name"))
+            if not simkl_id:
+                log.warning("watch_party.simkl_checkin_failed", reason="no_simkl_id", item=emby_item.get("Name"))
                 return
             
             # Checkin (optional message)
             message = f"Watching {emby_item.get('Name', 'unknown')} in a watch party!"
-            await trakt.checkin(payload, message=message)
-            log.info("watch_party.trakt_checkin", user_id=user.id, item=emby_item.get("Name"))
+            await simkl.checkin(payload, message=message)
+            log.info("watch_party.simkl_checkin", user_id=user.id, item=emby_item.get("Name"))
         
         except Exception as e:
-            log.error("watch_party.trakt_checkin_error", user_id=user.id, error=str(e))
+            log.error("watch_party.simkl_checkin_error", user_id=user.id, error=str(e))
 
-    async def _trakt_scrobble_stop(self, user: User, emby_item_id: str, position_ticks: int) -> None:
-        """Send scrobble-stop to Trakt when party ends."""
-        if not user.trakt_access_token:
+    async def _simkl_scrobble_stop(self, user: User, emby_item_id: str, position_ticks: int) -> None:
+        """Send scrobble-stop to Simkl when party ends."""
+        if not user.simkl_access_token:
             return
         
         try:
-            trakt = TraktClient(
-                access_token=user.trakt_access_token,
-                refresh_token=user.trakt_refresh_token,
-                token_expires=user.trakt_token_expires,
-                token_refresh_callback=self._make_token_callback(user),
+            simkl = SimklClient(
+                access_token=user.simkl_access_token,
+                
+                token_expires=user.simkl_token_expires,
             )
             
             # Get item details from Emby
@@ -451,22 +449,22 @@ class WatchPartyService:
                 progress = 90.0
             
             # Scrobble
-            await trakt.scrobble_stop(payload, progress=progress)
-            log.info("watch_party.trakt_scrobble", user_id=user.id, progress=f"{progress:.1f}%")
+            await simkl.scrobble_stop(payload, progress=progress)
+            log.info("watch_party.simkl_scrobble", user_id=user.id, progress=f"{progress:.1f}%")
         
         except Exception as e:
             err_str = str(e)
-            # 409 Conflict means Trakt has no active scrobble session to stop
+            # 409 Conflict means Simkl has no active scrobble session to stop
             # — harmless when party ends without a prior scrobble/start
             if "409" in err_str:
-                log.warning("watch_party.trakt_scrobble_409", user_id=user.id,
-                            detail="no active scrobble session on Trakt")
+                log.warning("watch_party.simkl_scrobble_409", user_id=user.id,
+                            detail="no active scrobble session on Simkl")
             else:
-                log.error("watch_party.trakt_scrobble_error", user_id=user.id, error=err_str)
+                log.error("watch_party.simkl_scrobble_error", user_id=user.id, error=err_str)
 
     async def record_reaction(self, code: str, user_id: int | None, emoji: str, position_ticks: int) -> None:
         """Persist an in-party emoji reaction so it can be rolled into the
-        end-of-party Trakt comment summary. Best-effort — a failure here
+        end-of-party Simkl comment summary. Best-effort — a failure here
         should never break the real-time broadcast that already happened."""
         if not emoji:
             return
@@ -492,7 +490,7 @@ class WatchPartyService:
 
     async def record_comment(self, code: str, user_id: int | None, username: str, comment_text: str) -> None:
         """Persist a user comment submitted during a watch party so it can
-        be included in the end-of-party Trakt comment. Best-effort."""
+        be included in the end-of-party Simkl comment. Best-effort."""
         if not comment_text or not comment_text.strip():
             return
         try:
@@ -515,12 +513,12 @@ class WatchPartyService:
         except Exception as e:
             log.warning("watch_party.comment_persist_failed", code=code, error=str(e))
 
-    async def _post_party_summary_to_trakt(self, party: WatchParty, participant_count: int) -> None:
+    async def _post_party_summary_to_simkl(self, party: WatchParty, participant_count: int) -> None:
         """Aggregate this party's reactions and user comments, then post a
-        summary comment to Trakt (via the host's account) when the party ends.
+        summary comment to Simkl (via the host's account) when the party ends.
 
-        Skipped entirely if the host never linked Trakt, if the item can't
-        be resolved to a Trakt-recognised ID, or if the party had no
+        Skipped entirely if the host never linked Simkl, if the item can't
+        be resolved to a Simkl-recognised ID, or if the party had no
         reactions, no comments, and only one participant.
         """
         try:
@@ -528,7 +526,7 @@ class WatchPartyService:
                 host = (await db.execute(
                     select(User).where(User.id == party.host_user_id)
                 )).scalar_one_or_none()
-                if not host or not host.trakt_access_token:
+                if not host or not host.simkl_access_token:
                     return
 
                 reactions = (await db.execute(
@@ -551,7 +549,7 @@ class WatchPartyService:
                         select(User).where(User.id == p.user_id)
                     )).scalar_one_or_none()
                     if u:
-                        name = u.emby_username or u.trakt_username or f"User {u.id}"
+                        name = u.emby_username or u.simkl_username or f"User {u.id}"
                         participant_names.append(name)
 
             if not reactions and not comments and participant_count < 2:
@@ -591,7 +589,7 @@ class WatchPartyService:
                 name = c.username or f"User {c.user_id or '?'}"
                 comment_lines.append(f"{name} - {c.comment_text}")
 
-            # Assemble full Trakt comment
+            # Assemble full Simkl comment
             if participant_names:
                 names_str = ", ".join(participant_names)
                 parts = [f"Watched with {names_str} in a watch party."]
@@ -603,20 +601,18 @@ class WatchPartyService:
                 parts.append(f"Reactions: {reaction_summary}.")
             comment = " ".join(parts)
 
-            trakt = TraktClient(
-                access_token=host.trakt_access_token,
-                refresh_token=host.trakt_refresh_token,
-                token_expires=host.trakt_token_expires,
-                token_refresh_callback=self._make_token_callback(host),
+            simkl = SimklClient(
+                access_token=host.simkl_access_token,
+                token_expires=host.simkl_token_expires,
             )
             try:
-                await trakt.post_comment(payload, comment, spoiler=False)
-                log.info("watch_party.trakt_comment_posted", party_id=party.id,
+                await simkl.post_comment(payload, comment, spoiler=False)
+                log.info("watch_party.simkl_comment_posted", party_id=party.id,
                          reactions=len(reactions), comments=len(comments))
             finally:
-                await trakt.close()
+                await simkl.close()
         except Exception as e:
-            log.error("watch_party.trakt_comment_error", party_id=party.id, error=str(e))
+            log.error("watch_party.simkl_comment_error", party_id=party.id, error=str(e))
 
     def _make_token_callback(self, user: User):
         """Create a token refresh callback for a user."""
@@ -626,9 +622,9 @@ class WatchPartyService:
             async with async_session() as db:
                 u = await db.get(User, user_id)
                 if u:
-                    u.trakt_access_token = access_token
-                    u.trakt_refresh_token = refresh_token
-                    u.trakt_token_expires = expires
+                    u.simkl_access_token = access_token
+                    _token
+                    u.simkl_token_expires = expires
                     await db.commit()
         return callback
 
@@ -875,7 +871,7 @@ class WatchPartyService:
 
         Sets a short-lived Redis flag per session so the webhook handler
         skips the playback.pause events that Emby fires during a seek
-        (Emby pauses → seeks → resumes, which would otherwise spam Trakt
+        (Emby pauses → seeks → resumes, which would otherwise spam Simkl
         with scrobble/pause calls).
         """
         r = await get_redis()
@@ -903,7 +899,7 @@ class WatchPartyService:
                 continue
             try:
                 # Suppress webhook pause processing for 10s — Emby fires
-                # playback.pause during seeks which would trigger Trakt scrobble
+                # playback.pause during seeks which would trigger Simkl scrobble
                 await r.setex(f"party_seek_suppress:{sid}", 10, "1")
                 await self.emby.send_play_state_command(
                     sid, "Seek", seek_ticks=position_ticks,
@@ -1070,7 +1066,7 @@ async def reaction(sid, data):
 
     Broadcasts immediately (unchanged), and separately persists the
     reaction (fire-and-forget) so it can be rolled into an end-of-party
-    Trakt comment summary.
+    Simkl comment summary.
     """
     code = data.get("code", "")
     await sio.emit("reaction", data, room=code, skip_sid=sid)
@@ -1081,10 +1077,10 @@ async def reaction(sid, data):
 
 @sio.event
 async def party_comment(sid, data):
-    """User comment for the Trakt summary: {code, user_id, username, text}.
+    """User comment for the Simkl summary: {code, user_id, username, text}.
 
     Broadcasts to the room as a chat message (so everyone sees it) and
-    persists to DB so it gets included in the end-of-party Trakt comment.
+    persists to DB so it gets included in the end-of-party Simkl comment.
     """
     code = data.get("code", "")
     await sio.emit("chat_message", data, room=code, skip_sid=sid)

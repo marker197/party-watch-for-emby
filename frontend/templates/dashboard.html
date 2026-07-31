@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Emby-Trakt Suite</title>
+<title>Emby-Simkl Suite</title>
 <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
 <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
@@ -193,7 +193,7 @@
   .log-area .entry.ok { color: var(--green); }
   .log-area .entry.err { color: var(--red); }
   .log-area .entry.mdblist { color: #3D7ABD; }
-  .log-area .entry.trakt-ok { color: #9F42C6; }
+  .log-area .entry.simkl-ok { color: #9F42C6; }
 
   /* Auth section */
   .auth-section {
@@ -654,7 +654,7 @@
 <body>
 <script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
 <nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
+    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
     <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">Dashboard</a>
     <a href="/lists" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📋 Lists</a>
     <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
@@ -671,7 +671,7 @@
 <div id="toastContainer" class="toast-container"></div>
 
 <div class="header">
-  <h1>Emby-Trakt Suite</h1>
+  <h1>Emby-Simkl Suite</h1>
   <span class="version">v2.1.1 - Build Complete</span>
   <div class="spacer"></div>
   <button class="theme-toggle" id="themeToggle" onclick="toggleSuiteTheme()">☀️ Light</button>
@@ -736,7 +736,7 @@
 
   <!-- Auth -->
   <div class="auth-section">
-    <h2>🔗 Link Trakt Account</h2>
+    <h2>🔗 Link Simkl Account</h2>
     <div class="input-group">
       <input id="embyUserId" placeholder="Emby User ID" />
       <input id="embyUsername" placeholder="Emby Username" />
@@ -764,7 +764,7 @@
           {{ 'ON' if features.smart_queue else 'OFF' }}
         </span>
       </div>
-      <p>Trakt-powered recommendations ranked by watchlist, trending, friends, and calendar data. Updated daily.</p>
+      <p>Simkl-powered recommendations ranked by watchlist, trending, friends, and calendar data. Updated daily.</p>
       <button class="btn btn-accent" onclick="triggerQueue()">Refresh Now</button>
       <button class="btn btn-blue btn-sm" id="btnToggleQueue" onclick="toggleQueue()">View Queue ▾</button>
 
@@ -779,7 +779,7 @@
           {{ 'ON' if features.ml_predictor else 'OFF' }}
         </span>
       </div>
-      <p>Trains on your Trakt ratings to predict scores for unwatched library items. Retrains weekly.</p>
+      <p>Trains on your Simkl ratings to predict scores for unwatched library items. Retrains weekly.</p>
       <button class="btn btn-green" onclick="trainModel()">Train Model</button>
       <button class="btn btn-blue btn-sm" onclick="viewPredictions()">View Predictions</button>
       <div id="mlOutput" class="log-area" style="display:none; margin-top:12px;"></div>
@@ -814,7 +814,7 @@
       <div class="card-header">
         <h2>🔍 Scrobble Audit</h2>
       </div>
-      <p>Items marked played in Emby but missing from Trakt — missed webhooks, downtime, etc. One-click or bulk backfill.</p>
+      <p>Items marked played in Emby but missing from Simkl — missed webhooks, downtime, etc. One-click or bulk backfill.</p>
       <button class="btn btn-blue btn-sm" id="btnToggleAudit" onclick="toggleAudit()">Run Audit ▾</button>
       <div id="auditOutput" class="log-area" style="display:none; margin-top:12px;"></div>
     </div>
@@ -834,7 +834,7 @@
       <div class="card-header">
         <h2>⏸️ Continue Watching</h2>
       </div>
-      <p>Resume where you left off — synced with Trakt playback progress.</p>
+      <p>Resume where you left off — synced with Simkl playback progress.</p>
       <button class="btn btn-blue btn-sm" id="btnToggleContinue" onclick="toggleContinue()">View Paused ▾</button>
     </div>
 
@@ -911,7 +911,7 @@
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
       <h3 style="font-size:0.95rem;">⏸️ Continue Watching</h3>
       <div style="display:flex;gap:6px;">
-        <button class="btn btn-sm" id="btnTraktSync" style="background:var(--surface-hover);color:var(--accent);" onclick="syncTraktPlayback()" title="Sync resume points with Trakt">🔄 Trakt Sync</button>
+        <button class="btn btn-sm" id="btnSimklSync" style="background:var(--surface-hover);color:var(--accent);" onclick="syncSimklPlayback()" title="Sync resume points with Simkl">🔄 Simkl Sync</button>
         <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleContinue()">✕ Close</button>
       </div>
     </div>
@@ -956,7 +956,7 @@
     <div id="activityFilters" style="display:flex; gap:4px; flex-wrap:wrap;">
       <button class="btn btn-sm activity-filter active" data-cat="" style="background:var(--accent);font-size:0.72rem;padding:3px 8px;" onclick="filterActivity(this,'')">All</button>
       <button class="btn btn-sm activity-filter" data-cat="webhook" style="background:var(--surface-hover);font-size:0.72rem;padding:3px 8px;" onclick="filterActivity(this,'webhook')">📡 Webhook</button>
-      <button class="btn btn-sm activity-filter" data-cat="trakt" style="background:var(--surface-hover);font-size:0.72rem;padding:3px 8px;" onclick="filterActivity(this,'trakt')">🔄 Trakt</button>
+      <button class="btn btn-sm activity-filter" data-cat="simkl" style="background:var(--surface-hover);font-size:0.72rem;padding:3px 8px;" onclick="filterActivity(this,'simkl')">🔄 Simkl</button>
       <button class="btn btn-sm activity-filter" data-cat="playback" style="background:var(--surface-hover);font-size:0.72rem;padding:3px 8px;" onclick="filterActivity(this,'playback')">▶️ Playback</button>
       <button class="btn btn-sm activity-filter" data-cat="general" style="background:var(--surface-hover);font-size:0.72rem;padding:3px 8px;" onclick="filterActivity(this,'general')">📋 General</button>
     </div>
@@ -1004,7 +1004,7 @@ async function loadUsers() {
   try {
     const r = await fetch(API + '/auth/users');
     allUsers = await r.json();
-    // Dashboard only shows Trakt-linked users
+    // Dashboard only shows Simkl-linked users
     const linkedUsers = allUsers.filter(u => u.linked);
     document.getElementById('userCount').textContent = linkedUsers.length;
     
@@ -1037,7 +1037,7 @@ async function loadUsers() {
       }
       return `<div class="user-row">
         <span class="name">${esc(u.emby_username || u.emby_user_id)}</span>
-        <span class="linked">✓ ${esc(u.trakt_username)}${tokenHtml}</span>
+        <span class="linked">✓ ${esc(u.simkl_username)}${tokenHtml}</span>
       </div>`;
     }).join('');
   } catch(e) {
@@ -1328,7 +1328,7 @@ async function startLink() {
 
   logTo('authOutput', 'Requesting device code…');
   try {
-    const r = await fetch(API + '/auth/trakt/device-code', {
+    const r = await fetch(API + '/auth/simkl/device-code', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({emby_user_id: uid, emby_username: uname})
@@ -1356,7 +1356,7 @@ async function startLink() {
     // Poll loop
     _authPollInterval = setInterval(async () => {
       try {
-        const pr = await fetch(API + '/auth/trakt/poll', {
+        const pr = await fetch(API + '/auth/simkl/poll', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({emby_user_id: uid, device_code: d.device_code})
@@ -1372,8 +1372,8 @@ async function startLink() {
         if (pd.status === 'linked') {
           clearInterval(_authPollInterval); _authPollInterval = null;
           clearTimeout(_authPollTimeout); _authPollTimeout = null;
-          logTo('authOutput', `Linked as ${pd.trakt_username}!`, 'ok');
-          glog(`User linked: ${pd.trakt_username}`, 'ok');
+          logTo('authOutput', `Linked as ${pd.simkl_username}!`, 'ok');
+          glog(`User linked: ${pd.simkl_username}`, 'ok');
           loadUsers();
         }
       } catch(e) {
@@ -1658,8 +1658,8 @@ async function viewQueue(skipTransition) {
         }
 
         // Block button
-        const blockBtn = i.trakt_id
-          ? `<button class="queue-block-btn" title="Never show again" onclick="blockQueueItem('${i.trakt_id}', '${safeTitle}', '${i.type || ''}')">✕</button>`
+        const blockBtn = i.simkl_id
+          ? `<button class="queue-block-btn" title="Never show again" onclick="blockQueueItem('${i.simkl_id}', '${safeTitle}', '${i.type || ''}')">✕</button>`
           : '';
 
         return `<tr id="queue-row-${n}">
@@ -1691,14 +1691,14 @@ async function viewQueue(skipTransition) {
   }
 }
 
-async function blockQueueItem(traktId, title, itemType) {
+async function blockQueueItem(simklId, title, itemType) {
   if (!currentUserId) return;
   if (!confirm(`Permanently hide "${title}" from your Smart Queue?\n\nIt will never appear again. You can undo this from Settings.`)) return;
   try {
     const r = await fetch(API + '/api/queue/block', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUserId, trakt_id: traktId, title: title, item_type: itemType }),
+      body: JSON.stringify({ user_id: currentUserId, simkl_id: simklId, title: title, item_type: itemType }),
     });
     const d = await r.json();
     if (d.status === 'ok') {
@@ -2145,7 +2145,7 @@ let _auditData = null;
 async function runAudit() {
   const el = document.getElementById('auditTable');
   const summary = document.getElementById('auditSummary');
-  el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Comparing Emby played items against Trakt history… this may take a moment.</div>';
+  el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Comparing Emby played items against Simkl history… this may take a moment.</div>';
   summary.innerHTML = '';
   document.getElementById('btnBackfillAll').style.display = 'none';
   try {
@@ -2159,7 +2159,7 @@ async function runAudit() {
 
     summary.innerHTML = `<div style="font-size:0.82rem; color:var(--text-dim);">` +
       `Emby played: ${s.emby_movies_played || 0} movies, ${s.emby_shows_played || 0} shows · ` +
-      `Trakt watched: ${s.trakt_movies_watched || 0} movies, ${s.trakt_shows_watched || 0} episodes · ` +
+      `Simkl watched: ${s.simkl_movies_watched || 0} movies, ${s.simkl_shows_watched || 0} episodes · ` +
       `<span style="color:${(movies.length + shows.length) > 0 ? 'var(--orange)' : 'var(--green)'}; font-weight:600;">` +
       `${movies.length} movies, ${s.episodes || shows.length} episodes missed</span></div>`;
 
@@ -2268,7 +2268,7 @@ function _updateAuditSummary() {
   if (!summary) return;
   summary.innerHTML = `<div style="font-size:0.82rem; color:var(--text-dim);">` +
     `Emby played: ${s.emby_movies_played || 0} movies, ${s.emby_shows_played || 0} shows · ` +
-    `Trakt watched: ${s.trakt_movies_watched || 0} movies, ${s.trakt_shows_watched || 0} episodes · ` +
+    `Simkl watched: ${s.simkl_movies_watched || 0} movies, ${s.simkl_shows_watched || 0} episodes · ` +
     `<span style="color:${(movies.length + totalEps) > 0 ? 'var(--orange)' : 'var(--green)'}; font-weight:600;">` +
     `${movies.length} movies, ${totalEps} episodes missed</span></div>`;
   const btnAll = document.getElementById('btnBackfillAll');
@@ -2537,7 +2537,7 @@ async function dashboardPoll() {
         const apiHtml = entries.map(e => {
           let icon = '•';
           const m = e.msg;
-          if (m.startsWith('▶ Trakt watching') || m.startsWith('▶ Trakt resumed')) icon = '▶️';
+          if (m.startsWith('▶ Simkl watching') || m.startsWith('▶ Simkl resumed')) icon = '▶️';
           else if (m.startsWith('⏸')) icon = '⏸️';
           else if (m.startsWith('⏹') || m.includes('stopped')) icon = '⏹️';
           else if (m.startsWith('✓ Synced')) icon = '✅';
@@ -2550,11 +2550,11 @@ async function dashboardPoll() {
           else if (m.includes('universe') || m.includes('Universe')) icon = '🌌';
           else if (m.includes('ML') || m.includes('Train') || m.includes('predict')) icon = '🤖';
           else if (m.includes('cache') || m.includes('Cache')) icon = '💾';
-          else if (e.cat === 'trakt') icon = '🔄';
+          else if (e.cat === 'simkl') icon = '🔄';
           else if (e.cat === 'webhook') icon = '📡';
           let cls = '';
           if (m.includes('Synced to MDBList')) cls = 'mdblist';
-          else if (m.startsWith('✓ Trakt scrobbled') || m.includes('Synced to Trakt')) cls = 'trakt-ok';
+          else if (m.startsWith('✓ Simkl scrobbled') || m.includes('Synced to Simkl')) cls = 'simkl-ok';
           else if (m.startsWith('✓')) cls = 'ok';
           else if (m.startsWith('✗') || m.startsWith('⚠')) cls = 'err';
           return `<div class="entry ${cls}"><span style="opacity:0.45;font-size:0.78rem;">${e.ts.split(' ')[1]}</span>  ${icon} ${esc(m)}</div>`;
@@ -2574,7 +2574,7 @@ async function dashboardPoll() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Continue Watching (with Trakt playback sync + Emby play)
+// Continue Watching (with Simkl playback sync + Emby play)
 // ═══════════════════════════════════════════════════════════════════════════
 
 let _continueLoaded = false;
@@ -2760,10 +2760,10 @@ function pickEpisodeAndPlay(btnEl) {
   document.body.insertAdjacentHTML('beforeend', pickerHtml);
 }
 
-// ── Trakt playback sync ──
+// ── Simkl playback sync ──
 
-async function syncTraktPlayback() {
-  const btn = document.getElementById('btnTraktSync');
+async function syncSimklPlayback() {
+  const btn = document.getElementById('btnSimklSync');
   btn.disabled = true;
   btn.textContent = '🔄 Syncing…';
 
@@ -2774,14 +2774,14 @@ async function syncTraktPlayback() {
     const unsynced = items.filter(i => !i.synced);
     const stale = items.filter(i => i.days_stale != null && i.days_stale > 30);
 
-    let msg = items.length + ' item(s) on Trakt';
+    let msg = items.length + ' item(s) on Simkl';
     if (unsynced.length) msg += ', ' + unsynced.length + ' out of sync with Emby';
     if (stale.length) msg += ', ' + stale.length + ' stale (>30d)';
 
     // Show sync details below the button
     const container = document.getElementById('continueTable');
     let syncHtml = '<div style="background:var(--surface-hover);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:12px;">';
-    syncHtml += '<div style="font-size:0.82rem;font-weight:600;color:var(--accent);margin-bottom:6px;">🔄 Trakt Playback Status</div>';
+    syncHtml += '<div style="font-size:0.82rem;font-weight:600;color:var(--accent);margin-bottom:6px;">🔄 Simkl Playback Status</div>';
     syncHtml += '<div style="font-size:0.78rem;color:var(--text-dim);margin-bottom:8px;">' + msg + '</div>';
 
     if (items.length) {
@@ -2791,14 +2791,14 @@ async function syncTraktPlayback() {
         const staleTag = item.days_stale != null && item.days_stale > 30
           ? ' <span style="color:var(--red);font-size:0.68rem;">(stale ' + item.days_stale + 'd)</span>' : '';
         const epLabel = item.episode ? ' <span style="color:var(--text-dim);font-size:0.75rem;">' + item.episode + '</span>' : '';
-        const traktP = 'Trakt: ' + item.trakt_progress + '%';
+        const simklP = 'Simkl: ' + item.simkl_progress + '%';
         const embyP = item.emby_progress != null ? ' · Emby: ' + item.emby_progress + '%' : ' · not in Emby';
-        const removeBtn = '<button onclick="removeTraktPb(' + item.trakt_playback_id + ')" style="background:none;border:1px solid var(--red);color:var(--red);padding:1px 5px;border-radius:3px;cursor:pointer;font-size:0.68rem;margin-left:6px;" title="Remove from Trakt">✕</button>';
+        const removeBtn = '<button onclick="removeSimklPb(' + item.simkl_playback_id + ')" style="background:none;border:1px solid var(--red);color:var(--red);padding:1px 5px;border-radius:3px;cursor:pointer;font-size:0.68rem;margin-left:6px;" title="Remove from Simkl">✕</button>';
 
         syncHtml += '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 8px;border-bottom:1px solid var(--border);font-size:0.82rem;">'
           + '<span style="color:' + syncColor + ';margin-right:5px;">' + syncIcon + '</span>'
           + '<span style="flex:1;">' + esc(item.title) + epLabel + staleTag + '</span>'
-          + '<span style="font-size:0.72rem;color:var(--text-dim);white-space:nowrap;">' + traktP + embyP + removeBtn + '</span>'
+          + '<span style="font-size:0.72rem;color:var(--text-dim);white-space:nowrap;">' + simklP + embyP + removeBtn + '</span>'
           + '</div>';
       });
     }
@@ -2811,21 +2811,21 @@ async function syncTraktPlayback() {
     const cleaned = existing.replace(/<div style="background:var\(--surface-hover\).*?<\/div>\s*<\/div>/s, '');
     container.innerHTML = syncHtml + cleaned;
 
-    showToast('Trakt Sync', unsynced.length ? 'error' : 'ok', null, unsynced.length ? msg : null);
+    showToast('Simkl Sync', unsynced.length ? 'error' : 'ok', null, unsynced.length ? msg : null);
   } catch(e) {
-    showToast('Trakt Sync', 'error', null, e.message);
+    showToast('Simkl Sync', 'error', null, e.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = '🔄 Trakt Sync';
+    btn.textContent = '🔄 Simkl Sync';
   }
 }
 
-async function removeTraktPb(playbackId) {
+async function removeSimklPb(playbackId) {
   try {
     const r = await fetch(API + `/api/playback-sync/${currentUserId}/${playbackId}`, {method:'DELETE'});
     if (r.ok) {
-      showToast('Trakt Sync', 'ok');
-      await syncTraktPlayback();
+      showToast('Simkl Sync', 'ok');
+      await syncSimklPlayback();
     }
   } catch(e) { /* ignore */ }
 }
@@ -3270,7 +3270,7 @@ function init() {
       if (el.textContent === 'No activity yet') el.innerHTML = '';
       let icon = '•';
       const m = e.msg;
-      if (m.startsWith('▶ Trakt watching') || m.startsWith('▶ Trakt resumed')) icon = '▶️';
+      if (m.startsWith('▶ Simkl watching') || m.startsWith('▶ Simkl resumed')) icon = '▶️';
       else if (m.startsWith('⏸')) icon = '⏸️';
       else if (m.startsWith('⏹') || m.includes('stopped')) icon = '⏹️';
       else if (m.startsWith('✓ Synced')) icon = '✅';
@@ -3283,12 +3283,12 @@ function init() {
       else if (m.includes('universe') || m.includes('Universe')) icon = '🌌';
       else if (m.includes('ML') || m.includes('Train') || m.includes('predict')) icon = '🤖';
       else if (m.includes('cache') || m.includes('Cache')) icon = '💾';
-      else if (e.cat === 'trakt') icon = '🔄';
+      else if (e.cat === 'simkl') icon = '🔄';
       else if (e.cat === 'webhook') icon = '📡';
       const ts = (e.ts || '').split(' ')[1] || '';
       let cls = '';
       if (m.includes('Synced to MDBList')) cls = 'mdblist';
-      else if (m.startsWith('✓ Trakt scrobbled') || m.includes('Synced to Trakt')) cls = 'trakt-ok';
+      else if (m.startsWith('✓ Simkl scrobbled') || m.includes('Synced to Simkl')) cls = 'simkl-ok';
       else if (m.startsWith('✓')) cls = 'ok';
       else if (m.startsWith('✗') || m.startsWith('⚠')) cls = 'err';
       const div = document.createElement('div');

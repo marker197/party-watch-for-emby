@@ -1,10 +1,10 @@
-"""Missed Scrobble Audit — surface items played in Emby but absent from Trakt.
+"""Missed Scrobble Audit — surface items played in Emby but absent from Simkl.
 
-Compares Emby's per-user played status (UserData.Played) against the Trakt
+Compares Emby's per-user played status (UserData.Played) against the Simkl
 watched list for both movies and shows.  Items present in Emby as played but
-missing from the Trakt watched set are flagged as missed scrobbles.
+missing from the Simkl watched set are flagged as missed scrobbles.
 
-Supports one-click and bulk backfill via Trakt's POST /sync/history.
+Supports one-click and bulk backfill via Simkl's POST /sync/history.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import structlog
 from sqlalchemy import select
 
 from app.models.schema import User, AppSetting
-from app.utils.trakt_client import TraktClient
+from app.utils.simkl_client import SimklClient
 from app.utils.emby_client import EmbyClient
 from app.utils.redis_cache import get_redis
 from app.utils.secure_redis import secure_get, secure_set
@@ -30,17 +30,17 @@ AUDIT_CACHE_TTL = 3600  # 1h — avoids hammering both APIs on repeated opens
 class ScrobbleAuditService:
 
     async def run_audit(self, user: User, force: bool = False) -> dict:
-        """Compare Emby played items against Trakt and/or MDBList watched history.
+        """Compare Emby played items against Simkl and/or MDBList watched history.
 
         Returns {movies: [...], shows: [...], summary: {...}}.
         Each item includes enough metadata for display + backfill.
         """
         # Determine which providers are active
         providers = await self._get_active_providers()
-        has_trakt = "trakt" in providers and user.trakt_access_token
+        has_simkl = "simkl" in providers and user.simkl_access_token
         has_mdblist = "mdblist" in providers and await self._get_mdblist_key()
 
-        if not user.emby_user_id or (not has_trakt and not has_mdblist):
+        if not user.emby_user_id or (not has_simkl and not has_mdblist):
             return {"movies": [], "shows": [], "summary": {"movies": 0, "shows": 0}}
 
         # Check cache first (skip if force)
@@ -54,14 +54,14 @@ class ScrobbleAuditService:
             except Exception:
                 pass
 
-        trakt = await self._make_trakt(user) if has_trakt else None
+        simkl = await self._make_simkl(user) if has_simkl else None
         mdb = await self._make_mdblist() if has_mdblist else None
         emby = EmbyClient()
         try:
-            result = await self._compare(trakt, emby, user, mdb=mdb)
+            result = await self._compare(simkl, emby, user, mdb=mdb)
         finally:
-            if trakt:
-                await trakt.close()
+            if simkl:
+                await simkl.close()
             if mdb:
                 await mdb.close()
             await emby.close()
@@ -157,7 +157,7 @@ class ScrobbleAuditService:
         return {"undismissed": emby_id}
 
     async def backfill(self, user: User, items: list[dict]) -> dict:
-        """Send items to Trakt watch history.
+        """Send items to Simkl watch history.
 
         Movies: {type: "movie", imdb_id, tmdb_id, title, last_played}
         Shows:  {type: "show", imdb_id, tmdb_id, tvdb_id, title, episodes: [{season, episode, last_played}, ...]}
@@ -165,7 +165,7 @@ class ScrobbleAuditService:
         if not items:
             return {"added": 0}
 
-        trakt = await self._make_trakt(user)
+        simkl = await self._make_simkl(user)
         try:
             payload = []
             for item in items:
@@ -180,7 +180,7 @@ class ScrobbleAuditService:
                     continue
 
                 if item.get("type") == "show" and item.get("episodes"):
-                    # Episode-level backfill: one Trakt entry per episode
+                    # Episode-level backfill: one Simkl entry per episode
                     for ep in item["episodes"]:
                         watched_at = ep.get("last_played")
                         if not watched_at:
@@ -212,7 +212,7 @@ class ScrobbleAuditService:
             if not payload:
                 return {"added": 0}
 
-            result = await trakt.add_to_history(payload)
+            result = await simkl.add_to_history(payload)
             added_movies = result.get("added", {}).get("movies", 0)
             added_episodes = result.get("added", {}).get("episodes", 0)
             added_shows = result.get("added", {}).get("shows", 0)
@@ -229,7 +229,7 @@ class ScrobbleAuditService:
 
             return {"added": total, "detail": result.get("added", {})}
         finally:
-            await trakt.close()
+            await simkl.close()
 
     # ------------------------------------------------------------------
 
@@ -262,31 +262,31 @@ class ScrobbleAuditService:
             start += batch
         return items
 
-    async def _compare(self, trakt: TraktClient | None, emby: EmbyClient, user: User, mdb=None) -> dict:
+    async def _compare(self, simkl: SimklClient | None, emby: EmbyClient, user: User, mdb=None) -> dict:
         # ── Dismissed items ──
         dismissed = set(await self.get_dismissed(user.id))
 
-        # ── Trakt side: build sets of watched IDs ──
-        trakt_movie_ids: set[str] = set()
+        # ── Simkl side: build sets of watched IDs ──
+        simkl_movie_ids: set[str] = set()
 
-        if trakt:
+        if simkl:
             try:
-                trakt_movies = await trakt.get_watched(kind="movies")
-                for entry in trakt_movies:
+                simkl_movies = await simkl.get_watched(kind="movies")
+                for entry in simkl_movies:
                     ids = entry.get("movie", {}).get("ids", {})
                     for key in ("imdb", "tmdb", "tvdb"):
                         val = ids.get(key)
                         if val:
-                            trakt_movie_ids.add(f"{key}:{val}")
+                            simkl_movie_ids.add(f"{key}:{val}")
             except Exception:
-                log.warning("scrobble_audit.trakt_movies_failed")
+                log.warning("scrobble_audit.simkl_movies_failed")
 
-        # Trakt shows: build a set of "showkey:SxxExx" for episode-level matching
-        trakt_watched_eps: set[str] = set()  # "{imdb_or_tvdb}:S{s}E{e}"
-        if trakt:
+        # Simkl shows: build a set of "showkey:SxxExx" for episode-level matching
+        simkl_watched_eps: set[str] = set()  # "{imdb_or_tvdb}:S{s}E{e}"
+        if simkl:
             try:
-                trakt_shows = await trakt.get_watched(kind="shows")
-                for entry in trakt_shows:
+                simkl_shows = await simkl.get_watched(kind="shows")
+                for entry in simkl_shows:
                     show_ids = entry.get("show", {}).get("ids", {})
                     # Build all provider keys for this show
                     show_keys: list[str] = []
@@ -301,19 +301,19 @@ class ScrobbleAuditService:
                             e_num = ep.get("number", 0)
                             ep_tag = f"S{s_num}E{e_num}"
                             for sk in show_keys:
-                                trakt_watched_eps.add(f"{sk}:{ep_tag}")
+                                simkl_watched_eps.add(f"{sk}:{ep_tag}")
             except Exception:
-                log.warning("scrobble_audit.trakt_shows_failed")
+                log.warning("scrobble_audit.simkl_shows_failed")
 
-        # Episode-level provider IDs from Trakt history — catches numbering
-        # mismatches between Emby and Trakt (e.g. The Pitt S2E24 vs S2E14)
-        trakt_ep_ids: set[str] = set()
-        if trakt:
+        # Episode-level provider IDs from Simkl history — catches numbering
+        # mismatches between Emby and Simkl (e.g. The Pitt S2E24 vs S2E14)
+        simkl_ep_ids: set[str] = set()
+        if simkl:
             try:
-                trakt_ep_ids = await trakt.get_watched_episode_ids()
-                log.info("scrobble_audit.trakt_episode_ids", count=len(trakt_ep_ids))
+                simkl_ep_ids = await simkl.get_watched_episode_ids()
+                log.info("scrobble_audit.simkl_episode_ids", count=len(simkl_ep_ids))
             except Exception:
-                log.warning("scrobble_audit.trakt_ep_ids_failed")
+                log.warning("scrobble_audit.simkl_ep_ids_failed")
 
         # ── MDBList side: merge watched data into the same sets ──
         if mdb:
@@ -322,15 +322,15 @@ class ScrobbleAuditService:
                 # Movies
                 for entry in mdb_watched.get("movies", []):
                     ids = entry.get("movie", {}).get("ids", {})
-                    for key in ("imdb", "tmdb", "tvdb", "trakt"):
+                    for key in ("imdb", "tmdb", "tvdb", "simkl"):
                         val = ids.get(key)
                         if val:
-                            trakt_movie_ids.add(f"{key}:{val}")
+                            simkl_movie_ids.add(f"{key}:{val}")
                 # Shows (episode-level)
                 for entry in mdb_watched.get("shows", []):
                     show_ids = entry.get("show", {}).get("ids", {})
                     show_keys_mdb: list[str] = []
-                    for key in ("imdb", "tvdb", "tmdb", "trakt"):
+                    for key in ("imdb", "tvdb", "tmdb", "simkl"):
                         val = show_ids.get(key)
                         if val:
                             show_keys_mdb.append(f"{key}:{val}")
@@ -340,13 +340,13 @@ class ScrobbleAuditService:
                             e_num = ep.get("number", 0)
                             ep_tag = f"S{s_num}E{e_num}"
                             for sk in show_keys_mdb:
-                                trakt_watched_eps.add(f"{sk}:{ep_tag}")
+                                simkl_watched_eps.add(f"{sk}:{ep_tag}")
                             # Also add to episode-level ID set
                             ep_ids = ep.get("ids", {})
                             for key in ("imdb", "tmdb", "tvdb"):
                                 val = ep_ids.get(key)
                                 if val:
-                                    trakt_ep_ids.add(f"{key}:{val}")
+                                    simkl_ep_ids.add(f"{key}:{val}")
                 log.info("scrobble_audit.mdblist_watched_merged",
                          movies=len(mdb_watched.get("movies", [])),
                          shows=len(mdb_watched.get("shows", [])))
@@ -365,15 +365,15 @@ class ScrobbleAuditService:
 
             provider_ids = item.get("ProviderIds", {})
             item_keys = set()
-            for prov, trakt_key in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
+            for prov, simkl_key in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
                 val = provider_ids.get(prov)
                 if val:
-                    item_keys.add(f"{trakt_key}:{val}")
+                    item_keys.add(f"{simkl_key}:{val}")
 
             if not item_keys:
                 continue  # can't match without IDs
 
-            if not item_keys & trakt_movie_ids:
+            if not item_keys & simkl_movie_ids:
                 # Dedup: multiple resolutions of the same movie share provider IDs.
                 # Use IMDB or TMDB as the dedup key; keep the copy with the latest play date.
                 dedup_key = provider_ids.get("Imdb") or provider_ids.get("Tmdb") or ""
@@ -429,12 +429,12 @@ class ScrobbleAuditService:
             series_year = series.get("ProductionYear")
             series_providers = series.get("ProviderIds", {})
 
-            # Build show-level keys for Trakt matching
+            # Build show-level keys for Simkl matching
             show_keys: list[str] = []
-            for prov, trakt_key in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
+            for prov, simkl_key in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
                 val = series_providers.get(prov)
                 if val:
-                    show_keys.append(f"{trakt_key}:{val}")
+                    show_keys.append(f"{simkl_key}:{val}")
             if not show_keys:
                 continue
 
@@ -445,7 +445,7 @@ class ScrobbleAuditService:
             if not played_episodes:
                 continue
 
-            # Compare each played episode against Trakt
+            # Compare each played episode against Simkl
             missing_eps = []
             for ep in played_episodes:
                 s_num = ep.get("ParentIndexNumber", 0)
@@ -454,20 +454,20 @@ class ScrobbleAuditService:
                     continue  # specials without numbering — skip
                 ep_tag = f"S{s_num}E{e_num}"
 
-                # Check 1: SxxExx match against Trakt watched shows
+                # Check 1: SxxExx match against Simkl watched shows
                 found = False
                 for sk in show_keys:
-                    if f"{sk}:{ep_tag}" in trakt_watched_eps:
+                    if f"{sk}:{ep_tag}" in simkl_watched_eps:
                         found = True
                         break
 
                 # Check 2: episode-level provider ID match (handles numbering
-                # mismatches like The Pitt S2E24 in Emby = S2E14 on Trakt)
-                if not found and trakt_ep_ids:
+                # mismatches like The Pitt S2E24 in Emby = S2E14 on Simkl)
+                if not found and simkl_ep_ids:
                     ep_providers = ep.get("ProviderIds", {})
-                    for prov, trakt_key in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
+                    for prov, simkl_key in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
                         val = ep_providers.get(prov)
-                        if val and f"{trakt_key}:{val}" in trakt_ep_ids:
+                        if val and f"{simkl_key}:{val}" in simkl_ep_ids:
                             found = True
                             break
 
@@ -512,12 +512,12 @@ class ScrobbleAuditService:
 
         log.info("scrobble_audit.complete", user=user.emby_username,
                  emby_movies=len(emby_movies), emby_series=len(emby_all_series),
-                 trakt_movie_ids=len(trakt_movie_ids),
-                 trakt_watched_eps=len(trakt_watched_eps),
-                 trakt_ep_ids=len(trakt_ep_ids),
+                 simkl_movie_ids=len(simkl_movie_ids),
+                 simkl_watched_eps=len(simkl_watched_eps),
+                 simkl_ep_ids=len(simkl_ep_ids),
                  dismissed=len(dismissed),
                  missing_movies=len(missing_movies),
-                 deduped_movies=len(emby_movies) - len(missing_movies) - len(trakt_movie_ids) if len(seen_movie_keys) else 0,
+                 deduped_movies=len(emby_movies) - len(missing_movies) - len(simkl_movie_ids) if len(seen_movie_keys) else 0,
                  missing_shows=len(missing_shows),
                  missing_episodes=total_missing_eps)
 
@@ -530,8 +530,8 @@ class ScrobbleAuditService:
                 "episodes": total_missing_eps,
                 "emby_movies_played": sum(1 for m in emby_movies if m.get("UserData", {}).get("Played")),
                 "emby_shows_played": len(emby_all_series),
-                "trakt_movies_watched": len(set(k.split(":")[1] for k in trakt_movie_ids if k.startswith("imdb:")) or trakt_movie_ids),
-                "trakt_shows_watched": len(trakt_watched_eps),
+                "simkl_movies_watched": len(set(k.split(":")[1] for k in simkl_movie_ids if k.startswith("imdb:")) or simkl_movie_ids),
+                "simkl_shows_watched": len(simkl_watched_eps),
             },
         }
 
@@ -599,20 +599,18 @@ class ScrobbleAuditService:
         return items
 
     @staticmethod
-    async def _make_trakt(user: User) -> TraktClient:
+    async def _make_simkl(user: User) -> SimklClient:
         async def on_token_refresh(access, refresh, expires):
             async with async_session() as db:
                 u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.trakt_access_token = access
-                u.trakt_refresh_token = refresh
-                u.trakt_token_expires = expires
+                u.simkl_access_token = access
+                
+                u.simkl_token_expires = expires
                 await db.commit()
 
-        return TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=on_token_refresh,
+        return SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
         )
 
     @staticmethod
@@ -624,12 +622,12 @@ class ScrobbleAuditService:
             if raw:
                 val = raw if isinstance(raw, str) else raw.decode()
                 if val == "both":
-                    return {"trakt", "mdblist"}
-                if val in ("trakt", "mdblist"):
+                    return {"simkl", "mdblist"}
+                if val in ("simkl", "mdblist"):
                     return {val}
         except Exception:
             pass
-        return {"trakt"}  # legacy default
+        return {"simkl"}  # legacy default
 
     @staticmethod
     async def _get_mdblist_key() -> str:

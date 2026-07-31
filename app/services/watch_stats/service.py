@@ -21,7 +21,7 @@ from app.utils.database import async_session
 
 log = structlog.get_logger()
 
-STATS_CACHE_TTL = 600  # 10 minutes (was 1 hour with Trakt API)
+STATS_CACHE_TTL = 600  # 10 minutes (was 1 hour with Simkl API)
 
 
 class WatchStatsService:

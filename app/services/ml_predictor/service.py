@@ -1,6 +1,6 @@
 """Service #2 — ML Rating Predictor.
 
-1. Fetches user's complete Trakt rating history
+1. Fetches user's complete Simkl rating history
 2. Extracts feature vectors:
    - Genres (one-hot, 21 genres)
    - Year, decade, runtime
@@ -8,7 +8,7 @@
    - Actors (top-N frequent from user's history, one-hot)
    - Directors (top-N frequent, one-hot)
    - Studios/Networks (top-N frequent, one-hot)
-   - Trakt community rating
+   - Simkl community rating
 3. Trains a gradient-boosted regressor per user
 4. Predicts ratings for every unwatched item in Emby library
 5. Stores predictions + confidence + human-readable explanations
@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.schema import MLModel, Prediction, User, UserRating, AppSetting
-from app.utils.trakt_client import TraktClient
+from app.utils.simkl_client import SimklClient
 from app.utils.database import async_session
 from app.utils.emby_client import EmbyClient
 from app.utils.library_cache import LibraryCache
@@ -55,7 +55,7 @@ TOP_N_ACTORS = 30      # one-hot encode top-30 most frequent actors
 TOP_N_DIRECTORS = 15   # one-hot encode top-15 most frequent directors
 TOP_N_STUDIOS = 10     # one-hot encode top-10 most frequent studios
 
-# Emby/TMDB genre labels → canonical Trakt-style tokens used by the model
+# Emby/TMDB genre labels → canonical Simkl-style tokens used by the model
 GENRE_ALIASES = {
     "science fiction": ["science-fiction"],
     "sci-fi": ["science-fiction"],
@@ -109,7 +109,7 @@ class MLPredictorService:
         try:
             async with async_session() as db:
                 users = (await db.execute(
-                    select(User).where(User.trakt_access_token.isnot(None))
+                    select(User).where(User.simkl_access_token.isnot(None))
                 )).scalars().all()
 
             for user in users:
@@ -142,20 +142,18 @@ class MLPredictorService:
         async def on_token_refresh(access, refresh, expires):
             async with async_session() as db:
                 u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.trakt_access_token = access
-                u.trakt_refresh_token = refresh
-                u.trakt_token_expires = expires
+                u.simkl_access_token = access
+                
+                u.simkl_token_expires = expires
                 await db.commit()
 
-        trakt = TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=on_token_refresh,
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
         )
         try:
             # 1. Fetch and cache ratings
-            ratings = await self._fetch_and_cache_ratings(trakt, user)
+            ratings = await self._fetch_and_cache_ratings(simkl, user)
             # Minimum ratings for training: configurable via ML_MIN_RATINGS
             # (default 5, hard floor 3 for cross-validation). More ratings =
             # better predictions; below ~15 expect rough results.
@@ -165,7 +163,7 @@ class MLPredictorService:
                 return {
                     "status": "skipped",
                     "reason": f"only {len(ratings)} rating(s) found — need at least {min_ratings}. "
-                              f"Rate more items on Trakt, then retrain.",
+                              f"Rate more items on Simkl, then retrain.",
                 }
 
             # 2. Enrich with Emby metadata (actors, directors, studios)
@@ -240,7 +238,7 @@ class MLPredictorService:
             log.info("ml_predictor.trained", user=user.emby_username, **result)
             return result
         finally:
-            await trakt.close()
+            await simkl.close()
 
     async def get_predictions(self, user_id: int, limit: int = 50) -> list[dict]:
         async with async_session() as db:
@@ -267,25 +265,25 @@ class MLPredictorService:
         ]
 
     # -----------------------------------------------------------------------
-    # Fetch & cache Trakt ratings
+    # Fetch & cache Simkl ratings
     # -----------------------------------------------------------------------
 
-    async def _fetch_and_cache_ratings(self, trakt: TraktClient, user: User) -> list[dict]:
-        raw_ratings = await trakt.get_user_ratings(kind="all")
+    async def _fetch_and_cache_ratings(self, simkl: SimklClient, user: User) -> list[dict]:
+        raw_ratings = await simkl.get_user_ratings(kind="all")
 
         rows = []
         for entry in raw_ratings:
             item = entry.get("movie") or entry.get("show") or {}
             rows.append({
-                "trakt_id": str(item.get("ids", {}).get("trakt", "")),
-                "trakt_slug": item.get("ids", {}).get("slug", ""),
+                "simkl_id": str(item.get("ids", {}).get("simkl", "")),
+                "simkl_slug": item.get("ids", {}).get("slug", ""),
                 "title": item.get("title", ""),
                 "item_type": "movie" if "movie" in entry else "show",
                 "rating": entry.get("rating", 0),
                 "genres": item.get("genres", []),
                 "year": item.get("year"),
                 "runtime": item.get("runtime"),
-                "trakt_rating": item.get("rating"),  # community rating
+                "simkl_rating": item.get("rating"),  # community rating
                 "ids": item.get("ids", {}),
                 "rated_at": entry.get("rated_at"),
             })
@@ -296,15 +294,15 @@ class MLPredictorService:
             for r in rows:
                 db.add(UserRating(
                     user_id=user.id,
-                    trakt_id=r["trakt_id"],
-                    trakt_slug=r["trakt_slug"],
+                    simkl_id=r["simkl_id"],
+                    simkl_slug=r["simkl_slug"],
                     title=r["title"],
                     item_type=r["item_type"],
                     rating=r["rating"],
                     genres=r["genres"],
                     year=r["year"],
                     runtime=r["runtime"],
-                    trakt_rating=r.get("trakt_rating"),
+                    simkl_rating=r.get("simkl_rating"),
                     rated_at=(
                         datetime.fromisoformat(r["rated_at"].replace("Z", "+00:00"))
                         .astimezone(timezone.utc)
@@ -327,8 +325,8 @@ class MLPredictorService:
             item_data = {
                 **r,
                 "actors": [], "directors": [], "studios": [],
-                # Trakt community rating (extended=full) covers items not in the library
-                "community_rating": r.get("trakt_rating") or 0,
+                # Simkl community rating (extended=full) covers items not in the library
+                "community_rating": r.get("simkl_rating") or 0,
             }
 
             # Try library cache first

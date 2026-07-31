@@ -15,12 +15,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schema import (
-    SocialWatching, LibraryGap, LibraryHealthReport, BulkAction, User
+    LibraryGap, LibraryHealthReport, BulkAction, User
 )
-from app.services.social_watching import SocialWatchingService
 from app.services.library_health import LibraryHealthMonitor
-from app.utils.database import get_db, async_session
-from app.utils.trakt_client import TraktClient
+from app.utils.database import get_db
+from app.utils.simkl_client import SimklClient
 from app.utils.library_cache import LibraryCache
 from app.utils.emby_client import EmbyClient
 
@@ -41,198 +40,75 @@ def _get_emby_client() -> EmbyClient:
     return EmbyClient()
 
 
-async def _get_user_trakt(user_id: int, db: AsyncSession) -> TraktClient:
-    """Build an authenticated TraktClient for the given user."""
+async def _get_user_simkl(user_id: int, db: AsyncSession) -> SimklClient:
+    """Build an authenticated SimklClient for the given user."""
     user = await db.get(User, user_id)
-    if not user or not user.trakt_access_token:
-        raise HTTPException(status_code=401, detail="User has no linked Trakt account")
+    if not user or not user.simkl_access_token:
+        raise HTTPException(status_code=401, detail="User has no linked Simkl account")
 
-    async def _on_refresh(access: str, refresh: str, expires: datetime) -> None:
-        async with async_session() as _db:
-            u = await _db.get(User, user.id)
-            u.trakt_access_token = access
-            u.trakt_refresh_token = refresh
-            u.trakt_token_expires = expires
-            await _db.commit()
-
-    return TraktClient(
-        access_token=user.trakt_access_token,
-        refresh_token=user.trakt_refresh_token,
-        token_expires=user.trakt_token_expires,
-        token_refresh_callback=_on_refresh,
+    return SimklClient(
+        access_token=user.simkl_access_token,
+        token_expires=user.simkl_token_expires,
     )
 
 
 # ============================================================================
-# SOCIAL WATCHING GRAPH (#6) - 5 Endpoints
+# SOCIAL WATCHING GRAPH (#6) - Disabled (Simkl has no social/friends API)
 # ============================================================================
+
+_SOCIAL_UNAVAILABLE = {
+    "success": False,
+    "detail": "Social watching is not available with Simkl (no friends API)"
+}
+
 
 @router.get("/social/friends-watching/{user_id}")
 async def get_friends_watching_now(
     user_id: int,
     limit: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Get friends currently watching content in real-time.
-    
-    Returns:
-        [{
-            'friend_username': str,
-            'current_item': str,
-            'item_type': str,
-            'friend_rating': float,
-            'in_library': bool,
-            'influence_score': float,
-            'started_at': datetime,
-            'friend_profile_url': str
-        }, ...]
-    """
-    try:
-        _emby = _get_emby_client()
-        trakt_client = await _get_user_trakt(user_id, db)
-        service = SocialWatchingService(db, trakt_client, _emby)
-        result = await service.get_friends_watching_now(user_id, limit)
-        return {"success": True, "data": result}
-    except Exception as e:
-        logger.error(f"Error in get_friends_watching_now: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
+    """Social watching — disabled (Simkl has no friends API)."""
+    return _SOCIAL_UNAVAILABLE
 
 
 @router.get("/social/influence-leaderboard/{user_id}")
 async def get_influence_leaderboard(
     user_id: int,
     limit: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Get leaderboard of friends ranked by influence score (how often you watch what they watch).
-    
-    Returns:
-        [{
-            'rank': int,
-            'friend_username': str,
-            'influence_score': float,
-            'shared_items': int,
-            'is_watching_now': bool,
-            'current_item': str,
-            'friend_profile_url': str
-        }, ...]
-    """
-    try:
-        _emby = _get_emby_client()
-        trakt_client = await _get_user_trakt(user_id, db)
-        service = SocialWatchingService(db, trakt_client, _emby)
-        leaderboard = await service.create_social_leaderboard(user_id, limit)
-        return {"success": True, "leaderboard": leaderboard}
-    except Exception as e:
-        logger.error(f"Error in get_influence_leaderboard: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
+    """Influence leaderboard — disabled (Simkl has no friends API)."""
+    return _SOCIAL_UNAVAILABLE
 
 
 @router.get("/social/overlap/{user_id}/{friend_username}")
 async def get_library_overlap(
     user_id: int,
     friend_username: str,
-    db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Analyze shared content (overlap) between user and friend.
-    
-    Returns:
-        {
-            'overlap_pct': float,
-            'shared_items': int,
-            'user_only_items': int,
-            'friend_only_items': int,
-            'shared_items_list': [{'title': str, 'user_rating': float, 'friend_rating': float}, ...]
-        }
-    """
-    try:
-        _emby = _get_emby_client()
-        trakt_client = await _get_user_trakt(user_id, db)
-        service = SocialWatchingService(db, trakt_client, _emby)
-        overlap = await service.get_library_overlap(user_id, friend_username)
-        return {"success": True, "overlap": overlap}
-    except Exception as e:
-        logger.error(f"Error in get_library_overlap: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
+    """Library overlap — disabled (Simkl has no friends API)."""
+    return _SOCIAL_UNAVAILABLE
 
 
 @router.post("/social/sync-mode/{user_id}/{friend_username}")
 async def enable_social_sync_mode(
     user_id: int,
     friend_username: str,
-    db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Enable social sync mode for watch party with a friend.
-    Sync playback, pause, and ratings across both users.
-    
-    Returns:
-        {'sync_enabled': bool, 'room_code': str, 'friend_info': {...}}
-    """
-    try:
-        # In production, would create a WebSocket connection
-        # For now, return sync room info
-        sync_room_code = f"sync_{user_id}_{friend_username}_{int(datetime.now(timezone.utc).timestamp())}"
-        
-        return {
-            "success": True,
-            "sync_enabled": True,
-            "room_code": sync_room_code,
-            "friend_username": friend_username,
-            "features": ["sync_playback", "pause_sync", "rating_sync", "real_time_comments"]
-        }
-    except Exception as e:
-        logger.error(f"Error in enable_social_sync_mode: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
+    """Social sync mode — disabled (Simkl has no friends API)."""
+    return _SOCIAL_UNAVAILABLE
 
 
 @router.post("/social/refresh/{user_id}")
 async def refresh_social_graph(
     user_id: int,
-    db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Manually refresh social watching graph (sync all friends' current activity).
-    
-    Returns:
-        {
-            'friends_synced': int,
-            'now_watching': int,
-            'newly_discovered': int
-        }
-    """
-    try:
-        _emby = _get_emby_client()
-        trakt_client = await _get_user_trakt(user_id, db)
-        service = SocialWatchingService(db, trakt_client, _emby)
-        result = await service.sync_friend_activity(user_id)
-        return {"success": True, "data": result}
-    except Exception as e:
-        logger.error(f"Error in refresh_social_graph: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
+    """Refresh social graph — disabled (Simkl has no friends API)."""
+    return _SOCIAL_UNAVAILABLE
 
 
 # ============================================================================
@@ -372,8 +248,8 @@ async def get_incomplete_series(
     """
     try:
         _emby = _get_emby_client()
-        trakt_client = await _get_user_trakt(user_id, db)
-        monitor = LibraryHealthMonitor(db, trakt_client, _emby, cache)
+        simkl_client = await _get_user_simkl(user_id, db)
+        monitor = LibraryHealthMonitor(db, simkl_client, _emby, cache)
         series = await monitor.detect_incomplete_series(user_id)
 
         # Filter by completion
@@ -415,8 +291,8 @@ async def get_orphaned_episodes(
     """
     try:
         _emby = _get_emby_client()
-        trakt_client = await _get_user_trakt(user_id, db)
-        monitor = LibraryHealthMonitor(db, trakt_client, _emby, cache)
+        simkl_client = await _get_user_simkl(user_id, db)
+        monitor = LibraryHealthMonitor(db, simkl_client, _emby, cache)
         orphaned = await monitor.find_orphaned_episodes(user_id)
 
         return {
@@ -455,8 +331,8 @@ async def get_acquisition_recommendations(
     """
     try:
         _emby = _get_emby_client()
-        trakt_client = await _get_user_trakt(user_id, db)
-        monitor = LibraryHealthMonitor(db, trakt_client, _emby, cache)
+        simkl_client = await _get_user_simkl(user_id, db)
+        monitor = LibraryHealthMonitor(db, simkl_client, _emby, cache)
         recommendations = await monitor.acquisition_recommendations(user_id, limit)
 
         if priority:
@@ -494,8 +370,8 @@ async def analyze_library_health(
     """
     try:
         _emby = _get_emby_client()
-        trakt_client = await _get_user_trakt(user_id, db)
-        monitor = LibraryHealthMonitor(db, trakt_client, _emby, cache)
+        simkl_client = await _get_user_simkl(user_id, db)
+        monitor = LibraryHealthMonitor(db, simkl_client, _emby, cache)
         report = await monitor.generate_health_report(user_id)
 
         return {

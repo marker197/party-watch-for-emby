@@ -1,6 +1,6 @@
 """Rating Bias Detector Service Implementation.
 
-Analyzes user's Trakt rating history to identify patterns, biases, and blind spots.
+Analyzes user's Simkl rating history to identify patterns, biases, and blind spots.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.schema import User, UserRating, RatingBias
-from app.utils.trakt_client import TraktClient
+from app.utils.simkl_client import SimklClient
 from app.utils.emby_client import EmbyClient
 from app.utils.database import async_session
 
@@ -45,7 +45,7 @@ class RatingBiasDetectorService:
         log.info("bias_detector.analyze_start")
         async with async_session() as db:
             users = (await db.execute(
-                select(User).where(User.trakt_access_token.isnot(None))
+                select(User).where(User.simkl_access_token.isnot(None))
             )).scalars().all()
 
         for user in users:
@@ -61,16 +61,14 @@ class RatingBiasDetectorService:
         async def on_token_refresh(access, refresh, expires):
             async with async_session() as db:
                 u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.trakt_access_token = access
-                u.trakt_refresh_token = refresh
-                u.trakt_token_expires = expires
+                u.simkl_access_token = access
+                
+                u.simkl_token_expires = expires
                 await db.commit()
 
-        trakt = TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=on_token_refresh,
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
         )
 
         try:
@@ -147,7 +145,7 @@ class RatingBiasDetectorService:
             return result
 
         finally:
-            await trakt.close()
+            await simkl.close()
 
     async def get_bias_report(self, user_id: int) -> dict | None:
         """Retrieve full bias report for a user."""
@@ -193,7 +191,7 @@ class RatingBiasDetectorService:
             "rating": rating.rating,
             "genres": rating.genres or [],
             "year": rating.year or 2000,
-            "trakt_rating": rating.trakt_rating or 0,
+            "simkl_rating": rating.simkl_rating or 0,
             "item_type": rating.item_type or "movie",
         }
 
@@ -277,7 +275,7 @@ class RatingBiasDetectorService:
         gems = []
         for r in ratings:
             user_rating = r["rating"]
-            community_rating = r.get("trakt_rating", 0)
+            community_rating = r.get("simkl_rating", 0)
             
             # Underrated: community loves it, user rated it lower
             if community_rating >= 7.5 and user_rating <= 6.0 and community_rating - user_rating >= 1.5:

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, and_, func, desc
 
 from app.models.schema import User, LibraryGap, LibraryHealthReport, UserRating, UniverseItem
-from app.utils.trakt_client import TraktClient
+from app.utils.simkl_client import SimklClient
 from app.utils.library_cache import LibraryCache
 from app.utils.emby_client import EmbyClient
 
@@ -45,9 +45,9 @@ class LibraryHealthMonitor:
         "missing_acclaimed_work",  # Director/actor has highly-rated film you don't have
     ]
 
-    def __init__(self, db: Session, trakt_client: TraktClient, emby_client: EmbyClient, cache: LibraryCache):
+    def __init__(self, db: Session, simkl_client: SimklClient, emby_client: EmbyClient, cache: LibraryCache):
         self.db = db
-        self.trakt = trakt_client
+        self.simkl = simkl_client
         self.emby = emby_client
         self.cache = cache
 
@@ -63,7 +63,7 @@ class LibraryHealthMonitor:
                 'watched_episodes': int,
                 'completion_pct': float,
                 'missing_seasons': [1, 2, 5],
-                'trakt_id': str,
+                'simkl_id': str,
                 'your_rating': float
             }, ...]
         """
@@ -89,8 +89,8 @@ class LibraryHealthMonitor:
                     continue
 
                 try:
-                    # Get full series from Trakt
-                    series = await self.trakt.get_show(show_title)
+                    # Get full series from Simkl
+                    series = await self.simkl.get_show(show_title)
                     if not series:
                         continue
 
@@ -125,7 +125,7 @@ class LibraryHealthMonitor:
                             "watched_episodes": watched_count,
                             "completion_pct": round(completion_pct, 1),
                             "missing_seasons": missing_seasons[:5],  # Top 5
-                            "trakt_id": series.get('ids', {}).get('trakt'),
+                            "simkl_id": series.get('ids', {}).get('simkl'),
                             "your_rating": episodes[0].rating if episodes else None,
                             "priority": self._calculate_priority("incomplete_series", completion_pct)
                         })
@@ -189,7 +189,7 @@ class LibraryHealthMonitor:
 
                     # Get show info
                     if show_title not in series_info:
-                        series_info[show_title] = await self.trakt.get_show(show_title)
+                        series_info[show_title] = await self.simkl.get_show(show_title)
 
                     series = series_info.get(show_title)
                     if not series:
@@ -255,14 +255,14 @@ class LibraryHealthMonitor:
 
             for movie in movies:
                 try:
-                    # Get related movies from Trakt
-                    movie_details = await self.trakt.get_movie(movie.trakt_slug or movie.title)
+                    # Get related movies from Simkl
+                    movie_details = await self.simkl.get_movie(movie.simkl_slug or movie.title)
                     if not movie_details:
                         continue
 
                     # Look for sequels/prequels
-                    movie_id = movie_details.get('ids', {}).get('trakt')
-                    related = await self.trakt.get_movie_related(movie_id)
+                    movie_id = movie_details.get('ids', {}).get('simkl')
+                    related = await self.simkl.get_movie_related(movie_id)
 
                     for rel_movie in related:
                         rel_title = rel_movie.get('title')
@@ -280,7 +280,7 @@ class LibraryHealthMonitor:
                                 "missing_year": rel_year,
                                 "relation": "sequel",
                                 "priority": self._calculate_priority("missing_sequel", movie.rating),
-                                "trakt_id": rel_movie.get('ids', {}).get('trakt')
+                                "simkl_id": rel_movie.get('ids', {}).get('simkl')
                             })
 
                 except Exception as e:
@@ -393,7 +393,7 @@ class LibraryHealthMonitor:
                 'reason': str,
                 'priority': str,
                 'estimated_cost': float,  # rough estimate
-                'trakt_rating': float,
+                'simkl_rating': float,
                 'why_you_should_get_it': str
             }, ...]
         """
@@ -409,7 +409,7 @@ class LibraryHealthMonitor:
                     "reason": f"Sequel to '{sequel['title']}' which you rated {sequel['your_rating']}/10",
                     "priority": sequel['priority'],
                     "estimated_cost": 4.99,  # rental estimate
-                    "trakt_rating": None,
+                    "simkl_rating": None,
                     "why_you_should_get_it": "You enjoyed the original, sequel continues the story"
                 })
 
@@ -423,7 +423,7 @@ class LibraryHealthMonitor:
                         "reason": f"Complete series: {series['completion_pct']}% done",
                         "priority": "high",
                         "estimated_cost": 19.99,
-                        "trakt_rating": None,
+                        "simkl_rating": None,
                         "why_you_should_get_it": f"Finish the series you're {series['completion_pct']}% through"
                     })
 

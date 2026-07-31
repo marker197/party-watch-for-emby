@@ -1,7 +1,7 @@
 """Service #1 — Smart Watch Queue.
 
 Daily task that:
-1. Pulls user's Trakt watchlist, trending, friends' ratings, calendar
+1. Pulls user's Simkl watchlist, trending, friends' ratings, calendar
 2. Cross-references with Emby library via LibraryCache (fast Redis lookups)
 3. Scores & ranks items using learned weights from feedback
 4. Creates / updates Emby collections
@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.schema import QueueItem, User
-from app.utils.trakt_client import TraktClient
+from app.utils.simkl_client import SimklClient
 from app.utils.emby_client import EmbyClient
 from app.utils.library_cache import LibraryCache
 from app.utils.redis_cache import cache_get, cache_set
@@ -75,7 +75,7 @@ class SmartQueueService:
         try:
             async with async_session() as db:
                 users = (await db.execute(
-                    select(User).where(User.trakt_access_token.isnot(None))
+                    select(User).where(User.simkl_access_token.isnot(None))
                 )).scalars().all()
 
             for user in users:
@@ -93,38 +93,36 @@ class SmartQueueService:
         async def on_token_refresh(access, refresh, expires):
             async with async_session() as db:
                 u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.trakt_access_token = access
-                u.trakt_refresh_token = refresh
-                u.trakt_token_expires = expires
+                u.simkl_access_token = access
+                
+                u.simkl_token_expires = expires
                 await db.commit()
 
-        trakt = TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=on_token_refresh,
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
         )
         try:
             # Check rate limit budget
-            info = trakt.get_rate_limit_info()
+            info = simkl.get_rate_limit_info()
             if info["remaining"] < 50:
                 log.warning("smart_queue.rate_limit_low", remaining=info["remaining"])
                 return
 
-            # Prune MOVIE items already in Trakt watched history
+            # Prune MOVIE items already in Simkl watched history
             # Shows are NOT filtered here — they use Emby episode awareness instead
-            watched_movie_ids = await self._get_watched_trakt_ids(trakt)
+            watched_movie_ids = await self._get_watched_simkl_ids(simkl)
 
-            candidates = await self._gather_candidates(trakt, user)
+            candidates = await self._gather_candidates(simkl, user)
 
             # Filter out already-watched movies (shows skip this filter)
             before = len(candidates)
             filtered = []
             for c in candidates:
-                tid = str(c.get("trakt_id", ""))
+                tid = str(c.get("simkl_id", ""))
                 if tid and tid in watched_movie_ids and c.get("item_type") == "movie":
                     log.debug("smart_queue.candidate_filtered",
-                              title=c.get("title"), trakt_id=tid, source=c.get("source"))
+                              title=c.get("title"), simkl_id=tid, source=c.get("source"))
                 else:
                     filtered.append(c)
             candidates = filtered
@@ -148,9 +146,9 @@ class SmartQueueService:
             top = await self._rotate_overflow(user.id, top)
 
             # Remaining candidates (not selected) become overflow for backfill
-            top_ids = {c["trakt_id"] for c in top}
+            top_ids = {c["simkl_id"] for c in top}
             leftover = sorted(
-                [c for c in scored if c["trakt_id"] not in top_ids],
+                [c for c in scored if c["simkl_id"] not in top_ids],
                 key=lambda c: c["score"], reverse=True,
             )
             overflow = leftover[:30]
@@ -160,7 +158,7 @@ class SmartQueueService:
             # remove items no longer present
             new_staleness = {}
             for c in top:
-                tid = str(c.get("trakt_id", ""))
+                tid = str(c.get("simkl_id", ""))
                 if tid:
                     new_staleness[tid] = staleness.get(tid, 0) + 1
             await self._save_staleness(user.id, new_staleness)
@@ -175,23 +173,23 @@ class SmartQueueService:
             log.info("smart_queue.user_done", user=user.emby_username,
                      items=len(top), overflow=len(overflow))
         finally:
-            await trakt.close()
+            await simkl.close()
 
     # -----------------------------------------------------------------------
-    # Gather candidates from multiple Trakt sources
+    # Gather candidates from multiple Simkl sources
     # -----------------------------------------------------------------------
 
-    async def _gather_candidates(self, trakt: TraktClient, user: User) -> list[dict]:
+    async def _gather_candidates(self, simkl: SimklClient, user: User) -> list[dict]:
         candidates: dict[str, dict] = {}
 
         # 1. Watchlist items
-        watchlist = await trakt.get_watchlist()
+        watchlist = await simkl.get_watchlist()
         for entry in watchlist:
             item = entry.get("movie") or entry.get("show") or {}
-            tid = str(item.get("ids", {}).get("trakt", ""))
+            tid = str(item.get("ids", {}).get("simkl", ""))
             if tid:
                 candidates[tid] = {
-                    "trakt_id": tid,
+                    "simkl_id": tid,
                     "title": item.get("title", ""),
                     "year": item.get("year"),
                     "item_type": "movie" if "movie" in entry else "show",
@@ -208,13 +206,13 @@ class SmartQueueService:
         # 2. Trending shows + movies (randomise page for variety)
         trending_page = random.randint(1, 3)
         for kind in ("shows", "movies"):
-            trending = await trakt.get_trending(kind=kind, limit=15, page=trending_page)
+            trending = await simkl.get_trending(kind=kind, limit=15, page=trending_page)
             for rank, entry in enumerate(trending):
                 item = entry.get("movie") or entry.get("show") or {}
-                tid = str(item.get("ids", {}).get("trakt", ""))
+                tid = str(item.get("ids", {}).get("simkl", ""))
                 if tid and tid not in candidates:
                     candidates[tid] = {
-                        "trakt_id": tid,
+                        "simkl_id": tid,
                         "title": item.get("title", ""),
                         "year": item.get("year"),
                         "item_type": "movie" if kind == "movies" else "show",
@@ -224,17 +222,17 @@ class SmartQueueService:
                         "trending_rank": rank + 1 + ((trending_page - 1) * 15),
                     }
 
-        # 3. Recommended (personalised based on user's Trakt ratings)
+        # 3. Recommended (personalised based on user's Simkl ratings)
         for kind in ("shows", "movies"):
             try:
-                recs = await trakt.get_recommended(kind=kind, limit=15)
+                recs = await simkl.get_recommended(kind=kind, limit=15)
                 for rank, entry in enumerate(recs):
                     # Recommended endpoint returns items directly (not wrapped)
                     item = entry.get("movie") or entry.get("show") or entry
-                    tid = str(item.get("ids", {}).get("trakt", ""))
+                    tid = str(item.get("ids", {}).get("simkl", ""))
                     if tid and tid not in candidates:
                         candidates[tid] = {
-                            "trakt_id": tid,
+                            "simkl_id": tid,
                             "title": item.get("title", ""),
                             "year": item.get("year"),
                             "item_type": "movie" if kind == "movies" else "show",
@@ -248,13 +246,13 @@ class SmartQueueService:
         # 4. Calendar (upcoming episodes for shows user follows)
         try:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            calendar = await trakt.get_my_shows(start_date=today, days=14)
+            calendar = await simkl.get_my_shows(start_date=today, days=14)
             for entry in calendar:
                 show = entry.get("show", {})
-                tid = str(show.get("ids", {}).get("trakt", ""))
+                tid = str(show.get("ids", {}).get("simkl", ""))
                 if tid and tid not in candidates:
                     candidates[tid] = {
-                        "trakt_id": tid,
+                        "simkl_id": tid,
                         "title": show.get("title", ""),
                         "year": show.get("year"),
                         "item_type": "show",
@@ -268,21 +266,21 @@ class SmartQueueService:
 
         # 5. Friends' highly rated
         try:
-            friends = await trakt.get_friends()
+            friends = await simkl.get_friends()
             for friend in friends[:10]:
                 fname = friend.get("user", {}).get("ids", {}).get("slug", "")
                 if not fname:
                     continue
                 try:
-                    friend_ratings = await trakt.get_friend_ratings(fname, kind="all")
+                    friend_ratings = await simkl.get_friend_ratings(fname, kind="all")
                     for r in friend_ratings:
                         if r.get("rating", 0) < 8:
                             continue
                         item = r.get("movie") or r.get("show") or {}
-                        tid = str(item.get("ids", {}).get("trakt", ""))
+                        tid = str(item.get("ids", {}).get("simkl", ""))
                         if tid and tid not in candidates:
                             candidates[tid] = {
-                                "trakt_id": tid,
+                                "simkl_id": tid,
                                 "title": item.get("title", ""),
                                 "year": item.get("year"),
                                 "item_type": "movie" if "movie" in r else "show",
@@ -313,7 +311,7 @@ class SmartQueueService:
     # -----------------------------------------------------------------------
 
     async def _load_staleness(self, user_id: int) -> dict[str, int]:
-        """Load per-item staleness counters (trakt_id → consecutive refresh count)."""
+        """Load per-item staleness counters (simkl_id → consecutive refresh count)."""
         try:
             data = await cache_get(f"queue_staleness:{user_id}")
             if data and isinstance(data, dict):
@@ -323,11 +321,11 @@ class SmartQueueService:
         return {}
 
     async def _load_blocklist(self, user_id: int) -> set[str]:
-        """Load permanently blocked Trakt IDs for a user."""
+        """Load permanently blocked Simkl IDs for a user."""
         from app.models.schema import QueueBlocklist
         async with async_session() as db:
             rows = (await db.execute(
-                select(QueueBlocklist.trakt_id).where(QueueBlocklist.user_id == user_id)
+                select(QueueBlocklist.simkl_id).where(QueueBlocklist.user_id == user_id)
             )).scalars().all()
             return set(rows)
 
@@ -360,7 +358,7 @@ class SmartQueueService:
 
             # staleness decay — reduce score for items that have sat unplayed
             if staleness:
-                days_stale = staleness.get(str(c.get("trakt_id", "")), 0)
+                days_stale = staleness.get(str(c.get("simkl_id", "")), 0)
                 if days_stale > 0:
                     # -1.5 points per day stale, capped at -8
                     penalty = min(days_stale * 1.5, 8.0)
@@ -399,9 +397,9 @@ class SmartQueueService:
             for c in pool:
                 if count >= quota:
                     break
-                if c["trakt_id"] not in used_ids:
+                if c["simkl_id"] not in used_ids:
                     selected.append(c)
-                    used_ids.add(c["trakt_id"])
+                    used_ids.add(c["simkl_id"])
                     count += 1
 
         target = sum(SOURCE_QUOTAS.values())  # 20
@@ -412,9 +410,9 @@ class SmartQueueService:
             for c in all_sorted:
                 if len(selected) >= target:
                     break
-                if c["trakt_id"] not in used_ids:
+                if c["simkl_id"] not in used_ids:
                     selected.append(c)
-                    used_ids.add(c["trakt_id"])
+                    used_ids.add(c["simkl_id"])
 
         # Final sort by score for display order
         selected.sort(key=lambda c: c["score"], reverse=True)
@@ -453,7 +451,7 @@ class SmartQueueService:
         # Sort by score ascending — bottom items are rotation candidates
         # Only rotate items that haven't been played
         top_sorted = sorted(top, key=lambda c: c.get("score", 0))
-        top_ids = {c["trakt_id"] for c in top}
+        top_ids = {c["simkl_id"] for c in top}
 
         rotated_out = []
         swapped_in = []
@@ -469,11 +467,11 @@ class SmartQueueService:
                 continue
             # Find an overflow item not already in the queue
             for ov in overflow:
-                if ov.get("trakt_id") and ov["trakt_id"] not in top_ids:
-                    rotated_out.append(candidate["trakt_id"])
+                if ov.get("simkl_id") and ov["simkl_id"] not in top_ids:
+                    rotated_out.append(candidate["simkl_id"])
                     swapped_in.append(ov)
-                    top_ids.discard(candidate["trakt_id"])
-                    top_ids.add(ov["trakt_id"])
+                    top_ids.discard(candidate["simkl_id"])
+                    top_ids.add(ov["simkl_id"])
                     overflow.remove(ov)
                     break
 
@@ -481,7 +479,7 @@ class SmartQueueService:
             return top
 
         # Build new top list
-        new_top = [c for c in top if c["trakt_id"] not in set(rotated_out)]
+        new_top = [c for c in top if c["simkl_id"] not in set(rotated_out)]
         new_top.extend(swapped_in)
         new_top.sort(key=lambda c: c.get("score", 0), reverse=True)
 
@@ -500,12 +498,12 @@ class SmartQueueService:
     # -----------------------------------------------------------------------
 
     async def _find_in_emby(self, candidate: dict) -> str | None:
-        """Match a Trakt item to an Emby library item via LibraryCache."""
+        """Match a Simkl item to an Emby library item via LibraryCache."""
         ids = candidate.get("ids", {})
 
         # Try provider IDs via cache first (sub-millisecond)
-        for provider_type, trakt_key in [("Tmdb", "tmdb"), ("Imdb", "imdb"), ("Tvdb", "tvdb")]:
-            pid = ids.get(trakt_key)
+        for provider_type, simkl_key in [("Tmdb", "tmdb"), ("Imdb", "imdb"), ("Tvdb", "tvdb")]:
+            pid = ids.get(simkl_key)
             if pid:
                 cached = await LibraryCache.find_by_provider_id(provider_type, str(pid))
                 if cached:
@@ -602,8 +600,8 @@ class SmartQueueService:
                     item_type=item["item_type"],
                     source=item["source"],
                     score=item["score"],
-                    trakt_trending_rank=item.get("trending_rank"),
-                    trakt_rating=item.get("friend_rating"),
+                    simkl_trending_rank=item.get("trending_rank"),
+                    simkl_rating=item.get("friend_rating"),
                     metadata_json=item,
                     in_library=in_library,
                 ))
@@ -1031,8 +1029,8 @@ class SmartQueueService:
                         item_type=replacement["item_type"],
                         source=replacement["source"],
                         score=replacement["score"],
-                        trakt_trending_rank=replacement.get("trending_rank"),
-                        trakt_rating=replacement.get("friend_rating"),
+                        simkl_trending_rank=replacement.get("trending_rank"),
+                        simkl_rating=replacement.get("friend_rating"),
                         metadata_json=replacement,
                     ))
                     await db.commit()
@@ -1045,34 +1043,34 @@ class SmartQueueService:
 
     async def _fetch_trending_replacement(self, user_id: int,
                                           current_items: list) -> dict | None:
-        """Pull fresh trending from Trakt and return the best unwatched candidate
+        """Pull fresh trending from Simkl and return the best unwatched candidate
         not already in the queue."""
         # Get the user for auth
         async with async_session() as db:
             user = (await db.execute(
                 select(User).where(User.id == user_id)
             )).scalar_one_or_none()
-        if not user or not user.trakt_access_token:
+        if not user or not user.simkl_access_token:
             return None
 
         # Set of Emby IDs already in queue
         existing_emby_ids = {item.emby_item_id for item in current_items}
 
-        trakt = TraktClient(access_token=user.trakt_access_token)
+        simkl = SimklClient(access_token=user.simkl_access_token)
         try:
             # Get watched history to exclude
-            watched_ids = await self._get_watched_trakt_ids(trakt)
+            watched_ids = await self._get_watched_simkl_ids(simkl)
 
             weights = await self._load_weights(user_id)
             for kind in ("shows", "movies"):
-                trending = await trakt.get_trending(kind=kind, limit=15)
+                trending = await simkl.get_trending(kind=kind, limit=15)
                 for rank, entry in enumerate(trending):
                     item = entry.get("movie") or entry.get("show") or {}
-                    tid = str(item.get("ids", {}).get("trakt", ""))
+                    tid = str(item.get("ids", {}).get("simkl", ""))
                     if not tid or tid in watched_ids:
                         continue
                     candidate = {
-                        "trakt_id": tid,
+                        "simkl_id": tid,
                         "title": item.get("title", ""),
                         "year": item.get("year"),
                         "item_type": "movie" if kind == "movies" else "show",
@@ -1091,7 +1089,7 @@ class SmartQueueService:
         except Exception:
             log.warning("smart_queue.trending_backfill_failed", user_id=user_id)
         finally:
-            await trakt.close()
+            await simkl.close()
         return None
 
     async def _resync_playlist_from_db(self, user_id: int):
@@ -1130,10 +1128,10 @@ class SmartQueueService:
     # Watched history filter
     # ===================================================================
 
-    async def _get_watched_trakt_ids(self, trakt: TraktClient) -> set[str]:
-        """Fetch Trakt watched history and return set of watched MOVIE Trakt IDs.
+    async def _get_watched_simkl_ids(self, simkl: SimklClient) -> set[str]:
+        """Fetch Simkl watched history and return set of watched MOVIE Simkl IDs.
 
-        Only movies are filtered at the Trakt level. Shows use Emby's
+        Only movies are filtered at the Simkl level. Shows use Emby's
         episode-level played status instead (a partially-watched show
         with unwatched episodes should stay in the queue).
 
@@ -1144,10 +1142,10 @@ class SmartQueueService:
 
         # 1. All-time watched movies
         try:
-            watched = await trakt.get_watched(kind="movies")
+            watched = await simkl.get_watched(kind="movies")
             for entry in watched:
                 item = entry.get("movie") or {}
-                tid = str(item.get("ids", {}).get("trakt", ""))
+                tid = str(item.get("ids", {}).get("simkl", ""))
                 if tid:
                     watched_ids.add(tid)
             log.info("smart_queue.watched_movies_from_watched",
@@ -1157,10 +1155,10 @@ class SmartQueueService:
 
         # 2. Recent movie history (catches items that may not appear in watched yet)
         try:
-            history = await trakt.get_history(kind="movies", limit=200)
+            history = await simkl.get_history(kind="movies", limit=200)
             for entry in history:
                 item = entry.get("movie") or {}
-                tid = str(item.get("ids", {}).get("trakt", ""))
+                tid = str(item.get("ids", {}).get("simkl", ""))
                 if tid:
                     watched_ids.add(tid)
             log.info("smart_queue.watched_movies_total",

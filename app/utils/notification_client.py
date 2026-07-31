@@ -21,7 +21,7 @@ log = structlog.get_logger()
 
 # Event types that can be individually toggled
 EVENT_TYPES = {
-    "scrobble":   "Scrobble complete (Trakt/MDBList sync)",
+    "scrobble":   "Scrobble complete (Simkl/MDBList sync)",
     "arrival":    "New content arrived in library",
     "premiere":   "Premiere or finale airing today",
     "download":   "Download finished",
@@ -68,7 +68,7 @@ async def _send_discord(url: str, title: str, message: str, color: int = 0x6C5CE
             "title": title,
             "description": message,
             "color": color,
-            "footer": {"text": "Emby-Trakt Suite"},
+            "footer": {"text": "Emby-Simkl Suite"},
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }]
     }
@@ -101,7 +101,7 @@ async def _send_webhook(url: str, title: str, message: str, event_type: str) -> 
         "title": title,
         "message": message,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "source": "emby-trakt-suite",
+        "source": "emby-simkl-suite",
     }
     resp = await _get_http().post(url, json=payload)
     resp.raise_for_status()
@@ -176,7 +176,7 @@ async def test_service(service: dict) -> dict:
         await _dispatch(
             service,
             "🔔 Test Notification",
-            "Emby-Trakt Suite notifications are working!",
+            "Emby-Simkl Suite notifications are working!",
             "test",
         )
         return {"status": "ok", "message": "Notification sent"}

@@ -11,14 +11,10 @@ class Settings(BaseSettings):
     SECURITY: No weak default values for secrets - must be explicitly set.
     """
 
-    # -- Trakt (optional — not needed if using MDBList-only mode) ---------------------
-    trakt_client_id: str = Field(
+    # -- Simkl (optional — not needed if using MDBList-only mode) ---------------------
+    simkl_client_id: str = Field(
         default="",
-        alias="TRAKT_CLIENT_ID",
-    )
-    trakt_client_secret: str = Field(
-        default="",
-        alias="TRAKT_CLIENT_SECRET",
+        alias="SIMKL_CLIENT_ID",
     )
 
     # -- MDBList (optional — OAuth for full integration) ----------------------------
@@ -50,9 +46,9 @@ class Settings(BaseSettings):
         ...,  # Required
         alias="DATABASE_URL",
     )
-    db_user: str = Field(default="embytrakt", alias="DB_USER")
+    db_user: str = Field(default="embysimkl", alias="DB_USER")
     db_password: str = Field(..., alias="DB_PASSWORD")  # Required
-    db_name: str = Field(default="embytrakt", alias="DB_NAME")
+    db_name: str = Field(default="embysimkl", alias="DB_NAME")
 
     # -- Feature toggles -----------------------------------------------------
     enable_smart_queue: bool = Field(default=True, alias="ENABLE_SMART_QUEUE")
@@ -71,7 +67,7 @@ class Settings(BaseSettings):
 
     # -- Security & Logging --------------------------------------------------
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
-    log_file: str = Field(default="/app/logs/emby-trakt-suite.log", alias="LOG_FILE")
+    log_file: str = Field(default="/app/logs/emby-simkl-suite.log", alias="LOG_FILE")
     log_max_bytes: int = Field(default=10_485_760, alias="LOG_MAX_BYTES")  # 10 MB
     log_backup_count: int = Field(default=5, alias="LOG_BACKUP_COUNT")
     jwt_secret_key: str = Field(
@@ -136,6 +132,6 @@ except ValueError as e:
     print("  - DB_PASSWORD")
     print("  - JWT_SECRET_KEY")
     print("\nOptional (at least one integration recommended):")
-    print("  - TRAKT_CLIENT_ID / TRAKT_CLIENT_SECRET")
+    print("  - SIMKL_CLIENT_ID")
     print("  - MDBLIST_CLIENT_ID / MDBLIST_CLIENT_SECRET")
     raise

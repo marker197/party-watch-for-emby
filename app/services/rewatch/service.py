@@ -11,8 +11,8 @@ rewatching.  Scoring factors:
   - Decay for dismissed items
 
 Data source priority:
-  1. Trakt ratings + history (richest data)
-  2. MDBList history (if no Trakt account)
+  1. Simkl ratings + history (richest data)
+  2. MDBList history (if no Simkl account)
   3. Emby LastPlayedDate + UserRating (fallback — single date, but PlayCount)
 
 Output: top 30 items persisted to Redis with 24h TTL.
@@ -90,8 +90,8 @@ class RewatchRecommender:
                                 seasonal: bool = True) -> list[dict]:
         """Rebuild the suggestion list for *user_id*.
 
-        Merges candidates from all available sources (Trakt + MDBList + Emby),
-        deduplicating by item_key.  Trakt is authoritative where overlap exists.
+        Merges candidates from all available sources (Simkl + MDBList + Emby),
+        deduplicating by item_key.  Simkl is authoritative where overlap exists.
         """
         r = await get_redis()
 
@@ -113,12 +113,12 @@ class RewatchRecommender:
         all_candidates: list[dict] = []
         sources_used: list[str] = []
 
-        trakt_candidates = await self._candidates_from_trakt(user_id, min_rating, cutoff)
-        if trakt_candidates:
-            all_candidates.extend(trakt_candidates)
-            sources_used.append("trakt")
-            log.debug("rewatch.source_trakt", user_id=user_id,
-                       count=len(trakt_candidates))
+        simkl_candidates = await self._candidates_from_simkl(user_id, min_rating, cutoff)
+        if simkl_candidates:
+            all_candidates.extend(simkl_candidates)
+            sources_used.append("simkl")
+            log.debug("rewatch.source_simkl", user_id=user_id,
+                       count=len(simkl_candidates))
 
         mdblist_candidates = await self._candidates_from_mdblist(user_id, min_rating, cutoff)
         if mdblist_candidates:
@@ -140,8 +140,8 @@ class RewatchRecommender:
                         json.dumps([]), ex=self.CACHE_TTL)
             return []
 
-        # Deduplicate: prefer Trakt > MDBList > Emby by keeping first seen
-        # (Trakt added first).  Match by imdb_id or item_key.
+        # Deduplicate: prefer Simkl > MDBList > Emby by keeping first seen
+        # (Simkl added first).  Match by imdb_id or item_key.
         seen_keys: set[str] = set()
         seen_imdb: set[str] = set()
         candidates: list[dict] = []
@@ -209,17 +209,17 @@ class RewatchRecommender:
             return db_result
 
         # Fallback: API sources (for pre-backfill state)
-        trakt_result = await self._history_from_trakt(user_id, item_id)
+        simkl_result = await self._history_from_simkl(user_id, item_id)
         mdblist_result = await self._history_from_mdblist(user_id, item_id)
         emby_result = await self._history_from_emby(user_id, item_id)
 
         log.debug("rewatch.history_sources", user_id=user_id, item_id=item_id,
-                  db=False, trakt=bool(trakt_result), mdblist=bool(mdblist_result),
+                  db=False, simkl =bool(simkl_result), mdblist=bool(mdblist_result),
                   emby=bool(emby_result))
 
         all_watches: list[dict] = []
-        if trakt_result and trakt_result.get("watches"):
-            all_watches.extend(trakt_result["watches"])
+        if simkl_result and simkl_result.get("watches"):
+            all_watches.extend(simkl_result["watches"])
         if mdblist_result and mdblist_result.get("watches"):
             all_watches.extend(mdblist_result["watches"])
         if emby_result and emby_result.get("watches"):
@@ -267,8 +267,8 @@ class RewatchRecommender:
                     q = q.where(WatchHistory.imdb_id == value)
                 elif provider == "tmdb":
                     q = q.where(WatchHistory.tmdb_id == value)
-                elif provider == "trakt":
-                    q = q.where(WatchHistory.trakt_id == value)
+                elif provider == "simkl":
+                    q = q.where(WatchHistory.simkl_id == value)
                 elif provider == "tvdb":
                     q = q.where(WatchHistory.tvdb_id == value)
                 else:
@@ -370,7 +370,7 @@ class RewatchRecommender:
 
         async with async_session() as db:
             users = (await db.execute(
-                select(User).where(User.trakt_access_token.isnot(None))
+                select(User).where(User.simkl_access_token.isnot(None))
             )).scalars().all()
 
         for user in users:
@@ -381,15 +381,15 @@ class RewatchRecommender:
                             error=str(e)[:200])
 
     # ------------------------------------------------------------------
-    # Data source: Trakt
+    # Data source: Simkl
     # ------------------------------------------------------------------
 
-    async def _candidates_from_trakt(self, user_id: int, min_rating: int,
+    async def _candidates_from_simkl(self, user_id: int, min_rating: int,
                                      cutoff: datetime) -> list[dict]:
-        """Pull rated items from Trakt, cross-ref with history for dates."""
+        """Pull rated items from Simkl, cross-ref with history for dates."""
         from app.utils.database import async_session
         from app.models.schema import User
-        from app.utils.trakt_client import TraktClient
+        from app.utils.simkl_client import SimklClient
         from app.utils.library_cache import LibraryCache
         from sqlalchemy import select
 
@@ -398,29 +398,29 @@ class RewatchRecommender:
                 select(User).where(User.id == user_id)
             )).scalar_one_or_none()
 
-        if not user or not user.trakt_access_token:
+        if not user or not user.simkl_access_token:
             return []
 
-        trakt = TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            
+            token_expires=user.simkl_token_expires,
         )
 
         try:
             # Get all ratings (movies + shows)
-            ratings = await trakt.get_user_ratings("movies")
-            ratings += await trakt.get_user_ratings("shows")
+            ratings = await simkl.get_user_ratings("movies")
+            ratings += await simkl.get_user_ratings("shows")
 
             # Get history for last-watched dates
-            history_movies = await trakt.get_history("movies", limit=10000)
-            history_shows = await trakt.get_history("shows", limit=10000)
+            history_movies = await simkl.get_history("movies", limit=10000)
+            history_shows = await simkl.get_history("shows", limit=10000)
 
-            # Build last-watched lookup: trakt_id -> most_recent_date
+            # Build last-watched lookup: simkl_id -> most_recent_date
             last_watched: dict[str, str] = {}
             for entry in history_movies + history_shows:
                 item = entry.get("movie") or entry.get("show") or {}
-                tid = str(item.get("ids", {}).get("trakt", ""))
+                tid = str(item.get("ids", {}).get("simkl", ""))
                 watched_at = entry.get("watched_at", "")
                 if tid and watched_at:
                     if tid not in last_watched or watched_at > last_watched[tid]:
@@ -434,7 +434,7 @@ class RewatchRecommender:
 
                 item = rated.get("movie") or rated.get("show") or {}
                 ids = item.get("ids", {})
-                trakt_id = str(ids.get("trakt", ""))
+                simkl_id = str(ids.get("simkl", ""))
                 imdb_id = ids.get("imdb", "")
                 tmdb_id = str(ids.get("tmdb", ""))
                 item_type = "movie" if "movie" in rated else "show"
@@ -443,7 +443,7 @@ class RewatchRecommender:
                 genres = item.get("genres", [])
 
                 # Determine last watched date
-                lw = last_watched.get(trakt_id, "")
+                lw = last_watched.get(simkl_id, "")
                 if not lw:
                     continue  # Never watched according to history
 
@@ -467,7 +467,7 @@ class RewatchRecommender:
                         emby_id = cached.get("emby_id")
 
                 candidates.append({
-                    "item_key": f"trakt:{trakt_id}",
+                    "item_key": f"simkl:{simkl_id}",
                     "title": title,
                     "year": year,
                     "item_type": item_type,
@@ -475,21 +475,21 @@ class RewatchRecommender:
                     "genres": genres,
                     "last_watched": lw_dt.strftime("%Y-%m-%d"),
                     "last_watched_iso": lw,
-                    "trakt_id": trakt_id,
+                    "simkl_id": simkl_id,
                     "imdb_id": imdb_id,
                     "tmdb_id": tmdb_id,
                     "emby_id": emby_id,
                     "in_library": emby_id is not None,
-                    "source": "trakt",
+                    "source": "simkl",
                 })
 
             return candidates
         except Exception as e:
-            log.warning("rewatch.trakt_fetch_failed", user_id=user_id,
+            log.warning("rewatch.simkl_fetch_failed", user_id=user_id,
                         error=str(e)[:200])
             return []
         finally:
-            await trakt.close()
+            await simkl.close()
 
     # ------------------------------------------------------------------
     # Data source: MDBList
@@ -510,7 +510,7 @@ class RewatchRecommender:
 
     async def _candidates_from_mdblist(self, user_id: int, min_rating: int,
                                        cutoff: datetime) -> list[dict]:
-        """Fallback: use MDBList /sync/watched + /sync/ratings when Trakt unavailable."""
+        """Fallback: use MDBList /sync/watched + /sync/ratings when Simkl unavailable."""
         from app.utils.library_cache import LibraryCache
 
         mdb = await self._build_mdblist_client()
@@ -538,7 +538,7 @@ class RewatchRecommender:
                         if r_val is None:
                             continue
                         ids = item.get("ids", {})
-                        for prov in ("imdb", "tmdb", "trakt", "mdblist"):
+                        for prov in ("imdb", "tmdb", "simkl", "mdblist"):
                             pid = ids.get(prov)
                             if pid:
                                 rating_lookup[f"{prov}:{pid}"] = float(r_val)
@@ -568,13 +568,13 @@ class RewatchRecommender:
                     rating = None
                     imdb_id = ids.get("imdb", "")
                     tmdb_id = str(ids.get("tmdb", "")) if ids.get("tmdb") else ""
-                    trakt_id = str(ids.get("trakt", "")) if ids.get("trakt") else ""
+                    simkl_id = str(ids.get("simkl", "")) if ids.get("simkl") else ""
                     mdblist_id = str(ids.get("mdblist", "")) if ids.get("mdblist") else ""
 
                     for key_str in (
                         f"imdb:{imdb_id}" if imdb_id else "",
                         f"tmdb:{tmdb_id}" if tmdb_id else "",
-                        f"trakt:{trakt_id}" if trakt_id else "",
+                        f"simkl:{simkl_id}" if simkl_id else "",
                         f"mdblist:{mdblist_id}" if mdblist_id else "",
                     ):
                         if key_str and key_str in rating_lookup:
@@ -630,7 +630,7 @@ class RewatchRecommender:
                         "genres": genres,
                         "last_watched": lw_dt.strftime("%Y-%m-%d"),
                         "last_watched_iso": watched_at,
-                        "trakt_id": trakt_id,
+                        "simkl_id": simkl_id,
                         "imdb_id": imdb_id,
                         "tmdb_id": tmdb_id,
                         "emby_id": emby_id,
@@ -730,7 +730,7 @@ class RewatchRecommender:
                     "genres": genres,
                     "last_watched": lp_dt.strftime("%Y-%m-%d"),
                     "last_watched_iso": last_played,
-                    "trakt_id": "",
+                    "simkl_id": "",
                     "imdb_id": imdb_id,
                     "tmdb_id": tmdb_id,
                     "emby_id": emby_id,
@@ -751,14 +751,14 @@ class RewatchRecommender:
     # History lookups (for hover flyout)
     # ------------------------------------------------------------------
 
-    async def _history_from_trakt(self, user_id: int, item_id: str) -> dict | None:
-        """Fetch all watch dates for a single item from Trakt.
+    async def _history_from_simkl(self, user_id: int, item_id: str) -> dict | None:
+        """Fetch all watch dates for a single item from Simkl.
 
-        item_id format: 'trakt:12345' or 'imdb:tt1234567'
+        item_id format: 'simkl:12345' or 'imdb:tt1234567'
         """
         from app.utils.database import async_session
         from app.models.schema import User
-        from app.utils.trakt_client import TraktClient
+        from app.utils.simkl_client import SimklClient
         from sqlalchemy import select
 
         async with async_session() as db:
@@ -766,13 +766,13 @@ class RewatchRecommender:
                 select(User).where(User.id == user_id)
             )).scalar_one_or_none()
 
-        if not user or not user.trakt_access_token:
+        if not user or not user.simkl_access_token:
             return None
 
-        trakt = TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            
+            token_expires=user.simkl_token_expires,
         )
 
         try:
@@ -780,14 +780,14 @@ class RewatchRecommender:
             # We need to check both movies and shows history
             watches = []
             for kind in ("movies", "shows"):
-                history = await trakt.get_history(kind, limit=10000)
+                history = await simkl.get_history(kind, limit=10000)
                 for entry in history:
                     item = entry.get("movie") or entry.get("show") or {}
                     ids = item.get("ids", {})
-                    tid = str(ids.get("trakt", ""))
+                    tid = str(ids.get("simkl", ""))
                     iid = ids.get("imdb", "")
 
-                    match = (item_id == f"trakt:{tid}" or
+                    match = (item_id == f"simkl:{tid}" or
                              item_id == f"imdb:{iid}" or
                              item_id == f"emby:{tid}")  # won't match but safe
 
@@ -798,7 +798,7 @@ class RewatchRecommender:
                                 dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
                                 watches.append({
                                     "date": dt.strftime("%Y-%m-%d %H:%M"),
-                                    "source": "trakt",
+                                    "source": "simkl",
                                 })
                             except (ValueError, TypeError):
                                 pass
@@ -809,11 +809,11 @@ class RewatchRecommender:
                 "play_count": len(watches),
             } if watches else None
         except Exception as e:
-            log.warning("rewatch.trakt_history_failed", user_id=user_id,
+            log.warning("rewatch.simkl_history_failed", user_id=user_id,
                         item_id=item_id, error=str(e)[:200])
             return None
         finally:
-            await trakt.close()
+            await simkl.close()
 
     async def _history_from_mdblist(self, user_id: int, item_id: str) -> dict | None:
         """Fetch watch history from MDBList /sync/watched for a single item.
@@ -897,8 +897,8 @@ class RewatchRecommender:
                 cached = await LibraryCache.find_by_provider_id("Imdb", item_id.split(":", 1)[1])
                 if cached:
                     emby_id = cached.get("emby_id")
-            elif item_id.startswith("trakt:"):
-                # Can't resolve trakt ID to emby ID without more data
+            elif item_id.startswith("simkl:"):
+                # Can't resolve simkl ID to emby ID without more data
                 return None
 
         if not emby_id:

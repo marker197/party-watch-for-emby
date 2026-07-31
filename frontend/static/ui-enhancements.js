@@ -1,5 +1,5 @@
 /**
- * Enhanced UI/UX Module - Phase 4D Polish & Optimization
+ * Enhanced UI/UX Module
  * 
  * Features:
  * - Dark/Light mode toggle (persistent)
@@ -13,7 +13,7 @@
 // Theme Management
 class ThemeManager {
     constructor() {
-        this.darkModeKey = 'emby-trakt-dark-mode';
+        this.darkModeKey = 'emby-simkl-dark-mode';
         this.init();
     }
 

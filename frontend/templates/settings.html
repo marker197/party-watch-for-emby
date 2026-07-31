@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Settings - Emby-Trakt Suite</title>
+  <title>Settings - Emby-Simkl Suite</title>
 <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
   <style>
     :root {
@@ -318,7 +318,7 @@
 <body>
 <script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
 <nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
+    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
     <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
     <a href="/lists" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📋 Lists</a>
     <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
@@ -344,8 +344,8 @@
         Choose which services to use for scrobbling, watchlist sync, and watch history tracking.
       </p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
-        <label style="display:flex;align-items:center;gap:6px;padding:8px 14px;background:var(--bg);border:2px solid var(--border);border-radius:8px;cursor:pointer;font-size:0.85rem;transition:border-color 0.15s;" id="providerOpt_trakt">
-          <input type="radio" name="integrationProvider" value="trakt" style="accent-color:var(--accent);" onchange="changeProvider(this.value)"> Trakt Only
+        <label style="display:flex;align-items:center;gap:6px;padding:8px 14px;background:var(--bg);border:2px solid var(--border);border-radius:8px;cursor:pointer;font-size:0.85rem;transition:border-color 0.15s;" id="providerOpt_simkl">
+          <input type="radio" name="integrationProvider" value="simkl" style="accent-color:var(--accent);" onchange="changeProvider(this.value)"> Simkl Only
         </label>
         <label style="display:flex;align-items:center;gap:6px;padding:8px 14px;background:var(--bg);border:2px solid var(--border);border-radius:8px;cursor:pointer;font-size:0.85rem;transition:border-color 0.15s;" id="providerOpt_mdblist">
           <input type="radio" name="integrationProvider" value="mdblist" style="accent-color:var(--accent);" onchange="changeProvider(this.value)"> MDBList Only
@@ -360,19 +360,19 @@
       <div id="providerStatus" style="font-size:0.78rem;color:var(--text-dim);"></div>
     </div>
 
-    <!-- Trakt Credentials -->
-    <div class="section" id="sectionTrakt">
-      <h2>🎯 Trakt Configuration <span id="badgeTrakt" class="conn-badge unknown" onclick="refreshStatus()" title="Click to refresh"><span class="dot"></span> Checking…</span></h2>
+    <!-- Simkl Credentials -->
+    <div class="section" id="sectionSimkl">
+      <h2>🎯 Simkl Configuration <span id="badgeSimkl" class="conn-badge unknown" onclick="refreshStatus()" title="Click to refresh"><span class="dot"></span> Checking…</span></h2>
 
       <div class="form-group">
         <label class="label">
           Client ID
-          <span class="label-desc">From Trakt.tv OAuth applications</span>
+          <span class="label-desc">From Simkl.tv OAuth applications</span>
         </label>
         <input 
           type="password" 
           class="input-field" 
-          id="traktClientId"
+          id="simklClientId"
           placeholder="••••••••••••••••••••"
         >
       </div>
@@ -380,21 +380,21 @@
       <div class="form-group">
         <label class="label">
           Client Secret
-          <span class="label-desc">From Trakt.tv OAuth applications</span>
+          <span class="label-desc">From Simkl.tv OAuth applications</span>
         </label>
         <input 
           type="password" 
           class="input-field" 
-          id="traktClientSecret"
+          id="simklClientSecret"
           placeholder="••••••••••••••••••••"
         >
       </div>
 
       <div class="btn-group">
-        <button class="btn btn-blue" id="testTrakt">🔗 Test Connection</button>
-        <button class="btn btn-blue" id="saveTrakt" disabled>💾 Save Changes</button>
+        <button class="btn btn-blue" id="testSimkl">🔗 Test Connection</button>
+        <button class="btn btn-blue" id="saveSimkl" disabled>💾 Save Changes</button>
       </div>
-      <div id="traktStatus"></div>
+      <div id="simklStatus"></div>
     </div>
 
     <!-- Emby Credentials -->
@@ -441,7 +441,7 @@
       <div class="toggle-group">
         <div class="toggle-label">
           <span class="title">Smart Watch Queue</span>
-          <span class="desc">Auto-generate intelligent queue from Trakt data</span>
+          <span class="desc">Auto-generate intelligent queue from Simkl data</span>
         </div>
         <div class="toggle-switch active" data-feature="smart_queue"></div>
       </div>
@@ -510,7 +510,7 @@
     <div class="section">
       <h2>📜 Watch History</h2>
       <p style="color:var(--text-dim);font-size:0.83rem;margin-bottom:14px;">
-        Import your full watch history from Trakt, MDBList, and Emby into the local database.
+        Import your full watch history from Simkl, MDBList, and Emby into the local database.
         Run once after first install — safe to re-run (duplicates are skipped).
         New watches are recorded automatically via webhooks after this.
       </p>
@@ -764,7 +764,7 @@
     <!-- Watchlist Sync -->
     <div class="section">
       <h2>🔄 Watchlist Sync</h2>
-      <p style="color:var(--text-dim);margin-bottom:16px;">Bi-directional sync between Radarr/Sonarr and your <span id="wlSyncProviderLabel">Trakt/MDBList</span> watchlist. Runs at startup, daily at 2:30 AM, and in the background when you open Airing Soon.</p>
+      <p style="color:var(--text-dim);margin-bottom:16px;">Bi-directional sync between Radarr/Sonarr and your <span id="wlSyncProviderLabel">Simkl/MDBList</span> watchlist. Runs at startup, daily at 2:30 AM, and in the background when you open Airing Soon.</p>
 
       <div class="toggle-group">
         <div class="toggle-label">
@@ -818,16 +818,16 @@
         <div id="mdblistStatus" style="font-size:0.78rem;margin-top:6px;"></div>
       </div>
 
-      <!-- Trakt → MDBList Sync -->
+      <!-- Simkl → MDBList Sync -->
       <div class="form-group" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
-        <label>Sync Trakt History → MDBList</label>
+        <label>Sync Simkl History → MDBList</label>
         <p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:10px;">
-          Push your Trakt watched history, ratings, and show progress into MDBList. After the first full sync, subsequent syncs only push new items.
+          Push your Simkl watched history, ratings, and show progress into MDBList. After the first full sync, subsequent syncs only push new items.
         </p>
         <div style="display:flex;gap:8px;align-items:center;">
           <button class="btn btn-blue" onclick="checkMdblistSyncStatus()">Check Status</button>
-          <button class="btn btn-green" onclick="runTraktToMdblistSync(false)" id="btnSyncToMdb">Sync New</button>
-          <button class="btn" style="background:var(--surface-hover);color:var(--text-dim);border:1px solid var(--border);" onclick="runTraktToMdblistSync(true)">Full Re-sync</button>
+          <button class="btn btn-green" onclick="runSimklToMdblistSync(false)" id="btnSyncToMdb">Sync New</button>
+          <button class="btn" style="background:var(--surface-hover);color:var(--text-dim);border:1px solid var(--border);" onclick="runSimklToMdblistSync(true)">Full Re-sync</button>
         </div>
         <div id="mdblistSyncResult" style="font-size:0.8rem;margin-top:8px;"></div>
       </div>
@@ -888,7 +888,7 @@
           🔐 Reset OAuth Credentials
         </button>
         <div style="font-size: 0.8rem; color: var(--text-dim); margin-top: 4px;">
-          Disconnects all Trakt accounts. Must re-authenticate.
+          Disconnects all Simkl accounts. Must re-authenticate.
         </div>
       </div>
 
@@ -919,7 +919,7 @@
     let pendingAction = null;
     let autoSaveTimeout = null;
 
-    let currentProvider = 'trakt';
+    let currentProvider = 'simkl';
 
     async function init() {
       await resolveUserId();
@@ -947,7 +947,7 @@
       try {
         const r = await fetch('/api/integration-provider');
         const data = await r.json();
-        currentProvider = data.provider || 'trakt';
+        currentProvider = data.provider || 'simkl';
         const radio = document.querySelector(`input[name="integrationProvider"][value="${currentProvider}"]`);
         if (radio) radio.checked = true;
         // Highlight selected
@@ -963,16 +963,16 @@
     }
 
     function updateProviderVisibility(provider) {
-      const traktSection = document.getElementById('sectionTrakt');
+      const simklSection = document.getElementById('sectionSimkl');
       const mdbSection = document.getElementById('sectionMdblist');
-      if (traktSection) traktSection.style.display = (provider === 'trakt' || provider === 'both') ? '' : 'none';
+      if (simklSection) simklSection.style.display = (provider === 'simkl' || provider === 'both') ? '' : 'none';
       if (mdbSection) mdbSection.style.display = (provider === 'mdblist' || provider === 'both') ? '' : 'none';
       // Update watchlist sync provider label
       const wlLabel = document.getElementById('wlSyncProviderLabel');
       if (wlLabel) {
-        if (provider === 'both') wlLabel.textContent = 'Trakt + MDBList';
+        if (provider === 'both') wlLabel.textContent = 'Simkl + MDBList';
         else if (provider === 'mdblist') wlLabel.textContent = 'MDBList';
-        else wlLabel.textContent = 'Trakt';
+        else wlLabel.textContent = 'Simkl';
       }
     }
 
@@ -996,7 +996,7 @@
         });
         if (!r.ok) throw new Error('Save failed');
         currentProvider = value;
-        status.textContent = '✓ Saved — active: ' + (value === 'both' ? 'Trakt + MDBList' : value === 'none' ? 'none' : value);
+        status.textContent = '✓ Saved — active: ' + (value === 'both' ? 'Simkl + MDBList' : value === 'none' ? 'none' : value);
         status.style.color = 'var(--green)';
         setTimeout(() => { status.textContent = ''; }, 3000);
       } catch(e) {
@@ -1044,15 +1044,15 @@
           }
         }
 
-        // Trakt
-        if (data.trakt) {
-          const t = data.trakt;
+        // Simkl
+        if (data.simkl) {
+          const t = data.simkl;
           if (t.status === 'ok') {
-            setBadge('badgeTrakt', 'ok', 'Connected');
+            setBadge('badgeSimkl', 'ok', 'Connected');
           } else if (t.status === 'error') {
-            setBadge('badgeTrakt', 'error', 'Offline');
+            setBadge('badgeSimkl', 'error', 'Offline');
           } else {
-            setBadge('badgeTrakt', 'unknown', 'Unknown');
+            setBadge('badgeSimkl', 'unknown', 'Unknown');
           }
         }
 
@@ -1121,7 +1121,7 @@
 
     async function refreshStatus() {
       setBadge('badgeEmby', 'checking', 'Checking…');
-      setBadge('badgeTrakt', 'checking', 'Checking…');
+      setBadge('badgeSimkl', 'checking', 'Checking…');
       setBadge('badgeRadarr', 'checking', 'Checking…');
       setBadge('badgeSonarr', 'checking', 'Checking…');
       setBadge('badgeSabnzbd', 'checking', 'Checking…');
@@ -1148,8 +1148,8 @@
     }
 
     function populateForm(settings) {
-      document.getElementById('traktClientId').value = settings.trakt_client_id || '';
-      document.getElementById('traktClientSecret').value = settings.trakt_client_secret || '';
+      document.getElementById('simklClientId').value = settings.simkl_client_id || '';
+      document.getElementById('simklClientSecret').value = settings.simkl_client_secret || '';
       document.getElementById('embyUrl').value = settings.emby_url || '';
       document.getElementById('embyApiKey').value = settings.emby_api_key || '';
 
@@ -1168,11 +1168,11 @@
     }
 
     function setupEventListeners() {
-      // Trakt
-      document.getElementById('testTrakt').addEventListener('click', () => testTrakt());
-      document.getElementById('saveTrakt').addEventListener('click', () => saveTrakt());
-      document.getElementById('traktClientId').addEventListener('input', enableButton('saveTrakt'));
-      document.getElementById('traktClientSecret').addEventListener('input', enableButton('saveTrakt'));
+      // Simkl
+      document.getElementById('testSimkl').addEventListener('click', () => testSimkl());
+      document.getElementById('saveSimkl').addEventListener('click', () => saveSimkl());
+      document.getElementById('simklClientId').addEventListener('input', enableButton('saveSimkl'));
+      document.getElementById('simklClientSecret').addEventListener('input', enableButton('saveSimkl'));
 
       // Emby
       document.getElementById('testEmby').addEventListener('click', () => testEmby());
@@ -1201,7 +1201,7 @@
       document.getElementById('resetCredentials').addEventListener('click', () => {
         showConfirmation(
           'Reset OAuth Credentials?',
-          'All Trakt accounts will be disconnected. You must re-authenticate. This cannot be undone.',
+          'All Simkl accounts will be disconnected. You must re-authenticate. This cannot be undone.',
           () => resetCredentials()
         );
       });
@@ -1230,8 +1230,8 @@
       };
     }
 
-    async function testTrakt() {
-      const btn = document.getElementById('testTrakt');
+    async function testSimkl() {
+      const btn = document.getElementById('testSimkl');
       btn.disabled = true;
       btn.textContent = '🔗 Testing...';
 
@@ -1240,23 +1240,23 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            service: 'trakt',
-            client_id: document.getElementById('traktClientId').value,
-            client_secret: document.getElementById('traktClientSecret').value
+            service: 'simkl',
+            client_id: document.getElementById('simklClientId').value,
+            client_secret: document.getElementById('simklClientSecret').value
           })
         });
 
         const data = await response.json();
         if (data.status === 'ok') {
-          showStatus('traktStatus', 'Connection successful!', 'success');
-          setBadge('badgeTrakt', 'ok', 'Connected');
+          showStatus('simklStatus', 'Connection successful!', 'success');
+          setBadge('badgeSimkl', 'ok', 'Connected');
         } else {
-          showStatus('traktStatus', data.message || 'Connection failed. Check credentials.', 'error');
-          setBadge('badgeTrakt', 'error', 'Offline');
+          showStatus('simklStatus', data.message || 'Connection failed. Check credentials.', 'error');
+          setBadge('badgeSimkl', 'error', 'Offline');
         }
       } catch (error) {
-        showStatus('traktStatus', `Error: ${error.message}`, 'error');
-        setBadge('badgeTrakt', 'error', 'Offline');
+        showStatus('simklStatus', `Error: ${error.message}`, 'error');
+        setBadge('badgeSimkl', 'error', 'Offline');
       } finally {
         btn.disabled = false;
         btn.textContent = '🔗 Test Connection';
@@ -1296,10 +1296,10 @@
       }
     }
 
-    async function saveTrakt() {
+    async function saveSimkl() {
       const data = {
-        trakt_client_id: document.getElementById('traktClientId').value,
-        trakt_client_secret: document.getElementById('traktClientSecret').value
+        simkl_client_id: document.getElementById('simklClientId').value,
+        simkl_client_secret: document.getElementById('simklClientSecret').value
       };
 
       try {
@@ -1310,13 +1310,13 @@
         });
 
         if (response.ok) {
-          showStatus('traktStatus', 'Settings saved!', 'success');
-          document.getElementById('saveTrakt').disabled = true;
+          showStatus('simklStatus', 'Settings saved!', 'success');
+          document.getElementById('saveSimkl').disabled = true;
         } else {
-          showStatus('traktStatus', 'Error saving settings', 'error');
+          showStatus('simklStatus', 'Error saving settings', 'error');
         }
       } catch (error) {
-        showStatus('traktStatus', `Error: ${error.message}`, 'error');
+        showStatus('simklStatus', `Error: ${error.message}`, 'error');
       }
     }
 
@@ -2287,8 +2287,8 @@
         const r = await fetch('/auth/users');
         const users = await r.json();
         if (Array.isArray(users) && users.length > 0) {
-          // Pick the first user with a linked Trakt account (has active token)
-          const linked = users.find(u => u.linked) || users.find(u => u.trakt_username) || users[0];
+          // Pick the first user with a linked Simkl account (has active token)
+          const linked = users.find(u => u.linked) || users.find(u => u.simkl_username) || users[0];
           currentUserId = linked.id;
         }
       } catch(e) {}
@@ -2488,7 +2488,7 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // Trakt → MDBList Sync
+    // Simkl → MDBList Sync
     // ═══════════════════════════════════════════════════════════════════
 
     async function checkMdblistSyncStatus() {
@@ -2503,7 +2503,7 @@
         const d = await r.json();
         el.innerHTML = `
           <div style="margin-top:6px;">
-            <strong>Trakt:</strong> ${d.trakt_movies} movies, ${d.trakt_shows} shows<br>
+            <strong>Simkl:</strong> ${d.simkl_movies} movies, ${d.simkl_shows} shows<br>
             <strong>MDBList:</strong> ${d.mdblist_movies} movies, ${d.mdblist_shows} shows<br>
             <strong style="color:var(--orange);">Missing from MDBList:</strong> ${d.missing_movies} movies, ${d.missing_shows} shows
           </div>`;
@@ -2517,7 +2517,7 @@
       }
     }
 
-    async function runTraktToMdblistSync(full) {
+    async function runSimklToMdblistSync(full) {
       const el = document.getElementById('mdblistSyncResult');
       const btn = document.getElementById('btnSyncToMdb');
       btn.disabled = true;
@@ -2525,7 +2525,7 @@
       const mode = full ? 'full re-sync' : 'incremental sync';
       el.innerHTML = `<span style="color:var(--text-dim);">Running ${mode}…</span>`;
       try {
-        const r = await fetch('/api/mdblist/sync-from-trakt', {
+        const r = await fetch('/api/mdblist/sync-from-simkl', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify(full ? {full: true} : {}),
@@ -2630,7 +2630,7 @@
           status.style.border = '1px solid rgba(0,184,148,0.3)';
           status.style.color = 'var(--green)';
           status.innerHTML = `✅ Import complete — <strong>${data.total_added}</strong> watches added`
-            + `<br><span style="color:var(--text-dim)">Trakt: ${a.trakt||0} added, ${s.trakt||0} skipped`
+            + `<br><span style="color:var(--text-dim)">Simkl: ${a.simkl||0} added, ${s.simkl||0} skipped`
             + ` · MDBList: ${a.mdblist||0} added, ${s.mdblist||0} skipped`
             + ` · Emby: ${a.emby||0} added, ${s.emby||0} skipped</span>`;
           btn.textContent = '📥 Import Watch History (re-run)';

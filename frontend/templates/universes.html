@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lists - Emby-Trakt Suite</title>
+  <title>Lists - Emby-Simkl Suite</title>
 <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
   <style>
     :root {
@@ -489,7 +489,7 @@
 <body>
 <script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
 <nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
+    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
     <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
     <a href="/lists" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">📋 Lists</a>
     <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
@@ -549,44 +549,44 @@
 
       <!-- Tabs -->
       <div id="importTabs" style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--border);">
-        <button id="tabTrakt" class="import-tab active" onclick="switchImportTab('trakt')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent-light);cursor:pointer;">Trakt <span id="traktBadge" style="font-size:0.72rem;padding:1px 6px;border-radius:10px;background:var(--surface-hover);color:var(--text-dim);font-weight:600;margin-left:4px;">—</span></button>
+        <button id="tabSimkl" class="import-tab active" onclick="switchImportTab('simkl')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent-light);cursor:pointer;">Simkl <span id="simklBadge" style="font-size:0.72rem;padding:1px 6px;border-radius:10px;background:var(--surface-hover);color:var(--text-dim);font-weight:600;margin-left:4px;">—</span></button>
         <button id="tabMdblist" class="import-tab" onclick="switchImportTab('mdblist')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim);cursor:pointer;">MDBList <span id="mdblistBadge" style="font-size:0.72rem;padding:1px 6px;border-radius:10px;background:var(--surface-hover);color:var(--text-dim);font-weight:600;margin-left:4px;">—</span></button>
         <button id="tabPopular" class="import-tab" onclick="switchImportTab('popular')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim);cursor:pointer;">🔥 Popular</button>
         <button id="tabTrending" class="import-tab" onclick="switchImportTab('trending')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim);cursor:pointer;">📈 Trending</button>
         <button id="tabMdblistTop" class="import-tab" onclick="switchImportTab('mdblistTop')" style="padding:8px 16px;font-size:0.82rem;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim);cursor:pointer;">⭐ MDBList Top</button>
       </div>
 
-      <!-- ── Trakt Tab ── -->
-      <div id="panelTrakt" style="display:block;">
+      <!-- ── Simkl Tab ── -->
+      <div id="panelSimkl" style="display:block;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-          <p style="color:var(--text-dim);font-size:0.82rem;margin:0;">Import your personal and liked Trakt lists as Emby playlists. Items are matched against your library cache.</p>
+          <p style="color:var(--text-dim);font-size:0.82rem;margin:0;">Import your personal and liked Simkl lists as Emby playlists. Items are matched against your library cache.</p>
           <div style="display:flex;gap:6px;flex-shrink:0;margin-left:12px;">
-            <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="refreshTraktLists()" title="Refresh list of available lists">🔄</button>
-            <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="syncAllTraktNow()" title="Re-import all previously imported Trakt lists">⟳ Sync All</button>
+            <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="refreshSimklLists()" title="Refresh list of available lists">🔄</button>
+            <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="syncAllSimklNow()" title="Re-import all previously imported Simkl lists">⟳ Sync All</button>
           </div>
         </div>
 
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
           <div style="flex:2;min-width:200px;">
             <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:4px;">Available Lists</label>
-            <select id="traktListSelect" style="width:100%;padding:8px 10px;font-size:0.85rem;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;">
+            <select id="simklListSelect" style="width:100%;padding:8px 10px;font-size:0.85rem;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;">
               <option value="">Loading lists…</option>
             </select>
           </div>
           <div style="flex:1;min-width:140px;">
             <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:4px;">Playlist Name (optional)</label>
-            <input type="text" id="traktPlaylistName" placeholder="Auto from list name" style="width:100%;padding:8px 10px;font-size:0.85rem;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;">
+            <input type="text" id="simklPlaylistName" placeholder="Auto from list name" style="width:100%;padding:8px 10px;font-size:0.85rem;background:var(--surface-hover);color:var(--text);border:1px solid var(--border);border-radius:6px;">
           </div>
-          <button class="btn" style="background:var(--green);color:#fff;padding:8px 16px;font-size:0.82rem;" onclick="importTraktList()">📥 Import</button>
+          <button class="btn" style="background:var(--green);color:#fff;padding:8px 16px;font-size:0.82rem;" onclick="importSimklList()">📥 Import</button>
         </div>
 
-        <div id="traktListDesc" style="font-size:0.78rem;color:var(--text-dim);margin-top:8px;display:none;"></div>
-        <div id="traktImportStatus" style="font-size:0.82rem;margin-top:8px;"></div>
+        <div id="simklListDesc" style="font-size:0.78rem;color:var(--text-dim);margin-top:8px;display:none;"></div>
+        <div id="simklImportStatus" style="font-size:0.82rem;margin-top:8px;"></div>
 
         <!-- Synced lists table -->
-        <div id="traktSyncedContainer" style="margin-top:16px;display:none;">
+        <div id="simklSyncedContainer" style="margin-top:16px;display:none;">
           <h4 style="font-size:0.85rem;font-weight:600;margin-bottom:8px;color:var(--text-dim);">Synced Lists</h4>
-          <div id="traktSyncedTable"></div>
+          <div id="simklSyncedTable"></div>
         </div>
       </div>
 
@@ -633,7 +633,7 @@
       <!-- ── Popular Tab ── -->
       <div id="panelPopular" style="display:none;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-          <p style="color:var(--text-dim);font-size:0.82rem;margin:0;">Browse popular Trakt community lists. Import any list as an Emby playlist.</p>
+          <p style="color:var(--text-dim);font-size:0.82rem;margin:0;">Browse popular Simkl community lists. Import any list as an Emby playlist.</p>
           <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="loadPopularLists()" title="Refresh">🔄</button>
         </div>
         <div id="popularListsGrid" style="font-size:0.82rem;color:var(--text-dim);">Loading popular lists…</div>
@@ -642,7 +642,7 @@
       <!-- ── Trending Tab ── -->
       <div id="panelTrending" style="display:none;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-          <p style="color:var(--text-dim);font-size:0.82rem;margin:0;">Browse trending Trakt community lists. Import any list as an Emby playlist.</p>
+          <p style="color:var(--text-dim);font-size:0.82rem;margin:0;">Browse trending Simkl community lists. Import any list as an Emby playlist.</p>
           <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.75rem;padding:4px 8px;" onclick="loadTrendingLists()" title="Refresh">🔄</button>
         </div>
         <div id="trendingListsGrid" style="font-size:0.82rem;color:var(--text-dim);">Loading trending lists…</div>
@@ -1393,7 +1393,7 @@
     // Import Lists — Show/Hide & Tab Switching
     // ═══════════════════════════════════════════════════════════════════
 
-    let hasTrakt = false;
+    let hasSimkl = false;
     let hasMdblist = false;
     let importListsVisible = false;
 
@@ -1411,13 +1411,13 @@
         t.style.borderBottomColor = 'transparent';
         t.style.color = 'var(--text-dim)';
       });
-      const tabMap = {trakt:'tabTrakt', mdblist:'tabMdblist', popular:'tabPopular', trending:'tabTrending', mdblistTop:'tabMdblistTop'};
+      const tabMap = {simkl:'tabSimkl', mdblist:'tabMdblist', popular:'tabPopular', trending:'tabTrending', mdblistTop:'tabMdblistTop'};
       const active = document.getElementById(tabMap[tab]);
       if (active) {
         active.style.borderBottomColor = 'var(--accent)';
         active.style.color = 'var(--accent-light)';
       }
-      document.getElementById('panelTrakt').style.display = tab === 'trakt' ? 'block' : 'none';
+      document.getElementById('panelSimkl').style.display = tab === 'simkl' ? 'block' : 'none';
       document.getElementById('panelMdblist').style.display = tab === 'mdblist' ? 'block' : 'none';
       document.getElementById('panelPopular').style.display = tab === 'popular' ? 'block' : 'none';
       document.getElementById('panelTrending').style.display = tab === 'trending' ? 'block' : 'none';
@@ -1429,16 +1429,16 @@
 
     async function initImportListsSection() {
       const section = document.getElementById('importListsSection');
-      const tabTrakt = document.getElementById('tabTrakt');
+      const tabSimkl = document.getElementById('tabSimkl');
       const tabMdblist = document.getElementById('tabMdblist');
       const toggleBtn = document.getElementById('importListsToggle');
 
-      // Check Trakt — try fetching lists to see if user is linked
+      // Check Simkl — try fetching lists to see if user is linked
       try {
-        const r = await fetch('/api/trakt-lists');
+        const r = await fetch('/api/simkl-lists');
         if (r.ok) {
           const d = await r.json();
-          if (d.lists) { hasTrakt = true; }
+          if (d.lists) { hasSimkl = true; }
         }
       } catch(e) {}
 
@@ -1452,7 +1452,7 @@
       } catch(e) {}
 
       // Neither available — hide toggle button entirely
-      if (!hasTrakt && !hasMdblist) {
+      if (!hasSimkl && !hasMdblist) {
         toggleBtn.style.display = 'none';
         return;
       }
@@ -1461,27 +1461,27 @@
       toggleBtn.style.display = '';
 
       // Configure tabs visibility
-      if (hasTrakt && hasMdblist) {
-        tabTrakt.style.display = '';
+      if (hasSimkl && hasMdblist) {
+        tabSimkl.style.display = '';
         tabMdblist.style.display = '';
-        switchImportTab('trakt');
-        loadTraktLists();
-        loadTraktSynced();
+        switchImportTab('simkl');
+        loadSimklLists();
+        loadSimklSynced();
         loadMdblistLists();
         loadMdblistSynced();
-      } else if (hasTrakt) {
-        tabTrakt.style.display = '';
+      } else if (hasSimkl) {
+        tabSimkl.style.display = '';
         tabMdblist.style.display = '';
-        switchImportTab('trakt');
-        loadTraktLists();
-        loadTraktSynced();
+        switchImportTab('simkl');
+        loadSimklLists();
+        loadSimklSynced();
         tabMdblist.onclick = function() {
           switchImportTab('mdblist');
           document.getElementById('mdblistContent').style.display = 'none';
           document.getElementById('mdblistNotConfigured').style.display = 'block';
         };
       } else {
-        tabTrakt.style.display = 'none';
+        tabSimkl.style.display = 'none';
         tabMdblist.style.display = '';
         switchImportTab('mdblist');
         loadMdblistLists();
@@ -1520,23 +1520,23 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // Trakt List Import
+    // Simkl List Import
     // ═══════════════════════════════════════════════════════════════════
 
-    async function loadTraktLists() {
-      const select = document.getElementById('traktListSelect');
-      const badge = document.getElementById('traktBadge');
+    async function loadSimklLists() {
+      const select = document.getElementById('simklListSelect');
+      const badge = document.getElementById('simklBadge');
       try {
-        const resp = await fetch('/api/trakt-lists');
+        const resp = await fetch('/api/simkl-lists');
         if (!resp.ok) {
-          select.innerHTML = '<option value="">Could not load lists — is Trakt linked?</option>';
+          select.innerHTML = '<option value="">Could not load lists — is Simkl linked?</option>';
           badge.textContent = 'error';
           return;
         }
         const data = await resp.json();
         const lists = data.lists || [];
         if (!lists.length) {
-          select.innerHTML = '<option value="">No lists found on your Trakt account</option>';
+          select.innerHTML = '<option value="">No lists found on your Simkl account</option>';
           badge.textContent = '0';
           return;
         }
@@ -1579,7 +1579,7 @@
 
         // Description preview on change
         select.onchange = function() {
-          const descEl = document.getElementById('traktListDesc');
+          const descEl = document.getElementById('simklListDesc');
           const opt = this.options[this.selectedIndex];
           const desc = opt ? opt.getAttribute('data-desc') : '';
           const name = opt ? opt.getAttribute('data-name') : '';
@@ -1589,7 +1589,7 @@
           } else {
             descEl.style.display = 'none';
           }
-          const nameInput = document.getElementById('traktPlaylistName');
+          const nameInput = document.getElementById('simklPlaylistName');
           if (name && !nameInput.value.trim()) {
             nameInput.placeholder = `📋 ${name}`;
           }
@@ -1600,8 +1600,8 @@
       }
     }
 
-    async function importTraktList() {
-      const select = document.getElementById('traktListSelect');
+    async function importSimklList() {
+      const select = document.getElementById('simklListSelect');
       const slug = select.value;
       if (!slug) { showToast('Select a list first'); return; }
 
@@ -1609,13 +1609,13 @@
       const listName = opt ? opt.getAttribute('data-name') : '';
       const listDesc = opt ? opt.getAttribute('data-desc') : '';
       const listUser = opt ? opt.getAttribute('data-user') : '';
-      const customName = document.getElementById('traktPlaylistName').value.trim();
-      const status = document.getElementById('traktImportStatus');
+      const customName = document.getElementById('simklPlaylistName').value.trim();
+      const status = document.getElementById('simklImportStatus');
 
       status.innerHTML = '<span style="color:var(--text-dim);">Importing… matching items against library…</span>';
 
       try {
-        const resp = await fetch('/api/trakt-lists/import', {
+        const resp = await fetch('/api/simkl-lists/import', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
@@ -1634,12 +1634,12 @@
             if (names) msg += ` (${names}${data.unmatched > 5 ? '…' : ''})`;
           }
           status.innerHTML = `<span style="color:var(--green);">${msg}</span>`;
-          document.getElementById('traktPlaylistName').value = '';
+          document.getElementById('simklPlaylistName').value = '';
           showToast(msg);
           setTimeout(() => { status.innerHTML = ''; }, 4000);
 
           // Track for auto-sync
-          await fetch('/api/trakt-lists/track', {
+          await fetch('/api/simkl-lists/track', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
@@ -1650,7 +1650,7 @@
               matched: data.matched,
             }),
           });
-          await loadTraktSynced();
+          await loadSimklSynced();
         } else {
           status.innerHTML = `<span style="color:var(--red);">✗ ${data.message || data.reason || 'Import failed'}</span>`;
         }
@@ -1659,11 +1659,11 @@
       }
     }
 
-    async function loadTraktSynced() {
-      const container = document.getElementById('traktSyncedContainer');
-      const table = document.getElementById('traktSyncedTable');
+    async function loadSimklSynced() {
+      const container = document.getElementById('simklSyncedContainer');
+      const table = document.getElementById('simklSyncedTable');
       try {
-        const r = await fetch('/api/trakt-lists/synced');
+        const r = await fetch('/api/simkl-lists/synced');
         const d = await r.json();
         const synced = d.synced || [];
 
@@ -1689,12 +1689,12 @@
           html += `<td style="padding:6px 8px;text-align:center;">${s.matched || '—'}</td>`;
           html += `<td style="padding:6px 8px;text-align:center;color:var(--text-dim);">${s.last_synced || 'never'}</td>`;
           html += '<td style="padding:6px 8px;text-align:center;" onclick="event.stopPropagation()">';
-          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:${autoOn ? 'var(--green)' : 'var(--surface-hover)'};color:${autoOn ? '#fff' : 'var(--text-dim)'};border:1px solid var(--border);" onclick="event.stopPropagation();toggleTraktAutoSync('${escapeHtml(s.slug)}', ${!autoOn})">${autoOn ? '✓ On' : '✗ Off'}</button>`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:${autoOn ? 'var(--green)' : 'var(--surface-hover)'};color:${autoOn ? '#fff' : 'var(--text-dim)'};border:1px solid var(--border);" onclick="event.stopPropagation();toggleSimklAutoSync('${escapeHtml(s.slug)}', ${!autoOn})">${autoOn ? '✓ On' : '✗ Off'}</button>`;
           html += '</td>';
           html += '<td style="padding:6px 8px;text-align:center;" onclick="event.stopPropagation()">';
           html += `<span style="display:flex;gap:4px;justify-content:center;">`;
-          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--blue);color:#fff;" onclick="event.stopPropagation();refreshSingleTrakt('${escapeHtml(s.slug)}', '${escapeHtml(s.playlist_name || '')}', '${escapeHtml(s.description || '')}', '${escapeHtml(s.username || 'me')}')">🔄</button>`;
-          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--red);color:#fff;" onclick="event.stopPropagation();removeTraktSync('${escapeHtml(s.slug)}')">✕</button>`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--blue);color:#fff;" onclick="event.stopPropagation();refreshSingleSimkl('${escapeHtml(s.slug)}', '${escapeHtml(s.playlist_name || '')}', '${escapeHtml(s.description || '')}', '${escapeHtml(s.username || 'me')}')">🔄</button>`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--red);color:#fff;" onclick="event.stopPropagation();removeSimklSync('${escapeHtml(s.slug)}')">✕</button>`;
           html += `</span></td></tr>`;
         }
 
@@ -1705,34 +1705,34 @@
       }
     }
 
-    async function toggleTraktAutoSync(slug, enabled) {
+    async function toggleSimklAutoSync(slug, enabled) {
       try {
-        await fetch(`/api/trakt-lists/synced/${encodeURIComponent(slug)}/auto-sync`, {
+        await fetch(`/api/simkl-lists/synced/${encodeURIComponent(slug)}/auto-sync`, {
           method: 'PUT',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ enabled }),
         });
         showToast(`Auto-sync ${enabled ? 'enabled' : 'disabled'}`);
-        await loadTraktSynced();
+        await loadSimklSynced();
       } catch(e) {
         showToast('Error: ' + e.message);
       }
     }
 
-    async function removeTraktSync(slug) {
+    async function removeSimklSync(slug) {
       try {
-        await fetch(`/api/trakt-lists/synced/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+        await fetch(`/api/simkl-lists/synced/${encodeURIComponent(slug)}`, { method: 'DELETE' });
         showToast('Removed from auto-sync');
-        await loadTraktSynced();
+        await loadSimklSynced();
       } catch(e) {
         showToast('Error: ' + e.message);
       }
     }
 
-    async function refreshSingleTrakt(slug, name, desc, username) {
+    async function refreshSingleSimkl(slug, name, desc, username) {
       showToast('Refreshing…');
       try {
-        const r = await fetch('/api/trakt-lists/import', {
+        const r = await fetch('/api/simkl-lists/import', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ list_slug: slug, playlist_name: name, description: desc, username: username }),
@@ -1740,13 +1740,13 @@
         const d = await r.json();
         if (d.status === 'ok') {
           // Update tracking
-          await fetch('/api/trakt-lists/track', {
+          await fetch('/api/simkl-lists/track', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ list_slug: slug, playlist_name: name, description: desc, username: username, matched: d.matched }),
           });
           showToast(`✓ Refreshed — ${d.matched} items matched`);
-          await loadTraktSynced();
+          await loadSimklSynced();
         } else {
           showToast('Refresh failed');
         }
@@ -1755,24 +1755,24 @@
       }
     }
 
-    async function refreshTraktLists() {
-      const badge = document.getElementById('traktBadge');
+    async function refreshSimklLists() {
+      const badge = document.getElementById('simklBadge');
       badge.textContent = '…';
       badge.style.color = 'var(--text-dim)';
-      await loadTraktLists();
-      showToast('Trakt lists refreshed');
+      await loadSimklLists();
+      showToast('Simkl lists refreshed');
     }
 
-    async function syncAllTraktNow() {
-      showToast('Syncing all Trakt lists…');
+    async function syncAllSimklNow() {
+      showToast('Syncing all Simkl lists…');
       try {
-        const r = await fetch('/api/trakt-lists/sync-all', { method: 'POST' });
+        const r = await fetch('/api/simkl-lists/sync-all', { method: 'POST' });
         const d = await r.json();
         if (d.status === 'ok') {
           const results = d.results || [];
           const okCount = results.filter(r => r.status === 'ok').length;
-          showToast(`✓ Synced ${okCount}/${results.length} Trakt lists`);
-          await loadTraktSynced();
+          showToast(`✓ Synced ${okCount}/${results.length} Simkl lists`);
+          await loadSimklSynced();
         } else {
           showToast('Sync failed');
         }
@@ -2037,7 +2037,7 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // Popular & Trending Trakt Lists
+    // Popular & Trending Simkl Lists
     // ═══════════════════════════════════════════════════════════════════
 
     function renderCommunityListGrid(lists, containerId) {
@@ -2067,14 +2067,14 @@
       btn.textContent = '…';
       btn.disabled = true;
       try {
-        const r = await fetch('/api/trakt-lists/import', {
+        const r = await fetch('/api/simkl-lists/import', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ list_slug: slug, playlist_name: name, description: desc, username: username }),
         });
         const d = await r.json();
         if (d.status === 'ok') {
-          await fetch('/api/trakt-lists/track', {
+          await fetch('/api/simkl-lists/track', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ list_slug: slug, playlist_name: name, description: desc, username: username, matched: d.matched }),
@@ -2085,7 +2085,7 @@
           btn.style.background = 'var(--surface-hover)';
           btn.style.color = 'var(--green)';
           showToast(`Imported "${name}" — ${d.matched} matched`);
-          await loadTraktSynced();
+          await loadSimklSynced();
         } else {
           btn.textContent = '✗ Failed';
           btn.style.color = 'var(--red)';
@@ -2100,7 +2100,7 @@
       const grid = document.getElementById('popularListsGrid');
       grid.innerHTML = '<span style="color:var(--text-dim);">Loading popular lists…</span>';
       try {
-        const r = await fetch('/api/trakt-lists/popular');
+        const r = await fetch('/api/simkl-lists/popular');
         const d = await r.json();
         renderCommunityListGrid(d.lists || [], 'popularListsGrid');
         grid._loaded = true;
@@ -2113,7 +2113,7 @@
       const grid = document.getElementById('trendingListsGrid');
       grid.innerHTML = '<span style="color:var(--text-dim);">Loading trending lists…</span>';
       try {
-        const r = await fetch('/api/trakt-lists/trending');
+        const r = await fetch('/api/simkl-lists/trending');
         const d = await r.json();
         renderCommunityListGrid(d.lists || [], 'trendingListsGrid');
         grid._loaded = true;
@@ -2140,7 +2140,7 @@
       tr.after(detailRow);
 
       try {
-        const r = await fetch(`/api/trakt-lists/items?slug=${encodeURIComponent(slug)}&username=${encodeURIComponent(username || 'me')}`);
+        const r = await fetch(`/api/simkl-lists/items?slug=${encodeURIComponent(slug)}&username=${encodeURIComponent(username || 'me')}`);
         const d = await r.json();
         const items = d.items || [];
         if (!items.length) {

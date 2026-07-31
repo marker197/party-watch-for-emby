@@ -20,10 +20,9 @@ class User(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     emby_user_id = Column(String(64), unique=True, nullable=False, index=True)
     emby_username = Column(String(128))
-    trakt_username = Column(String(128))
-    trakt_access_token = Column(Text)
-    trakt_refresh_token = Column(Text)
-    trakt_token_expires = Column(DateTime)
+    simkl_username = Column(String(128))
+    simkl_access_token = Column(Text)
+    simkl_token_expires = Column(DateTime)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
@@ -47,8 +46,8 @@ class QueueItem(Base):
     item_type = Column(String(32))   # movie | episode
     source = Column(String(32))      # watchlist | trending | friend | calendar
     score = Column(Float, default=0.0)
-    trakt_trending_rank = Column(Integer)
-    trakt_rating = Column(Float)
+    simkl_trending_rank = Column(Integer)
+    simkl_rating = Column(Float)
     metadata_json = Column(JSON)
     in_library = Column(Boolean, default=True)          # False = not in Emby, eligible for Radarr
     played = Column(Boolean, default=False)
@@ -65,13 +64,13 @@ class QueueBlocklist(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    trakt_id = Column(String(64), nullable=False)
+    simkl_id = Column(String(64), nullable=False)
     title = Column(String(512))
     item_type = Column(String(32))
     blocked_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     __table_args__ = (
-        UniqueConstraint("user_id", "trakt_id", name="uq_blocklist_user_trakt"),
+        UniqueConstraint("user_id", "simkl_id", name="uq_blocklist_user_simkl"),
     )
 
 
@@ -80,20 +79,20 @@ class QueueBlocklist(Base):
 # ---------------------------------------------------------------------------
 
 class UserRating(Base):
-    """Cached copy of a user's Trakt ratings for ML training."""
+    """Cached copy of a user's Simkl ratings for ML training."""
     __tablename__ = "user_ratings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    trakt_id = Column(String(64), nullable=False)
-    trakt_slug = Column(String(256))
+    simkl_id = Column(String(64), nullable=False)
+    simkl_slug = Column(String(256))
     title = Column(String(512))
     item_type = Column(String(32))
     rating = Column(Float, nullable=False)
     genres = Column(JSON)           # ["sci-fi","drama"]
     year = Column(Integer)
     runtime = Column(Integer)       # minutes
-    trakt_rating = Column(Float)    # community rating
+    simkl_rating = Column(Float)    # community rating
     network = Column(String(128))
     rated_at = Column(DateTime)
 
@@ -159,7 +158,7 @@ class UniverseItem(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     universe_id = Column(Integer, ForeignKey("universes.id", ondelete="CASCADE"), nullable=False)
-    trakt_id = Column(String(64))
+    simkl_id = Column(String(64))
     imdb_id = Column(String(16))      # e.g. "tt0371746"
     tmdb_id = Column(String(16))      # e.g. "1726"
     emby_item_id = Column(String(64))
@@ -209,8 +208,8 @@ class WatchPartyParticipant(Base):
 class WatchPartyReaction(Base):
     """Timestamped emoji reaction logged during a watch party.
 
-    Persisted so an end-of-party summary can be posted to Trakt as a
-    comment (see WatchPartyService._post_party_summary_to_trakt).
+    Persisted so an end-of-party summary can be posted to Simkl as a
+    comment (see WatchPartyService._post_party_summary_to_simkl).
     """
     __tablename__ = "watch_party_reactions"
 
@@ -225,8 +224,8 @@ class WatchPartyReaction(Base):
 class WatchPartyComment(Base):
     """User comment submitted during a watch party.
 
-    Aggregated into the end-of-party Trakt comment alongside emoji
-    reactions (see WatchPartyService._post_party_summary_to_trakt).
+    Aggregated into the end-of-party Simkl comment alongside emoji
+    reactions (see WatchPartyService._post_party_summary_to_simkl).
     """
     __tablename__ = "watch_party_comments"
 
@@ -254,7 +253,7 @@ class RatingBias(Base):
 
 
 # ---------------------------------------------------------------------------
-# Trakt Social Watching Graph  (#6)
+# Social Watching (deprecated)  (#6)
 # ---------------------------------------------------------------------------
 
 class SocialWatching(Base):
@@ -263,11 +262,11 @@ class SocialWatching(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    friend_trakt_username = Column(String(128), nullable=False)
+    friend_simkl_username = Column(String(128), nullable=False)
     friend_profile_url = Column(String(256))
     is_watching = Column(Boolean, default=False)
     current_item_title = Column(String(512))
-    current_item_trakt_id = Column(String(64))
+    current_item_simkl_id = Column(String(64))
     item_type = Column(String(32))  # 'movie' | 'episode'
     started_at = Column(DateTime)
     last_seen_at = Column(DateTime)
@@ -293,8 +292,8 @@ class LibraryGap(Base):
     gap_type = Column(String(32), nullable=False)  # 'incomplete_series' | 'orphaned_episode' | 'missing_sequel' | 'director_gap'
     title = Column(String(512))
     emby_item_id = Column(String(64))
-    trakt_id = Column(String(64))
-    trakt_slug = Column(String(256))
+    simkl_id = Column(String(64))
+    simkl_slug = Column(String(256))
     description = Column(Text)
     gap_details = Column(JSON)  # series_id, episodes_missing, director_name, etc.
     priority = Column(String(32), default='medium')  # low | medium | high | critical
@@ -333,7 +332,7 @@ class DismissedHealthItem(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     item_type = Column(String(16), nullable=False)   # 'movie' or 'show'
-    item_id = Column(String(64), nullable=False)      # imdb/tmdb/tvdb/trakt ID
+    item_id = Column(String(64), nullable=False)      # imdb/tmdb/tvdb/simkl ID
     dismissed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     user = relationship("User", foreign_keys=[user_id])
@@ -348,7 +347,7 @@ class WatchHistory(Base):
 
     Populated by:
       - Webhooks (PlaybackStop ≥80%, ItemMarkPlayed)
-      - One-time backfill from Trakt / MDBList / Emby
+      - One-time backfill from Simkl / MDBList / Emby
     """
     __tablename__ = "watch_history"
 
@@ -362,13 +361,13 @@ class WatchHistory(Base):
     episode_number = Column(Integer, nullable=True)
     imdb_id = Column(String(32), nullable=True)
     tmdb_id = Column(String(32), nullable=True)
-    trakt_id = Column(String(32), nullable=True)
+    simkl_id = Column(String(32), nullable=True)
     tvdb_id = Column(String(32), nullable=True)
     watched_at = Column(DateTime, nullable=False, index=True)
     runtime_minutes = Column(Integer, nullable=True)
     genres = Column(Text, nullable=True)  # comma-separated genre list
     progress = Column(Integer, nullable=True)  # playback progress 0-100 at time of recording
-    source = Column(String(32), nullable=False, default="webhook")  # webhook | backfill_trakt | backfill_mdblist | backfill_emby
+    source = Column(String(32), nullable=False, default="webhook")  # webhook | backfill_simkl | backfill_mdblist | backfill_emby
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     user = relationship("User", foreign_keys=[user_id])
@@ -384,7 +383,7 @@ class DismissedRewatchItem(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    item_key = Column(String(128), nullable=False)  # 'trakt:12345' or 'emby:abc'
+    item_key = Column(String(128), nullable=False)  # 'simkl:12345' or 'emby:abc'
     dismissed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     user = relationship("User", foreign_keys=[user_id])

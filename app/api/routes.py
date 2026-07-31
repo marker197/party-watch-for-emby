@@ -1,4 +1,4 @@
-"""REST API routes for the Emby-Trakt Suite."""
+"""REST API routes for the Emby-Simkl Suite."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from app.config import settings
 from app.models.schema import User, QueueItem, Prediction, MLModel, Universe, UniverseItem, AppSetting, WatchPartyParticipant, WatchParty
 from app.utils.database import get_db
-from app.utils.trakt_client import TraktClient
+from app.utils.simkl_client import SimklClient
 from app.utils.library_cache import LibraryCache
 from app.utils.emby_client import EmbyClient
 from app.utils.redis_cache import get_redis
@@ -40,7 +40,7 @@ class RewatchSettings(BaseModel):
 
 
 # ── item_key format validation ──────────────────────────────────────────
-_ITEM_KEY_RE = re.compile(r"^(emby|imdb|tmdb|trakt|tvdb):[A-Za-z0-9_-]+$")
+_ITEM_KEY_RE = re.compile(r"^(emby|imdb|tmdb|simkl|tvdb):[A-Za-z0-9_-]+$")
 
 
 def _validate_item_key(item_key: str) -> str:
@@ -58,7 +58,7 @@ async def _first_emby_user_id() -> str | None:
     """Return the emby_user_id of the first linked user (for user-scoped queries)."""
     async with async_session_ctx() as db:
         user = (await db.execute(
-            select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+            select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
         )).scalars().first()
     return user.emby_user_id if user else None
 from app.services.rating_bias_detector.service import RatingBiasDetectorService
@@ -103,11 +103,11 @@ async def health():
 # Integration Provider Selection
 # ═══════════════════════════════════════════════════════════════════════════
 
-VALID_PROVIDERS = {"trakt", "mdblist", "both", "none"}
+VALID_PROVIDERS = {"simkl", "mdblist", "both", "none"}
 
 async def _get_integration_provider(db: AsyncSession | None = None) -> str:
-    """Return the configured integration provider: 'trakt', 'mdblist', 'both', or 'none'.
-    Checks Redis first (fast), falls back to DB, defaults to 'trakt' for legacy installs."""
+    """Return the configured integration provider: 'simkl', 'mdblist', 'both', or 'none'.
+    Checks Redis first (fast), falls back to DB, defaults to 'simkl' for legacy installs."""
     r = await get_redis()
     raw = await r.get("integration_provider")
     if raw:
@@ -119,23 +119,23 @@ async def _get_integration_provider(db: AsyncSession | None = None) -> str:
         if row and row.value in VALID_PROVIDERS:
             await r.set("integration_provider", row.value)
             return row.value
-    # Legacy installs without this setting default to 'trakt' if trakt creds exist
-    if settings.trakt_client_id:
-        return "trakt"
+    # Legacy installs without this setting default to 'simkl' if simkl creds exist
+    if settings.simkl_client_id:
+        return "simkl"
     return "none"
 
 
 def _provider_set(provider: str) -> set[str]:
     """Convert provider string to set of active integrations."""
     if provider == "both":
-        return {"trakt", "mdblist"}
-    if provider in ("trakt", "mdblist"):
+        return {"simkl", "mdblist"}
+    if provider in ("simkl", "mdblist"):
         return {provider}
     return set()
 
 
 async def _get_active_providers(db: AsyncSession | None = None) -> set[str]:
-    """Return set of active integration providers, e.g. {'trakt', 'mdblist'}."""
+    """Return set of active integration providers, e.g. {'simkl', 'mdblist'}."""
     return _provider_set(await _get_integration_provider(db))
 
 
@@ -148,7 +148,7 @@ async def get_integration_provider(db: AsyncSession = Depends(get_db)):
 
 @router.put("/api/integration-provider")
 async def set_integration_provider(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
-    """Set the integration provider: 'trakt', 'mdblist', 'both', or 'none'."""
+    """Set the integration provider: 'simkl', 'mdblist', 'both', or 'none'."""
     provider = payload.get("provider", "").strip().lower()
     if provider not in VALID_PROVIDERS:
         raise HTTPException(400, f"Invalid provider. Must be one of: {', '.join(sorted(VALID_PROVIDERS))}")
@@ -178,7 +178,7 @@ async def check_setup_required(db: AsyncSession = Depends(get_db)):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Auth — Trakt device-code OAuth
+# Auth — Simkl device-code OAuth
 # ═══════════════════════════════════════════════════════════════════════════
 
 class LinkRequest(BaseModel):
@@ -191,10 +191,10 @@ class LinkPollRequest(BaseModel):
     device_code: str
 
 
-@router.post("/auth/trakt/device-code")
+@router.post("/auth/simkl/device-code")
 @limiter.limit(LIMITS["auth"])
-async def trakt_device_code(request: Request, db: AsyncSession = Depends(get_db)):
-    """Start Trakt device-code flow.  Returns user_code + verification_url."""
+async def simkl_device_code(request: Request, db: AsyncSession = Depends(get_db)):
+    """Start Simkl device-code flow.  Returns user_code + verification_url."""
     body = await request.json()
     emby_user_id = body.get("emby_user_id", "").strip()
     emby_username = body.get("emby_username", "").strip()
@@ -211,36 +211,36 @@ async def trakt_device_code(request: Request, db: AsyncSession = Depends(get_db)
         await db.commit()
         await db.refresh(user)
 
-    trakt = TraktClient()
+    simkl = SimklClient()
     try:
-        result = await trakt.get_device_code()
+        result = await simkl.get_pin_code()
     finally:
-        await trakt.close()
+        await simkl.close()
 
     return {
         "user_code": result["user_code"],
         "verification_url": result["verification_url"],
-        "device_code": result["device_code"],
+        "device_code": result["user_code"],   # Simkl polls with user_code, not device_code
         "expires_in": result["expires_in"],
         "interval": result["interval"],
     }
 
 
-@router.post("/auth/trakt/poll")
+@router.post("/auth/simkl/poll")
 @limiter.limit(LIMITS["auth"])
-async def trakt_poll(request: Request, db: AsyncSession = Depends(get_db)):
-    """Poll for completed Trakt authorisation."""
+async def simkl_poll(request: Request, db: AsyncSession = Depends(get_db)):
+    """Poll for completed Simkl authorisation."""
     body = await request.json()
     device_code = body.get("device_code", "").strip()
     emby_user_id = body.get("emby_user_id", "").strip()
     if not device_code or not emby_user_id:
         raise HTTPException(400, "device_code and emby_user_id are required")
 
-    trakt = TraktClient()
+    simkl = SimklClient()
     try:
-        token_data = await trakt.poll_device_token(device_code)
+        token_data = await simkl.poll_pin_token(device_code)
     finally:
-        await trakt.close()
+        await simkl.close()
 
     if not token_data:
         return {"status": "pending"}
@@ -252,26 +252,41 @@ async def trakt_poll(request: Request, db: AsyncSession = Depends(get_db)):
     if not user:
         raise HTTPException(404, "User not found — call device-code first")
 
-    user.trakt_access_token = token_data["access_token"]
-    user.trakt_refresh_token = token_data["refresh_token"]
-    user.trakt_token_expires = (datetime.now(timezone.utc) + timedelta(seconds=token_data.get("expires_in", 7776000))).replace(tzinfo=None)
+    user.simkl_access_token = token_data["access_token"]
+    token_expires_in = token_data.get("expires_in", 157680000)  # 5yr default per Simkl docs
+    user.simkl_token_expires = (datetime.now(timezone.utc) + timedelta(seconds=token_expires_in)).replace(tzinfo=None)
 
-    # fetch trakt username
-    authed = TraktClient(access_token=token_data["access_token"])
+    # Log token info for debugging auth issues
+    tok = token_data["access_token"]
+    tok_hint = f"{tok[:8]}…{tok[-4:]}" if len(tok) > 12 else tok[:8]
+    log.info("simkl_poll.token_received", **{"token_hint": tok_hint, "expires_in": token_expires_in,
+                       "user_id": user.id, "emby_user_id": emby_user_id})
+
+    # fetch simkl username
+    authed = SimklClient(access_token=token_data["access_token"])
     try:
         me = await authed.get_me()
-        user.trakt_username = me.get("user", {}).get("username", "")
+        user.simkl_username = me.get("user", {}).get("username", "")
     finally:
         await authed.close()
 
     await db.commit()
+
+    # Post-commit verification: re-read from DB to confirm persistence
+    await db.refresh(user)
+    stored_hint = ""
+    if user.simkl_access_token:
+        st = user.simkl_access_token
+        stored_hint = f"{st[:8]}…{st[-4:]}" if len(st) > 12 else st[:8]
+    log.info("simkl_poll.token_persisted", **{"stored_hint": stored_hint, "match": stored_hint == tok_hint,
+                       "expires": str(user.simkl_token_expires)})
 
     # ✅ SECURITY: Issue JWT tokens to user
     tokens = await issue_tokens(user)
 
     return {
         "status": "linked",
-        "trakt_username": user.trakt_username,
+        "simkl_username": user.simkl_username,
         "access_token": tokens.access_token,
         "refresh_token": tokens.refresh_token,
         "token_type": tokens.token_type,
@@ -285,7 +300,7 @@ async def list_users(db: AsyncSession = Depends(get_db)):
     now = datetime.now(timezone.utc)
     result = []
     for u in users:
-        expires = u.trakt_token_expires
+        expires = u.simkl_token_expires
         token_info = {}
         if expires:
             # DB-stored expires may be naive (pre-timezone-aware migration)
@@ -316,8 +331,8 @@ async def list_users(db: AsyncSession = Depends(get_db)):
             "id": u.id,
             "emby_user_id": u.emby_user_id,
             "emby_username": u.emby_username,
-            "trakt_username": u.trakt_username,
-            "linked": bool(u.trakt_access_token),
+            "simkl_username": u.simkl_username,
+            "linked": bool(u.simkl_access_token),
             **token_info,
         })
     return result
@@ -328,7 +343,7 @@ async def list_all_emby_users(db: AsyncSession = Depends(get_db)):
     """Return all Emby server users, auto-creating DB records for any missing.
 
     The watch party page needs every Emby user in the dropdown, not just
-    those who have been through the Trakt link flow.
+    those who have been through the Simkl link flow.
     """
     emby = EmbyClient()
     try:
@@ -372,8 +387,8 @@ async def list_all_emby_users(db: AsyncSession = Depends(get_db)):
     result = []
     for u in by_emby_id.values():
         token_info = {}
-        if u.trakt_token_expires:
-            _exp = u.trakt_token_expires
+        if u.simkl_token_expires:
+            _exp = u.simkl_token_expires
             if _exp.tzinfo is None:
                 _exp = _exp.replace(tzinfo=timezone.utc)
             delta = _exp - now
@@ -399,8 +414,8 @@ async def list_all_emby_users(db: AsyncSession = Depends(get_db)):
             "id": u.id,
             "emby_user_id": u.emby_user_id,
             "emby_username": u.emby_username,
-            "trakt_username": u.trakt_username,
-            "linked": bool(u.trakt_access_token),
+            "simkl_username": u.simkl_username,
+            "linked": bool(u.simkl_access_token),
             **token_info,
         })
 
@@ -461,7 +476,7 @@ async def get_queue(
             "type": i.item_type,
             "source": i.source,
             "score": i.score,
-            "trending_rank": i.trakt_trending_rank,
+            "trending_rank": i.simkl_trending_rank,
             "played": i.played,
             "played_at": i.played_at.isoformat() if i.played_at else None,
             "in_library": i.in_library if i.in_library is not None else True,
@@ -471,7 +486,7 @@ async def get_queue(
             "tmdb_id": (i.metadata_json or {}).get("ids", {}).get("tmdb"),
             "imdb_id": (i.metadata_json or {}).get("ids", {}).get("imdb"),
             "tvdb_id": (i.metadata_json or {}).get("ids", {}).get("tvdb"),
-            "trakt_id": (i.metadata_json or {}).get("trakt_id"),
+            "simkl_id": (i.metadata_json or {}).get("simkl_id"),
             "year": (i.metadata_json or {}).get("year"),
         }
         for i in items
@@ -492,24 +507,24 @@ async def block_queue_item(
     from app.models.schema import QueueBlocklist
 
     user_id = payload.get("user_id")
-    trakt_id = str(payload.get("trakt_id", ""))
+    simkl_id = str(payload.get("simkl_id", ""))
     title = payload.get("title", "")
     item_type = payload.get("item_type", "")
 
-    if not trakt_id or not user_id:
-        raise HTTPException(400, "user_id and trakt_id required")
+    if not simkl_id or not user_id:
+        raise HTTPException(400, "user_id and simkl_id required")
     require_user_ownership(current_user.id, user_id, "queue_block")
 
     # Insert into blocklist (ignore duplicate)
     existing = (await db.execute(
         select(QueueBlocklist).where(
             QueueBlocklist.user_id == user_id,
-            QueueBlocklist.trakt_id == trakt_id,
+            QueueBlocklist.simkl_id == simkl_id,
         )
     )).scalar_one_or_none()
     if not existing:
         db.add(QueueBlocklist(
-            user_id=user_id, trakt_id=trakt_id,
+            user_id=user_id, simkl_id=simkl_id,
             title=title, item_type=item_type,
         ))
         await db.flush()
@@ -520,8 +535,8 @@ async def block_queue_item(
     )).scalars().all()
     removed = False
     for qi in queue_items:
-        qi_trakt = str((qi.metadata_json or {}).get("trakt_id", ""))
-        if qi_trakt == trakt_id:
+        qi_simkl = str((qi.metadata_json or {}).get("simkl_id", ""))
+        if qi_simkl == simkl_id:
             await db.delete(qi)
             removed = True
     await db.commit()
@@ -541,8 +556,8 @@ async def block_queue_item(
                         item_type=replacement["item_type"],
                         source=replacement["source"],
                         score=replacement["score"],
-                        trakt_trending_rank=replacement.get("trending_rank"),
-                        trakt_rating=replacement.get("friend_rating"),
+                        simkl_trending_rank=replacement.get("trending_rank"),
+                        simkl_rating=replacement.get("friend_rating"),
                         metadata_json=replacement,
                         in_library=emby_id is not None,
                     ))
@@ -554,8 +569,8 @@ async def block_queue_item(
         except Exception as e:
             log.warning("queue.backfill_failed", error=str(e)[:120])
 
-    log.info("queue.item_blocked", user_id=user_id, trakt_id=trakt_id, title=title)
-    return {"status": "ok", "blocked": trakt_id, "title": title}
+    log.info("queue.item_blocked", user_id=user_id, simkl_id=simkl_id, title=title)
+    return {"status": "ok", "blocked": simkl_id, "title": title}
 
 
 @router.get("/api/queue/blocklist/{user_id}")
@@ -579,7 +594,7 @@ async def get_queue_blocklist(
         "items": [
             {
                 "id": i.id,
-                "trakt_id": i.trakt_id,
+                "simkl_id": i.simkl_id,
                 "title": i.title,
                 "item_type": i.item_type,
                 "blocked_at": i.blocked_at.isoformat() if i.blocked_at else None,
@@ -659,13 +674,13 @@ async def get_airing_soon(
         result = await airing_alerts_svc.get_airing_soon(user, days=days)
     except Exception:
         log.exception("airing_soon.fetch_failed", user_id=user_id)
-        raise HTTPException(502, "failed to fetch airing calendar from Trakt")
+        raise HTTPException(502, "failed to fetch airing calendar from Simkl")
 
     alerts = result.get("items", [])
     home_releases = result.get("upcoming_home_releases", [])
 
     # Fire watchlist sync in background — ensures missing Radarr/Sonarr
-    # items are on the Trakt/MDBList watchlist so they appear in Airing Soon.
+    # items are on the Simkl/MDBList watchlist so they appear in Airing Soon.
     # Throttled: runs at most once every 30 minutes per user.
     r = await get_redis()
     throttle_key = f"watchlist_sync:last_run:{user_id}"
@@ -706,8 +721,8 @@ async def train_model(
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(404, "User not found")
-    if not user.trakt_access_token:
-        raise HTTPException(400, "User not linked to Trakt")
+    if not user.simkl_access_token:
+        raise HTTPException(400, "User not linked to Simkl")
     result = await ml_predictor_svc.train_for_user(user)
     return result
 
@@ -750,7 +765,7 @@ async def get_model_info(
                 genre: {
                     "delta": s.get("bias_score", 0.0),
                     "user_avg": s.get("avg", 0.0),
-                    "trakt_avg": round(s.get("avg", 0.0) - s.get("bias_score", 0.0), 1),
+                    "simkl_avg": round(s.get("avg", 0.0) - s.get("bias_score", 0.0), 1),
                 }
                 for genre, s in top
             }
@@ -796,7 +811,7 @@ async def scrobble_audit(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Compare Emby played items vs Trakt history — surface missed scrobbles."""
+    """Compare Emby played items vs Simkl history — surface missed scrobbles."""
     require_user_ownership(current_user.id, user_id, "scrobble_audit")
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
@@ -811,7 +826,7 @@ async def scrobble_backfill(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Backfill selected items to Trakt history.
+    """Backfill selected items to Simkl history.
 
     Body: {items: [{type, imdb_id, tmdb_id, title}, ...]}
     """
@@ -832,7 +847,7 @@ async def scrobble_backfill_all(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Backfill ALL missed scrobbles to Trakt history."""
+    """Backfill ALL missed scrobbles to Simkl history."""
     require_user_ownership(current_user.id, user_id, "scrobble_backfill_all")
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
@@ -1009,7 +1024,7 @@ async def export_universes():
                         "item_type": i.item_type,
                         "release_order": i.release_order,
                         "chronological_order": i.chronological_order,
-                        "trakt_id": i.trakt_id,
+                        "simkl_id": i.simkl_id,
                         "imdb_id": i.imdb_id,
                         "tmdb_id": i.tmdb_id,
                     }
@@ -1045,7 +1060,7 @@ async def export_universes():
                         "item_type": item.item_type,
                         "release_order": item.release_order,
                         "chronological_order": item.chronological_order,
-                        "trakt_id": item.trakt_id,
+                        "simkl_id": item.simkl_id,
                         "imdb_id": item.imdb_id,
                         "tmdb_id": item.tmdb_id,
                     }
@@ -1120,7 +1135,7 @@ async def import_universes(request: Request, _user: User = Depends(get_current_u
                     item_type=item_data.get("item_type", "movie"),
                     release_order=item_data.get("release_order", 0),
                     chronological_order=item_data.get("chronological_order", 0),
-                    trakt_id=item_data.get("trakt_id"),
+                    simkl_id=item_data.get("simkl_id"),
                     imdb_id=item_data.get("imdb_id"),
                     tmdb_id=item_data.get("tmdb_id"),
                     in_library=False,
@@ -1856,7 +1871,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
     On PlaybackStop / ItemMarkedPlayed:
       1. Record feedback for Smart Queue scoring
-      2. Scrobble to Trakt watch history (if user has linked Trakt account)
+      2. Scrobble to Simkl watch history (if user has linked Simkl account)
     """
     import json as _json
 
@@ -1939,40 +1954,30 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         )
         return {"status": "ignored", "reason": "unknown_user"}
 
-    trakt_synced = False
+    simkl_synced = False
 
-    # -- Helper: build a Trakt client with auto-refresh for this user ---------
-    async def _get_trakt_client():
-        async def _on_refresh(access, refresh, expires):
-            async with async_session() as _db:
-                u = await _db.get(User, user.id)
-                u.trakt_access_token = access
-                u.trakt_refresh_token = refresh
-                u.trakt_token_expires = expires
-                await _db.commit()
-
-        return TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=_on_refresh,
+    # -- Helper: build a Simkl client with auto-refresh for this user ---------
+    async def _get_simkl_client():
+        return SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
         )
 
-    # -- Helper: build Trakt scrobble payload from webhook item data ----------
+    # -- Helper: build Simkl scrobble payload from webhook item data ----------
     def _build_scrobble_payload():
         provider_ids = item_data.get("ProviderIds", {})
-        trakt_ids = {}
+        simkl_ids = {}
         if provider_ids.get("Imdb"):
-            trakt_ids["imdb"] = provider_ids["Imdb"]
+            simkl_ids["imdb"] = provider_ids["Imdb"]
         if provider_ids.get("Tmdb"):
-            trakt_ids["tmdb"] = int(provider_ids["Tmdb"])
+            simkl_ids["tmdb"] = int(provider_ids["Tmdb"])
         if provider_ids.get("Tvdb"):
-            trakt_ids["tvdb"] = int(provider_ids["Tvdb"])
-        if not trakt_ids:
+            simkl_ids["tvdb"] = int(provider_ids["Tvdb"])
+        if not simkl_ids:
             return None
 
         if item_type_raw == "Movie":
-            return {"movie": {"ids": trakt_ids}}
+            return {"movie": {"ids": simkl_ids}}
         elif item_type_raw == "Episode":
             # Try to get series-level provider IDs from the webhook payload
             series_ids = {}
@@ -1994,8 +1999,8 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 return {"show": {"ids": series_ids}, "episode": episode_obj}
             else:
                 # Fallback: put episode's own IDs on the episode object directly.
-                # Trakt accepts episode.ids as an alternative to show.ids + season/number.
-                episode_obj["ids"] = trakt_ids
+                # Simkl accepts episode.ids as an alternative to show.ids + season/number.
+                episode_obj["ids"] = simkl_ids
                 return {"episode": episode_obj}
         return None
 
@@ -2070,8 +2075,8 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     async def _build_mdblist_scrobble_payload():
         """Build MDBList-compatible scrobble payload from webhook item data.
         Supports movies and TV episodes.
-        Movie IDs accepted: imdb, tmdb, trakt, kitsu, mdblist (NOT tvdb).
-        Show/episode IDs accepted: imdb, tmdb, trakt, tvdb, mdblist.
+        Movie IDs accepted: imdb, tmdb, simkl, kitsu, mdblist (NOT tvdb).
+        Show/episode IDs accepted: imdb, tmdb, simkl, tvdb, mdblist.
         Episode payload uses MDBList's nested format:
           {"show": {"ids": {...}, "season": {"number": N, "episode": {"number": M}}}}
         """
@@ -2132,25 +2137,25 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
                 if action == "start":
                     await mdb.scrobble_start(payload, progress=progress)
-                    await _activity_log(f"📋 MDBList watching: {display_name}", category="trakt")
+                    await _activity_log(f"📋 MDBList watching: {display_name}", category="simkl")
                 elif action == "pause":
                     await mdb.scrobble_pause(payload, progress=progress)
                     await _activity_log(
                         f"📋 MDBList paused: {display_name} at {time_str} ({progress_pct}%)",
-                        category="trakt",
+                        category="simkl",
                     )
                 elif action == "stop":
                     result = await mdb.scrobble_stop(payload, progress=progress)
                     await _activity_log(
                         f"📋 MDBList stop: {display_name} ({progress_pct}%)",
-                        category="trakt",
+                        category="simkl",
                     )
                     return result
                 elif action == "resume":
                     await mdb.scrobble_start(payload, progress=progress)
                     await _activity_log(
                         f"📋 MDBList resumed: {display_name} at {time_str} ({progress_pct}%)",
-                        category="trakt",
+                        category="simkl",
                     )
             finally:
                 await mdb.close()
@@ -2172,7 +2177,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             detail = f" [{status_code}]" if status_code else ""
             if resp_body:
                 detail += f" {resp_body[:120]}"
-            await _activity_log(f"⚠ MDBList {action} failed: {display_name}{detail}", category="trakt")
+            await _activity_log(f"⚠ MDBList {action} failed: {display_name}{detail}", category="simkl")
 
     # -- Helper: add to MDBList watched history --------------------------------
     async def _mdblist_add_to_history():
@@ -2209,13 +2214,13 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         }],
                     )
                 if item_type_raw == "Movie":
-                    await _activity_log(f"✓ Synced to MDBList: {display_name}", category="trakt")
+                    await _activity_log(f"✓ Synced to MDBList: {display_name}", category="simkl")
                 elif item_type_raw == "Episode":
                     season_num = item_data.get("ParentIndexNumber", "?")
                     episode_num = item_data.get("IndexNumber", "?")
                     await _activity_log(
                         f"✓ Synced to MDBList: {display_name}",
-                        category="trakt",
+                        category="simkl",
                     )
             finally:
                 await mdb.close()
@@ -2243,7 +2248,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         duration = item_data.get("RunTimeTicks", 0)
         if duration > 0 and pos > 0:
             return min(99.9, max(1.0, pos / duration * 100))
-        # Trakt rejects progress < 1% with 422, so default to 1% minimum
+        # Simkl rejects progress < 1% with 422, so default to 1% minimum
         return 1.0
 
     # ── Match Emby event names ───────────────────────────────────────────────
@@ -2299,7 +2304,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         except Exception:
             pass  # non-critical
 
-    # ── playback.start → Trakt scrobble/start ("Watching…") ─────────────────
+    # ── playback.start → Simkl scrobble/start ("Watching…") ─────────────────
     if is_play_start:
         # Invalidate continue watching cache — a new resume point is being created
         await _invalidate_continue_watching()
@@ -2317,85 +2322,85 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             except Exception:
                 pass
 
-        if user.trakt_access_token:
+        if user.simkl_access_token:
             try:
-                trakt = await _get_trakt_client()
+                simkl = await _get_simkl_client()
                 scrobble = _build_scrobble_payload()
                 if scrobble:
                     progress = _calc_progress()
-                    await trakt.scrobble_start(scrobble, progress=progress)
-                    trakt_synced = True
-                    await _activity_log(f"▶ Trakt watching: {display_name}", category="trakt")
+                    await simkl.scrobble_start(scrobble, progress=progress)
+                    simkl_synced = True
+                    await _activity_log(f"▶ Simkl watching: {display_name}", category="simkl")
             except Exception as e:
-                log.warning("webhook.trakt_scrobble_start_failed", error=str(e))
-                await _activity_log(f"⚠ Trakt start failed: {display_name} — {str(e)[:80]}", category="trakt")
+                log.warning("webhook.simkl_scrobble_start_failed", error=str(e))
+                await _activity_log(f"⚠ Simkl start failed: {display_name} — {str(e)[:80]}", category="simkl")
         # MDBList scrobble start
         asyncio.create_task(_mdblist_scrobble("start", _calc_progress()))
-        return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
+        return {"status": "received", "event": event_type, "simkl_synced": simkl_synced}
 
-    # ── playback.pause → Trakt scrobble/pause ───────────────────────────────
+    # ── playback.pause → Simkl scrobble/pause ───────────────────────────────
     if is_play_pause:
-        if user.trakt_access_token:
+        if user.simkl_access_token:
             progress = _calc_progress()
-            # Trakt rejects pause at >80% progress (considers it watched).
+            # Simkl rejects pause at >80% progress (considers it watched).
             # Skip the scrobble — the stop event that follows will sync history.
             if progress > 80:
                 await _activity_log(
                     f"⏸ Paused near end: {item_name} ({progress:.0f}%) — skipped scrobble, stop will sync",
-                    category="trakt",
+                    category="simkl",
                 )
             else:
                 try:
-                    trakt = await _get_trakt_client()
+                    simkl = await _get_simkl_client()
                     scrobble = _build_scrobble_payload()
                     if scrobble:
-                        await trakt.scrobble_pause(scrobble, progress=progress)
-                        trakt_synced = True
+                        await simkl.scrobble_pause(scrobble, progress=progress)
+                        simkl_synced = True
                         pos_secs = _get_position_ticks() // 10000000
                         mm, ss = divmod(pos_secs, 60)
                         await _activity_log(
-                            f"⏸ Trakt paused: {display_name} at {mm}:{ss:02d} ({progress:.0f}%)",
-                            category="trakt",
+                            f"⏸ Simkl paused: {display_name} at {mm}:{ss:02d} ({progress:.0f}%)",
+                            category="simkl",
                         )
                 except Exception as e:
                     err_str = str(e)
                     if "422" in err_str:
-                        # Trakt rejected — likely near end of content, not a real error
+                        # Simkl rejected — likely near end of content, not a real error
                         await _activity_log(
-                            f"⏸ Pause skipped by Trakt: {display_name} ({progress:.0f}%) — will sync on stop",
-                            category="trakt",
+                            f"⏸ Pause skipped by Simkl: {display_name} ({progress:.0f}%) — will sync on stop",
+                            category="simkl",
                         )
                     else:
-                        log.warning("webhook.trakt_scrobble_pause_failed", error=err_str)
-                        await _activity_log(f"⚠ Trakt pause failed: {display_name} — {err_str[:80]}", category="trakt")
+                        log.warning("webhook.simkl_scrobble_pause_failed", error=err_str)
+                        await _activity_log(f"⚠ Simkl pause failed: {display_name} — {err_str[:80]}", category="simkl")
         # MDBList scrobble pause
         asyncio.create_task(_mdblist_scrobble("pause", _calc_progress()))
-        return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
+        return {"status": "received", "event": event_type, "simkl_synced": simkl_synced}
 
-    # ── playback.unpause → Trakt scrobble/start (resume) ────────────────────
+    # ── playback.unpause → Simkl scrobble/start (resume) ────────────────────
     if is_play_unpause:
-        if user.trakt_access_token:
+        if user.simkl_access_token:
             try:
-                trakt = await _get_trakt_client()
+                simkl = await _get_simkl_client()
                 scrobble = _build_scrobble_payload()
                 if scrobble:
                     progress = _calc_progress()
-                    await trakt.scrobble_start(scrobble, progress=progress)
-                    trakt_synced = True
+                    await simkl.scrobble_start(scrobble, progress=progress)
+                    simkl_synced = True
                     pos_secs = _get_position_ticks() // 10000000
                     mm, ss = divmod(pos_secs, 60)
                     await _activity_log(
-                        f"▶ Trakt resumed: {display_name} at {mm}:{ss:02d} ({progress:.0f}%)",
-                        category="trakt",
+                        f"▶ Simkl resumed: {display_name} at {mm}:{ss:02d} ({progress:.0f}%)",
+                        category="simkl",
                     )
             except Exception as e:
-                log.warning("webhook.trakt_scrobble_resume_failed", error=str(e))
-                await _activity_log(f"⚠ Trakt resume failed: {display_name} — {str(e)[:80]}", category="trakt")
+                log.warning("webhook.simkl_scrobble_resume_failed", error=str(e))
+                await _activity_log(f"⚠ Simkl resume failed: {display_name} — {str(e)[:80]}", category="simkl")
         # MDBList scrobble resume
         asyncio.create_task(_mdblist_scrobble("resume", _calc_progress()))
-        return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
+        return {"status": "received", "event": event_type, "simkl_synced": simkl_synced}
 
-    # ── playback.stop / item.markplayed → Trakt watch history ───────────────
+    # ── playback.stop / item.markplayed → Simkl watch history ───────────────
     if is_watched:
         # Invalidate continue watching cache — item finished or resume point changed
         await _invalidate_continue_watching()
@@ -2424,86 +2429,86 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             category="playback",
         )
 
-        # ── Send scrobble/stop to clear Trakt "watching" state ──────────
+        # ── Send scrobble/stop to clear Simkl "watching" state ──────────
         # Only for actual playback stops (not manual mark-as-played).
-        # If progress > 80%, Trakt auto-adds to history (action=scrobble)
+        # If progress > 80%, Simkl auto-adds to history (action=scrobble)
         # and we skip the manual add_to_history to avoid duplicates.
         scrobble_already_added = False
-        if is_play_stop and user.trakt_access_token:
+        if is_play_stop and user.simkl_access_token:
             try:
-                trakt = await _get_trakt_client()
+                simkl = await _get_simkl_client()
                 scrobble = _build_scrobble_payload()
                 if scrobble:
                     progress = _calc_progress()
-                    result = await trakt.scrobble_stop(scrobble, progress=progress)
+                    result = await simkl.scrobble_stop(scrobble, progress=progress)
                     action = result.get("action", "") if isinstance(result, dict) else ""
                     if action == "scrobble":
-                        # >80% progress — Trakt added to history automatically
+                        # >80% progress — Simkl added to history automatically
                         scrobble_already_added = True
-                        trakt_synced = True
+                        simkl_synced = True
                         await _activity_log(
-                            f"✓ Trakt scrobbled: {display_name} ({progress:.0f}%)",
-                            category="trakt",
+                            f"✓ Simkl scrobbled: {display_name} ({progress:.0f}%)",
+                            category="simkl",
                         )
                     else:
-                        # <80% — Trakt saved as pause/playback progress
+                        # <80% — Simkl saved as pause/playback progress
                         await _activity_log(
-                            f"⏹ Trakt stop: {display_name} ({progress:.0f}%) — action={action}",
-                            category="trakt",
+                            f"⏹ Simkl stop: {display_name} ({progress:.0f}%) — action={action}",
+                            category="simkl",
                         )
             except Exception as e:
                 err_str = str(e)
                 if "409" in err_str:
                     # Already scrobbled recently — watching state is cleared
                     scrobble_already_added = True
-                    trakt_synced = True
+                    simkl_synced = True
                     await _activity_log(
-                        f"⏹ Trakt stop (already scrobbled): {display_name}",
-                        category="trakt",
+                        f"⏹ Simkl stop (already scrobbled): {display_name}",
+                        category="simkl",
                     )
                 elif "422" in err_str:
-                    # Progress < 1% — Trakt ignores, but watching state is cleared
+                    # Progress < 1% — Simkl ignores, but watching state is cleared
                     await _activity_log(
-                        f"⏹ Trakt stop ignored (<1%): {display_name}",
-                        category="trakt",
+                        f"⏹ Simkl stop ignored (<1%): {display_name}",
+                        category="simkl",
                     )
                 else:
-                    log.warning("webhook.trakt_scrobble_stop_failed", error=err_str)
+                    log.warning("webhook.simkl_scrobble_stop_failed", error=err_str)
                     await _activity_log(
-                        f"⚠ Trakt stop failed: {display_name} — {err_str[:80]}",
-                        category="trakt",
+                        f"⚠ Simkl stop failed: {display_name} — {err_str[:80]}",
+                        category="simkl",
                     )
 
-        # Scrobble to Trakt watch history if user has a token
-        if user.trakt_access_token and not scrobble_already_added:
+        # Scrobble to Simkl watch history if user has a token
+        if user.simkl_access_token and not scrobble_already_added:
             try:
-                trakt = await _get_trakt_client()
+                simkl = await _get_simkl_client()
 
-                # Build Trakt item from provider IDs in the webhook payload
+                # Build Simkl item from provider IDs in the webhook payload
                 provider_ids = item_data.get("ProviderIds", {})
-                trakt_ids = {}
+                simkl_ids = {}
                 if provider_ids.get("Imdb"):
-                    trakt_ids["imdb"] = provider_ids["Imdb"]
+                    simkl_ids["imdb"] = provider_ids["Imdb"]
                 if provider_ids.get("Tmdb"):
-                    trakt_ids["tmdb"] = int(provider_ids["Tmdb"])
+                    simkl_ids["tmdb"] = int(provider_ids["Tmdb"])
                 if provider_ids.get("Tvdb"):
-                    trakt_ids["tvdb"] = int(provider_ids["Tvdb"])
+                    simkl_ids["tvdb"] = int(provider_ids["Tvdb"])
 
-                if trakt_ids:
+                if simkl_ids:
                     watched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
                     if item_type_raw in ("Movie",):
                         history_item = {
-                            "ids": trakt_ids,
+                            "ids": simkl_ids,
                             "watched_at": watched_at,
                         }
-                        await trakt.add_to_history([history_item])
-                        trakt_synced = True
-                        log.info("webhook.trakt_history_synced",
-                                 type="movie", ids=trakt_ids, user=user.id)
+                        await simkl.add_to_history([history_item])
+                        simkl_synced = True
+                        log.info("webhook.simkl_history_synced",
+                                 type="movie", ids=simkl_ids, user=user.id)
                         await _activity_log(
-                            f"✓ Synced to Trakt: {display_name}",
-                            category="trakt",
+                            f"✓ Synced to Simkl: {display_name}",
+                            category="simkl",
                         )
 
                     elif item_type_raw in ("Episode",):
@@ -2511,7 +2516,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
                         episode = {
                             "watched_at": watched_at,
-                            "ids": trakt_ids,
+                            "ids": simkl_ids,
                         }
                         season_num = item_data.get("ParentIndexNumber")
                         episode_num = item_data.get("IndexNumber")
@@ -2522,55 +2527,55 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
                         show_item = {
                             "_type": "show",
-                            "ids": series_ids or trakt_ids,
+                            "ids": series_ids or simkl_ids,
                             "seasons": [{
                                 "number": season_num or 1,
                                 "episodes": [episode],
                             }],
                         }
-                        await trakt.add_to_history([show_item])
-                        trakt_synced = True
-                        log.info("webhook.trakt_history_synced",
-                                 type="episode", ids=series_ids or trakt_ids,
-                                 ep_ids=trakt_ids, user=user.id)
+                        await simkl.add_to_history([show_item])
+                        simkl_synced = True
+                        log.info("webhook.simkl_history_synced",
+                                 type="episode", ids=series_ids or simkl_ids,
+                                 ep_ids=simkl_ids, user=user.id)
                         await _activity_log(
-                            f"✓ Synced to Trakt: {display_name}",
-                            category="trakt",
+                            f"✓ Synced to Simkl: {display_name}",
+                            category="simkl",
                         )
                     else:
                         await _activity_log(
-                            f"Skipped Trakt sync: {display_name} — unsupported type '{item_type_raw}'",
-                            category="trakt",
+                            f"Skipped Simkl sync: {display_name} — unsupported type '{item_type_raw}'",
+                            category="simkl",
                         )
                 else:
                     await _activity_log(
-                        f"Skipped Trakt sync: {display_name} — no provider IDs (IMDB/TMDB/TVDB)",
-                        category="trakt",
+                        f"Skipped Simkl sync: {display_name} — no provider IDs (IMDB/TMDB/TVDB)",
+                        category="simkl",
                     )
 
             except Exception as e:
-                log.error("webhook.trakt_sync_failed", error=str(e), user=user.id)
+                log.error("webhook.simkl_sync_failed", error=str(e), user=user.id)
                 await _activity_log(
-                    f"✗ Trakt sync failed: {display_name} — {str(e)[:80]}",
-                    category="trakt",
+                    f"✗ Simkl sync failed: {display_name} — {str(e)[:80]}",
+                    category="simkl",
                 )
 
             # Invalidate scrobble audit cache so newly synced items
             # don't appear as missed on the next audit view
-            if trakt_synced:
+            if simkl_synced:
                 await scrobble_audit_svc.invalidate_cache(user.id)
         else:
             if not scrobble_already_added:
                 await _activity_log(
-                    f"Skipped Trakt sync: {display_name} — user has no Trakt token",
-                    category="trakt",
+                    f"Skipped Simkl sync: {display_name} — user has no Simkl token",
+                    category="simkl",
                 )
 
         # ── MDBList: scrobble stop + history sync ─────────────────────────
         if is_play_stop:
             asyncio.create_task(_mdblist_scrobble("stop", _calc_progress()))
         if not scrobble_already_added or True:
-            # Always try MDBList history (independent of Trakt scrobble state)
+            # Always try MDBList history (independent of Simkl scrobble state)
             asyncio.create_task(_mdblist_add_to_history())
 
         # ── Persistent watch history (local DB) ──────────────────────────
@@ -2603,7 +2608,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 wh_imdb = provider_ids.get("Imdb", "") or ""
                 wh_tmdb = str(provider_ids.get("Tmdb", "")) if provider_ids.get("Tmdb") else ""
                 wh_tvdb = str(provider_ids.get("Tvdb", "")) if provider_ids.get("Tvdb") else ""
-                wh_trakt = ""
+                wh_simkl = ""
 
                 if item_type_raw == "Episode":
                     series_ids = await _resolve_series_ids()
@@ -2661,7 +2666,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         episode_number=wh_episode,
                         imdb_id=wh_imdb or None,
                         tmdb_id=wh_tmdb or None,
-                        trakt_id=wh_trakt or None,
+                        simkl_id=wh_simkl or None,
                         tvdb_id=wh_tvdb or None,
                         watched_at=now_naive,
                         runtime_minutes=runtime_min,
@@ -2906,7 +2911,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
         return {"status": "received", "event": event_type}
 
-    # ── library.deleted / item.removed → remove from Trakt watchlist ─────
+    # ── library.deleted / item.removed → remove from Simkl watchlist ─────
     if is_library_removed and item_type_raw in ("Movie", "Series"):
         try:
             provider_ids = item_data.get("ProviderIds", {})
@@ -2915,29 +2920,19 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             tvdb_id = provider_ids.get("Tvdb")
 
             if tmdb_id or imdb_id or tvdb_id:
-                # Remove from Trakt watchlist for all linked users
-                async with async_session() as _db:
+                # Remove from Simkl watchlist for all linked users
+                async with async_session_ctx() as _db:
                     linked_users = (await _db.execute(
-                        select(User).where(User.trakt_access_token.isnot(None))
+                        select(User).where(User.simkl_access_token.isnot(None))
                     )).scalars().all()
 
                 removed_for: list[str] = []
                 for lu in linked_users:
-                    trakt = None
+                    simkl = None
                     try:
-                        async def _on_refresh_rm(access, refresh, expires, _uid=lu.id):
-                            async with async_session() as __db:
-                                u = await __db.get(User, _uid)
-                                u.trakt_access_token = access
-                                u.trakt_refresh_token = refresh
-                                u.trakt_token_expires = expires
-                                await __db.commit()
-
-                        trakt = TraktClient(
-                            access_token=lu.trakt_access_token,
-                            refresh_token=lu.trakt_refresh_token,
-                            token_expires=lu.trakt_token_expires,
-                            token_refresh_callback=_on_refresh_rm,
+                        simkl = SimklClient(
+                            access_token=lu.simkl_access_token,
+                            token_expires=lu.simkl_token_expires,
                         )
 
                         if item_type_raw == "Movie":
@@ -2946,7 +2941,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                                 ids["tmdb"] = int(tmdb_id)
                             if imdb_id:
                                 ids["imdb"] = imdb_id
-                            result = await trakt.remove_from_watchlist(
+                            result = await simkl.remove_from_watchlist(
                                 movies=[{"ids": ids}]
                             )
                             deleted = (result.get("deleted") or {}).get("movies", 0)
@@ -2956,30 +2951,30 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                                 ids["tvdb"] = int(tvdb_id)
                             if imdb_id:
                                 ids["imdb"] = imdb_id
-                            result = await trakt.remove_from_watchlist(
+                            result = await simkl.remove_from_watchlist(
                                 shows=[{"ids": ids}]
                             )
                             deleted = (result.get("deleted") or {}).get("shows", 0)
 
                         if deleted:
                             removed_for.append(lu.emby_username or str(lu.id))
-                            log.info("webhook.trakt_watchlist_removed",
+                            log.info("webhook.simkl_watchlist_removed",
                                      title=item_name, user=lu.id, deleted=deleted)
                     except Exception as e:
-                        log.debug("webhook.trakt_watchlist_remove_failed",
+                        log.debug("webhook.simkl_watchlist_remove_failed",
                                   user=lu.id, error=str(e)[:120])
                     finally:
-                        if trakt:
-                            await trakt.close()
+                        if simkl:
+                            await simkl.close()
 
                 if removed_for:
                     await _activity_log(
-                        f"🗑️ Library removed: {item_name} — removed from Trakt watchlist for {', '.join(removed_for)}",
-                        category="trakt",
+                        f"🗑️ Library removed: {item_name} — removed from Simkl watchlist for {', '.join(removed_for)}",
+                        category="simkl",
                     )
                 else:
                     await _activity_log(
-                        f"🗑️ Library removed: {item_name} — not on any user's Trakt watchlist",
+                        f"🗑️ Library removed: {item_name} — not on any user's Simkl watchlist",
                         category="library",
                     )
             else:
@@ -2999,7 +2994,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             category="webhook",
         )
 
-    return {"status": "received", "event": event_type, "trakt_synced": trakt_synced}
+    return {"status": "received", "event": event_type, "simkl_synced": simkl_synced}
 
 
 # -- Activity log (Redis-backed, last 100 entries) ---------------------------
@@ -3035,7 +3030,7 @@ def _maybe_notify(message: str) -> None:
     from app.utils.notification_client import notify
     msg = message.strip()
     # Scrobble completions
-    if msg.startswith("✓ Trakt scrobbled:") or msg.startswith("✓ Synced to Trakt:"):
+    if msg.startswith("✓ Simkl scrobbled:") or msg.startswith("✓ Synced to Simkl:"):
         title = msg.split(":", 1)[1].strip() if ":" in msg else msg
         notify("scrobble", "🎬 Scrobbled", title)
     elif msg.startswith("✓ Synced to MDBList:"):
@@ -3473,10 +3468,10 @@ def _parse_db_url(url: str) -> tuple[str, str, str, str]:
     """
     from urllib.parse import urlparse, unquote
     parsed = urlparse(url)
-    user = unquote(parsed.username or "embytrakt")
+    user = unquote(parsed.username or "embysimkl")
     password = unquote(parsed.password or "")
     host = parsed.hostname or "postgres"
-    dbname = (parsed.path or "/embytrakt").lstrip("/")
+    dbname = (parsed.path or "/embysimkl").lstrip("/")
     return user, password, host, dbname
 
 @router.post("/api/db/backup")
@@ -3488,7 +3483,7 @@ async def create_db_backup(_user: User = Depends(get_current_user)):
     backup_dir = "/app/cache/backups"
     os.makedirs(backup_dir, exist_ok=True)
     backup_id = uuid.uuid4().hex[:12]
-    filename = f"emby-trakt-backup-{backup_id}.sql"
+    filename = f"emby-simkl-backup-{backup_id}.sql"
     filepath = os.path.join(backup_dir, filename)
 
     # Parse connection details from DATABASE_URL
@@ -3527,7 +3522,7 @@ async def download_db_backup(backup_id: str, _user: User = Depends(get_current_u
     if not re.fullmatch(r"[a-f0-9]{1,24}", backup_id):
         raise HTTPException(400, "Invalid backup ID")
 
-    filepath = f"/app/cache/backups/emby-trakt-backup-{backup_id}.sql"
+    filepath = f"/app/cache/backups/emby-simkl-backup-{backup_id}.sql"
     if not os.path.isfile(filepath):
         raise HTTPException(404, "Backup not found — create one first")
     return FileResponse(
@@ -4002,8 +3997,8 @@ async def update_queue_settings(payload: dict, db: AsyncSession = Depends(get_db
 # ═══════════════════════════════════════════════════════════════════════════
 
 class SettingsRequest(BaseModel):
-    trakt_client_id: str = None
-    trakt_client_secret: str = None
+    simkl_client_id: str = None
+    simkl_client_secret: str = None
     emby_url: str = None
     emby_api_key: str = None
     cron_smart_queue: str = None
@@ -4078,8 +4073,8 @@ async def _put_setting(db: AsyncSession, key: str, value: str):
 async def read_settings(db: AsyncSession = Depends(get_db)):
     """Read current settings — DB overrides, .env fallbacks."""
     return {
-        "trakt_client_id": os.getenv("TRAKT_CLIENT_ID", "")[:8] + "****" if os.getenv("TRAKT_CLIENT_ID") else "",
-        "trakt_client_secret": os.getenv("TRAKT_CLIENT_SECRET", "")[:8] + "****" if os.getenv("TRAKT_CLIENT_SECRET") else "",
+        "simkl_client_id": os.getenv("SIMKL_CLIENT_ID", "")[:8] + "****" if os.getenv("SIMKL_CLIENT_ID") else "",
+        "simkl_client_secret": os.getenv("SIMKL_CLIENT_SECRET", "")[:8] + "****" if os.getenv("SIMKL_CLIENT_SECRET") else "",
         "emby_url": os.getenv("EMBY_URL", ""),
         "emby_api_key": os.getenv("EMBY_API_KEY", "")[:8] + "****" if os.getenv("EMBY_API_KEY") else "",
         "cron_smart_queue": await _get_setting(db, "cron_smart_queue", os.getenv("SMART_QUEUE_CRON", "0 2 * * *")),
@@ -4133,18 +4128,18 @@ class TestConnectionRequest(BaseModel):
 
 @router.post("/api/settings/test-connection")
 async def test_connection(body: TestConnectionRequest, _user: User = Depends(get_current_user)):
-    """Test Trakt or Emby connection (uses credentials from .env)."""
+    """Test Simkl or Emby connection (uses credentials from .env)."""
     service = body.service
-    if service == "trakt":
-        # Test Trakt API
-        trakt = TraktClient()
+    if service == "simkl":
+        # Test Simkl API
+        simkl = SimklClient()
         try:
-            result = await trakt.get_trending(kind="shows")
+            result = await simkl.get_trending(kind="shows")
             return {"status": "ok"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
         finally:
-            await trakt.close()
+            await simkl.close()
     
     elif service == "emby":
         # Test Emby API
@@ -4162,12 +4157,11 @@ async def test_connection(body: TestConnectionRequest, _user: User = Depends(get
 
 @router.post("/api/settings/reset-oauth")
 async def reset_oauth(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
-    """Clear all stored Trakt OAuth tokens (users must re-link)."""
+    """Clear all stored Simkl OAuth tokens (users must re-link)."""
     users = (await db.execute(select(User))).scalars().all()
     for user in users:
-        user.trakt_access_token = None
-        user.trakt_refresh_token = None
-        user.trakt_token_expires = None
+        user.simkl_access_token = None
+        user.simkl_token_expires = None
     await db.commit()
     return {"status": "ok", "message": f"OAuth tokens cleared for {len(users)} user(s). Re-link on the Link page."}
 
@@ -4204,11 +4198,11 @@ async def factory_reset(request: Request, db: AsyncSession = Depends(get_db), _u
 
 @router.get("/api/connection-status")
 async def connection_status():
-    """Return cached heartbeat results for Emby, Trakt, and Radarr."""
+    """Return cached heartbeat results for Emby, Simkl, and Radarr."""
     import json as _json
     r = await get_redis()
     result = {}
-    for svc in ("emby", "trakt"):
+    for svc in ("emby", "simkl"):
         raw = await r.get(f"heartbeat:{svc}")
         if raw:
             result[svc] = _json.loads(raw)
@@ -4267,7 +4261,7 @@ async def connection_status():
             result["mdblist"] = {"status": "unknown", "checked_at": None}
     # Integration provider
     raw_prov = await r.get("integration_provider")
-    result["integration_provider"] = (raw_prov if isinstance(raw_prov, str) else raw_prov.decode()) if raw_prov else "trakt"
+    result["integration_provider"] = (raw_prov if isinstance(raw_prov, str) else raw_prov.decode()) if raw_prov else "simkl"
     return result
 
 
@@ -5031,14 +5025,14 @@ async def test_notification(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Watchlist Sync (Radarr/Sonarr → Trakt Watchlist)
+# Watchlist Sync (Radarr/Sonarr → Simkl Watchlist)
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.post("/api/watchlist-sync/run")
 async def run_watchlist_sync(
     current_user: User = Depends(get_current_user),
 ):
-    """Manually trigger a Radarr/Sonarr ↔ Trakt watchlist sync."""
+    """Manually trigger a Radarr/Sonarr ↔ Simkl watchlist sync."""
     from app.services.watchlist_sync.service import WatchlistSyncService
     svc = WatchlistSyncService()
     try:
@@ -5157,40 +5151,30 @@ async def test_tmdb_key(payload: dict, _user: User = Depends(get_current_user)):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Trakt Personal Lists → Emby Playlists
+# Simkl Personal Lists → Emby Playlists
 # ═══════════════════════════════════════════════════════════════════════════
 
-@router.get("/api/trakt-lists")
-async def get_trakt_lists():
-    """Fetch all Trakt lists available to the user: personal, liked, and collaborations."""
+@router.get("/api/simkl-lists")
+async def get_simkl_lists():
+    """Fetch all Simkl lists available to the user: personal, liked, and collaborations."""
     async with async_session_ctx() as db:
         user = (await db.execute(
-            select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+            select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
         )).scalars().first()
-        if not user or not user.trakt_access_token:
-            raise HTTPException(400, "No Trakt-linked user found")
+        if not user or not user.simkl_access_token:
+            raise HTTPException(400, "No Simkl-linked user found")
 
-        async def _on_refresh(access, refresh, expires):
-            async with async_session_ctx() as rdb:
-                u = (await rdb.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.trakt_access_token = access
-                u.trakt_refresh_token = refresh
-                u.trakt_token_expires = expires
-                await rdb.commit()
-
-        trakt = TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=_on_refresh,
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
         )
 
     try:
-        my_lists = await trakt.get_my_lists()
-        liked_lists = await trakt.get_liked_lists()
-        collab_lists = await trakt.get_collaborations()
+        my_lists = await simkl.get_my_lists()
+        liked_lists = await simkl.get_liked_lists()
+        collab_lists = await simkl.get_collaborations()
     finally:
-        await trakt.close()
+        await simkl.close()
 
     results = []
     seen_slugs = set()
@@ -5227,9 +5211,9 @@ async def get_trakt_lists():
     return {"lists": results}
 
 
-@router.post("/api/trakt-lists/import")
-async def import_trakt_list(payload: dict, _user: User = Depends(get_current_user)):
-    """Import a Trakt list into an Emby playlist.
+@router.post("/api/simkl-lists/import")
+async def import_simkl_list(payload: dict, _user: User = Depends(get_current_user)):
+    """Import a Simkl list into an Emby playlist.
 
     Payload: {"list_slug": "...", "playlist_name": "...", "username": "..."}
     username defaults to "me" for the user's own lists.
@@ -5245,31 +5229,21 @@ async def import_trakt_list(payload: dict, _user: User = Depends(get_current_use
 
     async with async_session_ctx() as db:
         user = (await db.execute(
-            select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+            select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
         )).scalars().first()
-        if not user or not user.trakt_access_token:
-            raise HTTPException(400, "No Trakt-linked user found")
+        if not user or not user.simkl_access_token:
+            raise HTTPException(400, "No Simkl-linked user found")
 
-        async def _on_refresh(access, refresh, expires):
-            async with async_session_ctx() as rdb:
-                u = (await rdb.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.trakt_access_token = access
-                u.trakt_refresh_token = refresh
-                u.trakt_token_expires = expires
-                await rdb.commit()
-
-        trakt = TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=_on_refresh,
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
         )
 
     try:
         # Fetch items — the endpoint returns items under /users/{username}/lists/{slug}/items
-        items = await trakt.get_list_items(username, list_slug)
+        items = await simkl.get_list_items(username, list_slug)
     finally:
-        await trakt.close()
+        await simkl.close()
 
     if not items:
         return {"status": "ok", "matched": 0, "unmatched": 0, "message": "List is empty"}
@@ -5320,7 +5294,7 @@ async def import_trakt_list(payload: dict, _user: User = Depends(get_current_use
                     playlist_id, description,
                     user_id=emby_user_id,
                 )
-            log.info("trakt_list.imported", slug=list_slug, name=final_name,
+            log.info("simkl_list.imported", slug=list_slug, name=final_name,
                      matched=len(emby_ids), unmatched=len(unmatched))
     finally:
         await emby.close()
@@ -5593,25 +5567,25 @@ async def import_mdblist_list(payload: dict, db: AsyncSession = Depends(get_db),
     }
 
 
-# -- Trakt synced list tracking (mirrors MDBList pattern) ------------------
+# -- Simkl synced list tracking (mirrors MDBList pattern) ------------------
 
-@router.get("/api/trakt-lists/synced")
-async def get_trakt_synced(db: AsyncSession = Depends(get_db)):
-    """Return Trakt lists that have been imported and are tracked for sync."""
+@router.get("/api/simkl-lists/synced")
+async def get_simkl_synced(db: AsyncSession = Depends(get_db)):
+    """Return Simkl lists that have been imported and are tracked for sync."""
     import json as _json
     r = await get_redis()
-    raw = await r.get("trakt_synced_lists")
+    raw = await r.get("simkl_synced_lists")
     if not raw:
-        raw = await _get_setting(db, "trakt_synced_lists", "[]")
+        raw = await _get_setting(db, "simkl_synced_lists", "[]")
         if raw and raw != "[]":
-            await r.set("trakt_synced_lists", raw)
+            await r.set("simkl_synced_lists", raw)
     synced = _json.loads(raw) if raw else []
     return {"synced": synced}
 
 
-@router.post("/api/trakt-lists/track")
-async def track_trakt_list(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
-    """Add or update a Trakt list in synced tracking after import."""
+@router.post("/api/simkl-lists/track")
+async def track_simkl_list(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
+    """Add or update a Simkl list in synced tracking after import."""
     import json as _json
     slug = (payload.get("list_slug") or "").strip()
     if not slug:
@@ -5623,7 +5597,7 @@ async def track_trakt_list(payload: dict, db: AsyncSession = Depends(get_db), _u
     matched = payload.get("matched", 0)
 
     r = await get_redis()
-    raw = await r.get("trakt_synced_lists")
+    raw = await r.get("simkl_synced_lists")
     synced = _json.loads(raw) if raw else []
 
     entry_found = False
@@ -5648,19 +5622,19 @@ async def track_trakt_list(payload: dict, db: AsyncSession = Depends(get_db), _u
             "auto_sync": True,
         })
 
-    await r.set("trakt_synced_lists", _json.dumps(synced))
-    await _put_setting(db, "trakt_synced_lists", _json.dumps(synced))
+    await r.set("simkl_synced_lists", _json.dumps(synced))
+    await _put_setting(db, "simkl_synced_lists", _json.dumps(synced))
     await db.commit()
     return {"status": "ok", "slug": slug}
 
 
-@router.put("/api/trakt-lists/synced/{slug}/auto-sync")
-async def toggle_trakt_auto_sync(slug: str, payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
-    """Toggle auto-sync for a tracked Trakt list."""
+@router.put("/api/simkl-lists/synced/{slug}/auto-sync")
+async def toggle_simkl_auto_sync(slug: str, payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
+    """Toggle auto-sync for a tracked Simkl list."""
     import json as _json
     enabled = payload.get("enabled", True)
     r = await get_redis()
-    raw = await r.get("trakt_synced_lists")
+    raw = await r.get("simkl_synced_lists")
     synced = _json.loads(raw) if raw else []
 
     for entry in synced:
@@ -5670,36 +5644,36 @@ async def toggle_trakt_auto_sync(slug: str, payload: dict, db: AsyncSession = De
     else:
         raise HTTPException(404, "List not tracked")
 
-    await r.set("trakt_synced_lists", _json.dumps(synced))
-    await _put_setting(db, "trakt_synced_lists", _json.dumps(synced))
+    await r.set("simkl_synced_lists", _json.dumps(synced))
+    await _put_setting(db, "simkl_synced_lists", _json.dumps(synced))
     await db.commit()
     return {"status": "ok", "slug": slug, "auto_sync": enabled}
 
 
-@router.delete("/api/trakt-lists/synced/{slug}")
-async def remove_trakt_synced(slug: str, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
-    """Remove a Trakt list from sync tracking (does NOT delete the Emby playlist)."""
+@router.delete("/api/simkl-lists/synced/{slug}")
+async def remove_simkl_synced(slug: str, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
+    """Remove a Simkl list from sync tracking (does NOT delete the Emby playlist)."""
     import json as _json
     r = await get_redis()
-    raw = await r.get("trakt_synced_lists")
+    raw = await r.get("simkl_synced_lists")
     synced = _json.loads(raw) if raw else []
 
     synced = [e for e in synced if e.get("slug") != slug]
 
-    await r.set("trakt_synced_lists", _json.dumps(synced))
-    await _put_setting(db, "trakt_synced_lists", _json.dumps(synced))
+    await r.set("simkl_synced_lists", _json.dumps(synced))
+    await _put_setting(db, "simkl_synced_lists", _json.dumps(synced))
     await db.commit()
     return {"status": "ok", "slug": slug}
 
 
-@router.post("/api/trakt-lists/sync-all")
-async def sync_all_trakt_lists(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
-    """Re-import all auto-synced Trakt lists."""
+@router.post("/api/simkl-lists/sync-all")
+async def sync_all_simkl_lists(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
+    """Re-import all auto-synced Simkl lists."""
     import json as _json
     r = await get_redis()
-    raw = await r.get("trakt_synced_lists")
+    raw = await r.get("simkl_synced_lists")
     if not raw:
-        raw = await _get_setting(db, "trakt_synced_lists", "[]")
+        raw = await _get_setting(db, "simkl_synced_lists", "[]")
     synced = _json.loads(raw) if raw else []
 
     results = []
@@ -5708,7 +5682,7 @@ async def sync_all_trakt_lists(db: AsyncSession = Depends(get_db), _user: User =
             results.append({"slug": entry["slug"], "status": "skipped", "reason": "auto_sync_off"})
             continue
         try:
-            result = await import_trakt_list({
+            result = await import_simkl_list({
                 "list_slug": entry["slug"],
                 "playlist_name": entry.get("playlist_name", ""),
                 "description": entry.get("description", ""),
@@ -5721,15 +5695,15 @@ async def sync_all_trakt_lists(db: AsyncSession = Depends(get_db), _user: User =
     return {"status": "ok", "results": results}
 
 
-@router.get("/api/trakt-lists/popular")
-async def get_trakt_popular_lists():
-    """Fetch popular Trakt community lists (public endpoint, no auth needed)."""
-    trakt = TraktClient()
+@router.get("/api/simkl-lists/popular")
+async def get_simkl_popular_lists():
+    """Fetch popular Simkl community lists (public endpoint, no auth needed)."""
+    simkl = SimklClient()
 
     try:
-        raw = await trakt.get_popular_lists(limit=25)
+        raw = await simkl.get_popular_lists(limit=25)
     finally:
-        await trakt.close()
+        await simkl.close()
 
     results = []
     for entry in (raw or []):
@@ -5747,15 +5721,15 @@ async def get_trakt_popular_lists():
     return {"lists": results}
 
 
-@router.get("/api/trakt-lists/trending")
-async def get_trakt_trending_lists():
-    """Fetch trending Trakt community lists (public endpoint, no auth needed)."""
-    trakt = TraktClient()
+@router.get("/api/simkl-lists/trending")
+async def get_simkl_trending_lists():
+    """Fetch trending Simkl community lists (public endpoint, no auth needed)."""
+    simkl = SimklClient()
 
     try:
-        raw = await trakt.get_trending_lists(limit=25)
+        raw = await simkl.get_trending_lists(limit=25)
     finally:
-        await trakt.close()
+        await simkl.close()
 
     results = []
     for entry in (raw or []):
@@ -5773,35 +5747,25 @@ async def get_trakt_trending_lists():
     return {"lists": results}
 
 
-@router.get("/api/trakt-lists/items")
-async def get_trakt_list_items_detail(slug: str, username: str = "me"):
-    """Fetch items from a Trakt list with in-library/missing status for each item."""
+@router.get("/api/simkl-lists/items")
+async def get_simkl_list_items_detail(slug: str, username: str = "me"):
+    """Fetch items from a Simkl list with in-library/missing status for each item."""
     async with async_session_ctx() as db:
         user = (await db.execute(
-            select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+            select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
         )).scalars().first()
-        if not user or not user.trakt_access_token:
-            raise HTTPException(400, "No Trakt-linked user found")
+        if not user or not user.simkl_access_token:
+            raise HTTPException(400, "No Simkl-linked user found")
 
-        async def _on_refresh(access, refresh, expires):
-            async with async_session_ctx() as rdb:
-                u = (await rdb.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.trakt_access_token = access
-                u.trakt_refresh_token = refresh
-                u.trakt_token_expires = expires
-                await rdb.commit()
-
-        trakt = TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=_on_refresh,
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
         )
 
     try:
-        items = await trakt.get_list_items(username, slug)
+        items = await simkl.get_list_items(username, slug)
     finally:
-        await trakt.close()
+        await simkl.close()
 
     results = []
     for entry in (items or []):
@@ -6262,7 +6226,7 @@ async def remote_play_sessions(user_id: int, db: AsyncSession = Depends(get_db))
 async def remote_play(request: Request, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Resolve a media item from provider IDs and start playback on Emby.
 
-    Called by the browser extension.  Accepts IDs from Trakt, IMDB, or TMDB,
+    Called by the browser extension.  Accepts IDs from Simkl, IMDB, or TMDB,
     resolves to an Emby library item, finds an active session for the user,
     and sends a play command.
     """
@@ -6278,7 +6242,7 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db), _use
     if not user_id:
         raise HTTPException(400, "user_id required")
     if not ids:
-        raise HTTPException(400, "at least one ID required (imdb_id, tmdb_id, trakt_slug)")
+        raise HTTPException(400, "at least one ID required (imdb_id, tmdb_id, simkl_slug)")
 
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user or not user.emby_user_id:
@@ -6299,25 +6263,25 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db), _use
             if cached:
                 matches.append(cached)
 
-    # Trakt slug → resolve via Trakt API to get provider IDs
-    if not matches and ids.get("trakt_slug") and user.trakt_access_token:
+    # Simkl slug → resolve via Simkl API to get provider IDs
+    if not matches and ids.get("simkl_slug") and user.simkl_access_token:
         try:
-            trakt = TraktClient(access_token=user.trakt_access_token)
+            simkl = SimklClient(access_token=user.simkl_access_token)
             kind = "movie" if media_type == "movie" else "show"
-            results = await trakt.search(query=ids["trakt_slug"], kind=kind)
-            await trakt.close()
+            results = await simkl.search(query=ids["simkl_slug"], kind=kind)
+            await simkl.close()
             if results:
                 item_data = results[0].get(kind, {})
-                trakt_ids = item_data.get("ids", {})
+                simkl_ids = item_data.get("ids", {})
                 for ptype, tkey in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
-                    pid = trakt_ids.get(tkey)
+                    pid = simkl_ids.get(tkey)
                     if pid:
                         cached = await LibraryCache.find_by_provider_id(ptype, str(pid))
                         if cached:
                             matches.append(cached)
                             break
         except Exception:
-            log.debug("remote_play.trakt_resolve_failed", slug=ids.get("trakt_slug"))
+            log.debug("remote_play.simkl_resolve_failed", slug=ids.get("simkl_slug"))
 
     # Title fallback
     if not matches and ids.get("title"):
@@ -6807,7 +6771,7 @@ async def watch_party_server_sessions(db: AsyncSession = Depends(get_db)):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Trakt Playback Sync — compare Trakt resume points with Emby
+# Simkl Playback Sync — compare Simkl resume points with Emby
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.get("/api/playback-sync/{user_id}")
@@ -6816,18 +6780,18 @@ async def get_playback_sync(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Compare Trakt in-progress playback items with Emby resume points.
+    """Compare Simkl in-progress playback items with Emby resume points.
 
-    Returns items that exist on Trakt's playback list, enriched with
-    Emby resume data if available.  Surfaces mismatches (Trakt has a
+    Returns items that exist on Simkl's playback list, enriched with
+    Emby resume data if available.  Surfaces mismatches (Simkl has a
     resume point but Emby doesn't, or vice versa) and stale entries
     (paused > 30 days ago).
     """
     import json as _json
 
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-    if not user or not user.trakt_access_token:
-        raise HTTPException(404, "User not found or no Trakt account linked")
+    if not user or not user.simkl_access_token:
+        raise HTTPException(404, "User not found or no Simkl account linked")
     require_user_ownership(current_user.id, user_id, "playback_sync")
 
     # Cache for 10 min
@@ -6840,29 +6804,19 @@ async def get_playback_sync(
     except Exception:
         pass
 
-    # Fetch Trakt playback progress
-    async def _on_refresh(access, refresh, expires):
-        async with async_session() as _db:
-            u = await _db.get(User, user.id)
-            u.trakt_access_token = access
-            u.trakt_refresh_token = refresh
-            u.trakt_token_expires = expires
-            await _db.commit()
-
-    trakt = TraktClient(
-        access_token=user.trakt_access_token,
-        refresh_token=user.trakt_refresh_token,
-        token_expires=user.trakt_token_expires,
-        token_refresh_callback=_on_refresh,
+    # Fetch Simkl playback progress
+    simkl = SimklClient(
+        access_token=user.simkl_access_token,
+        token_expires=user.simkl_token_expires,
     )
 
     try:
-        trakt_playback = await trakt.get_playback()
+        simkl_playback = await simkl.get_playback()
     except Exception as e:
-        log.warning("playback_sync.trakt_fetch_failed", error=str(e)[:120])
-        raise HTTPException(502, f"Failed to fetch Trakt playback: {str(e)[:100]}")
+        log.warning("playback_sync.simkl_fetch_failed", error=str(e)[:120])
+        raise HTTPException(502, f"Failed to fetch Simkl playback: {str(e)[:100]}")
 
-    if not trakt_playback:
+    if not simkl_playback:
         result = {"items": [], "total": 0}
         try:
             r = await get_redis()
@@ -6905,7 +6859,7 @@ async def get_playback_sync(
     items: list[dict] = []
     now = datetime.now(timezone.utc)
 
-    for pb in trakt_playback:
+    for pb in simkl_playback:
         pb_id = pb.get("id")
         pb_type = pb.get("type", "")
         progress = pb.get("progress", 0)
@@ -6948,14 +6902,14 @@ async def get_playback_sync(
                     break
 
         item_entry = {
-            "trakt_playback_id": pb_id,
+            "simkl_playback_id": pb_id,
             "type": pb_type,
             "title": title,
             "episode": ep_label,
-            "trakt_progress": round(progress, 1),
+            "simkl_progress": round(progress, 1),
             "paused_at": paused_at,
             "days_stale": days_stale,
-            "trakt_ids": {k: v for k, v in ids.items() if v},
+            "simkl_ids": {k: v for k, v in ids.items() if v},
         }
 
         if emby_match:
@@ -6987,34 +6941,24 @@ async def get_playback_sync(
 
 
 @router.delete("/api/playback-sync/{user_id}/{playback_id}")
-async def delete_trakt_playback(
+async def delete_simkl_playback(
     user_id: int,
     playback_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Remove a stale playback entry from Trakt."""
+    """Remove a stale playback entry from Simkl."""
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-    if not user or not user.trakt_access_token:
-        raise HTTPException(404, "User not found or no Trakt account linked")
+    if not user or not user.simkl_access_token:
+        raise HTTPException(404, "User not found or no Simkl account linked")
     require_user_ownership(current_user.id, user_id, "playback_sync")
 
-    async def _on_refresh(access, refresh, expires):
-        async with async_session() as _db:
-            u = await _db.get(User, user.id)
-            u.trakt_access_token = access
-            u.trakt_refresh_token = refresh
-            u.trakt_token_expires = expires
-            await _db.commit()
-
-    trakt = TraktClient(
-        access_token=user.trakt_access_token,
-        refresh_token=user.trakt_refresh_token,
-        token_expires=user.trakt_token_expires,
-        token_refresh_callback=_on_refresh,
+    simkl = SimklClient(
+        access_token=user.simkl_access_token,
+        token_expires=user.simkl_token_expires,
     )
 
-    await trakt.delete_playback(playback_id)
+    await simkl.delete_playback(playback_id)
 
     # Invalidate cache
     try:
@@ -7085,7 +7029,7 @@ async def dismiss_library_health_item(
     require_user_ownership(current_user.id, user_id, "library_health")
     body = await request.json()
     item_type = body.get("type", "")  # "movie" or "show"
-    item_id = str(body.get("id", ""))  # imdb/tmdb/tvdb/trakt ID
+    item_id = str(body.get("id", ""))  # imdb/tmdb/tvdb/simkl ID
     if not item_id or not item_type:
         raise HTTPException(400, "type and id required")
 
@@ -7180,12 +7124,12 @@ async def db_app_settings(prefix: str = "", db: AsyncSession = Depends(get_db)):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Trakt ↔ MDBList Cross-Sync
+# Simkl ↔ MDBList Cross-Sync
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.get("/api/mdblist/sync-status")
 async def mdblist_sync_status(db: AsyncSession = Depends(get_db)):
-    """Compare Trakt watched history against MDBList to show what's missing.
+    """Compare Simkl watched history against MDBList to show what's missing.
     Returns counts and sample items for movies and shows."""
     import json as _json
 
@@ -7199,23 +7143,22 @@ async def mdblist_sync_status(db: AsyncSession = Depends(get_db)):
 
     # Get the first linked user
     user = (await db.execute(
-        select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+        select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
     )).scalars().first()
     if not user:
-        raise HTTPException(400, "No linked Trakt user found")
+        raise HTTPException(400, "No linked Simkl user found")
 
     from app.utils.mdblist_client import MDBListClient
 
-    trakt = TraktClient(
-        access_token=user.trakt_access_token,
-        refresh_token=user.trakt_refresh_token,
-        token_expires=user.trakt_token_expires,
+    simkl = SimklClient(
+        access_token=user.simkl_access_token,
+        token_expires=user.simkl_token_expires,
     )
     mdb = MDBListClient(api_key=key)
 
     try:
-        # Fetch Trakt watched movies
-        trakt_movies = await trakt.get_watched(kind="movies")
+        # Fetch Simkl watched movies
+        simkl_movies = await simkl.get_watched(kind="movies")
         # Fetch MDBList watched
         mdb_watched = await mdb.get_watched()
 
@@ -7223,7 +7166,7 @@ async def mdblist_sync_status(db: AsyncSession = Depends(get_db)):
         mdb_movie_ids: set[str] = set()
         for entry in mdb_watched.get("movies", []):
             ids = entry.get("movie", {}).get("ids", {})
-            for k in ("imdb", "tmdb", "tvdb", "trakt"):
+            for k in ("imdb", "tmdb", "tvdb", "simkl"):
                 v = ids.get(k)
                 if v:
                     mdb_movie_ids.add(f"{k}:{v}")
@@ -7231,18 +7174,18 @@ async def mdblist_sync_status(db: AsyncSession = Depends(get_db)):
         mdb_show_keys: set[str] = set()
         for entry in mdb_watched.get("shows", []):
             ids = entry.get("show", {}).get("ids", {})
-            for k in ("imdb", "tmdb", "tvdb", "trakt"):
+            for k in ("imdb", "tmdb", "tvdb", "simkl"):
                 v = ids.get(k)
                 if v:
                     mdb_show_keys.add(f"{k}:{v}")
 
-        # Find Trakt movies not in MDBList
+        # Find Simkl movies not in MDBList
         missing_movies = []
-        for entry in trakt_movies:
+        for entry in simkl_movies:
             movie = entry.get("movie", {})
             ids = movie.get("ids", {})
             item_keys = set()
-            for k in ("imdb", "tmdb", "tvdb", "trakt"):
+            for k in ("imdb", "tmdb", "tvdb", "simkl"):
                 v = ids.get(k)
                 if v:
                     item_keys.add(f"{k}:{v}")
@@ -7254,14 +7197,14 @@ async def mdblist_sync_status(db: AsyncSession = Depends(get_db)):
                     "last_watched_at": entry.get("last_watched_at"),
                 })
 
-        # Find Trakt shows not in MDBList (show-level only)
-        trakt_shows = await trakt.get_watched(kind="shows")
+        # Find Simkl shows not in MDBList (show-level only)
+        simkl_shows = await simkl.get_watched(kind="shows")
         missing_shows = []
-        for entry in trakt_shows:
+        for entry in simkl_shows:
             show = entry.get("show", {})
             ids = show.get("ids", {})
             item_keys = set()
-            for k in ("imdb", "tmdb", "tvdb", "trakt"):
+            for k in ("imdb", "tmdb", "tvdb", "simkl"):
                 v = ids.get(k)
                 if v:
                     item_keys.add(f"{k}:{v}")
@@ -7274,8 +7217,8 @@ async def mdblist_sync_status(db: AsyncSession = Depends(get_db)):
                 })
 
         return {
-            "trakt_movies": len(trakt_movies),
-            "trakt_shows": len(trakt_shows),
+            "simkl_movies": len(simkl_movies),
+            "simkl_shows": len(simkl_shows),
             "mdblist_movies": len(mdb_watched.get("movies", [])),
             "mdblist_shows": len(mdb_watched.get("shows", [])),
             "missing_movies": len(missing_movies),
@@ -7284,13 +7227,13 @@ async def mdblist_sync_status(db: AsyncSession = Depends(get_db)):
             "sample_shows": missing_shows[:20],
         }
     finally:
-        await trakt.close()
+        await simkl.close()
         await mdb.close()
 
 
-@router.post("/api/mdblist/sync-from-trakt")
-async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
-    """Incremental sync of Trakt watched history into MDBList.
+@router.post("/api/mdblist/sync-from-simkl")
+async def sync_simkl_to_mdblist(request: Request, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
+    """Incremental sync of Simkl watched history into MDBList.
 
     On first run, pushes everything. On subsequent runs, only pushes items
     watched after the last successful sync timestamp (stored in Redis).
@@ -7307,10 +7250,10 @@ async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get
         raise HTTPException(400, "MDBList API key not configured")
 
     user = (await db.execute(
-        select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+        select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
     )).scalars().first()
     if not user:
-        raise HTTPException(400, "No linked Trakt user found")
+        raise HTTPException(400, "No linked Simkl user found")
 
     # Check for force-full flag
     force_full = False
@@ -7330,24 +7273,23 @@ async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get
 
     from app.utils.mdblist_client import MDBListClient
 
-    trakt = TraktClient(
-        access_token=user.trakt_access_token,
-        refresh_token=user.trakt_refresh_token,
-        token_expires=user.trakt_token_expires,
+    simkl = SimklClient(
+        access_token=user.simkl_access_token,
+        token_expires=user.simkl_token_expires,
     )
     mdb = MDBListClient(api_key=key)
 
     sync_started_at = datetime.now(timezone.utc).isoformat()
 
     try:
-        # Fetch full Trakt watched history
-        trakt_movies = await trakt.get_watched(kind="movies")
-        trakt_shows = await trakt.get_watched(kind="shows")
+        # Fetch full Simkl watched history
+        simkl_movies = await simkl.get_watched(kind="movies")
+        simkl_shows = await simkl.get_watched(kind="shows")
 
         # Build MDBList movie payloads — filter by last_watched_at if delta sync
         mdb_movies = []
         skipped_movies = 0
-        for entry in trakt_movies:
+        for entry in simkl_movies:
             watched_at = entry.get("last_watched_at", "")
             if last_sync_ts and watched_at and watched_at <= last_sync_ts:
                 skipped_movies += 1
@@ -7355,7 +7297,7 @@ async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get
             movie = entry.get("movie", {})
             ids = movie.get("ids", {})
             mdb_ids = {}
-            for k in ("imdb", "tmdb", "tvdb", "trakt"):
+            for k in ("imdb", "tmdb", "tvdb", "simkl"):
                 if ids.get(k):
                     mdb_ids[k] = ids[k]
             if mdb_ids:
@@ -7379,14 +7321,14 @@ async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get
             await asyncio.sleep(0)
             try:
                 params: dict = {"page": ep_page, "limit": ep_per_page}
-                # For delta sync, use start_at filter if Trakt supports it
+                # For delta sync, use start_at filter if Simkl supports it
                 # Otherwise filter client-side
-                resp = await trakt._client.get(
+                resp = await simkl._client.get(
                     "/users/me/history/episodes",
-                    headers=trakt._auth_headers(),
+                    headers=simkl._auth_headers(),
                     params=params,
                 )
-                trakt._update_rate_limit(resp)
+                simkl._update_rate_limit(resp)
                 if resp.status_code == 429:
                     await asyncio.sleep(min(30, float(resp.headers.get("Retry-After", "10"))))
                     continue
@@ -7415,13 +7357,13 @@ async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get
                     s_num = ep.get("season", 0)
                     e_num = ep.get("number", 0)
 
-                    show_key = str(show_ids.get("trakt", "")) or str(show_ids.get("imdb", ""))
+                    show_key = str(show_ids.get("simkl", "")) or str(show_ids.get("imdb", ""))
                     if not show_key:
                         continue
 
                     if show_key not in show_eps:
                         mdb_ids = {}
-                        for k in ("imdb", "tmdb", "tvdb", "trakt"):
+                        for k in ("imdb", "tmdb", "tvdb", "simkl"):
                             if show_ids.get(k):
                                 mdb_ids[k] = show_ids[k]
                         show_eps[show_key] = {"ids": mdb_ids, "seasons": defaultdict(list)}
@@ -7490,16 +7432,16 @@ async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get
         # Also sync ratings (only new ones since last sync)
         ratings_result = {"movies": 0, "episodes": 0}
         try:
-            trakt_ratings = await trakt.get_user_ratings(kind="movies")
+            simkl_ratings = await simkl.get_user_ratings(kind="movies")
             mdb_rate_movies = []
-            for entry in trakt_ratings:
+            for entry in simkl_ratings:
                 rated_at = entry.get("rated_at", "")
                 if last_sync_ts and rated_at and rated_at <= last_sync_ts:
                     continue
                 movie = entry.get("movie", {})
                 ids = movie.get("ids", {})
                 mdb_ids = {}
-                for k in ("imdb", "tmdb", "tvdb", "trakt"):
+                for k in ("imdb", "tmdb", "tvdb", "simkl"):
                     if ids.get(k):
                         mdb_ids[k] = ids[k]
                 if mdb_ids and entry.get("rating"):
@@ -7537,8 +7479,8 @@ async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get
             "watched": results,
             "ratings": ratings_result,
             "totals": {
-                "trakt_movies": len(trakt_movies),
-                "trakt_shows": len(trakt_shows),
+                "simkl_movies": len(simkl_movies),
+                "simkl_shows": len(simkl_shows),
                 "pushed_movies": len(mdb_movies),
                 "pushed_shows": len(mdb_shows),
                 "skipped_movies": skipped_movies,
@@ -7546,7 +7488,7 @@ async def sync_trakt_to_mdblist(request: Request, db: AsyncSession = Depends(get
             },
         }
     finally:
-        await trakt.close()
+        await simkl.close()
         await mdb.close()
 
 
@@ -7798,10 +7740,10 @@ async def get_watch_history_by_date(
     Items watched multiple times on the same day are collapsed into one
     entry with a play_count.  Dedup uses a normalised key built from
     item_type + title (or series+season+episode for episodes) so that
-    rows from different backfill sources (webhook / trakt / emby) that
+    rows from different backfill sources (webhook / simkl / emby) that
     describe the same logical watch merge correctly.
 
-    Items without an ``emby_id`` (Trakt backfill) are resolved against
+    Items without an ``emby_id`` (Simkl backfill) are resolved against
     the Redis library cache so images can be served.
     """
     from app.models.schema import WatchHistory
@@ -7949,7 +7891,7 @@ async def get_item_watch_history(
 ):
     """Return all watch events for a specific item (rewatch flyout).
 
-    item_key formats: 'emby:xxx', 'imdb:ttxxx', 'trakt:123'
+    item_key formats: 'emby:xxx', 'imdb:ttxxx', 'simkl:123'
     """
     require_user_ownership(current_user.id, user_id, "watch_history_item")
     _validate_item_key(item_key)
@@ -7965,8 +7907,8 @@ async def get_item_watch_history(
         filters.append(WatchHistory.imdb_id == value)
     elif provider == "tmdb":
         filters.append(WatchHistory.tmdb_id == value)
-    elif provider == "trakt":
-        filters.append(WatchHistory.trakt_id == value)
+    elif provider == "simkl":
+        filters.append(WatchHistory.simkl_id == value)
     elif provider == "tvdb":
         filters.append(WatchHistory.tvdb_id == value)
     else:
@@ -8150,7 +8092,7 @@ async def backfill_watch_history(
     user_id: int,
     _user: User = Depends(get_current_user),
 ):
-    """One-time import of watch history from Trakt, MDBList, and Emby.
+    """One-time import of watch history from Simkl, MDBList, and Emby.
 
     Runs in-request (not background) so the caller sees the result.
     Deduplicates via unique constraint — safe to run multiple times.
@@ -8195,17 +8137,16 @@ async def backfill_watch_history(
             await db.commit()
             log.info("backfill.duplicates_cleaned", user_id=user_id, removed=dupes_removed)
 
-        added = {"trakt": 0, "mdblist": 0, "emby": 0}
-        skipped = {"trakt": 0, "mdblist": 0, "emby": 0}
+        added = {"simkl": 0, "mdblist": 0, "emby": 0}
+        skipped = {"simkl": 0, "mdblist": 0, "emby": 0}
 
-        # ── 1. Trakt (richest — individual timestamps) ────────────────
-        if user.trakt_access_token:
+        # ── 1. Simkl (richest — individual timestamps) ────────────────
+        if user.simkl_access_token:
             try:
-                from app.utils.trakt_client import TraktClient
-                trakt = TraktClient(
-                    access_token=user.trakt_access_token,
-                    refresh_token=user.trakt_refresh_token,
-                    token_expires=user.trakt_token_expires,
+                from app.utils.simkl_client import SimklClient
+                simkl = SimklClient(
+                    access_token=user.simkl_access_token,
+                    token_expires=user.simkl_token_expires,
                 )
                 try:
                     # Pre-load existing keys into a set for fast dedup
@@ -8221,16 +8162,16 @@ async def backfill_watch_history(
 
                     for kind in ("movies", "episodes"):
                         page = 1
-                        per_page = 250  # Trakt caps at 250 per page
+                        per_page = 250  # Simkl caps at 250 per page
                         kind_added = 0
                         kind_skipped = 0
                         while page <= 50:
-                            history = await trakt.get_history(kind, limit=per_page, page=page)
+                            history = await simkl.get_history(kind, limit=per_page, page=page)
                             if not history:
-                                log.debug("backfill.trakt_page_empty", kind=kind, page=page)
+                                log.debug("backfill.simkl_page_empty", kind=kind, page=page)
                                 break
 
-                            log.debug("backfill.trakt_page", kind=kind, page=page,
+                            log.debug("backfill.simkl_page", kind=kind, page=page,
                                       items=len(history))
 
                             batch = []
@@ -8259,11 +8200,11 @@ async def backfill_watch_history(
                                         title=title,
                                         imdb_id=ids.get("imdb") or None,
                                         tmdb_id=str(ids.get("tmdb")) if ids.get("tmdb") else None,
-                                        trakt_id=str(ids.get("trakt")) if ids.get("trakt") else None,
+                                        simkl_id=str(ids.get("simkl")) if ids.get("simkl") else None,
                                         tvdb_id=None,
                                         watched_at=dt_naive,
                                         runtime_minutes=item.get("runtime"),
-                                        source="backfill_trakt",
+                                        source="backfill_simkl",
                                     ))
                                 else:
                                     ep = entry.get("episode", {})
@@ -8285,11 +8226,11 @@ async def backfill_watch_history(
                                         episode_number=ep.get("number"),
                                         imdb_id=show_ids.get("imdb") or None,
                                         tmdb_id=str(show_ids.get("tmdb")) if show_ids.get("tmdb") else None,
-                                        trakt_id=str(ep_ids.get("trakt")) if ep_ids.get("trakt") else None,
+                                        simkl_id=str(ep_ids.get("simkl")) if ep_ids.get("simkl") else None,
                                         tvdb_id=str(show_ids.get("tvdb")) if show_ids.get("tvdb") else None,
                                         watched_at=dt_naive,
                                         runtime_minutes=ep.get("runtime") or show.get("runtime"),
-                                        source="backfill_trakt",
+                                        source="backfill_simkl",
                                     ))
 
                             if batch:
@@ -8301,18 +8242,18 @@ async def backfill_watch_history(
                                 break
                             page += 1
 
-                        added["trakt"] += kind_added
-                        skipped["trakt"] += kind_skipped
-                        log.info("backfill.trakt_kind_done", kind=kind,
+                        added["simkl"] += kind_added
+                        skipped["simkl"] += kind_skipped
+                        log.info("backfill.simkl_kind_done", kind=kind,
                                  added=kind_added, skipped=kind_skipped, pages=page)
                 finally:
-                    await trakt.close()
+                    await simkl.close()
             except Exception as e:
-                log.warning("backfill.trakt_failed", error=str(e)[:200])
+                log.warning("backfill.simkl_failed", error=str(e)[:200])
                 await db.rollback()
 
         # ── 2. MDBList (last watched date + plays count) ──────────────
-        # Re-load existing keys (Trakt may have added new ones)
+        # Re-load existing keys (Simkl may have added new ones)
         existing_rows = (await db.execute(
             select(WatchHistory.item_type, WatchHistory.title, WatchHistory.watched_at)
             .where(WatchHistory.user_id == user_id)
@@ -8355,7 +8296,7 @@ async def backfill_watch_history(
                                 title=title,
                                 imdb_id=ids.get("imdb") or None,
                                 tmdb_id=str(ids.get("tmdb")) if ids.get("tmdb") else None,
-                                trakt_id=str(ids.get("trakt")) if ids.get("trakt") else None,
+                                simkl_id=str(ids.get("simkl")) if ids.get("simkl") else None,
                                 tvdb_id=str(ids.get("tvdb")) if ids.get("tvdb") else None,
                                 watched_at=dt_naive,
                                 source="backfill_mdblist",
@@ -8603,3 +8544,419 @@ async def backfill_watch_history_genres(
             "updated_by_title": title_updated,
             "total_updated": updated + title_updated,
         }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Rating Sync — MDBList ↔ Simkl
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/api/rating-sync/{user_id}")
+@limiter.limit(LIMITS["heavy"])
+async def sync_ratings_between_providers(
+    request: Request,
+    user_id: int,
+    direction: str = Query("mdblist_to_simkl",
+                           regex="^(mdblist_to_simkl|simkl_to_mdblist|bidirectional)$"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Sync ratings between MDBList and Simkl.
+
+    Directions:
+      - mdblist_to_simkl: push MDBList ratings → Simkl
+      - simkl_to_mdblist: push Simkl ratings → MDBList
+      - bidirectional: merge both (MDBList wins on conflicts)
+    """
+    require_user_ownership(current_user.id, user_id, "rating_sync")
+    user = (await db.execute(
+        select(User).where(User.id == user_id)
+    )).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    # Build clients
+    from app.utils.mdblist_client import MDBListClient
+    from app.utils.secure_redis import secure_get
+    mdb_key = await secure_get("mdblist_api_key")
+    mdb = MDBListClient(api_key=mdb_key) if mdb_key else None
+
+    simkl = None
+    if user.simkl_access_token:
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
+        )
+
+    if not mdb and not simkl:
+        raise HTTPException(400, "Neither MDBList nor Simkl is configured")
+
+    try:
+        result = {"synced_to_simkl": 0, "synced_to_mdblist": 0,
+                  "skipped_existing": 0, "errors": 0}
+
+        # ── Fetch ratings from both ──
+        mdb_ratings: dict = {}
+        simkl_ratings: list[dict] = []
+
+        if mdb:
+            try:
+                mdb_ratings = await mdb.get_ratings()
+            except Exception as e:
+                log.warning("rating_sync.mdblist_fetch_failed", **{"error": str(e)[:120]})
+
+        if simkl:
+            try:
+                simkl_ratings = await simkl.get_user_ratings("all")
+            except Exception as e:
+                log.warning("rating_sync.simkl_fetch_failed", **{"error": str(e)[:120]})
+
+        # ── Build lookup maps: imdb_id → {rating, item_data} ──
+        mdb_by_imdb: dict[str, dict] = {}
+        for kind in ("movies", "shows"):
+            for item in (mdb_ratings.get(kind, []) if isinstance(mdb_ratings, dict) else []):
+                r_val = item.get("rating")
+                iid = (item.get("ids") or {}).get("imdb", "")
+                if r_val is not None and iid:
+                    mdb_by_imdb[iid] = {
+                        "rating": int(round(float(r_val))),
+                        "item_type": "movie" if kind == "movies" else "show",
+                        "ids": item.get("ids", {}),
+                        "title": item.get("title", ""),
+                    }
+
+        simkl_by_imdb: dict[str, dict] = {}
+        for entry in simkl_ratings:
+            item_obj = entry.get("movie") or entry.get("show") or {}
+            iid = (item_obj.get("ids") or {}).get("imdb", "")
+            r_val = entry.get("rating")
+            if r_val is not None and iid:
+                simkl_by_imdb[iid] = {
+                    "rating": int(r_val),
+                    "item_type": "movie" if "movie" in entry else "show",
+                    "ids": item_obj.get("ids", {}),
+                    "title": item_obj.get("title", ""),
+                }
+
+        # ── MDBList → Simkl ──
+        if direction in ("mdblist_to_simkl", "bidirectional") and simkl and mdb_by_imdb:
+            to_push: list[dict] = []
+            for imdb_id, mdb_item in mdb_by_imdb.items():
+                existing = simkl_by_imdb.get(imdb_id)
+                if existing and existing["rating"] == mdb_item["rating"]:
+                    result["skipped_existing"] += 1
+                    continue
+                # Build Simkl-format rating payload
+                ids = {"imdb": imdb_id}
+                if mdb_item["ids"].get("tmdb"):
+                    ids["tmdb"] = int(mdb_item["ids"]["tmdb"])
+                entry_obj = {
+                    "rating": mdb_item["rating"],
+                    "ids": ids,
+                }
+                if mdb_item["item_type"] == "movie":
+                    to_push.append({"movie": entry_obj})
+                else:
+                    to_push.append({"show": entry_obj})
+
+            if to_push:
+                # Batch in chunks of 100
+                for i in range(0, len(to_push), 100):
+                    chunk = to_push[i:i + 100]
+                    try:
+                        await simkl.add_ratings(chunk)
+                        result["synced_to_simkl"] += len(chunk)
+                    except Exception as e:
+                        log.warning("rating_sync.simkl_push_error", **{"error": str(e)[:120],
+                                              "chunk_size": len(chunk)})
+                        result["errors"] += len(chunk)
+
+        # ── Simkl → MDBList ──
+        if direction in ("simkl_to_mdblist", "bidirectional") and mdb and simkl_by_imdb:
+            movies_to_push: list[dict] = []
+            shows_to_push: list[dict] = []
+            for imdb_id, simkl_item in simkl_by_imdb.items():
+                existing = mdb_by_imdb.get(imdb_id)
+                if existing and existing["rating"] == simkl_item["rating"]:
+                    result["skipped_existing"] += 1
+                    continue
+                entry_obj = {
+                    "ids": {"imdb": imdb_id},
+                    "rating": simkl_item["rating"],
+                }
+                if simkl_item["item_type"] == "movie":
+                    movies_to_push.append(entry_obj)
+                else:
+                    shows_to_push.append(entry_obj)
+
+            if movies_to_push or shows_to_push:
+                try:
+                    await mdb.add_ratings(
+                        movies=movies_to_push or None,
+                        shows=shows_to_push or None,
+                    )
+                    result["synced_to_mdblist"] += len(movies_to_push) + len(shows_to_push)
+                except Exception as e:
+                    log.warning("rating_sync.mdblist_push_error", **{"error": str(e)[:120]})
+                    result["errors"] += len(movies_to_push) + len(shows_to_push)
+
+        log.info("rating_sync.complete", **{"user_id": user_id, "direction": direction, **result})
+        return {"success": True, **result}
+    finally:
+        if simkl:
+            await simkl.close()
+        if mdb:
+            await mdb.close()
+
+
+@router.get("/api/rating-sync/{user_id}/status")
+async def get_rating_sync_status(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Preview what a rating sync would do without executing it."""
+    require_user_ownership(current_user.id, user_id, "rating_sync")
+    user = (await db.execute(
+        select(User).where(User.id == user_id)
+    )).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    from app.utils.mdblist_client import MDBListClient
+    from app.utils.secure_redis import secure_get
+    mdb_key = await secure_get("mdblist_api_key")
+    mdb = MDBListClient(api_key=mdb_key) if mdb_key else None
+    simkl = None
+    if user.simkl_access_token:
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
+        )
+
+    try:
+        mdb_count = 0
+        simkl_count = 0
+        overlap = 0
+
+        if mdb:
+            try:
+                mdb_ratings = await mdb.get_ratings()
+                for kind in ("movies", "shows"):
+                    mdb_count += len(mdb_ratings.get(kind, [])
+                                     if isinstance(mdb_ratings, dict) else [])
+            except Exception:
+                pass
+
+        if simkl:
+            try:
+                sr = await simkl.get_user_ratings("all")
+                simkl_count = len(sr)
+                # Count overlap by IMDB ID
+                simkl_imdb = set()
+                for entry in sr:
+                    item_obj = entry.get("movie") or entry.get("show") or {}
+                    iid = (item_obj.get("ids") or {}).get("imdb", "")
+                    if iid:
+                        simkl_imdb.add(iid)
+                if isinstance(mdb_ratings, dict):
+                    for kind in ("movies", "shows"):
+                        for item in mdb_ratings.get(kind, []):
+                            iid = (item.get("ids") or {}).get("imdb", "")
+                            if iid in simkl_imdb:
+                                overlap += 1
+            except Exception:
+                pass
+
+        return {
+            "mdblist_rated": mdb_count,
+            "simkl_rated": simkl_count,
+            "overlap": overlap,
+            "mdblist_only": mdb_count - overlap,
+            "simkl_only": simkl_count - overlap,
+            "mdblist_configured": mdb is not None,
+            "simkl_configured": simkl is not None,
+        }
+    finally:
+        if simkl:
+            await simkl.close()
+        if mdb:
+            await mdb.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# History-Based Recommendations
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/watch-history/{user_id}/recommendations")
+async def get_history_recommendations(
+    user_id: int,
+    limit: int = Query(20, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Recommend unwatched library items based on the user's watch history
+    and MDBList/Simkl ratings.
+
+    Approach:
+      1. Fetch user's rated items (MDBList primary, Simkl supplement)
+      2. Identify top-rated genres (weighted by rating)
+      3. Find unwatched items in Emby library matching those genres
+      4. Score by genre overlap × community rating
+    """
+    require_user_ownership(current_user.id, user_id, "recommendations")
+    from app.utils.library_cache import LibraryCache
+    from app.utils.mdblist_client import MDBListClient
+    from app.utils.secure_redis import secure_get
+    from app.utils.emby_client import EmbyClient
+    from collections import Counter
+
+    user = (await db.execute(
+        select(User).where(User.id == user_id)
+    )).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    r = await get_redis()
+    cache_key = f"history_recs_v1:{user_id}"
+    cached = await r.get(cache_key)
+    if cached:
+        import json as _json
+        return _json.loads(cached)
+
+    # ── 1. Collect rated items from MDBList + Simkl ──
+    genre_scores: Counter = Counter()  # genre → sum of ratings
+    genre_counts: Counter = Counter()  # genre → count
+    rated_imdb: set[str] = set()       # already rated/watched items
+
+    # MDBList ratings (primary — has a rating for every watched item)
+    mdb_key = await secure_get("mdblist_api_key")
+    if mdb_key:
+        mdb = MDBListClient(api_key=mdb_key)
+        try:
+            mdb_ratings = await mdb.get_ratings()
+            for kind in ("movies", "shows"):
+                for item in (mdb_ratings.get(kind, [])
+                             if isinstance(mdb_ratings, dict) else []):
+                    rating = item.get("rating")
+                    iid = (item.get("ids") or {}).get("imdb", "")
+                    genres = [g.lower() for g in item.get("genres", [])]
+                    if rating and iid:
+                        rated_imdb.add(iid)
+                        for g in genres:
+                            genre_scores[g] += float(rating)
+                            genre_counts[g] += 1
+        except Exception:
+            pass
+        finally:
+            await mdb.close()
+
+    # Simkl ratings (supplement — may have items MDBList doesn't)
+    if user.simkl_access_token:
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
+        )
+        try:
+            sr = await simkl.get_user_ratings("all")
+            for entry in sr:
+                item_obj = entry.get("movie") or entry.get("show") or {}
+                iid = (item_obj.get("ids") or {}).get("imdb", "")
+                rating = entry.get("rating")
+                genres = [g.lower() for g in item_obj.get("genres", [])]
+                if rating and iid and iid not in rated_imdb:
+                    rated_imdb.add(iid)
+                    for g in genres:
+                        genre_scores[g] += float(rating)
+                        genre_counts[g] += 1
+        except Exception:
+            pass
+        finally:
+            await simkl.close()
+
+    if not genre_scores:
+        return {"items": [], "top_genres": [], "rated_count": len(rated_imdb)}
+
+    # ── 2. Compute genre affinity: avg rating per genre ──
+    genre_affinity = {
+        g: genre_scores[g] / genre_counts[g]
+        for g in genre_scores
+        if genre_counts[g] >= 3  # need at least 3 ratings to be meaningful
+    }
+    top_genres = sorted(genre_affinity.items(), key=lambda x: x[1], reverse=True)[:8]
+    top_genre_set = {g for g, _ in top_genres}
+
+    # ── 3. Scan Emby library for unwatched items matching top genres ──
+    emby = EmbyClient()
+    try:
+        # Get user's played items from Emby
+        played_items = await emby.get_items(
+            user_id=user.emby_user_id,
+            params={"IsPlayed": "true", "Recursive": "true",
+                    "IncludeItemTypes": "Movie,Series",
+                    "Fields": "ProviderIds,Genres,CommunityRating",
+                    "Limit": "10000"}
+        )
+        played_imdb = set()
+        for pi in (played_items or []):
+            pid = (pi.get("ProviderIds") or {}).get("Imdb", "")
+            if pid:
+                played_imdb.add(pid)
+
+        # Get all unwatched items
+        all_items = await emby.get_items(
+            user_id=user.emby_user_id,
+            params={"IsPlayed": "false", "Recursive": "true",
+                    "IncludeItemTypes": "Movie,Series",
+                    "Fields": "ProviderIds,Genres,CommunityRating,Overview",
+                    "Limit": "5000"}
+        )
+    finally:
+        await emby.close()
+
+    # ── 4. Score unwatched items ──
+    scored: list[dict] = []
+    for item in (all_items or []):
+        item_imdb = (item.get("ProviderIds") or {}).get("Imdb", "")
+        if item_imdb in rated_imdb or item_imdb in played_imdb:
+            continue  # already watched/rated
+
+        item_genres = {g.lower() for g in item.get("Genres", [])}
+        overlap = item_genres & top_genre_set
+        if not overlap:
+            continue
+
+        community_rating = item.get("CommunityRating") or 0
+        # Score = genre overlap count × avg genre affinity × community rating boost
+        genre_boost = sum(genre_affinity.get(g, 0) for g in overlap) / len(overlap)
+        score = len(overlap) * genre_boost * (1 + community_rating / 10)
+
+        scored.append({
+            "emby_id": item.get("Id"),
+            "title": item.get("Name", ""),
+            "year": item.get("ProductionYear"),
+            "item_type": "movie" if item.get("Type") == "Movie" else "show",
+            "genres": list(item_genres),
+            "matched_genres": list(overlap),
+            "community_rating": round(community_rating, 1),
+            "score": round(score, 2),
+            "imdb_id": item_imdb,
+            "overview": (item.get("Overview") or "")[:200],
+        })
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    result_items = scored[:limit]
+
+    result = {
+        "items": result_items,
+        "top_genres": [{"genre": g, "avg_rating": round(s, 1)} for g, s in top_genres],
+        "rated_count": len(rated_imdb),
+    }
+
+    # Cache for 6 hours
+    import json as _json
+    try:
+        await r.setex(cache_key, 21600, _json.dumps(result))
+    except Exception:
+        pass
+
+    return result

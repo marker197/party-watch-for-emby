@@ -121,7 +121,7 @@ async def get_current_user(
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="No linked user yet. Link your Trakt account first.",
+                detail="No linked user yet. Link your Simkl account first.",
             )
         return user
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rating Predictions - Emby-Trakt Suite</title>
+  <title>Rating Predictions - Emby-Simkl Suite</title>
 <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
   <style>
@@ -311,7 +311,7 @@
 <body>
 <script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
 <nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-TRAKT SUITE</span>
+    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
     <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
     <a href="/lists" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📋 Lists</a>
     <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">🤖 Predictions</a>
@@ -404,7 +404,7 @@
         modelInfo = await response.json();
         if (modelInfo.status === 'no_model') {
           document.getElementById('modelStats').innerHTML =
-            '<p style="color: var(--text-dim);">No model trained yet. Click Retrain Model to train on your Trakt ratings.</p>';
+            '<p style="color: var(--text-dim);">No model trained yet. Click Retrain Model to train on your Simkl ratings.</p>';
           document.getElementById('insights').innerHTML =
             '<p style="color: var(--text-dim);">Insights appear after the model is trained.</p>';
           return;
@@ -528,7 +528,7 @@
         <div class="insight-card">
           <div class="insight-label">Typical Error</div>
           <div class="insight-value">${modelInfo.mae != null ? '±' + modelInfo.mae.toFixed(1) : '—'}</div>
-          <div class="insight-desc">Average prediction error (out of 10) — shrinks as you rate more on Trakt</div>
+          <div class="insight-desc">Average prediction error (out of 10) — shrinks as you rate more on Simkl</div>
         </div>
 
         <div class="insight-card">
@@ -565,7 +565,7 @@
           <div class="insight-label">${genre}</div>
           <div class="insight-value">+${data.delta.toFixed(2)}</div>
           <div class="insight-desc">
-            Your avg: ${data.user_avg.toFixed(1)} vs Trakt: ${data.trakt_avg.toFixed(1)}
+            Your avg: ${data.user_avg.toFixed(1)} vs Simkl: ${data.simkl_avg.toFixed(1)}
           </div>
         </div>
       `).join('');

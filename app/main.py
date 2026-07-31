@@ -1,4 +1,4 @@
-"""Emby-Trakt Suite — application bootstrap.
+"""Emby-Simkl Suite — application bootstrap.
 
 Starts:
   - FastAPI REST server on port 8000
@@ -206,11 +206,11 @@ async def lifespan(app: FastAPI):
         async with async_session() as db:
             result = await db.execute(sa_text("SELECT version_num FROM alembic_version LIMIT 1"))
             row = result.first()
-            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres", "005_watch_history_progress", "006_dedup_watch_history"):
+            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres", "005_watch_history_progress", "006_dedup_watch_history", "007_simkl"):
                 # Pre-squash revision — jump to current head
-                await db.execute(sa_text("UPDATE alembic_version SET version_num = '006_dedup_watch_history'"))
+                await db.execute(sa_text("UPDATE alembic_version SET version_num = '007_simkl'"))
                 await db.commit()
-                log.info("suite.alembic_version_updated", old=row[0], new="006_dedup_watch_history")
+                log.info("suite.alembic_version_updated", old=row[0], new="007_simkl")
             # Let Alembic CMD run any pending upgrades (001→002→003→004→005)
     except Exception as e:
         log.warning("suite.alembic_version_check_skipped", error=str(e))
@@ -257,7 +257,7 @@ async def lifespan(app: FastAPI):
         log.warning("suite.initial_heartbeat_failed")
 
     # First-run watchlist sync — ensures missing Radarr/Sonarr items are
-    # on the Trakt/MDBList watchlist from the moment the container starts
+    # on the Simkl/MDBList watchlist from the moment the container starts
     try:
         from app.services.watchlist_sync.service import WatchlistSyncService
         _wls_startup = WatchlistSyncService()
@@ -278,7 +278,7 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="Emby-Trakt Suite",
+    title="Emby-Simkl Suite",
     version="1.0.0",
     description="Smart Queue · ML Predictor · Universe Discovery · Watch Party · Monitoring",
     lifespan=lifespan,
@@ -599,7 +599,7 @@ def reschedule_job(job_id: str, cron_expr: str):
 
 
 async def run_heartbeat():
-    """Ping Emby, Trakt, and Radarr — store results in Redis."""
+    """Ping Emby, Simkl, and Radarr — store results in Redis."""
     from app.utils.redis_cache import get_redis
     r = await get_redis()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -622,22 +622,22 @@ async def run_heartbeat():
     finally:
         await emby.close()
 
-    # --- Trakt (only if configured) ---
-    if settings.trakt_client_id:
-        from app.utils.trakt_client import TraktClient
-        trakt = TraktClient()
+    # --- Simkl (only if configured) ---
+    if settings.simkl_client_id:
+        from app.utils.simkl_client import SimklClient
+        simkl = SimklClient()
         try:
-            await trakt.get_trending(kind="shows")
-            await r.set("heartbeat:trakt", _json.dumps({
+            await simkl.get_trending(kind="shows")
+            await r.set("heartbeat:simkl", _json.dumps({
                 "status": "ok", "checked_at": now,
             }), ex=600)
         except Exception as e:
-            await r.set("heartbeat:trakt", _json.dumps({
+            await r.set("heartbeat:simkl", _json.dumps({
                 "status": "error", "checked_at": now,
                 "message": str(e)[:200],
             }), ex=600)
         finally:
-            await trakt.close()
+            await simkl.close()
 
     # --- Radarr (0..N servers from Redis config) ---
     raw_servers = await secure_get("radarr_servers")
@@ -729,71 +729,14 @@ async def run_heartbeat():
             await client.close()
 
 
-async def check_trakt_tokens():
-    """Proactively refresh Trakt tokens before they expire.
+async def check_simkl_tokens():
+    """Check Simkl token validity.
 
-    Runs every 30 minutes.  Creates an authenticated TraktClient for each
-    linked user and calls _ensure_token_valid(), which refreshes the token
-    if it's within 5 minutes of expiry (or already expired but the refresh
-    token hasn't gone stale yet).
-
-    Skips entirely if Trakt is not an active integration provider.
+    Simkl tokens last ~5 years so this is a lightweight check, not a refresh.
+    If a token is expired or invalid, logs a warning so the user knows to
+    re-link.  Not scheduled by default — called only from heartbeat if needed.
     """
-    # Check if Trakt is enabled
-    from app.utils.redis_cache import get_redis
-    try:
-        r = await _get_redis()
-        provider = await r.get("integration_provider")
-        if provider:
-            pval = provider if isinstance(provider, str) else provider.decode()
-            if pval not in ("trakt", "both"):
-                return  # Trakt not active, skip
-    except Exception:
-        pass  # If Redis fails, continue with check anyway
-
-    if not settings.trakt_client_id:
-        return  # No Trakt credentials configured
-
-    from app.utils.trakt_client import TraktClient
-    from app.models.schema import User
-
-    async with async_session() as db:
-        result = await db.execute(
-            select(User).where(User.trakt_access_token.isnot(None))
-        )
-        users = result.scalars().all()
-
-    for user in users:
-        if not user.trakt_access_token or not user.trakt_refresh_token:
-            continue
-
-        async def _make_callback(uid=user.id):
-            async def _cb(access, refresh, expires):
-                async with async_session() as rdb:
-                    u = (await rdb.execute(
-                        select(User).where(User.id == uid)
-                    )).scalar_one()
-                    u.trakt_access_token = access
-                    u.trakt_refresh_token = refresh
-                    u.trakt_token_expires = expires
-                    await rdb.commit()
-                log.info("trakt.token_refreshed_proactive", user_id=uid)
-            return _cb
-
-        callback = await _make_callback()
-        trakt = TraktClient(
-            access_token=user.trakt_access_token,
-            refresh_token=user.trakt_refresh_token,
-            token_expires=user.trakt_token_expires,
-            token_refresh_callback=callback,
-        )
-        try:
-            await trakt._ensure_token_valid()
-        except Exception as e:
-            log.error("trakt.proactive_refresh_failed", user_id=user.id,
-                      error=str(e)[:200])
-        finally:
-            await trakt.close()
+    pass  # Simkl tokens are ~5yr, no proactive refresh needed
 
 
 def _register_jobs():
@@ -884,7 +827,7 @@ def _register_jobs():
         log.info("scheduler.job_added", job="bias_analysis", cron=cron)
 
     # Watchlist Sync — daily at 2:30 AM (after smart queue at 2 AM)
-    # Scans Radarr/Sonarr for missing items, adds to Trakt watchlist,
+    # Scans Radarr/Sonarr for missing items, adds to Simkl watchlist,
     # refreshes Airing Soon so new watchlisted premieres appear.
     from app.services.watchlist_sync.service import WatchlistSyncService
     _wls_svc = WatchlistSyncService()
@@ -923,25 +866,25 @@ def _register_jobs():
     )
     log.info("scheduler.job_added", job="mdblist_sync", cron=mdblist_cron)
 
-    # Trakt List Sync — daily at 3:20 AM (right after MDBList sync)
-    trakt_list_cron = "20 3 * * *"
-    _job_crons["trakt_list_sync"] = trakt_list_cron
+    # Simkl List Sync — daily at 3:20 AM (right after MDBList sync)
+    simkl_list_cron = "20 3 * * *"
+    _job_crons["simkl_list_sync"] = simkl_list_cron
 
-    async def _run_trakt_list_sync():
+    async def _run_simkl_list_sync():
         async def _do():
-            from app.api.routes import sync_all_trakt_lists
+            from app.api.routes import sync_all_simkl_lists
             from app.utils.database import async_session as _async_session
             async with _async_session() as db:
-                await sync_all_trakt_lists(db)
-        await _tracked_job("trakt_list_sync", _do)
+                await sync_all_simkl_lists(db)
+        await _tracked_job("simkl_list_sync", _do)
 
     scheduler.add_job(
-        _run_trakt_list_sync,
-        CronTrigger(**_parse_cron(trakt_list_cron)),
-        id="trakt_list_sync",
+        _run_simkl_list_sync,
+        CronTrigger(**_parse_cron(simkl_list_cron)),
+        id="simkl_list_sync",
         replace_existing=True,
     )
-    log.info("scheduler.job_added", job="trakt_list_sync", cron=trakt_list_cron)
+    log.info("scheduler.job_added", job="simkl_list_sync", cron=simkl_list_cron)
 
     # Premiere notifications — daily at 8 AM (notify about today's premieres/finales)
     premiere_notify_cron = "0 8 * * *"
@@ -960,7 +903,7 @@ def _register_jobs():
             from app.utils.database import async_session as _async_session
             async with _async_session() as db:
                 user = (await db.execute(
-                    select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+                    select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
                 )).scalars().first()
             if not user:
                 return
@@ -999,7 +942,7 @@ def _register_jobs():
         emby = EmbyClient()
         async with _async_session() as db:
             user = (await db.execute(
-                select(User).where(User.trakt_access_token.isnot(None)).order_by(User.id)
+                select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
             )).scalars().first()
         uid = user.emby_user_id if user else None
         summary = await LibraryCache.index_library(emby, user_id=uid)
@@ -1028,7 +971,7 @@ def _register_jobs():
             from app.utils.database import async_session as _async_session
             async with _async_session() as db:
                 users = (await db.execute(
-                    select(User).where(User.trakt_access_token.isnot(None))
+                    select(User).where(User.simkl_access_token.isnot(None))
                 )).scalars().all()
             for u in users:
                 try:
@@ -1087,16 +1030,6 @@ def _register_jobs():
         replace_existing=True,
     )
     log.info("scheduler.job_added", job="heartbeat", interval="5m")
-
-    # Proactive Trakt token refresh — every 30 minutes
-    scheduler.add_job(
-        check_trakt_tokens,
-        "interval",
-        minutes=30,
-        id="trakt_token_check",
-        replace_existing=True,
-    )
-    log.info("scheduler.job_added", job="trakt_token_check", interval="30m")
 
 
 # ---------------------------------------------------------------------------
