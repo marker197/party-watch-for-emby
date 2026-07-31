@@ -10,10 +10,11 @@ rewatching.  Scoring factors:
   - Staleness weight: longer since last watch = higher score (capped)
   - Decay for dismissed items
 
-Data source priority:
-  1. Simkl ratings + history (richest data)
-  2. MDBList history (if no Simkl account)
-  3. Emby LastPlayedDate + UserRating (fallback — single date, but PlayCount)
+Data sources (all active, merged with deduplication):
+  1. MDBList ratings + history (has a rating for every watched item)
+  2. Simkl ratings + history (richer metadata when available)
+  3. Emby LastPlayedDate + UserRating (local fallback — single date, but PlayCount)
+  Dedup priority: Simkl > MDBList > Emby (first seen wins by IMDB ID)
 
 Output: top 30 items persisted to Redis with 24h TTL.
 """
@@ -544,24 +545,39 @@ class RewatchRecommender:
                                 rating_lookup[f"{prov}:{pid}"] = float(r_val)
 
             candidates = []
+            _dbg_no_date = 0
+            _dbg_too_recent = 0
+            _dbg_no_rating = 0
+            _dbg_below_min = 0
+            _dbg_total = 0
             for kind, item_type in (("movies", "movie"), ("shows", "show")):
                 for entry in watched_data.get(kind, []):
+                    _dbg_total += 1
                     ids = entry.get("ids", {})
                     title = entry.get("title", "Unknown")
                     year = entry.get("year")
                     genres = [g.lower() for g in entry.get("genres", [])]
                     plays = entry.get("plays", 1)
 
-                    # Determine last watched date
-                    watched_at = entry.get("watched_at") or entry.get("last_watched_at", "")
+                    # Determine last watched date — try multiple field names
+                    watched_at = (
+                        entry.get("watched_at")
+                        or entry.get("last_watched_at")
+                        or entry.get("updated_at")
+                        or entry.get("last_played")
+                        or ""
+                    )
                     if not watched_at:
+                        _dbg_no_date += 1
                         continue
                     try:
                         lw_dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
                     except (ValueError, TypeError):
+                        _dbg_no_date += 1
                         continue
 
                     if lw_dt > cutoff:
+                        _dbg_too_recent += 1
                         continue  # Watched too recently
 
                     # Find rating from ratings lookup
@@ -584,6 +600,12 @@ class RewatchRecommender:
                     # Fallback: check for rating in watched entry itself
                     if rating is None:
                         rating = entry.get("rating")
+                    # Fallback: check for MDBList score (0-100 scale → 1-10)
+                    if rating is None and entry.get("score") is not None:
+                        try:
+                            rating = round(float(entry["score"]) / 10, 1)
+                        except (ValueError, TypeError):
+                            pass
 
                     # Fallback: use Emby CommunityRating via library cache
                     if rating is None:
@@ -595,7 +617,11 @@ class RewatchRecommender:
                         if cached_item:
                             rating = cached_item.get("community_rating")
 
-                    if rating is None or float(rating) < min_rating:
+                    if rating is None:
+                        _dbg_no_rating += 1
+                        continue
+                    if float(rating) < min_rating:
+                        _dbg_below_min += 1
                         continue
                     rating = float(rating)
 
@@ -638,6 +664,18 @@ class RewatchRecommender:
                         "play_count": plays,
                         "source": "mdblist",
                     })
+
+            log.info("rewatch.mdblist_filter_stages", user_id=user_id,
+                     total=_dbg_total, no_date=_dbg_no_date,
+                     too_recent=_dbg_too_recent, no_rating=_dbg_no_rating,
+                     below_min=_dbg_below_min, passed=len(candidates),
+                     min_rating=min_rating,
+                     cutoff=cutoff.isoformat(),
+                     rating_lookup_size=len(rating_lookup),
+                     sample_date_fields=(
+                         list(watched_data.get("movies", [{}])[0].keys())[:10]
+                         if watched_data.get("movies") else "empty"
+                     ))
 
             return candidates
         except Exception as e:

@@ -595,10 +595,12 @@ class SimklClient:
                 shows.append(show_entry)
             elif "anime" in item:
                 anime.append(item)
-            elif item.get("_type") == "movies" or item.get("type") == "movie":
+            elif item.get("_type") in ("movie", "movies") or item.get("type") == "movie":
                 movies.append(item)
-            elif item.get("_type") in ("shows", "anime"):
+            elif item.get("_type") in ("show", "shows"):
                 shows.append(item)
+            elif item.get("_type") == "anime":
+                anime.append(item)
             else:
                 # Default to movie
                 movies.append(item)
@@ -747,13 +749,42 @@ class SimklClient:
 
     async def get_my_premieres(self, **kw) -> list[dict]:
         """Fetch upcoming TV premieres (new + soon).
-        Returns combined list from /tv/premieres/new and /tv/premieres/soon."""
+        Returns combined list from /tv/premieres/new and /tv/premieres/soon.
+        Each entry is reshaped to {show, episode, first_aired} format
+        expected by airing_alerts._merge_entry."""
         results = []
         for param in ("new", "soon"):
             try:
                 data = await self.get_tv_premieres(param)
                 if isinstance(data, list):
-                    results.extend(data)
+                    for item in data:
+                        # Simkl premiere endpoints return flat show objects:
+                        # {title, ids, year, first_aired, ...}
+                        # Reshape to match the structure _merge_entry expects
+                        if "show" in item and isinstance(item["show"], dict):
+                            # Already in {show, episode} format — pass through
+                            results.append(item)
+                        else:
+                            # Flat object — wrap it
+                            results.append({
+                                "show": {
+                                    "title": item.get("title", ""),
+                                    "ids": item.get("ids", {}),
+                                    "year": item.get("year"),
+                                },
+                                "episode": {
+                                    "season": 1,
+                                    "number": 1,
+                                    "title": item.get("episode_title")
+                                            or item.get("title", ""),
+                                },
+                                "first_aired": (
+                                    item.get("first_aired")
+                                    or item.get("date")
+                                    or item.get("air_date")
+                                    or ""
+                                ),
+                            })
             except Exception:
                 pass
         return results

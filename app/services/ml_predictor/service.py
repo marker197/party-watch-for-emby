@@ -138,15 +138,6 @@ class MLPredictorService:
 
     async def _train_for_user_inner(self, user: User) -> dict:
         """Internal training pipeline."""
-        # Token refresh callback
-        async def on_token_refresh(access, refresh, expires):
-            async with async_session() as db:
-                u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.simkl_access_token = access
-                
-                u.simkl_token_expires = expires
-                await db.commit()
-
         simkl = SimklClient(
             access_token=user.simkl_access_token,
             token_expires=user.simkl_token_expires,
@@ -269,11 +260,20 @@ class MLPredictorService:
     # -----------------------------------------------------------------------
 
     async def _fetch_and_cache_ratings(self, simkl: SimklClient, user: User) -> list[dict]:
-        raw_ratings = await simkl.get_user_ratings(kind="all")
+        # ── Simkl ratings ──
+        raw_ratings = []
+        try:
+            raw_ratings = await simkl.get_user_ratings(kind="all")
+        except Exception as e:
+            log.warning("ml_predictor.simkl_ratings_failed", error=str(e)[:120])
 
         rows = []
+        seen_imdb: set[str] = set()
         for entry in raw_ratings:
             item = entry.get("movie") or entry.get("show") or {}
+            imdb_id = item.get("ids", {}).get("imdb", "")
+            if imdb_id:
+                seen_imdb.add(imdb_id)
             rows.append({
                 "simkl_id": str(item.get("ids", {}).get("simkl", "")),
                 "simkl_slug": item.get("ids", {}).get("slug", ""),
@@ -287,6 +287,56 @@ class MLPredictorService:
                 "ids": item.get("ids", {}),
                 "rated_at": entry.get("rated_at"),
             })
+
+        # ── MDBList ratings (supplement — has a rating for every watched item) ──
+        mdb_added = 0
+        try:
+            from app.utils.mdblist_client import MDBListClient
+            from app.utils.secure_redis import secure_get
+            mdb_key = await secure_get("mdblist_api_key")
+            log.info("ml_predictor.mdblist_attempt", has_key=bool(mdb_key),
+                     simkl_ratings=len(rows))
+            if mdb_key:
+                mdb = MDBListClient(api_key=mdb_key)
+                try:
+                    mdb_ratings = await mdb.get_ratings()
+                    log.info("ml_predictor.mdblist_ratings_raw",
+                             type=type(mdb_ratings).__name__,
+                             keys=list(mdb_ratings.keys()) if isinstance(mdb_ratings, dict) else "not_dict",
+                             movies=len(mdb_ratings.get("movies", [])) if isinstance(mdb_ratings, dict) else 0,
+                             shows=len(mdb_ratings.get("shows", [])) if isinstance(mdb_ratings, dict) else 0)
+                    if isinstance(mdb_ratings, dict):
+                        for kind, item_type in (("movies", "movie"), ("shows", "show")):
+                            for item in mdb_ratings.get(kind, []):
+                                rating = item.get("rating")
+                                ids = item.get("ids", {})
+                                imdb_id = ids.get("imdb", "")
+                                if not rating or not imdb_id:
+                                    continue
+                                if imdb_id in seen_imdb:
+                                    continue  # already have from Simkl
+                                seen_imdb.add(imdb_id)
+                                rows.append({
+                                    "simkl_id": str(ids.get("simkl", "")),
+                                    "simkl_slug": "",
+                                    "title": item.get("title", ""),
+                                    "item_type": item_type,
+                                    "rating": int(round(float(rating))),
+                                    "genres": [g.lower() for g in item.get("genres", [])],
+                                    "year": item.get("year"),
+                                    "runtime": item.get("runtime"),
+                                    "simkl_rating": None,
+                                    "ids": ids,
+                                    "rated_at": item.get("rated_at"),
+                                })
+                                mdb_added += 1
+                finally:
+                    await mdb.close()
+        except Exception as e:
+            log.warning("ml_predictor.mdblist_ratings_failed", error=str(e)[:120])
+
+        if mdb_added:
+            log.info("ml_predictor.mdblist_ratings_merged", count=mdb_added)
 
         # persist to DB
         async with async_session() as db:

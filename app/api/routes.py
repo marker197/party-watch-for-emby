@@ -7307,66 +7307,46 @@ async def sync_simkl_to_mdblist(request: Request, db: AsyncSession = Depends(get
                 })
 
         mdb_shows = []
-        # Paginate through /users/me/history/episodes for episode-level data
+        # Parse episode-level data from already-fetched simkl_shows
+        # (Simkl's /sync/all-items/shows/completed includes seasons/episodes)
         from collections import defaultdict
         show_eps: dict[str, dict] = {}
-
-        ep_page = 1
-        ep_per_page = 500
-        ep_max_pages = 50
         total_eps_fetched = 0
         skipped_eps = 0
 
-        while ep_page <= ep_max_pages:
-            await asyncio.sleep(0)
-            try:
-                params: dict = {"page": ep_page, "limit": ep_per_page}
-                # For delta sync, use start_at filter if Simkl supports it
-                # Otherwise filter client-side
-                resp = await simkl._client.get(
-                    "/users/me/history/episodes",
-                    headers=simkl._auth_headers(),
-                    params=params,
-                )
-                simkl._update_rate_limit(resp)
-                if resp.status_code == 429:
-                    await asyncio.sleep(min(30, float(resp.headers.get("Retry-After", "10"))))
-                    continue
-                if resp.status_code != 200:
-                    log.warning("mdblist_sync.history_page_failed",
-                                page=ep_page, status=resp.status_code)
-                    break
-                entries = resp.json()
-                if not entries:
-                    break
+        for entry in simkl_shows:
+            show = entry.get("show", {})
+            show_ids = show.get("ids", {})
+            show_key = str(show_ids.get("simkl", "")) or str(show_ids.get("imdb", ""))
+            if not show_key:
+                continue
 
-                # For delta sync: episodes are returned newest-first.
-                # Once we hit an entry older than last_sync_ts, we can stop.
-                page_all_old = True
+            # Show-level last_watched_at for delta sync filtering
+            show_watched_at = entry.get("last_watched_at", "")
 
-                for entry in entries:
-                    watched_at = entry.get("watched_at", "")
+            seasons = entry.get("seasons", [])
+            if not seasons:
+                # No season data — skip (Simkl may not include episode-level
+                # detail depending on the response). The show-level entry
+                # is still useful for movie-style "mark whole show watched".
+                continue
+
+            if show_key not in show_eps:
+                mdb_ids = {}
+                for k in ("imdb", "tmdb", "tvdb", "simkl"):
+                    if show_ids.get(k):
+                        mdb_ids[k] = show_ids[k]
+                show_eps[show_key] = {"ids": mdb_ids, "seasons": defaultdict(list)}
+
+            for season in seasons:
+                s_num = season.get("number", 0)
+                for ep in season.get("episodes", []):
+                    e_num = ep.get("number", 0)
+                    watched_at = ep.get("watched_at") or show_watched_at or ""
+
                     if last_sync_ts and watched_at and watched_at <= last_sync_ts:
                         skipped_eps += 1
                         continue
-
-                    page_all_old = False
-                    show = entry.get("show", {})
-                    show_ids = show.get("ids", {})
-                    ep = entry.get("episode", {})
-                    s_num = ep.get("season", 0)
-                    e_num = ep.get("number", 0)
-
-                    show_key = str(show_ids.get("simkl", "")) or str(show_ids.get("imdb", ""))
-                    if not show_key:
-                        continue
-
-                    if show_key not in show_eps:
-                        mdb_ids = {}
-                        for k in ("imdb", "tmdb", "tvdb", "simkl"):
-                            if show_ids.get(k):
-                                mdb_ids[k] = show_ids[k]
-                        show_eps[show_key] = {"ids": mdb_ids, "seasons": defaultdict(list)}
 
                     show_eps[show_key]["seasons"][s_num].append({
                         "number": e_num,
@@ -7374,23 +7354,10 @@ async def sync_simkl_to_mdblist(request: Request, db: AsyncSession = Depends(get
                     })
                     total_eps_fetched += 1
 
-                # If delta sync and entire page was old, stop paginating
-                if last_sync_ts and page_all_old:
-                    break
-
-                total_pages = int(resp.headers.get("X-Pagination-Page-Count", "1"))
-                if ep_page >= total_pages:
-                    break
-                ep_page += 1
-            except Exception as e:
-                log.warning("mdblist_sync.history_page_error",
-                            page=ep_page, error=str(e)[:120])
-                break
-
-        log.info("mdblist_sync.episodes_fetched",
+        log.info("mdblist_sync.episodes_parsed",
                  shows=len(show_eps), episodes=total_eps_fetched,
                  skipped_eps=skipped_eps, skipped_movies=skipped_movies,
-                 pages=ep_page, mode="delta" if last_sync_ts else "full")
+                 mode="delta" if last_sync_ts else "full")
 
         # Convert grouped data to MDBList payload
         for show_key, show_data in show_eps.items():

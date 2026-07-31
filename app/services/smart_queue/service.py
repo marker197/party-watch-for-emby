@@ -89,14 +89,6 @@ class SmartQueueService:
             await self._close_emby()
 
     async def _update_user_queue(self, user: User):
-        # Token refresh callback
-        async def on_token_refresh(access, refresh, expires):
-            async with async_session() as db:
-                u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.simkl_access_token = access
-                
-                u.simkl_token_expires = expires
-                await db.commit()
 
         simkl = SimklClient(
             access_token=user.simkl_access_token,
@@ -208,7 +200,7 @@ class SmartQueueService:
         for kind in ("shows", "movies"):
             trending = await simkl.get_trending(kind=kind, limit=15, page=trending_page)
             for rank, entry in enumerate(trending):
-                item = entry.get("movie") or entry.get("show") or {}
+                item = entry.get("movie") or entry.get("show") or entry
                 tid = str(item.get("ids", {}).get("simkl", ""))
                 if tid and tid not in candidates:
                     candidates[tid] = {
