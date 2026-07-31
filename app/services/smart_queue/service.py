@@ -177,7 +177,7 @@ class SmartQueueService:
         # 1. Watchlist items
         watchlist = await simkl.get_watchlist()
         for entry in watchlist:
-            item = entry.get("movie") or entry.get("show") or {}
+            item = entry.get("movie") or entry.get("show") or entry
             tid = str(item.get("ids", {}).get("simkl", ""))
             if tid:
                 candidates[tid] = {
@@ -1057,7 +1057,7 @@ class SmartQueueService:
             for kind in ("shows", "movies"):
                 trending = await simkl.get_trending(kind=kind, limit=15)
                 for rank, entry in enumerate(trending):
-                    item = entry.get("movie") or entry.get("show") or {}
+                    item = entry.get("movie") or entry.get("show") or entry
                     tid = str(item.get("ids", {}).get("simkl", ""))
                     if not tid or tid in watched_ids:
                         continue

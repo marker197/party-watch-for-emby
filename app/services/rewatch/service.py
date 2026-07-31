@@ -420,7 +420,7 @@ class RewatchRecommender:
             # Build last-watched lookup: simkl_id -> most_recent_date
             last_watched: dict[str, str] = {}
             for entry in history_movies + history_shows:
-                item = entry.get("movie") or entry.get("show") or {}
+                item = entry.get("movie") or entry.get("show") or entry
                 tid = str(item.get("ids", {}).get("simkl", ""))
                 watched_at = entry.get("watched_at", "")
                 if tid and watched_at:
@@ -433,7 +433,7 @@ class RewatchRecommender:
                 if rating < min_rating:
                     continue
 
-                item = rated.get("movie") or rated.get("show") or {}
+                item = rated.get("movie") or rated.get("show") or rated
                 ids = item.get("ids", {})
                 simkl_id = str(ids.get("simkl", ""))
                 imdb_id = ids.get("imdb", "")
@@ -820,7 +820,7 @@ class RewatchRecommender:
             for kind in ("movies", "shows"):
                 history = await simkl.get_history(kind, limit=10000)
                 for entry in history:
-                    item = entry.get("movie") or entry.get("show") or {}
+                    item = entry.get("movie") or entry.get("show") or entry
                     ids = item.get("ids", {})
                     tid = str(ids.get("simkl", ""))
                     iid = ids.get("imdb", "")

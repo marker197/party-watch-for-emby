@@ -270,7 +270,7 @@ class MLPredictorService:
         rows = []
         seen_imdb: set[str] = set()
         for entry in raw_ratings:
-            item = entry.get("movie") or entry.get("show") or {}
+            item = entry.get("movie") or entry.get("show") or entry
             imdb_id = item.get("ids", {}).get("imdb", "")
             if imdb_id:
                 seen_imdb.add(imdb_id)
@@ -278,7 +278,7 @@ class MLPredictorService:
                 "simkl_id": str(item.get("ids", {}).get("simkl", "")),
                 "simkl_slug": item.get("ids", {}).get("slug", ""),
                 "title": item.get("title", ""),
-                "item_type": "movie" if "movie" in entry else "show",
+                "item_type": "movie" if entry.get("_type", "").startswith("movie") or "movie" in entry else "show",
                 "rating": entry.get("rating", 0),
                 "genres": item.get("genres", []),
                 "year": item.get("year"),
@@ -307,10 +307,34 @@ class MLPredictorService:
                              shows=len(mdb_ratings.get("shows", [])) if isinstance(mdb_ratings, dict) else 0)
                     if isinstance(mdb_ratings, dict):
                         for kind, item_type in (("movies", "movie"), ("shows", "show")):
-                            for item in mdb_ratings.get(kind, []):
+                            kind_items = mdb_ratings.get(kind, [])
+                            if kind_items and kind == "movies":
+                                # Log first item structure for debugging
+                                first = kind_items[0] if kind_items else {}
+                                log.info("ml_predictor.mdblist_first_item",
+                                         keys=list(first.keys())[:15],
+                                         has_ids=bool(first.get("ids")),
+                                         has_rating=first.get("rating") is not None,
+                                         has_score=first.get("score") is not None,
+                                         has_imdb_id=bool(first.get("imdb_id")),
+                                         sample_ids=first.get("ids", {}) if isinstance(first.get("ids"), dict) else "missing")
+                            for item in kind_items:
+                                # Rating: try 'rating' first, fall back to 'score' (0-100 → 1-10)
                                 rating = item.get("rating")
+                                if rating is None and item.get("score") is not None:
+                                    try:
+                                        rating = round(float(item["score"]) / 10, 1)
+                                    except (ValueError, TypeError):
+                                        pass
+                                # IDs: try nested 'ids' dict first, fall back to flat fields
                                 ids = item.get("ids", {})
-                                imdb_id = ids.get("imdb", "")
+                                if not isinstance(ids, dict):
+                                    ids = {}
+                                imdb_id = (
+                                    ids.get("imdb", "")
+                                    or item.get("imdb_id", "")
+                                    or item.get("imdb", "")
+                                )
                                 if not rating or not imdb_id:
                                     continue
                                 if imdb_id in seen_imdb:

@@ -136,6 +136,16 @@ class SimklClient:
         # 409 = duplicate prevention on scrobble (not an error)
         if resp.status_code == 409:
             return resp.json()
+        if resp.status_code == 400:
+            body_text = ""
+            try:
+                body_text = resp.text[:300]
+            except Exception:
+                pass
+            log.warning("simkl.bad_request", path=path,
+                        response_body=body_text,
+                        payload_keys=list((payload or {}).keys()),
+                        token_hint=self._token_hint())
         resp.raise_for_status()
         if resp.status_code == 204:
             return {}

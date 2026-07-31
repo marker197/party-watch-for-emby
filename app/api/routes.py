@@ -7294,7 +7294,7 @@ async def sync_simkl_to_mdblist(request: Request, db: AsyncSession = Depends(get
             if last_sync_ts and watched_at and watched_at <= last_sync_ts:
                 skipped_movies += 1
                 continue
-            movie = entry.get("movie", {})
+            movie = entry.get("movie", {}) if "movie" in entry else entry
             ids = movie.get("ids", {})
             mdb_ids = {}
             for k in ("imdb", "tmdb", "tvdb", "simkl"):
@@ -7315,7 +7315,7 @@ async def sync_simkl_to_mdblist(request: Request, db: AsyncSession = Depends(get
         skipped_eps = 0
 
         for entry in simkl_shows:
-            show = entry.get("show", {})
+            show = entry.get("show", {}) if "show" in entry else entry
             show_ids = show.get("ids", {})
             show_key = str(show_ids.get("simkl", "")) or str(show_ids.get("imdb", ""))
             if not show_key:
@@ -8593,7 +8593,7 @@ async def sync_ratings_between_providers(
 
         simkl_by_imdb: dict[str, dict] = {}
         for entry in simkl_ratings:
-            item_obj = entry.get("movie") or entry.get("show") or {}
+            item_obj = entry.get("movie") or entry.get("show") or entry
             iid = (item_obj.get("ids") or {}).get("imdb", "")
             r_val = entry.get("rating")
             if r_val is not None and iid:
@@ -8721,7 +8721,7 @@ async def get_rating_sync_status(
                 # Count overlap by IMDB ID
                 simkl_imdb = set()
                 for entry in sr:
-                    item_obj = entry.get("movie") or entry.get("show") or {}
+                    item_obj = entry.get("movie") or entry.get("show") or entry
                     iid = (item_obj.get("ids") or {}).get("imdb", "")
                     if iid:
                         simkl_imdb.add(iid)
@@ -8826,7 +8826,7 @@ async def get_history_recommendations(
         try:
             sr = await simkl.get_user_ratings("all")
             for entry in sr:
-                item_obj = entry.get("movie") or entry.get("show") or {}
+                item_obj = entry.get("movie") or entry.get("show") or entry
                 iid = (item_obj.get("ids") or {}).get("imdb", "")
                 rating = entry.get("rating")
                 genres = [g.lower() for g in item_obj.get("genres", [])]

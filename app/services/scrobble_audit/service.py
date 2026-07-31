@@ -273,7 +273,8 @@ class ScrobbleAuditService:
             try:
                 simkl_movies = await simkl.get_watched(kind="movies")
                 for entry in simkl_movies:
-                    ids = entry.get("movie", {}).get("ids", {})
+                    item = entry.get("movie", {}) if "movie" in entry else entry
+                    ids = item.get("ids", {})
                     for key in ("imdb", "tmdb", "tvdb"):
                         val = ids.get(key)
                         if val:
@@ -287,7 +288,8 @@ class ScrobbleAuditService:
             try:
                 simkl_shows = await simkl.get_watched(kind="shows")
                 for entry in simkl_shows:
-                    show_ids = entry.get("show", {}).get("ids", {})
+                    show_obj = entry.get("show", {}) if "show" in entry else entry
+                    show_ids = show_obj.get("ids", {})
                     # Build all provider keys for this show
                     show_keys: list[str] = []
                     for key in ("imdb", "tvdb", "tmdb"):
@@ -321,14 +323,27 @@ class ScrobbleAuditService:
                 mdb_watched = await mdb.get_watched()
                 # Movies
                 for entry in mdb_watched.get("movies", []):
-                    ids = entry.get("movie", {}).get("ids", {})
+                    item = entry.get("movie", {}) if "movie" in entry else entry
+                    ids = item.get("ids", {})
+                    # Also try flat imdb_id/tmdb_id fields
+                    if not ids:
+                        ids = {}
+                        for k, fk in [("imdb", "imdb_id"), ("tmdb", "tmdb_id"), ("tvdb", "tvdb_id")]:
+                            if entry.get(fk):
+                                ids[k] = entry[fk]
                     for key in ("imdb", "tmdb", "tvdb", "simkl"):
                         val = ids.get(key)
                         if val:
                             simkl_movie_ids.add(f"{key}:{val}")
                 # Shows (episode-level)
                 for entry in mdb_watched.get("shows", []):
-                    show_ids = entry.get("show", {}).get("ids", {})
+                    show_obj = entry.get("show", {}) if "show" in entry else entry
+                    show_ids = show_obj.get("ids", {})
+                    if not show_ids:
+                        show_ids = {}
+                        for k, fk in [("imdb", "imdb_id"), ("tmdb", "tmdb_id"), ("tvdb", "tvdb_id")]:
+                            if entry.get(fk):
+                                show_ids[k] = entry[fk]
                     show_keys_mdb: list[str] = []
                     for key in ("imdb", "tvdb", "tmdb", "simkl"):
                         val = show_ids.get(key)
@@ -600,13 +615,6 @@ class ScrobbleAuditService:
 
     @staticmethod
     async def _make_simkl(user: User) -> SimklClient:
-        async def on_token_refresh(access, refresh, expires):
-            async with async_session() as db:
-                u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.simkl_access_token = access
-                
-                u.simkl_token_expires = expires
-                await db.commit()
 
         return SimklClient(
             access_token=user.simkl_access_token,
