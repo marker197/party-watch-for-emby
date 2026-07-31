@@ -58,17 +58,9 @@ class AiringAlertsService:
 
         simkl: SimklClient | None = None
         if use_simkl:
-            async def on_token_refresh(access, refresh, expires):
-                async with async_session() as db:
-                    u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
-                    u.simkl_access_token = access
-                    
-                    u.simkl_token_expires = expires
-                    await db.commit()
-
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
-            token_expires=user.simkl_token_expires,
+                token_expires=user.simkl_token_expires,
             )
 
         try:
@@ -374,7 +366,7 @@ class AiringAlertsService:
         for key, entry in merged.items():
             show = entry["show"]
             episode = entry["episode"]
-            show_simkl_id = str(show.get("ids", {}).get("simkl", ""))
+            show_simkl_id = str(show.get("ids", {}).get("simkl") or show.get("ids", {}).get("simkl_id") or "")
             show_tvdb_id = show.get("ids", {}).get("tvdb")
 
             days_until = self._days_until(entry.get("first_aired"))
@@ -547,7 +539,7 @@ class AiringAlertsService:
     def _merge_entry(merged: dict, entry: dict, is_premiere_source: bool) -> None:
         show = entry.get("show", {})
         episode = entry.get("episode", {})
-        show_simkl_id = str(show.get("ids", {}).get("simkl", ""))
+        show_simkl_id = str(show.get("ids", {}).get("simkl") or show.get("ids", {}).get("simkl_id") or "")
         key = (show_simkl_id, episode.get("season"), episode.get("number"))
         if key not in merged:
             merged[key] = {"show": show, "episode": episode, "first_aired": entry.get("first_aired"),
@@ -633,7 +625,7 @@ class AiringAlertsService:
             finale_season = info["season"]
             episodes_airing_before = 0
             for key, entry in merged_entries.items():
-                entry_simkl_id = str(entry["show"].get("ids", {}).get("simkl", ""))
+                entry_simkl_id = str(entry["show"].get("ids", {}).get("simkl") or entry["show"].get("ids", {}).get("simkl_id") or "")
                 if entry_simkl_id != simkl_id:
                     continue
                 ep = entry["episode"]
@@ -757,7 +749,7 @@ class AiringAlertsService:
         #    movies not in Radarr) ──
         for entry in simkl_releases:
             movie = entry.get("movie", {})
-            movie_simkl_id = str(movie.get("ids", {}).get("simkl", ""))
+            movie_simkl_id = str(movie.get("ids", {}).get("simkl") or movie.get("ids", {}).get("simkl_id") or "")
             movie_tmdb_id = movie.get("ids", {}).get("tmdb")
 
             if movie_simkl_id and movie_simkl_id in seen_simkl:

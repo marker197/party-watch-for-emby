@@ -7317,7 +7317,7 @@ async def sync_simkl_to_mdblist(request: Request, db: AsyncSession = Depends(get
         for entry in simkl_shows:
             show = entry.get("show", {}) if "show" in entry else entry
             show_ids = show.get("ids", {})
-            show_key = str(show_ids.get("simkl", "")) or str(show_ids.get("imdb", ""))
+            show_key = str(show_ids.get("simkl") or show_ids.get("simkl_id") or "") or str(show_ids.get("imdb", ""))
             if not show_key:
                 continue
 

@@ -438,11 +438,30 @@ class SimklClient:
         return await self._get(f"/tv/episodes/{simkl_id}", auth_required=False)
 
     async def get_tv_premieres(self, param: str = "new") -> list[dict]:
-        """TV premieres — 'new' or 'soon'. No auth."""
+        """TV premieres — 'new' or 'soon'. No auth. Paginated (default 60, max 20 pages)."""
+        all_items: list[dict] = []
+        page = 1
+        max_pages = 20
         try:
-            return await self._get(f"/tv/premieres/{param}", auth_required=False)
+            while page <= max_pages:
+                resp = await self._client.get(
+                    f"{BASE_URL}/tv/premieres/{param}",
+                    params={**self._base_params(), "page": page, "limit": 60},
+                    headers={"User-Agent": "emby-simkl-suite/1.0"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, list):
+                    all_items.extend(data)
+                else:
+                    break
+                total_pages = int(resp.headers.get("X-Pagination-Page-Count", "1"))
+                if page >= total_pages:
+                    break
+                page += 1
         except Exception:
-            return []
+            pass
+        return all_items
 
     async def get_tv_airing(self, date: str | None = None) -> list[dict]:
         """What's airing today/tomorrow/on a date. No auth."""

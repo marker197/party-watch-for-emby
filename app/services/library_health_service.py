@@ -397,15 +397,6 @@ class LibraryHealthService:
         if not user.simkl_access_token:
             return None
 
-        async def _on_refresh(access, refresh, expires):
-            async with async_session() as db:
-                u = (await db.execute(
-                    select(User).where(User.id == user.id)
-                )).scalar_one()
-                u.simkl_access_token = access
-                
-                u.simkl_token_expires = expires
-                await db.commit()
 
         return SimklClient(
             access_token=user.simkl_access_token,

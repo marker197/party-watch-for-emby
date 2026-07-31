@@ -178,7 +178,7 @@ class SmartQueueService:
         watchlist = await simkl.get_watchlist()
         for entry in watchlist:
             item = entry.get("movie") or entry.get("show") or entry
-            tid = str(item.get("ids", {}).get("simkl", ""))
+            tid = str(item.get("ids", {}).get("simkl") or item.get("ids", {}).get("simkl_id") or "")
             if tid:
                 candidates[tid] = {
                     "simkl_id": tid,
@@ -201,7 +201,7 @@ class SmartQueueService:
             trending = await simkl.get_trending(kind=kind, limit=15, page=trending_page)
             for rank, entry in enumerate(trending):
                 item = entry.get("movie") or entry.get("show") or entry
-                tid = str(item.get("ids", {}).get("simkl", ""))
+                tid = str(item.get("ids", {}).get("simkl") or item.get("ids", {}).get("simkl_id") or "")
                 if tid and tid not in candidates:
                     candidates[tid] = {
                         "simkl_id": tid,
@@ -221,7 +221,7 @@ class SmartQueueService:
                 for rank, entry in enumerate(recs):
                     # Recommended endpoint returns items directly (not wrapped)
                     item = entry.get("movie") or entry.get("show") or entry
-                    tid = str(item.get("ids", {}).get("simkl", ""))
+                    tid = str(item.get("ids", {}).get("simkl") or item.get("ids", {}).get("simkl_id") or "")
                     if tid and tid not in candidates:
                         candidates[tid] = {
                             "simkl_id": tid,
@@ -241,7 +241,7 @@ class SmartQueueService:
             calendar = await simkl.get_my_shows(start_date=today, days=14)
             for entry in calendar:
                 show = entry.get("show", {})
-                tid = str(show.get("ids", {}).get("simkl", ""))
+                tid = str(show.get("ids", {}).get("simkl") or show.get("ids", {}).get("simkl_id") or "")
                 if tid and tid not in candidates:
                     candidates[tid] = {
                         "simkl_id": tid,
@@ -269,7 +269,7 @@ class SmartQueueService:
                         if r.get("rating", 0) < 8:
                             continue
                         item = r.get("movie") or r.get("show") or {}
-                        tid = str(item.get("ids", {}).get("simkl", ""))
+                        tid = str(item.get("ids", {}).get("simkl") or item.get("ids", {}).get("simkl_id") or "")
                         if tid and tid not in candidates:
                             candidates[tid] = {
                                 "simkl_id": tid,
@@ -1058,7 +1058,7 @@ class SmartQueueService:
                 trending = await simkl.get_trending(kind=kind, limit=15)
                 for rank, entry in enumerate(trending):
                     item = entry.get("movie") or entry.get("show") or entry
-                    tid = str(item.get("ids", {}).get("simkl", ""))
+                    tid = str(item.get("ids", {}).get("simkl") or item.get("ids", {}).get("simkl_id") or "")
                     if not tid or tid in watched_ids:
                         continue
                     candidate = {
@@ -1137,7 +1137,7 @@ class SmartQueueService:
             watched = await simkl.get_watched(kind="movies")
             for entry in watched:
                 item = entry.get("movie") or {}
-                tid = str(item.get("ids", {}).get("simkl", ""))
+                tid = str(item.get("ids", {}).get("simkl") or item.get("ids", {}).get("simkl_id") or "")
                 if tid:
                     watched_ids.add(tid)
             log.info("smart_queue.watched_movies_from_watched",
@@ -1150,7 +1150,7 @@ class SmartQueueService:
             history = await simkl.get_history(kind="movies", limit=200)
             for entry in history:
                 item = entry.get("movie") or {}
-                tid = str(item.get("ids", {}).get("simkl", ""))
+                tid = str(item.get("ids", {}).get("simkl") or item.get("ids", {}).get("simkl_id") or "")
                 if tid:
                     watched_ids.add(tid)
             log.info("smart_queue.watched_movies_total",

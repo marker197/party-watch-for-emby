@@ -58,14 +58,6 @@ class RatingBiasDetectorService:
 
     async def analyze_user(self, user: User) -> dict:
         """Full bias analysis pipeline for a single user."""
-        async def on_token_refresh(access, refresh, expires):
-            async with async_session() as db:
-                u = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
-                u.simkl_access_token = access
-                
-                u.simkl_token_expires = expires
-                await db.commit()
-
         simkl = SimklClient(
             access_token=user.simkl_access_token,
             token_expires=user.simkl_token_expires,

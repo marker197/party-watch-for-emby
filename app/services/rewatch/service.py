@@ -421,7 +421,7 @@ class RewatchRecommender:
             last_watched: dict[str, str] = {}
             for entry in history_movies + history_shows:
                 item = entry.get("movie") or entry.get("show") or entry
-                tid = str(item.get("ids", {}).get("simkl", ""))
+                tid = str(item.get("ids", {}).get("simkl") or item.get("ids", {}).get("simkl_id") or "")
                 watched_at = entry.get("watched_at", "")
                 if tid and watched_at:
                     if tid not in last_watched or watched_at > last_watched[tid]:
@@ -435,7 +435,7 @@ class RewatchRecommender:
 
                 item = rated.get("movie") or rated.get("show") or rated
                 ids = item.get("ids", {})
-                simkl_id = str(ids.get("simkl", ""))
+                simkl_id = str(ids.get("simkl") or ids.get("simkl_id") or "")
                 imdb_id = ids.get("imdb", "")
                 tmdb_id = str(ids.get("tmdb", ""))
                 item_type = "movie" if "movie" in rated else "show"
@@ -584,7 +584,7 @@ class RewatchRecommender:
                     rating = None
                     imdb_id = ids.get("imdb", "")
                     tmdb_id = str(ids.get("tmdb", "")) if ids.get("tmdb") else ""
-                    simkl_id = str(ids.get("simkl", "")) if ids.get("simkl") else ""
+                    simkl_id = str(ids.get("simkl") or ids.get("simkl_id") or "") if ids.get("simkl") else ""
                     mdblist_id = str(ids.get("mdblist", "")) if ids.get("mdblist") else ""
 
                     for key_str in (
@@ -822,7 +822,7 @@ class RewatchRecommender:
                 for entry in history:
                     item = entry.get("movie") or entry.get("show") or entry
                     ids = item.get("ids", {})
-                    tid = str(ids.get("simkl", ""))
+                    tid = str(ids.get("simkl") or ids.get("simkl_id") or "")
                     iid = ids.get("imdb", "")
 
                     match = (item_id == f"simkl:{tid}" or

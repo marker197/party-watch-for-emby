@@ -275,7 +275,7 @@ class MLPredictorService:
             if imdb_id:
                 seen_imdb.add(imdb_id)
             rows.append({
-                "simkl_id": str(item.get("ids", {}).get("simkl", "")),
+                "simkl_id": str(item.get("ids", {}).get("simkl") or item.get("ids", {}).get("simkl_id") or ""),
                 "simkl_slug": item.get("ids", {}).get("slug", ""),
                 "title": item.get("title", ""),
                 "item_type": "movie" if entry.get("_type", "").startswith("movie") or "movie" in entry else "show",
@@ -341,7 +341,7 @@ class MLPredictorService:
                                     continue  # already have from Simkl
                                 seen_imdb.add(imdb_id)
                                 rows.append({
-                                    "simkl_id": str(ids.get("simkl", "")),
+                                    "simkl_id": str(ids.get("simkl") or ids.get("simkl_id") or ""),
                                     "simkl_slug": "",
                                     "title": item.get("title", ""),
                                     "item_type": item_type,
