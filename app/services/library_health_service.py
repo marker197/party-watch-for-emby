@@ -191,12 +191,13 @@ class LibraryHealthService:
     async def _scan_watched_not_in_library(
         self, simkl: SimklClient,
     ) -> tuple[list[dict], list[dict]]:
-        """Find items in Simkl watched history that aren't in the Emby library."""
+        """Find items in Simkl/MDBList watched history that aren't in the Emby library."""
 
         missing_movies: list[dict] = []
         missing_shows: list[dict] = []
+        seen_ids: set[str] = set()  # dedup across sources
 
-        # Movies
+        # ── Simkl watched ──
         try:
             watched_movies = await simkl.get_watched(kind="movies")
         except Exception as e:
@@ -204,25 +205,25 @@ class LibraryHealthService:
             watched_movies = []
 
         for entry in watched_movies:
-            movie = entry.get("movie", {})
+            movie = entry.get("movie") or entry
             ids = movie.get("ids", {})
             title = movie.get("title", "")
             year = movie.get("year")
+            dedup_key = ids.get("imdb") or ids.get("tmdb") or title
+            if dedup_key in seen_ids:
+                continue
 
-            # Check library cache
             in_library = await self._is_in_library(ids)
             if not in_library:
+                seen_ids.add(dedup_key)
                 missing_movies.append({
-                    "title": title,
-                    "year": year,
-                    "imdb_id": ids.get("imdb"),
-                    "tmdb_id": ids.get("tmdb"),
-                    "simkl_id": ids.get("simkl"),
+                    "title": title, "year": year,
+                    "imdb_id": ids.get("imdb"), "tmdb_id": ids.get("tmdb"),
+                    "simkl_id": ids.get("simkl") or ids.get("simkl_id"),
                     "plays": entry.get("plays", 1),
                     "last_watched": entry.get("last_watched_at", ""),
                 })
 
-        # Shows
         try:
             watched_shows = await simkl.get_watched(kind="shows")
         except Exception as e:
@@ -230,67 +231,174 @@ class LibraryHealthService:
             watched_shows = []
 
         for entry in watched_shows:
-            show = entry.get("show", {})
+            show = entry.get("show") or entry
             ids = show.get("ids", {})
             title = show.get("title", "")
             year = show.get("year")
+            dedup_key = ids.get("imdb") or ids.get("tvdb") or title
+            if dedup_key in seen_ids:
+                continue
 
             in_library = await self._is_in_library(ids)
             if not in_library:
-                # Count episodes watched
                 ep_count = 0
                 for season in entry.get("seasons", []):
                     ep_count += len(season.get("episodes", []))
-
+                seen_ids.add(dedup_key)
                 missing_shows.append({
-                    "title": title,
-                    "year": year,
-                    "imdb_id": ids.get("imdb"),
-                    "tmdb_id": ids.get("tmdb"),
+                    "title": title, "year": year,
+                    "imdb_id": ids.get("imdb"), "tmdb_id": ids.get("tmdb"),
                     "tvdb_id": ids.get("tvdb"),
-                    "simkl_id": ids.get("simkl"),
+                    "simkl_id": ids.get("simkl") or ids.get("simkl_id"),
                     "plays": entry.get("plays", 1),
                     "episodes_watched": ep_count,
                     "last_watched": entry.get("last_watched_at", ""),
                 })
 
-        # Sort by most recently watched
+        # ── MDBList watched (supplement) ──
+        try:
+            mdb = await self._get_mdblist_client()
+            if mdb:
+                try:
+                    mdb_watched = await mdb.get_watched()
+                    for entry in mdb_watched.get("movies", []):
+                        inner = entry.get("movie") or entry
+                        ids = inner.get("ids", {})
+                        dedup_key = ids.get("imdb") or ids.get("tmdb") or inner.get("title", "")
+                        if dedup_key in seen_ids:
+                            continue
+                        in_library = await self._is_in_library(ids)
+                        if not in_library:
+                            seen_ids.add(dedup_key)
+                            missing_movies.append({
+                                "title": inner.get("title", ""), "year": inner.get("year"),
+                                "imdb_id": ids.get("imdb"), "tmdb_id": ids.get("tmdb"),
+                                "simkl_id": ids.get("simkl") or ids.get("simkl_id"),
+                                "plays": entry.get("plays", 1),
+                                "last_watched": entry.get("last_watched_at", ""),
+                            })
+                    for entry in mdb_watched.get("shows", []):
+                        inner = entry.get("show") or entry
+                        ids = inner.get("ids", {})
+                        dedup_key = ids.get("imdb") or ids.get("tvdb") or inner.get("title", "")
+                        if dedup_key in seen_ids:
+                            continue
+                        in_library = await self._is_in_library(ids)
+                        if not in_library:
+                            seen_ids.add(dedup_key)
+                            missing_shows.append({
+                                "title": inner.get("title", ""), "year": inner.get("year"),
+                                "imdb_id": ids.get("imdb"), "tmdb_id": ids.get("tmdb"),
+                                "tvdb_id": ids.get("tvdb"),
+                                "simkl_id": ids.get("simkl") or ids.get("simkl_id"),
+                                "plays": entry.get("plays", 1),
+                                "last_watched": entry.get("last_watched_at", ""),
+                            })
+                finally:
+                    await mdb.close()
+        except Exception:
+            pass
+
         missing_movies.sort(key=lambda x: x.get("last_watched", ""), reverse=True)
         missing_shows.sort(key=lambda x: x.get("last_watched", ""), reverse=True)
-
         return missing_movies, missing_shows
 
     # ── Scan: missing sequels ───────────────────────────────────────────
 
     async def _scan_missing_sequels(
-        self, simkl: SimklClient, min_rating: int = 8, max_lookups: int = 30,
+        self, simkl: SimklClient, min_rating: int = 7, max_lookups: int = 30,
     ) -> list[dict]:
-        """For movies you rated 8+, check if Simkl's related movies are in your library."""
+        """For movies you rated highly, check if Simkl's similar movies are in your library.
+        Uses both Simkl and MDBList ratings."""
         results: list[dict] = []
+        seen_titles: set[str] = set()
 
+        # ── Gather highly-rated movies from all sources ──
+        high_rated: list[dict] = []  # [{title, rating, simkl_id, imdb_id}, ...]
+
+        # Simkl ratings
         try:
-            ratings = await simkl.get_user_ratings(kind="movies")
+            simkl_ratings = await simkl.get_user_ratings(kind="movies")
+            for entry in simkl_ratings:
+                r_val = entry.get("rating") or 0
+                if r_val < min_rating:
+                    continue
+                inner = entry.get("movie") or entry
+                ids = inner.get("ids", {})
+                high_rated.append({
+                    "title": inner.get("title", ""),
+                    "rating": r_val,
+                    "simkl_id": str(ids.get("simkl") or ids.get("simkl_id") or ""),
+                    "imdb_id": ids.get("imdb", ""),
+                    "tmdb_id": str(ids.get("tmdb", "")),
+                })
         except Exception as e:
-            log.warning("library_health.ratings_failed", error=str(e)[:120])
+            log.warning("library_health.simkl_ratings_failed", error=str(e)[:120])
+
+        # MDBList ratings (supplement)
+        try:
+            mdb = await self._get_mdblist_client()
+            if mdb:
+                try:
+                    mdb_ratings = await mdb.get_ratings()
+                    if isinstance(mdb_ratings, dict):
+                        seen_imdb: set[str] = {h["imdb_id"] for h in high_rated if h["imdb_id"]}
+                        for item in mdb_ratings.get("movies", []):
+                            r_val = item.get("rating") or 0
+                            if r_val < min_rating:
+                                continue
+                            inner = item.get("movie") or item
+                            ids = inner.get("ids", {})
+                            imdb = ids.get("imdb", "")
+                            if imdb and imdb in seen_imdb:
+                                continue
+                            high_rated.append({
+                                "title": inner.get("title", ""),
+                                "rating": r_val,
+                                "simkl_id": "",
+                                "imdb_id": imdb,
+                                "tmdb_id": str(ids.get("tmdb", "")),
+                            })
+                            if imdb:
+                                seen_imdb.add(imdb)
+                finally:
+                    await mdb.close()
+        except Exception:
+            pass
+
+        if not high_rated:
+            log.info("library_health.no_high_rated", min_rating=min_rating)
             return results
 
-        # Filter to highly rated, shuffle so each scan surfaces different suggestions
+        # Shuffle so each scan surfaces different suggestions
         import random as _random
-        high_rated = [
-            r for r in ratings
-            if (r.get("rating") or 0) >= min_rating
-        ]
         _random.shuffle(high_rated)
 
-        # Limit lookups to avoid hammering Simkl
+        log.info("library_health.high_rated_found", count=len(high_rated),
+                 min_rating=min_rating)
+
+        # ── Look up similar movies for each highly-rated item ──
         lookups_done = 0
         for entry in high_rated:
             if lookups_done >= max_lookups:
                 break
 
-            movie = entry.get("movie", {})
-            ids = movie.get("ids", {})
-            simkl_id = ids.get("simkl")
+            simkl_id = entry.get("simkl_id")
+
+            # If no simkl_id, try to resolve from IMDB ID
+            if not simkl_id and entry.get("imdb_id"):
+                try:
+                    search_results = await simkl.search_by_id("imdb", entry["imdb_id"])
+                    if search_results and isinstance(search_results, list):
+                        first = search_results[0]
+                        simkl_id = str(
+                            first.get("ids", {}).get("simkl")
+                            or first.get("ids", {}).get("simkl_id")
+                            or ""
+                        )
+                except Exception:
+                    pass
+
             if not simkl_id:
                 continue
 
@@ -305,25 +413,30 @@ class LibraryHealthService:
                 rel_title = rel.get("title", "")
                 rel_year = rel.get("year")
 
+                if not rel_title:
+                    continue
+
+                # Dedup
+                dedup = f"{rel_title}:{rel_year}"
+                if dedup in seen_titles:
+                    continue
+
                 in_library = await self._is_in_library(rel_ids)
                 if not in_library:
-                    # Avoid duplicates
-                    if any(r["title"] == rel_title and r.get("year") == rel_year for r in results):
-                        continue
+                    seen_titles.add(dedup)
                     results.append({
                         "title": rel_title,
                         "year": rel_year,
                         "imdb_id": rel_ids.get("imdb"),
                         "tmdb_id": rel_ids.get("tmdb"),
-                        "simkl_id": rel_ids.get("simkl"),
-                        "related_to": movie.get("title", ""),
+                        "simkl_id": rel_ids.get("simkl") or rel_ids.get("simkl_id"),
+                        "related_to": entry.get("title", ""),
                         "your_rating": entry.get("rating"),
                     })
 
-            # Brief pause to respect rate limits
-            await asyncio.sleep(0.2)
+            # Brief pause to respect Simkl rate limits (1 POST/sec)
+            await asyncio.sleep(0.3)
 
-        # Sort by your rating of the source movie
         results.sort(key=lambda x: x.get("your_rating", 0), reverse=True)
         return results[:50]
 
@@ -397,9 +510,20 @@ class LibraryHealthService:
         if not user.simkl_access_token:
             return None
 
-
         return SimklClient(
             access_token=user.simkl_access_token,
-            
             token_expires=user.simkl_token_expires,
         )
+
+    @staticmethod
+    async def _get_mdblist_client():
+        """Build an MDBListClient using the stored API key, or None."""
+        from app.utils.secure_redis import secure_get
+        raw = await secure_get("mdblist_api_key")
+        if not raw:
+            return None
+        key = raw if isinstance(raw, str) else raw.decode()
+        if not key:
+            return None
+        from app.utils.mdblist_client import MDBListClient
+        return MDBListClient(api_key=key)
