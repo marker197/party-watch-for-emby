@@ -165,6 +165,10 @@ class LibraryCache:
             # Cache by title
             if title:
                 await r.setex(cls._title_cache_key(title, year), CACHE_EXPIRY, cache_data)
+                # For series, also store a year-less key so CDN items with
+                # mismatched year (e.g. latest season year) can still match
+                if year and item_type == "series":
+                    await r.setex(cls._title_cache_key(title, None), CACHE_EXPIRY, cache_data)
         except Exception as e:
             log.warning("library_cache.cache_item_error", error=str(e), item_id=item.get("Id"))
 

@@ -415,7 +415,7 @@ class MLPredictorService:
             if not emby_match and r.get("title"):
                 emby_match = await LibraryCache.find_by_title(r["title"], year=r.get("year"))
 
-            # If in library, fetch full Emby metadata for People/Studios
+            # If in library, fetch full Emby metadata for People/Studios/Genres
             if emby_match:
                 try:
                     full_item = await self.emby.get_item_safe(emby_match["emby_id"])
@@ -435,6 +435,9 @@ class MLPredictorService:
                     ][:3]
                     if full_item.get("CommunityRating"):
                         item_data["community_rating"] = full_item["CommunityRating"]
+                    # Fill genres from Emby if rating source didn't provide them
+                    if not item_data.get("genres") and full_item.get("Genres"):
+                        item_data["genres"] = [g.lower() for g in full_item["Genres"]]
                 except Exception:
                     pass
 

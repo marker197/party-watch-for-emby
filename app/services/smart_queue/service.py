@@ -508,6 +508,12 @@ class SmartQueueService:
             cached = await LibraryCache.find_by_title(title, year=year)
             if cached:
                 return cached["emby_id"]
+            # Year mismatch is common for shows — CDN may report latest season year
+            # while Emby stores the series premiere year. Try without year.
+            if year:
+                cached = await LibraryCache.find_by_title(title, year=None)
+                if cached:
+                    return cached["emby_id"]
 
         # Last resort: live Emby search (only if cache misses)
         if title:

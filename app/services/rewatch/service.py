@@ -530,6 +530,49 @@ class RewatchRecommender:
                       rated_movies=len(ratings_data.get("movies", []) if isinstance(ratings_data, dict) else []),
                       rated_shows=len(ratings_data.get("shows", []) if isinstance(ratings_data, dict) else []))
 
+            # ── Build Emby date lookup: imdb→LastPlayedDate ──
+            # MDBList last_watched_at is often the sync date (not real watch date).
+            # Emby's LastPlayedDate is the actual playback date.
+            emby_date_lookup: dict[str, str] = {}  # imdb_id → date string
+            try:
+                from app.utils.database import async_session
+                from app.models.schema import User
+                from app.utils.emby_client import EmbyClient
+                from sqlalchemy import select
+                async with async_session() as db:
+                    user = (await db.execute(
+                        select(User).where(User.id == user_id)
+                    )).scalar_one_or_none()
+                if user:
+                    emby = EmbyClient()
+                    try:
+                        for itype in ("Movie", "Series"):
+                            resp = await emby.get_items(
+                                user_id=user.emby_user_id,
+                                item_type=itype,
+                                filters="IsPlayed",
+                                fields="ProviderIds,UserData,UserDataLastPlayedDate",
+                                limit=5000,
+                            )
+                            items = resp.get("Items", []) if isinstance(resp, dict) else resp
+                            for it in items:
+                                lpd = (it.get("UserData") or {}).get("LastPlayedDate", "")
+                                if not lpd:
+                                    continue
+                                pids = it.get("ProviderIds", {})
+                                imdb = pids.get("Imdb", "")
+                                if imdb:
+                                    emby_date_lookup[imdb] = lpd
+                                tmdb = pids.get("Tmdb", "")
+                                if tmdb:
+                                    emby_date_lookup[f"tmdb:{tmdb}"] = lpd
+                    finally:
+                        await emby.close()
+                log.debug("rewatch.emby_date_lookup", user_id=user_id,
+                          entries=len(emby_date_lookup))
+            except Exception as e:
+                log.debug("rewatch.emby_date_lookup_failed", error=str(e)[:120])
+
             # Build ratings lookup: (provider:id) -> rating
             rating_lookup: dict[str, float] = {}
             if isinstance(ratings_data, dict):
@@ -572,6 +615,32 @@ class RewatchRecommender:
                         or entry.get("last_played")
                         or ""
                     )
+
+                    # MDBList last_watched_at is often the sync date, not real watch date.
+                    # Cross-reference with Emby's LastPlayedDate for more accurate data.
+                    imdb_id_for_lookup = ids.get("imdb", "")
+                    tmdb_id_for_lookup = str(ids.get("tmdb", "")) if ids.get("tmdb") else ""
+
+                    emby_lpd = None
+                    if imdb_id_for_lookup and imdb_id_for_lookup in emby_date_lookup:
+                        emby_lpd = emby_date_lookup[imdb_id_for_lookup]
+                    elif tmdb_id_for_lookup and f"tmdb:{tmdb_id_for_lookup}" in emby_date_lookup:
+                        emby_lpd = emby_date_lookup[f"tmdb:{tmdb_id_for_lookup}"]
+
+                    # Use Emby date if it's older (more likely the real watch date)
+                    if emby_lpd:
+                        try:
+                            emby_dt = datetime.fromisoformat(
+                                str(emby_lpd).replace("Z", "+00:00"))
+                            if not watched_at:
+                                watched_at = str(emby_lpd)
+                            else:
+                                mdb_dt = datetime.fromisoformat(
+                                    watched_at.replace("Z", "+00:00"))
+                                if emby_dt < mdb_dt:
+                                    watched_at = str(emby_lpd)
+                        except (ValueError, TypeError):
+                            pass
                     if not watched_at:
                         _dbg_no_date += 1
                         continue
@@ -736,23 +805,34 @@ class RewatchRecommender:
                       movies=len(movies), shows=len(shows))
 
             candidates = []
+            _emby_no_rating = 0
+            _emby_below_min = 0
+            _emby_no_date = 0
+            _emby_too_recent = 0
             for item in (movies + shows):
                 user_data = item.get("UserData", {})
                 user_rating = user_data.get("Rating") or item.get("CommunityRating")
 
-                if not user_rating or user_rating < min_rating:
+                if not user_rating:
+                    _emby_no_rating += 1
+                    continue
+                if user_rating < min_rating:
+                    _emby_below_min += 1
                     continue
 
                 last_played = user_data.get("LastPlayedDate", "")
                 if not last_played:
+                    _emby_no_date += 1
                     continue
 
                 try:
                     lp_dt = datetime.fromisoformat(last_played.replace("Z", "+00:00"))
                 except (ValueError, TypeError):
+                    _emby_no_date += 1
                     continue
 
                 if lp_dt > cutoff:
+                    _emby_too_recent += 1
                     continue
 
                 provider_ids = item.get("ProviderIds", {})
@@ -782,6 +862,12 @@ class RewatchRecommender:
                     "source": "emby",
                 })
 
+            log.info("rewatch.emby_filter_stages", user_id=user_id,
+                     total=len(movies) + len(shows),
+                     no_rating=_emby_no_rating, below_min=_emby_below_min,
+                     no_date=_emby_no_date, too_recent=_emby_too_recent,
+                     passed=len(candidates), min_rating=min_rating,
+                     cutoff=cutoff.isoformat())
             return candidates
         except Exception as e:
             log.warning("rewatch.emby_fetch_failed", user_id=user_id,
