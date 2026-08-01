@@ -85,28 +85,45 @@ class WatchlistSyncService:
 
         settings = await self._get_settings()
 
+        simkl_client = None
+        mdb_client = None
+
         # ---------- Simkl ----------
         if "simkl" in providers and user.simkl_access_token:
-            simkl = await self._build_simkl_client(user)
+            simkl_client = await self._build_simkl_client(user)
             try:
                 if settings.get("arr_to_watchlist"):
-                    await self._arr_to_simkl_watchlist(user, simkl)
+                    await self._arr_to_simkl_watchlist(user, simkl_client)
                 if settings.get("watchlist_to_arr"):
-                    await self._simkl_watchlist_to_arr(user, simkl)
-            finally:
-                await simkl.close()
+                    await self._simkl_watchlist_to_arr(user, simkl_client)
+            except Exception as e:
+                log.warning("watchlist_sync.simkl_failed", error=str(e)[:200])
 
         # ---------- MDBList ----------
         if "mdblist" in providers:
-            mdb = await self._build_mdblist_client()
-            if mdb:
+            mdb_client = await self._build_mdblist_client()
+            if mdb_client:
                 try:
                     if settings.get("arr_to_watchlist"):
-                        await self._arr_to_mdblist_watchlist(user, mdb)
+                        await self._arr_to_mdblist_watchlist(user, mdb_client)
                     if settings.get("watchlist_to_arr"):
-                        await self._mdblist_watchlist_to_arr(user, mdb)
-                finally:
-                    await mdb.close()
+                        await self._mdblist_watchlist_to_arr(user, mdb_client)
+                except Exception as e:
+                    log.warning("watchlist_sync.mdblist_failed", error=str(e)[:200])
+
+        # ---------- Cross-sync: MDBList ↔ Simkl watchlists ----------
+        if simkl_client and mdb_client:
+            try:
+                await self._mdblist_watchlist_to_simkl(user, mdb_client, simkl_client)
+                await self._simkl_watchlist_to_mdblist(user, simkl_client, mdb_client)
+            except Exception as e:
+                log.warning("watchlist_sync.cross_sync_failed", error=str(e)[:200])
+
+        # Clean up clients
+        if simkl_client:
+            await simkl_client.close()
+        if mdb_client:
+            await mdb_client.close()
 
     # ------------------------------------------------------------------
     # Client builders
@@ -284,6 +301,170 @@ class WatchlistSyncService:
             await self._refresh_airing_soon(user)
 
     # ==================================================================
+    # Cross-sync: MDBList ↔ Simkl watchlists
+    # ==================================================================
+
+    async def _mdblist_watchlist_to_simkl(self, user: User, mdb, simkl: SimklClient):
+        """Items on MDBList watchlist but not on Simkl → add to Simkl plan-to-watch."""
+        wl_data = await mdb.get_watchlist()
+
+        # Parse MDBList watchlist
+        wl_items = []
+        if isinstance(wl_data, dict):
+            wl_items = (wl_data.get("movies") or []) + (wl_data.get("shows") or [])
+        elif isinstance(wl_data, list):
+            wl_items = wl_data
+
+        if not wl_items:
+            return
+
+        # Get Simkl watchlist for dupe check
+        simkl_movies = await simkl.get_watchlist(kind="movies")
+        simkl_shows = await simkl.get_watchlist(kind="shows")
+
+        simkl_imdb: set[str] = set()
+        simkl_tmdb: set[int] = set()
+        for item in (simkl_movies or []) + (simkl_shows or []):
+            inner = item.get("movie") or item.get("show") or item
+            ids = inner.get("ids", {})
+            if ids.get("imdb"):
+                simkl_imdb.add(str(ids["imdb"]))
+            if ids.get("tmdb"):
+                simkl_tmdb.add(int(ids["tmdb"]))
+
+        movies_to_add: list[dict] = []
+        shows_to_add: list[dict] = []
+
+        for item in wl_items:
+            inner = item.get("movie") or item.get("show") or item
+            inner_ids = inner.get("ids", {}) if isinstance(inner.get("ids"), dict) else {}
+
+            imdb = item.get("imdb") or item.get("imdbid") or inner_ids.get("imdb") or ""
+            tmdb = item.get("tmdb") or item.get("tmdbid") or inner_ids.get("tmdb")
+            tvdb = item.get("tvdbid") or item.get("tvdb") or inner_ids.get("tvdb")
+            mediatype = item.get("mediatype") or item.get("type") or ""
+
+            if not mediatype:
+                if "movie" in item:
+                    mediatype = "movie"
+                elif "show" in item:
+                    mediatype = "show"
+
+            # Skip if already on Simkl watchlist
+            if imdb and imdb in simkl_imdb:
+                continue
+            if tmdb and int(tmdb) in simkl_tmdb:
+                continue
+
+            simkl_ids = {}
+            if imdb:
+                simkl_ids["imdb"] = imdb
+            if tmdb:
+                simkl_ids["tmdb"] = int(tmdb)
+            if tvdb:
+                simkl_ids["tvdb"] = int(tvdb)
+            if not simkl_ids:
+                continue
+
+            if mediatype == "movie" or (not mediatype and not tvdb):
+                movies_to_add.append({"ids": simkl_ids})
+            else:
+                shows_to_add.append({"ids": simkl_ids})
+
+        if not movies_to_add and not shows_to_add:
+            return
+
+        result = await simkl.add_to_watchlist(
+            movies=movies_to_add or None,
+            shows=shows_to_add or None,
+        )
+        added = result.get("added", {})
+        log.info("watchlist_sync.mdblist_to_simkl.done",
+                 user_id=user.id,
+                 movies_added=added.get("movies", 0),
+                 shows_added=added.get("shows", 0),
+                 movies_sent=len(movies_to_add),
+                 shows_sent=len(shows_to_add))
+
+    async def _simkl_watchlist_to_mdblist(self, user: User, simkl: SimklClient, mdb):
+        """Items on Simkl watchlist but not on MDBList → add to MDBList watchlist."""
+        simkl_movies = await simkl.get_watchlist(kind="movies")
+        simkl_shows = await simkl.get_watchlist(kind="shows")
+
+        if not simkl_movies and not simkl_shows:
+            return
+
+        # Get MDBList watchlist for dupe check
+        mdb_wl = await mdb.get_watchlist()
+        mdb_items = []
+        if isinstance(mdb_wl, dict):
+            mdb_items = (mdb_wl.get("movies") or []) + (mdb_wl.get("shows") or [])
+        elif isinstance(mdb_wl, list):
+            mdb_items = mdb_wl
+
+        mdb_imdb: set[str] = set()
+        mdb_tmdb: set[int] = set()
+        for item in mdb_items:
+            inner = item.get("movie") or item.get("show") or item
+            inner_ids = inner.get("ids", {}) if isinstance(inner.get("ids"), dict) else {}
+            imdb = item.get("imdb") or item.get("imdbid") or inner_ids.get("imdb")
+            tmdb = item.get("tmdb") or item.get("tmdbid") or inner_ids.get("tmdb")
+            if imdb:
+                mdb_imdb.add(str(imdb))
+            if tmdb:
+                mdb_tmdb.add(int(tmdb))
+
+        movies_to_add: list[dict] = []
+        shows_to_add: list[dict] = []
+
+        for item in (simkl_movies or []):
+            inner = item.get("movie") or item
+            ids = inner.get("ids", {})
+            imdb = ids.get("imdb", "")
+            tmdb = ids.get("tmdb")
+            if imdb and imdb in mdb_imdb:
+                continue
+            if tmdb and int(tmdb) in mdb_tmdb:
+                continue
+            entry = {}
+            if imdb:
+                entry["imdb"] = imdb
+            if tmdb:
+                entry["tmdb"] = int(tmdb)
+            if entry:
+                movies_to_add.append(entry)
+
+        for item in (simkl_shows or []):
+            inner = item.get("show") or item
+            ids = inner.get("ids", {})
+            imdb = ids.get("imdb", "")
+            tmdb = ids.get("tmdb")
+            if imdb and imdb in mdb_imdb:
+                continue
+            if tmdb and int(tmdb) in mdb_tmdb:
+                continue
+            entry = {}
+            if imdb:
+                entry["imdb"] = imdb
+            if tmdb:
+                entry["tmdb"] = int(tmdb)
+            if entry:
+                shows_to_add.append(entry)
+
+        if not movies_to_add and not shows_to_add:
+            return
+
+        result = await mdb.add_to_watchlist(
+            movies=movies_to_add or None,
+            shows=shows_to_add or None,
+        )
+        log.info("watchlist_sync.simkl_to_mdblist.done",
+                 user_id=user.id,
+                 movies_sent=len(movies_to_add),
+                 shows_sent=len(shows_to_add),
+                 result=str(result)[:200])
+
+    # ==================================================================
     # Direction 2: Watchlist → Arr
     # ==================================================================
 
@@ -329,7 +510,7 @@ class WatchlistSyncService:
         """Add MDBList watchlist items to Radarr/Sonarr if not already there."""
         wl_data = await mdb.get_watchlist()
 
-        # Parse MDBList response — items have tmdb/imdb/tvdbid at top level
+        # Parse MDBList response — items may be flat or wrapped in movie/show keys
         wl_items = []
         if isinstance(wl_data, dict):
             wl_items = (wl_data.get("movies") or []) + (wl_data.get("shows") or [])
@@ -340,12 +521,24 @@ class WatchlistSyncService:
         wl_show_map: dict[int, dict] = {}
 
         for item in wl_items:
+            # MDBList may wrap: {movie: {title, ids: {tmdb, imdb}}} or flat: {tmdb, imdb, title}
+            inner = item.get("movie") or item.get("show") or item
+            inner_ids = inner.get("ids", {}) if isinstance(inner.get("ids"), dict) else {}
+
             mediatype = item.get("mediatype") or item.get("type") or ""
-            tmdb = item.get("tmdb") or item.get("tmdbid")
-            imdb = item.get("imdb") or item.get("imdbid")
-            tvdb = item.get("tvdbid") or item.get("tvdb")
-            title = item.get("title") or ""
-            year = item.get("year")
+            # Try flat fields first, fall back to nested ids
+            tmdb = item.get("tmdb") or item.get("tmdbid") or inner_ids.get("tmdb")
+            imdb = item.get("imdb") or item.get("imdbid") or inner_ids.get("imdb")
+            tvdb = item.get("tvdbid") or item.get("tvdb") or inner_ids.get("tvdb")
+            title = item.get("title") or inner.get("title") or ""
+            year = item.get("year") or inner.get("year")
+
+            # Infer mediatype from wrapper key if not explicit
+            if not mediatype:
+                if "movie" in item:
+                    mediatype = "movie"
+                elif "show" in item:
+                    mediatype = "show"
 
             if mediatype == "movie" or (not mediatype and not tvdb):
                 if tmdb:
@@ -362,8 +555,6 @@ class WatchlistSyncService:
                         "ids": {"tvdb": int(tvdb), "imdb": imdb or None},
                     }
                 elif tmdb:
-                    # No TVDB ID — try to resolve from TMDB
-                    # For now, skip shows without TVDB (Sonarr requires TVDB)
                     log.debug("watchlist_sync.mdblist_to_arr.show_no_tvdb",
                               tmdb=tmdb, title=title)
 
