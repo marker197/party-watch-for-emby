@@ -260,8 +260,23 @@ class SimklClient:
                 )
                 if isinstance(data, list):
                     results.extend(data)
-            except Exception:
-                pass
+                    if data:
+                        first = data[0]
+                        first_ids = first.get("ids", {})
+                        log.debug("simkl.watchlist_fetched", kind=item_type,
+                                  count=len(data),
+                                  first_title=first.get("title", "?")[:40],
+                                  first_ids_keys=list(first_ids.keys())[:8],
+                                  has_tmdb=bool(first_ids.get("tmdb")),
+                                  has_imdb=bool(first_ids.get("imdb")))
+                    else:
+                        log.debug("simkl.watchlist_empty", kind=item_type)
+                else:
+                    log.debug("simkl.watchlist_not_list", kind=item_type,
+                              type=type(data).__name__)
+            except Exception as e:
+                log.warning("simkl.watchlist_fetch_failed", kind=item_type,
+                            error=str(e)[:120])
         return results
 
     async def add_to_watchlist(self, items: list[dict] | None = None,

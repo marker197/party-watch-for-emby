@@ -473,6 +473,11 @@ class WatchlistSyncService:
         wl_movies = await simkl.get_watchlist(kind="movies")
         wl_shows = await simkl.get_watchlist(kind="shows")
 
+        log.info("watchlist_sync.simkl_to_arr.raw_counts",
+                 user_id=user.id,
+                 movies=len(wl_movies or []),
+                 shows=len(wl_shows or []))
+
         wl_movie_map: dict[int, dict] = {}  # keyed by TMDB
         wl_movie_imdb_map: dict[str, dict] = {}  # fallback: keyed by IMDB
         for item in (wl_movies or []):
