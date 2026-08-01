@@ -416,6 +416,23 @@ class LibraryHealthService:
                 if not rel_title:
                     continue
 
+                # Resolve IMDB/TMDB if missing (Simkl recommendations often
+                # only include simkl_id — need full IDs for IMDB links + Radarr)
+                rel_simkl = str(rel_ids.get("simkl") or rel_ids.get("simkl_id") or "")
+                if rel_simkl and not rel_ids.get("imdb") and not rel_ids.get("tmdb"):
+                    try:
+                        detail = await simkl.get_movie_detail(rel_simkl)
+                        if detail and isinstance(detail, dict):
+                            full_ids = detail.get("ids", {})
+                            if full_ids.get("imdb"):
+                                rel_ids["imdb"] = full_ids["imdb"]
+                            if full_ids.get("tmdb"):
+                                rel_ids["tmdb"] = full_ids["tmdb"]
+                            if full_ids.get("tvdb"):
+                                rel_ids["tvdb"] = full_ids["tvdb"]
+                    except Exception:
+                        pass
+
                 # Dedup
                 dedup = f"{rel_title}:{rel_year}"
                 if dedup in seen_titles:
