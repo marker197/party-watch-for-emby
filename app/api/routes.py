@@ -1992,12 +1992,12 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             # Fallback: resolve series IDs via library cache / Emby API
             if not series_ids:
                 resolved = await _resolve_series_ids()
-                if resolved.get("Imdb"):
-                    series_ids["imdb"] = resolved["Imdb"]
-                if resolved.get("Tmdb"):
-                    series_ids["tmdb"] = int(resolved["Tmdb"])
-                if resolved.get("Tvdb"):
-                    series_ids["tvdb"] = int(resolved["Tvdb"])
+                if resolved.get("imdb"):
+                    series_ids["imdb"] = resolved["imdb"]
+                if resolved.get("tmdb"):
+                    series_ids["tmdb"] = int(resolved["tmdb"])
+                if resolved.get("tvdb"):
+                    series_ids["tvdb"] = int(resolved["tvdb"])
 
             episode_obj = {
                 "season": item_data.get("ParentIndexNumber", 1),
@@ -7460,6 +7460,173 @@ async def sync_simkl_to_mdblist(request: Request, db: AsyncSession = Depends(get
                 "pushed_shows": len(mdb_shows),
                 "skipped_movies": skipped_movies,
                 "skipped_episodes": skipped_eps,
+            },
+        }
+    finally:
+        await simkl.close()
+        await mdb.close()
+
+
+@router.post("/api/mdblist/sync-to-simkl")
+async def sync_mdblist_to_simkl(request: Request, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
+    """Import MDBList watched history and ratings into Simkl.
+
+    On first run, pushes everything. On subsequent runs, only pushes items
+    watched/rated after the last sync timestamp (stored in Redis).
+    Pass {"full": true} in body to force a full re-sync.
+    """
+    import json as _json
+
+    key = await _get_mdblist_key(db)
+    if not key:
+        raise HTTPException(400, "MDBList API key not configured")
+
+    user = (await db.execute(
+        select(User).where(User.id == _user.id)
+    )).scalar_one_or_none()
+    if not user or not user.simkl_access_token:
+        raise HTTPException(400, "Simkl not linked")
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    force_full = body.get("full", False)
+
+    from app.utils.mdblist_client import MDBListClient
+    mdb = MDBListClient(api_key=key)
+    simkl = SimklClient(
+        access_token=user.simkl_access_token,
+        token_expires=user.simkl_token_expires,
+    )
+
+    try:
+        r = await get_redis()
+
+        # Delta sync: read last sync timestamp
+        last_sync_ts = None
+        if not force_full:
+            raw = await r.get("mdblist_to_simkl_last_sync")
+            if raw:
+                last_sync_ts = raw if isinstance(raw, str) else raw.decode()
+
+        sync_start = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        # ── 1. Fetch MDBList watched history ──
+        mdb_watched = await mdb.get_watched()
+
+        # ── 2. Build Simkl history payload ──
+        history_payload: list[dict] = []
+        skipped = 0
+
+        # Movies
+        for entry in mdb_watched.get("movies", []):
+            inner = entry.get("movie") or entry
+            watched_at = entry.get("last_watched_at") or entry.get("watched_at") or ""
+            if last_sync_ts and watched_at and watched_at <= last_sync_ts:
+                skipped += 1
+                continue
+            ids = inner.get("ids", {})
+            simkl_ids = {}
+            for k in ("imdb", "tmdb", "tvdb"):
+                if ids.get(k):
+                    simkl_ids[k] = ids[k]
+            if not simkl_ids:
+                continue
+            history_payload.append({
+                "ids": simkl_ids,
+                "watched_at": watched_at or sync_start,
+                "_type": "movie",
+            })
+
+        # Shows (with episode-level data)
+        for entry in mdb_watched.get("shows", []):
+            inner = entry.get("show") or entry
+            watched_at = entry.get("last_watched_at") or entry.get("watched_at") or ""
+            if last_sync_ts and watched_at and watched_at <= last_sync_ts:
+                skipped += 1
+                continue
+            ids = inner.get("ids", {})
+            simkl_ids = {}
+            for k in ("imdb", "tmdb", "tvdb"):
+                if ids.get(k):
+                    simkl_ids[k] = ids[k]
+            if not simkl_ids:
+                continue
+            # Check if entry has season/episode data
+            seasons = entry.get("seasons", [])
+            if seasons:
+                history_payload.append({
+                    "ids": simkl_ids,
+                    "seasons": seasons,
+                    "_type": "show",
+                })
+            else:
+                history_payload.append({
+                    "ids": simkl_ids,
+                    "watched_at": watched_at or sync_start,
+                    "_type": "show",
+                })
+
+        log.info("mdblist_to_simkl.history_built",
+                 movies=sum(1 for p in history_payload if p.get("_type") == "movie"),
+                 shows=sum(1 for p in history_payload if p.get("_type") == "show"),
+                 skipped=skipped,
+                 mode="delta" if last_sync_ts else "full")
+
+        # Push history to Simkl
+        history_result = {}
+        if history_payload:
+            history_result = await simkl.add_to_history(history_payload)
+
+        # ── 3. Fetch MDBList ratings and push to Simkl ──
+        mdb_ratings = await mdb.get_ratings()
+        ratings_payload: list[dict] = []
+
+        if isinstance(mdb_ratings, dict):
+            for kind in ("movies", "shows"):
+                for item in mdb_ratings.get(kind, []):
+                    rating_val = item.get("rating")
+                    if not rating_val:
+                        continue
+                    inner = item.get("movie") or item.get("show") or item
+                    ids = inner.get("ids", {})
+                    simkl_ids = {}
+                    for k in ("imdb", "tmdb", "tvdb"):
+                        if ids.get(k):
+                            simkl_ids[k] = ids[k]
+                    if not simkl_ids:
+                        continue
+                    ratings_payload.append({
+                        "ids": simkl_ids,
+                        "rating": int(round(float(rating_val))),
+                        "_type": "movie" if kind == "movies" else "show",
+                    })
+
+        ratings_result = {}
+        if ratings_payload:
+            ratings_result = await simkl.add_ratings(ratings_payload)
+
+        log.info("mdblist_to_simkl.ratings_pushed", count=len(ratings_payload),
+                 result=ratings_result.get("added", {}))
+
+        # Save sync timestamp
+        await r.set("mdblist_to_simkl_last_sync", sync_start)
+
+        added = history_result.get("added", {})
+        return {
+            "mode": "full" if force_full or not last_sync_ts else "delta",
+            "history": {
+                "movies_pushed": added.get("movies", 0),
+                "shows_pushed": added.get("shows", 0),
+                "episodes_pushed": added.get("episodes", 0),
+                "skipped": skipped,
+                "total_payload": len(history_payload),
+            },
+            "ratings": {
+                "pushed": len(ratings_payload),
+                "added": ratings_result.get("added", {}),
             },
         }
     finally:

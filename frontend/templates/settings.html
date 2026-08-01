@@ -831,6 +831,19 @@
         </div>
         <div id="mdblistSyncResult" style="font-size:0.8rem;margin-top:8px;"></div>
       </div>
+
+      <!-- MDBList → Simkl Sync -->
+      <div class="form-group" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
+        <label>Sync MDBList History → Simkl</label>
+        <p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:10px;">
+          Import your MDBList watched movies, shows, dates, and ratings into Simkl. After the first full import, subsequent syncs only push new items.
+        </p>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="btn btn-green" onclick="runMdblistToSimklSync(false)" id="btnSyncToSimkl">Sync New</button>
+          <button class="btn" style="background:var(--surface-hover);color:var(--text-dim);border:1px solid var(--border);" onclick="runMdblistToSimklSync(true)">Full Re-sync</button>
+        </div>
+        <div id="mdbToSimklSyncResult" style="font-size:0.8rem;margin-top:8px;"></div>
+      </div>
     </div>
 
     <!-- Notifications -->
@@ -2545,6 +2558,42 @@
             <strong>Pushed:</strong> ${t.pushed_movies || 0} movies, ${t.pushed_shows || 0} shows<br>
             <strong>Skipped:</strong> ${t.skipped_movies || 0} movies, ${t.skipped_episodes || 0} episodes (already synced)<br>
             <strong>Ratings:</strong> ${rt.movies || 0} movie ratings synced
+          </div>`;
+      } catch(e) {
+        el.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sync New';
+      }
+    }
+
+    async function runMdblistToSimklSync(full) {
+      const el = document.getElementById('mdbToSimklSyncResult');
+      const btn = document.getElementById('btnSyncToSimkl');
+      btn.disabled = true;
+      btn.textContent = 'Syncing…';
+      const mode = full ? 'full re-sync' : 'incremental sync';
+      el.innerHTML = `<span style="color:var(--text-dim);">Running ${mode}… This may take a minute.</span>`;
+      try {
+        const r = await fetch('/api/mdblist/sync-to-simkl', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(full ? {full: true} : {}),
+        });
+        if (!r.ok) {
+          const d = await r.json();
+          throw new Error(d.detail || 'Sync failed');
+        }
+        const d = await r.json();
+        const h = d.history || {};
+        const rt = d.ratings || {};
+        const syncMode = d.mode === 'delta' ? 'Incremental' : 'Full';
+        el.innerHTML = `
+          <div style="color:var(--green);margin-top:6px;">
+            ✓ ${syncMode} sync complete<br>
+            <strong>History:</strong> ${h.movies_pushed || 0} movies, ${h.shows_pushed || 0} shows, ${h.episodes_pushed || 0} episodes pushed<br>
+            <strong>Skipped:</strong> ${h.skipped || 0} items (already synced)<br>
+            <strong>Ratings:</strong> ${rt.pushed || 0} ratings pushed
           </div>`;
       } catch(e) {
         el.innerHTML = `<span style="color:var(--red);">✗ ${e.message}</span>`;
