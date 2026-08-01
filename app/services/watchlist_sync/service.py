@@ -150,13 +150,15 @@ class WatchlistSyncService:
 
         wl_tmdb_ids: set[int] = set()
         for item in (wl_movies or []):
-            tmdb = ((item.get("movie") or {}).get("ids") or {}).get("tmdb")
+            movie = item.get("movie") or item
+            tmdb = (movie.get("ids") or {}).get("tmdb")
             if tmdb:
                 wl_tmdb_ids.add(tmdb)
 
         wl_tvdb_ids: set[int] = set()
         for item in (wl_shows or []):
-            tvdb = ((item.get("show") or {}).get("ids") or {}).get("tvdb")
+            show = item.get("show") or item
+            tvdb = (show.get("ids") or {}).get("tvdb")
             if tvdb:
                 wl_tvdb_ids.add(tvdb)
 
@@ -292,17 +294,27 @@ class WatchlistSyncService:
 
         wl_movie_map: dict[int, dict] = {}
         for item in (wl_movies or []):
-            movie = item.get("movie") or {}
-            tmdb = (movie.get("ids") or {}).get("tmdb")
+            movie = item.get("movie") or item
+            ids = movie.get("ids") or {}
+            tmdb = ids.get("tmdb")
             if tmdb:
-                wl_movie_map[tmdb] = movie
+                wl_movie_map[int(tmdb)] = {
+                    "title": movie.get("title", ""),
+                    "year": movie.get("year"),
+                    "ids": {"tmdb": int(tmdb), "imdb": ids.get("imdb")},
+                }
 
         wl_show_map: dict[int, dict] = {}
         for item in (wl_shows or []):
-            show = item.get("show") or {}
-            tvdb = (show.get("ids") or {}).get("tvdb")
+            show = item.get("show") or item
+            ids = show.get("ids") or {}
+            tvdb = ids.get("tvdb")
             if tvdb:
-                wl_show_map[tvdb] = show
+                wl_show_map[int(tvdb)] = {
+                    "title": show.get("title", ""),
+                    "year": show.get("year"),
+                    "ids": {"tvdb": int(tvdb), "imdb": ids.get("imdb")},
+                }
 
         if not wl_movie_map and not wl_show_map:
             log.info("watchlist_sync.simkl_to_arr.empty_watchlist", user_id=user.id)
