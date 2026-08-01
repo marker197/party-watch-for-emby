@@ -473,33 +473,91 @@ class WatchlistSyncService:
         wl_movies = await simkl.get_watchlist(kind="movies")
         wl_shows = await simkl.get_watchlist(kind="shows")
 
-        wl_movie_map: dict[int, dict] = {}
+        wl_movie_map: dict[int, dict] = {}  # keyed by TMDB
+        wl_movie_imdb_map: dict[str, dict] = {}  # fallback: keyed by IMDB
         for item in (wl_movies or []):
             movie = item.get("movie") or item
             ids = movie.get("ids") or {}
             tmdb = ids.get("tmdb")
+            imdb = ids.get("imdb", "")
+            title = movie.get("title", "")
+            year = movie.get("year")
+            entry = {
+                "title": title,
+                "year": year,
+                "ids": {"tmdb": int(tmdb) if tmdb else None, "imdb": imdb or None},
+            }
             if tmdb:
-                wl_movie_map[int(tmdb)] = {
-                    "title": movie.get("title", ""),
-                    "year": movie.get("year"),
-                    "ids": {"tmdb": int(tmdb), "imdb": ids.get("imdb")},
-                }
+                wl_movie_map[int(tmdb)] = entry
+            elif imdb:
+                wl_movie_imdb_map[imdb] = entry
 
-        wl_show_map: dict[int, dict] = {}
+        wl_show_map: dict[int, dict] = {}  # keyed by TVDB
         for item in (wl_shows or []):
             show = item.get("show") or item
             ids = show.get("ids") or {}
             tvdb = ids.get("tvdb")
+            imdb = ids.get("imdb", "")
+            tmdb = ids.get("tmdb")
+            title = show.get("title", "")
+            year = show.get("year")
             if tvdb:
                 wl_show_map[int(tvdb)] = {
-                    "title": show.get("title", ""),
-                    "year": show.get("year"),
-                    "ids": {"tvdb": int(tvdb), "imdb": ids.get("imdb")},
+                    "title": title,
+                    "year": year,
+                    "ids": {"tvdb": int(tvdb), "imdb": imdb or None},
                 }
 
-        if not wl_movie_map and not wl_show_map:
+        if not wl_movie_map and not wl_movie_imdb_map and not wl_show_map:
             log.info("watchlist_sync.simkl_to_arr.empty_watchlist", user_id=user.id)
             return
+
+        log.info("watchlist_sync.simkl_to_arr.parsed",
+                 user_id=user.id,
+                 movies_tmdb=len(wl_movie_map),
+                 movies_imdb_only=len(wl_movie_imdb_map),
+                 shows=len(wl_show_map))
+
+        # Merge IMDB-only movies: resolve TMDB via Radarr lookup
+        if wl_movie_imdb_map:
+            from app.utils.radarr_client import RadarrClient
+            raw = await secure_get("radarr_servers")
+            if raw:
+                servers = _json.loads(raw)
+                if servers:
+                    srv = servers[0]
+                    client = None
+                    try:
+                        client = RadarrClient(
+                            srv["url"], srv["api_key"],
+                            name=srv.get("name", "Radarr"),
+                        )
+                        for imdb, entry in wl_movie_imdb_map.items():
+                            try:
+                                results = await client.lookup_by_imdb(imdb)
+                                if results:
+                                    first = results[0] if isinstance(results, list) else results
+                                    tmdb = first.get("tmdbId")
+                                    if tmdb:
+                                        entry["ids"]["tmdb"] = int(tmdb)
+                                        wl_movie_map[int(tmdb)] = entry
+                                    else:
+                                        # Add by IMDB anyway — Radarr can add by IMDB
+                                        wl_movie_map[hash(imdb)] = entry
+                            except Exception:
+                                # Still add with IMDB only
+                                wl_movie_map[hash(imdb)] = entry
+                    except Exception:
+                        # Can't resolve — add all IMDB entries with hash keys
+                        for imdb, entry in wl_movie_imdb_map.items():
+                            wl_movie_map[hash(imdb)] = entry
+                    finally:
+                        if client:
+                            await client.close()
+            else:
+                # No Radarr — add with hash keys so they at least get attempted
+                for imdb, entry in wl_movie_imdb_map.items():
+                    wl_movie_map[hash(imdb)] = entry
 
         await self._add_to_arr(
             user, wl_movie_map, wl_show_map,
