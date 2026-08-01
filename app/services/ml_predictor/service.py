@@ -309,31 +309,30 @@ class MLPredictorService:
                         for kind, item_type in (("movies", "movie"), ("shows", "show")):
                             kind_items = mdb_ratings.get(kind, [])
                             if kind_items and kind == "movies":
-                                # Log first item structure for debugging
                                 first = kind_items[0] if kind_items else {}
                                 log.info("ml_predictor.mdblist_first_item",
                                          keys=list(first.keys())[:15],
-                                         has_ids=bool(first.get("ids")),
-                                         has_rating=first.get("rating") is not None,
-                                         has_score=first.get("score") is not None,
-                                         has_imdb_id=bool(first.get("imdb_id")),
-                                         sample_ids=first.get("ids", {}) if isinstance(first.get("ids"), dict) else "missing")
+                                         has_movie_key=bool(first.get("movie")),
+                                         has_show_key=bool(first.get("show")),
+                                         inner_keys=list((first.get("movie") or first.get("show") or {}).keys())[:10])
                             for item in kind_items:
-                                # Rating: try 'rating' first, fall back to 'score' (0-100 → 1-10)
+                                # MDBList wraps items: {rating, rated_at, movie: {title, ids, ...}}
+                                inner = item.get("movie") or item.get("show") or item
+                                # Rating from the wrapper level
                                 rating = item.get("rating")
                                 if rating is None and item.get("score") is not None:
                                     try:
                                         rating = round(float(item["score"]) / 10, 1)
                                     except (ValueError, TypeError):
                                         pass
-                                # IDs: try nested 'ids' dict first, fall back to flat fields
-                                ids = item.get("ids", {})
+                                # IDs from the inner object
+                                ids = inner.get("ids", {})
                                 if not isinstance(ids, dict):
                                     ids = {}
                                 imdb_id = (
                                     ids.get("imdb", "")
-                                    or item.get("imdb_id", "")
-                                    or item.get("imdb", "")
+                                    or inner.get("imdb_id", "")
+                                    or inner.get("imdb", "")
                                 )
                                 if not rating or not imdb_id:
                                     continue
@@ -343,12 +342,12 @@ class MLPredictorService:
                                 rows.append({
                                     "simkl_id": str(ids.get("simkl") or ids.get("simkl_id") or ""),
                                     "simkl_slug": "",
-                                    "title": item.get("title", ""),
+                                    "title": inner.get("title", ""),
                                     "item_type": item_type,
                                     "rating": int(round(float(rating))),
-                                    "genres": [g.lower() for g in item.get("genres", [])],
-                                    "year": item.get("year"),
-                                    "runtime": item.get("runtime"),
+                                    "genres": [g.lower() for g in inner.get("genres", [])],
+                                    "year": inner.get("year"),
+                                    "runtime": inner.get("runtime"),
                                     "simkl_rating": None,
                                     "ids": ids,
                                     "rated_at": item.get("rated_at"),

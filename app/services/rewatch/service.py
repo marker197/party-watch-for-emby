@@ -538,7 +538,9 @@ class RewatchRecommender:
                         r_val = item.get("rating")
                         if r_val is None:
                             continue
-                        ids = item.get("ids", {})
+                        # MDBList wraps: {rating, movie: {ids: ...}}
+                        inner = item.get("movie") or item.get("show") or item
+                        ids = inner.get("ids", {})
                         for prov in ("imdb", "tmdb", "simkl", "mdblist"):
                             pid = ids.get(prov)
                             if pid:
@@ -553,13 +555,16 @@ class RewatchRecommender:
             for kind, item_type in (("movies", "movie"), ("shows", "show")):
                 for entry in watched_data.get(kind, []):
                     _dbg_total += 1
-                    ids = entry.get("ids", {})
-                    title = entry.get("title", "Unknown")
-                    year = entry.get("year")
-                    genres = [g.lower() for g in entry.get("genres", [])]
+                    # MDBList wraps: {last_watched_at, movie: {title, ids, year, ...}}
+                    inner = entry.get("movie") or entry.get("show") or entry
+                    ids = inner.get("ids", {})
+                    title = inner.get("title", "Unknown")
+                    year = inner.get("year")
+                    genres = [g.lower() for g in inner.get("genres", [])]
                     plays = entry.get("plays", 1)
 
                     # Determine last watched date — try multiple field names
+                    # Date fields live at the wrapper level, not inside movie/show
                     watched_at = (
                         entry.get("watched_at")
                         or entry.get("last_watched_at")

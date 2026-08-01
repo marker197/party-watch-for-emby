@@ -1964,7 +1964,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         )
 
     # -- Helper: build Simkl scrobble payload from webhook item data ----------
-    def _build_scrobble_payload():
+    async def _build_scrobble_payload():
         provider_ids = item_data.get("ProviderIds", {})
         simkl_ids = {}
         if provider_ids.get("Imdb"):
@@ -1989,17 +1989,25 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             if series_provider.get("Tvdb"):
                 series_ids["tvdb"] = int(series_provider["Tvdb"])
 
+            # Fallback: resolve series IDs via library cache / Emby API
+            if not series_ids:
+                resolved = await _resolve_series_ids()
+                if resolved.get("Imdb"):
+                    series_ids["imdb"] = resolved["Imdb"]
+                if resolved.get("Tmdb"):
+                    series_ids["tmdb"] = int(resolved["Tmdb"])
+                if resolved.get("Tvdb"):
+                    series_ids["tvdb"] = int(resolved["Tvdb"])
+
             episode_obj = {
                 "season": item_data.get("ParentIndexNumber", 1),
                 "number": item_data.get("IndexNumber", 1),
             }
 
             if series_ids:
-                # Best case: we have show-level IDs + season/episode numbers
                 return {"show": {"ids": series_ids}, "episode": episode_obj}
             else:
-                # Fallback: put episode's own IDs on the episode object directly.
-                # Simkl accepts episode.ids as an alternative to show.ids + season/number.
+                # Last resort: episode-level IDs (may not work on all providers)
                 episode_obj["ids"] = simkl_ids
                 return {"episode": episode_obj}
         return None
@@ -2325,7 +2333,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         if user.simkl_access_token:
             try:
                 simkl = await _get_simkl_client()
-                scrobble = _build_scrobble_payload()
+                scrobble = await _build_scrobble_payload()
                 if scrobble:
                     progress = _calc_progress()
                     await simkl.scrobble_start(scrobble, progress=progress)
@@ -2352,7 +2360,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             else:
                 try:
                     simkl = await _get_simkl_client()
-                    scrobble = _build_scrobble_payload()
+                    scrobble = await _build_scrobble_payload()
                     if scrobble:
                         await simkl.scrobble_pause(scrobble, progress=progress)
                         simkl_synced = True
@@ -2382,7 +2390,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         if user.simkl_access_token:
             try:
                 simkl = await _get_simkl_client()
-                scrobble = _build_scrobble_payload()
+                scrobble = await _build_scrobble_payload()
                 if scrobble:
                     progress = _calc_progress()
                     await simkl.scrobble_start(scrobble, progress=progress)
@@ -2437,7 +2445,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         if is_play_stop and user.simkl_access_token:
             try:
                 simkl = await _get_simkl_client()
-                scrobble = _build_scrobble_payload()
+                scrobble = await _build_scrobble_payload()
                 if scrobble:
                     progress = _calc_progress()
                     result = await simkl.scrobble_stop(scrobble, progress=progress)

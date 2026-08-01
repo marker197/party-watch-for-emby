@@ -341,8 +341,74 @@ class AiringAlertsService:
                 log.warning("airing_alerts.my_shows_failed", error=str(e)[:200])
                 upcoming = []
 
+            # Build a set of show IDs the user follows (Simkl watchlist + Sonarr)
+            # so we can filter global premieres to only relevant shows
+            followed_ids: set[str] = set()
             try:
-                premieres = await simkl.get_my_premieres(start_date=today, days=days)
+                wl = await simkl.get_watchlist(kind="shows")
+                for entry in wl:
+                    inner = entry.get("show") or entry
+                    ids = inner.get("ids", {})
+                    for k in ("simkl", "simkl_id", "imdb", "tmdb", "tvdb"):
+                        v = ids.get(k)
+                        if v:
+                            followed_ids.add(f"{k}:{v}")
+            except Exception:
+                pass
+            # Also add IDs from get_my_shows (user's "watching" shows)
+            for entry in upcoming:
+                inner = entry.get("show") or entry
+                ids = inner.get("ids", {})
+                for k in ("simkl", "simkl_id", "imdb", "tmdb", "tvdb"):
+                    v = ids.get(k)
+                    if v:
+                        followed_ids.add(f"{k}:{v}")
+
+            # Add Sonarr TVDB IDs
+            sonarr_cal = (arr_dates or {}).get("sonarr_calendar", {})
+            for tvdb_str in sonarr_cal:
+                followed_ids.add(f"tvdb:{tvdb_str}")
+
+            # Add MDBList watchlist IDs if available
+            try:
+                from app.utils.secure_redis import secure_get
+                mdb_key = await secure_get("mdblist_api_key")
+                if mdb_key:
+                    from app.utils.mdblist_client import MDBListClient
+                    mdb = MDBListClient(api_key=mdb_key)
+                    try:
+                        mdb_wl = await mdb.get_watchlist(mediatype="show")
+                        for entry in (mdb_wl.get("shows", []) if isinstance(mdb_wl, dict) else []):
+                            inner = entry.get("show") or entry
+                            ids = inner.get("ids", {})
+                            for k in ("imdb", "tmdb", "tvdb"):
+                                v = ids.get(k)
+                                if v:
+                                    followed_ids.add(f"{k}:{v}")
+                    finally:
+                        await mdb.close()
+            except Exception:
+                pass
+
+            log.info("airing_alerts.followed_ids", count=len(followed_ids))
+
+            try:
+                raw_premieres = await simkl.get_my_premieres(start_date=today, days=days)
+                # Filter: only keep premieres for shows the user follows
+                premieres = []
+                for entry in raw_premieres:
+                    show = entry.get("show", {})
+                    show_ids = show.get("ids", {})
+                    matched = False
+                    for k in ("simkl", "simkl_id", "imdb", "tmdb", "tvdb"):
+                        v = show_ids.get(k)
+                        if v and f"{k}:{v}" in followed_ids:
+                            matched = True
+                            break
+                    if matched:
+                        premieres.append(entry)
+                log.info("airing_alerts.premieres_filtered",
+                         raw=len(raw_premieres), kept=len(premieres))
             except Exception as e:
                 log.warning("airing_alerts.premieres_failed", error=str(e)[:200])
                 premieres = []
