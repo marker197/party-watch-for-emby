@@ -157,8 +157,39 @@ class MLPredictorService:
                               f"Rate more items on Simkl, then retrain.",
                 }
 
-            # 2. Enrich with Emby metadata (actors, directors, studios)
+            # 2. Enrich with Emby metadata (actors, directors, studios, genres)
             enriched = await self._enrich_with_emby(ratings)
+
+            # 2b. Persist enriched genres back to DB for bias detector
+            genre_updates = 0
+            async with async_session() as db:
+                for item in enriched:
+                    if item.get("genres") and item.get("simkl_id"):
+                        result = await db.execute(
+                            select(UserRating).where(
+                                UserRating.user_id == user.id,
+                                UserRating.simkl_id == item["simkl_id"],
+                            )
+                        )
+                        row = result.scalar_one_or_none()
+                        if row and (not row.genres or row.genres == []):
+                            row.genres = item["genres"]
+                            genre_updates += 1
+                    # Also match by title+year for MDBList items without simkl_id
+                    elif item.get("genres") and item.get("title") and not item.get("simkl_id"):
+                        result = await db.execute(
+                            select(UserRating).where(
+                                UserRating.user_id == user.id,
+                                UserRating.title == item["title"],
+                            )
+                        )
+                        row = result.scalar_one_or_none()
+                        if row and (not row.genres or row.genres == []):
+                            row.genres = item["genres"]
+                            genre_updates += 1
+                if genre_updates:
+                    await db.commit()
+                    log.info("ml_predictor.genres_backfilled", count=genre_updates)
 
             # 3. Discover top actors/directors/studios from user's history
             self._compute_top_people(enriched)

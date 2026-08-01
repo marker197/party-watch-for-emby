@@ -421,7 +421,7 @@ class LibraryHealthService:
                 if dedup in seen_titles:
                     continue
 
-                in_library = await self._is_in_library(rel_ids)
+                in_library = await self._is_in_library(rel_ids, title=rel_title, year=rel_year)
                 if not in_library:
                     seen_titles.add(dedup)
                     results.append({
@@ -442,12 +442,21 @@ class LibraryHealthService:
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
-    async def _is_in_library(self, ids: dict) -> bool:
+    async def _is_in_library(self, ids: dict, title: str = "", year: int | None = None) -> bool:
         """Check if an item with these provider IDs exists in the library cache."""
         for provider, key in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
             val = ids.get(key)
             if val:
                 match = await LibraryCache.find_by_provider_id(provider, str(val))
+                if match and match.get("emby_id"):
+                    return True
+        # Title fallback when IDs don't match (e.g. Simkl recommendations without IMDB/TMDB)
+        if title:
+            match = await LibraryCache.find_by_title(title, year=year)
+            if match and match.get("emby_id"):
+                return True
+            if year:
+                match = await LibraryCache.find_by_title(title, year=None)
                 if match and match.get("emby_id"):
                     return True
         return False

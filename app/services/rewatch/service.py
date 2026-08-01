@@ -786,7 +786,7 @@ class RewatchRecommender:
                 user_id=user.emby_user_id,
                 item_type="Movie",
                 filters="IsPlayed",
-                fields="ProviderIds,Genres,ProductionYear,UserData,UserDataLastPlayedDate",
+                fields="ProviderIds,Genres,ProductionYear,CommunityRating,UserData,UserDataLastPlayedDate",
                 limit=5000,
             )
             movies = resp_movies.get("Items", []) if isinstance(resp_movies, dict) else resp_movies
@@ -796,7 +796,7 @@ class RewatchRecommender:
                 user_id=user.emby_user_id,
                 item_type="Series",
                 filters="IsPlayed",
-                fields="ProviderIds,Genres,ProductionYear,UserData,UserDataLastPlayedDate",
+                fields="ProviderIds,Genres,ProductionYear,CommunityRating,UserData,UserDataLastPlayedDate",
                 limit=5000,
             )
             shows = resp_shows.get("Items", []) if isinstance(resp_shows, dict) else resp_shows
