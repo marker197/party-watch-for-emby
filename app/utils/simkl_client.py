@@ -258,22 +258,39 @@ class SimklClient:
                     f"/sync/all-items/{item_type}/plantowatch",
                     params={"extended": "full"},
                 )
+                items = None
                 if isinstance(data, list):
-                    results.extend(data)
-                    if data:
-                        first = data[0]
-                        first_ids = first.get("ids", {})
-                        log.debug("simkl.watchlist_fetched", kind=item_type,
-                                  count=len(data),
-                                  first_title=first.get("title", "?")[:40],
-                                  first_ids_keys=list(first_ids.keys())[:8],
-                                  has_tmdb=bool(first_ids.get("tmdb")),
-                                  has_imdb=bool(first_ids.get("imdb")))
-                    else:
-                        log.debug("simkl.watchlist_empty", kind=item_type)
+                    items = data
+                elif isinstance(data, dict):
+                    # Simkl sometimes wraps the list under a key matching the
+                    # media type, or under "movies"/"shows"/"anime"/"episodes"
+                    items = (
+                        data.get(item_type)
+                        or data.get("movies")
+                        or data.get("shows")
+                        or data.get("anime")
+                        or data.get("items")
+                        or data.get("results")
+                        or data.get("data")
+                    )
+                    if not isinstance(items, list):
+                        log.warning("simkl.watchlist_unexpected_format", kind=item_type,
+                                    dict_keys=list(data.keys())[:10],
+                                    sample=str(data)[:300])
+                        items = None
+
+                if items:
+                    results.extend(items)
+                    first = items[0]
+                    first_ids = first.get("ids", {})
+                    log.debug("simkl.watchlist_fetched", kind=item_type,
+                              count=len(items),
+                              first_title=str(first.get("title", "?"))[:40],
+                              first_ids_keys=list(first_ids.keys())[:8],
+                              has_tmdb=bool(first_ids.get("tmdb")),
+                              has_imdb=bool(first_ids.get("imdb")))
                 else:
-                    log.debug("simkl.watchlist_not_list", kind=item_type,
-                              type=type(data).__name__)
+                    log.debug("simkl.watchlist_empty", kind=item_type)
             except Exception as e:
                 log.warning("simkl.watchlist_fetch_failed", kind=item_type,
                             error=str(e)[:120])
