@@ -893,6 +893,7 @@ def _register_jobs():
     async def _run_premiere_notify():
         async def _do():
             from app.utils.notification_client import notify, _load_config
+            from app.models.schema import User
             # Only run if premiere notifications are enabled
             config = await _load_config()
             if not config.get("events", {}).get("premiere", False):
@@ -969,6 +970,7 @@ def _register_jobs():
     async def _run_library_health_scan():
         async def _do():
             from app.utils.database import async_session as _async_session
+            from app.models.schema import User
             async with _async_session() as db:
                 users = (await db.execute(
                     select(User).where(User.simkl_access_token.isnot(None))
