@@ -2149,6 +2149,7 @@ async function runAudit() {
   el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Comparing Emby played items against Simkl history… this may take a moment.</div>';
   summary.innerHTML = '';
   document.getElementById('btnBackfillAll').style.display = 'none';
+  document.getElementById('btnClearDismissals').style.display = 'none';
   try {
     const r = await fetch(API + `/api/scrobble-audit/${currentUserId}?force=true`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -2158,11 +2159,7 @@ async function runAudit() {
     const shows = data.shows || [];
     const s = data.summary || {};
 
-    summary.innerHTML = `<div style="font-size:0.82rem; color:var(--text-dim);">` +
-      `Emby played: ${s.emby_movies_played || 0} movies, ${s.emby_shows_played || 0} shows · ` +
-      `Simkl watched: ${s.simkl_movies_watched || 0} movies, ${s.simkl_shows_watched || 0} episodes · ` +
-      `<span style="color:${(movies.length + shows.length) > 0 ? 'var(--orange)' : 'var(--green)'}; font-weight:600;">` +
-      `${movies.length} movies, ${s.episodes || shows.length} episodes missed</span></div>`;
+    _updateAuditSummary();
 
     if (movies.length === 0 && shows.length === 0) {
       el.innerHTML = '<div style="color:var(--green);padding:8px;">✓ Everything in sync — no missed scrobbles found.</div>';
