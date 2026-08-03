@@ -258,27 +258,7 @@ class SimklClient:
                     f"/sync/all-items/{item_type}/plantowatch",
                     params={"extended": "full"},
                 )
-                items = None
-                if isinstance(data, list):
-                    items = data
-                elif isinstance(data, dict):
-                    # Simkl sometimes wraps the list under a key matching the
-                    # media type, or under "movies"/"shows"/"anime"/"episodes"
-                    items = (
-                        data.get(item_type)
-                        or data.get("movies")
-                        or data.get("shows")
-                        or data.get("anime")
-                        or data.get("items")
-                        or data.get("results")
-                        or data.get("data")
-                    )
-                    if not isinstance(items, list):
-                        log.warning("simkl.watchlist_unexpected_format", kind=item_type,
-                                    dict_keys=list(data.keys())[:10],
-                                    sample=str(data)[:300])
-                        items = None
-
+                items = self._unwrap_sync_response(data, item_type)
                 if items:
                     results.extend(items)
                     first = items[0]
@@ -286,7 +266,6 @@ class SimklClient:
                     log.debug("simkl.watchlist_fetched", kind=item_type,
                               count=len(items),
                               first_title=str(first.get("title", "?"))[:40],
-                              first_ids_keys=list(first_ids.keys())[:8],
                               has_tmdb=bool(first_ids.get("tmdb")),
                               has_imdb=bool(first_ids.get("imdb")))
                 else:
@@ -339,8 +318,8 @@ class SimklClient:
                     f"/sync/all-items/{item_type}/completed",
                     params={"extended": "full"},
                 )
-                if isinstance(data, list):
-                    results.extend(data)
+                items = self._unwrap_sync_response(data, item_type)
+                results.extend(items)
             except Exception:
                 pass
         return results
@@ -352,7 +331,7 @@ class SimklClient:
                 f"/sync/all-items/{kind}/completed",
                 params={"extended": "full"},
             )
-            return data if isinstance(data, list) else []
+            return self._unwrap_sync_response(data, kind)
         except Exception:
             return []
 
@@ -364,24 +343,53 @@ class SimklClient:
         try:
             data = await self._get("/sync/all-items/shows/completed",
                                    params={"extended": "full"})
-            if isinstance(data, list):
-                for show in data:
-                    show_obj = show.get("show", {})
-                    show_imdb = show_obj.get("ids", {}).get("imdb")
-                    # Try to extract per-episode IDs from seasons structure
-                    seasons = show.get("seasons", [])
-                    if seasons:
-                        for season in seasons:
-                            for ep in season.get("episodes", []):
-                                ep_imdb = ep.get("ids", {}).get("imdb")
-                                if ep_imdb:
-                                    watched.add(ep_imdb)
-                    # Always include show-level IMDB as fallback
-                    if show_imdb:
-                        watched.add(show_imdb)
-        except Exception:
-            pass
+            items = self._unwrap_sync_response(data, "shows")
+            for show in items:
+                show_obj = show.get("show") or show
+                show_imdb = show_obj.get("ids", {}).get("imdb")
+                # Try to extract per-episode IDs from seasons structure
+                seasons = show.get("seasons", [])
+                if seasons:
+                    for season in seasons:
+                        for ep in season.get("episodes", []):
+                            ep_imdb = ep.get("ids", {}).get("imdb")
+                            if ep_imdb:
+                                watched.add(ep_imdb)
+                            # Also build SxxExx-style keys for matching
+                            s_num = season.get("number", 0)
+                            e_num = ep.get("number", 0)
+                            if show_imdb and s_num and e_num:
+                                watched.add(f"{show_imdb}:S{s_num:02d}E{e_num:02d}")
+                # Always include show-level IMDB as fallback
+                if show_imdb:
+                    watched.add(show_imdb)
+            log.debug("simkl.watched_episode_ids", count=len(watched),
+                       shows=len(items))
+        except Exception as e:
+            log.warning("simkl.watched_episode_ids_failed", error=str(e)[:120])
         return watched
+
+    @staticmethod
+    def _unwrap_sync_response(data, kind: str) -> list[dict]:
+        """Simkl /sync/all-items returns either a bare list or a dict wrapper.
+        This normalises both to a list."""
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            items = (
+                data.get(kind)
+                or data.get("movies")
+                or data.get("shows")
+                or data.get("anime")
+                or data.get("items")
+                or data.get("results")
+                or data.get("data")
+            )
+            if isinstance(items, list):
+                return items
+            log.warning("simkl.unwrap_unexpected_keys", kind=kind,
+                        keys=list(data.keys())[:10])
+        return []
 
     async def check_watched(self, items: list[dict]) -> list[dict]:
         """Bulk lookup: have I watched these items?

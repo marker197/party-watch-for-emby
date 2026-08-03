@@ -888,6 +888,7 @@
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
       <h3 style="font-size:0.95rem;">🔍 Missed Scrobbles</h3>
       <div style="display:flex; gap:8px;">
+        <button class="btn btn-sm" id="btnClearDismissals" onclick="clearAllDismissals()" style="display:none; background:var(--surface-hover); font-size:0.72rem;">🗑️ Clear Dismissals</button>
         <button class="btn btn-sm btn-green" id="btnBackfillAll" onclick="backfillAll()" style="display:none;">Backfill All</button>
         <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleAudit()">✕ Close</button>
       </div>
@@ -2264,15 +2265,23 @@ function _updateAuditSummary() {
   const shows = _auditData.shows || [];
   const totalEps = shows.reduce((sum, s) => sum + (s.episode_count || (s.episodes || []).length || 0), 0);
   const s = _auditData.summary || {};
+  const dismissed = s.dismissed_count || 0;
   const summary = document.getElementById('auditSummary');
   if (!summary) return;
-  summary.innerHTML = `<div style="font-size:0.82rem; color:var(--text-dim);">` +
+  let html = `<div style="font-size:0.82rem; color:var(--text-dim);">` +
     `Emby played: ${s.emby_movies_played || 0} movies, ${s.emby_shows_played || 0} shows · ` +
-    `Simkl watched: ${s.simkl_movies_watched || 0} movies, ${s.simkl_shows_watched || 0} episodes · ` +
+    `Simkl watched: ${s.simkl_movies_watched || 0} movies, ${s.simkl_shows_watched || 0} shows · ` +
     `<span style="color:${(movies.length + totalEps) > 0 ? 'var(--orange)' : 'var(--green)'}; font-weight:600;">` +
-    `${movies.length} movies, ${totalEps} episodes missed</span></div>`;
+    `${movies.length} movies, ${totalEps} episodes missed</span>`;
+  if (dismissed > 0) {
+    html += ` · <span style="color:var(--text-dim);">${dismissed} dismissed</span>`;
+  }
+  html += `</div>`;
+  summary.innerHTML = html;
   const btnAll = document.getElementById('btnBackfillAll');
   if (btnAll) btnAll.style.display = (movies.length + shows.length) > 0 ? '' : 'none';
+  const btnClear = document.getElementById('btnClearDismissals');
+  if (btnClear) btnClear.style.display = dismissed > 0 ? '' : 'none';
 }
 
 function _removeAuditRow(id) {
@@ -2370,6 +2379,25 @@ async function dismissAuditItem(embyId, kind) {
     _updateAuditSummary();
   } catch(e) {
     // silent fail
+  }
+}
+
+async function clearAllDismissals() {
+  const btn = document.getElementById('btnClearDismissals');
+  if (!confirm('Clear all dismissed items? They will reappear in the next audit run.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Clearing…'; }
+  try {
+    const r = await fetch(API + `/api/scrobble-audit/${currentUserId}/clear-dismissals`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    if (btn) { btn.textContent = `✓ ${data.cleared || 0} cleared`; btn.style.background = 'var(--green)'; }
+    // Re-run audit to show previously dismissed items
+    setTimeout(() => runAudit(), 1500);
+  } catch(e) {
+    if (btn) { btn.textContent = '✗ Failed'; btn.style.background = 'var(--red)'; btn.disabled = false; }
   }
 }
 

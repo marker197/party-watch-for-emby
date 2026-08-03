@@ -156,6 +156,15 @@ class ScrobbleAuditService:
         await self.invalidate_cache(user_id)
         return {"undismissed": emby_id}
 
+    async def clear_all_dismissals(self, user_id: int) -> dict:
+        """Remove all dismissed items so they reappear in the audit."""
+        prev = await self.get_dismissed(user_id)
+        count = len(prev)
+        await self._save_dismissed(user_id, [])
+        await self.invalidate_cache(user_id)
+        log.info("scrobble_audit.dismissals_cleared", user_id=user_id, count=count)
+        return {"cleared": count}
+
     async def backfill(self, user: User, items: list[dict]) -> dict:
         """Send items to Simkl watch history.
 
@@ -282,7 +291,11 @@ class ScrobbleAuditService:
             except Exception:
                 log.warning("scrobble_audit.simkl_movies_failed")
 
-        # Simkl shows: build a set of "showkey:SxxExx" for episode-level matching
+        # Simkl shows: build show-level completed set + episode-level set
+        # Simkl /sync/all-items/shows/completed returns flat show objects
+        # WITHOUT seasons/episodes breakdown — so we must treat any show
+        # in the "completed" list as fully watched at show level.
+        simkl_completed_shows: set[str] = set()  # "imdb:ttXXX", "tvdb:123", etc.
         simkl_watched_eps: set[str] = set()  # "{imdb_or_tvdb}:S{s}E{e}"
         if simkl:
             try:
@@ -296,7 +309,11 @@ class ScrobbleAuditService:
                         val = show_ids.get(key)
                         if val:
                             show_keys.append(f"{key}:{val}")
-                    # Walk seasons → episodes
+                    # Add to completed set — Simkl "completed" means all watched
+                    for sk in show_keys:
+                        simkl_completed_shows.add(sk)
+                    # Walk seasons → episodes (Simkl rarely provides this,
+                    # but keep as secondary match for partial data)
                     for season in entry.get("seasons", []):
                         s_num = season.get("number", 0)
                         for ep in season.get("episodes", []):
@@ -304,6 +321,10 @@ class ScrobbleAuditService:
                             ep_tag = f"S{s_num}E{e_num}"
                             for sk in show_keys:
                                 simkl_watched_eps.add(f"{sk}:{ep_tag}")
+                log.info("scrobble_audit.simkl_shows_parsed",
+                         completed_shows=len(simkl_shows),
+                         completed_show_keys=len(simkl_completed_shows),
+                         episode_keys=len(simkl_watched_eps))
             except Exception:
                 log.warning("scrobble_audit.simkl_shows_failed")
 
@@ -453,6 +474,11 @@ class ScrobbleAuditService:
             if not show_keys:
                 continue
 
+            # Check 0: if the entire show is "completed" on Simkl,
+            # all episodes are watched — skip episode-level comparison
+            if any(sk in simkl_completed_shows for sk in show_keys):
+                continue
+
             # Fetch played episodes for this series from Emby
             played_episodes = await self._get_played_episodes(
                 emby, user.emby_user_id, series_id
@@ -525,14 +551,39 @@ class ScrobbleAuditService:
         missing_movies.sort(key=lambda x: (x.get("title") or "").lower())
         missing_shows.sort(key=lambda x: (x.get("title") or "").lower())
 
+        # Count unique movies by deduping: each movie contributes up to 3 keys
+        # (imdb:X, tmdb:X, tvdb:X). Group by provider and take the largest set.
+        _unique_movies = set()
+        for k in simkl_movie_ids:
+            if k.startswith("imdb:"):
+                _unique_movies.add(k)
+        if not _unique_movies:
+            # Fallback: count tmdb keys if no IMDB keys
+            for k in simkl_movie_ids:
+                if k.startswith("tmdb:"):
+                    _unique_movies.add(k)
+        # If still empty, rough estimate: total keys / 3
+        unique_movie_count = len(_unique_movies) if _unique_movies else len(simkl_movie_ids) // 3
+
+        # Count unique completed shows from Simkl (dedupe across key types)
+        _unique_shows = set()
+        for k in simkl_completed_shows:
+            if k.startswith("imdb:"):
+                _unique_shows.add(k)
+        if not _unique_shows:
+            for k in simkl_completed_shows:
+                if k.startswith("tvdb:"):
+                    _unique_shows.add(k)
+        unique_show_count = len(_unique_shows) if _unique_shows else len(simkl_completed_shows) // 3
+
         log.info("scrobble_audit.complete", user=user.emby_username,
                  emby_movies=len(emby_movies), emby_series=len(emby_all_series),
                  simkl_movie_ids=len(simkl_movie_ids),
+                 simkl_completed_shows=len(simkl_completed_shows),
                  simkl_watched_eps=len(simkl_watched_eps),
                  simkl_ep_ids=len(simkl_ep_ids),
                  dismissed=len(dismissed),
                  missing_movies=len(missing_movies),
-                 deduped_movies=len(emby_movies) - len(missing_movies) - len(simkl_movie_ids) if len(seen_movie_keys) else 0,
                  missing_shows=len(missing_shows),
                  missing_episodes=total_missing_eps)
 
@@ -545,8 +596,9 @@ class ScrobbleAuditService:
                 "episodes": total_missing_eps,
                 "emby_movies_played": sum(1 for m in emby_movies if m.get("UserData", {}).get("Played")),
                 "emby_shows_played": len(emby_all_series),
-                "simkl_movies_watched": len(set(k.split(":")[1] for k in simkl_movie_ids if k.startswith("imdb:")) or simkl_movie_ids),
-                "simkl_shows_watched": len(simkl_watched_eps),
+                "simkl_movies_watched": unique_movie_count,
+                "simkl_shows_watched": unique_show_count,
+                "dismissed_count": len(dismissed),
             },
         }
 

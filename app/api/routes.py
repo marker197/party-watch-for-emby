@@ -895,6 +895,16 @@ async def scrobble_undismiss(
     return await scrobble_audit_svc.undismiss_item(user_id, emby_id)
 
 
+@router.post("/api/scrobble-audit/{user_id}/clear-dismissals")
+async def scrobble_clear_dismissals(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+):
+    """Remove all dismissed items so they reappear in the scrobble audit."""
+    require_user_ownership(current_user.id, user_id, "scrobble_clear_dismissals")
+    return await scrobble_audit_svc.clear_all_dismissals(user_id)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Feature #3 — Shared Universe Discovery
 # ═══════════════════════════════════════════════════════════════════════════
