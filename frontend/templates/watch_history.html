@@ -380,12 +380,13 @@ function renderItem(item) {
 
   // Movies use Thumb, episodes/shows use Primary
   const imgType = item.item_type === 'movie' ? 'Thumb' : 'Primary';
-  const url = imgUrl(item.emby_id, imgType);
+  const effectiveId = item.emby_id || (item.item_type === 'episode' ? item.series_emby_id : null);
+  const url = imgUrl(effectiveId, imgType);
   // Fallback chain: movie Thumb→Primary, episode Primary→series Primary
   let fallbackUrl = '';
   if (item.item_type === 'movie') {
     fallbackUrl = imgUrl(item.emby_id, 'Primary');
-  } else if (item.item_type === 'episode' && item.series_emby_id) {
+  } else if (item.item_type === 'episode' && item.emby_id && item.series_emby_id) {
     fallbackUrl = imgUrl(item.series_emby_id, 'Primary');
   }
 

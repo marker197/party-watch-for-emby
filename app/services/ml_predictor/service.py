@@ -350,7 +350,7 @@ class MLPredictorService:
             if mdb_key:
                 mdb = MDBListClient(api_key=mdb_key)
                 try:
-                    mdb_ratings = await mdb.get_ratings()
+                    mdb_ratings = await mdb.get_all_ratings()
                     log.info("ml_predictor.mdblist_ratings_raw",
                              type=type(mdb_ratings).__name__,
                              keys=list(mdb_ratings.keys()) if isinstance(mdb_ratings, dict) else "not_dict",
