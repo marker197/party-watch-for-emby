@@ -9286,10 +9286,19 @@ async def get_unrated_items(
 
     # Try to enrich year from library cache
     for item in seen.values():
-        if item["emby_id"]:
-            cached = await LibraryCache.get_item(item["emby_id"])
-            if cached:
-                item["year"] = cached.get("ProductionYear")
+        if item.get("year"):
+            continue
+        cached = None
+        if item.get("imdb_id"):
+            cached = await LibraryCache.find_by_provider_id("Imdb", item["imdb_id"])
+        if not cached and item.get("tmdb_id"):
+            cached = await LibraryCache.find_by_provider_id("Tmdb", item["tmdb_id"])
+        if not cached and item.get("title"):
+            cached = await LibraryCache.find_by_title(item["title"])
+        if cached:
+            item["year"] = cached.get("ProductionYear")
+            if not item.get("emby_id"):
+                item["emby_id"] = cached.get("emby_id") or cached.get("Id")
 
     return {"items": list(seen.values()), "total_unrated": len(seen)}
 
