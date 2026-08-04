@@ -9611,7 +9611,33 @@ async def get_user_ratings(
         except Exception:
             pass
 
+    # Batch-fetch latest episode info from watch history for show ratings
+    from app.models.schema import WatchHistory
+    show_titles = [r.title for r in rows if r.item_type == "show" and r.title]
+    episode_info: dict[str, dict] = {}  # title_lower → {season, episode, ep_title}
+    if show_titles:
+        try:
+            from sqlalchemy import func
+            # Get the most recent watch history entry for each show
+            for title in set(show_titles):
+                wh_row = (await db.execute(
+                    select(WatchHistory).where(
+                        WatchHistory.user_id == user_id,
+                        WatchHistory.series_name == title,
+                        WatchHistory.season_number.isnot(None),
+                    ).order_by(WatchHistory.watched_at.desc()).limit(1)
+                )).scalar_one_or_none()
+                if wh_row:
+                    episode_info[title.lower()] = {
+                        "season_number": wh_row.season_number,
+                        "episode_number": wh_row.episode_number,
+                        "episode_title": wh_row.title,
+                    }
+        except Exception:
+            pass
+
     for r in rows:
+        ep = episode_info.get((r.title or "").lower(), {}) if r.item_type == "show" else {}
         items.append({
             "id": r.id,
             "title": r.title,
@@ -9623,6 +9649,8 @@ async def get_user_ratings(
             "source": r.source or "imported",
             "rated_at": r.rated_at.isoformat() if r.rated_at else None,
             "emby_id": emby_id_map.get(r.id),
+            "season_number": ep.get("season_number"),
+            "episode_number": ep.get("episode_number"),
         })
     return {"items": items, "count": len(items)}
 
