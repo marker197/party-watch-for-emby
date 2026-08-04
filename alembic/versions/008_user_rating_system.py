@@ -4,8 +4,8 @@ Revision ID: 008
 Revises: 007
 """
 
-revision = "008"
-down_revision = "007"
+revision = "008_user_rating"
+down_revision = "007_simkl"
 
 from alembic import op
 import sqlalchemy as sa

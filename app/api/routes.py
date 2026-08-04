@@ -7919,8 +7919,12 @@ async def get_watch_history_by_date(
     from collections import OrderedDict
 
     filters = [WatchHistory.user_id == user_id]
-    if item_type and item_type in ("movie", "episode"):
-        filters.append(WatchHistory.item_type == item_type)
+    if item_type and item_type in ("movie", "episode", "show"):
+        if item_type == "show":
+            # Shows mode: fetch episodes, collapse to series level below
+            filters.append(WatchHistory.item_type == "episode")
+        else:
+            filters.append(WatchHistory.item_type == item_type)
     if before:
         try:
             before_date = datetime.strptime(before, "%Y-%m-%d").date()
@@ -7937,10 +7941,15 @@ async def get_watch_history_by_date(
     rows = (await db.execute(q)).scalars().all()
 
     # ── Normalised dedup key ────────────────────────────────────────
+    collapse_to_show = (item_type == "show")
+
     def _dedup_key(r):
         """Build a stable key that merges rows from different sources."""
         if r.item_type == "episode":
             series = (r.series_name or "").strip().lower()
+            if collapse_to_show:
+                # Collapse all episodes of the same series into one entry
+                return f"show|{series}"
             sn = r.season_number if r.season_number is not None else -1
             en = r.episode_number if r.episode_number is not None else -1
             return f"ep|{series}|{sn}|{en}"
@@ -7980,7 +7989,7 @@ async def get_watch_history_by_date(
         else:
             bucket[key] = {
                 "emby_id": r.emby_id,
-                "item_type": r.item_type,
+                "item_type": "show" if collapse_to_show else r.item_type,
                 "title": r.title,
                 "series_name": r.series_name,
                 "season_number": r.season_number,

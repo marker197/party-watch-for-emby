@@ -284,6 +284,7 @@
   <div class="filter-bar">
     <button class="filter-btn active" data-type="all" onclick="setFilter('all', this)">All</button>
     <button class="filter-btn" data-type="movie" onclick="setFilter('movie', this)">Movies</button>
+    <button class="filter-btn" data-type="show" onclick="setFilter('show', this)">Shows</button>
     <button class="filter-btn" data-type="episode" onclick="setFilter('episode', this)">Episodes</button>
   </div>
 
@@ -351,6 +352,12 @@ function itemLabel(item) {
   const sn = item.season_number != null ? String(item.season_number).padStart(2, '0') : null;
   const en = item.episode_number != null ? String(item.episode_number).padStart(2, '0') : null;
 
+  if (item.item_type === 'show') {
+    const series = item.series_name || item.title || '';
+    const epCount = item.play_count || 1;
+    const sub = epCount === 1 ? '1 episode' : epCount + ' episodes';
+    return { title: series, sub: sub };
+  }
   if (item.item_type === 'episode') {
     const series = item.series_name || '';
     const epCode = (sn && en) ? ('S' + sn + ' E' + en) : '';
@@ -365,13 +372,15 @@ function renderItem(item) {
   const label = itemLabel(item);
   if (!label.title) return '';
 
-  // Movies use Thumb, episodes use Primary
+  // Movies use Thumb, episodes/shows use Primary
   const imgType = item.item_type === 'movie' ? 'Thumb' : 'Primary';
   const url = imgUrl(item.emby_id, imgType);
   // Fallback: if movie Thumb fails, try Primary
   const fallbackUrl = item.item_type === 'movie' ? imgUrl(item.emby_id, 'Primary') : '';
 
-  const badge = item.play_count > 1 ? '<span class="play-count-badge">' + item.play_count + '\u00d7</span>' : '';
+  const badge = (item.item_type === 'show')
+    ? '' // show mode uses play_count as episode count in subtitle, not badge
+    : (item.play_count > 1 ? '<span class="play-count-badge">' + item.play_count + '\u00d7</span>' : '');
   const icon = item.item_type === 'movie' ? '🎬' : '📺';
   const phTitle = esc(label.title);
 
@@ -470,6 +479,7 @@ async function loadHistory() {
     var url = '/api/watch-history/' + currentUserId + '/by-date?days=30';
     if (nextBefore) url += '&before=' + nextBefore;
     if (currentFilter === 'movie') url += '&item_type=movie';
+    else if (currentFilter === 'show') url += '&item_type=show';
     else if (currentFilter === 'episode') url += '&item_type=episode';
 
     var r = await fetch(url);
