@@ -9341,7 +9341,7 @@ async def rate_item(
             from app.utils.emby_client import EmbyClient
             emby = EmbyClient()
             search_type = "Series" if item_type == "show" else "Movie"
-            results = await emby.search_items(title, item_type=search_type, limit=3)
+            results = await emby.search_items(title, item_type=search_type)
             if results:
                 for result in (results if isinstance(results, list) else results.get("Items", results)):
                     r_pids = result.get("ProviderIds", {})
