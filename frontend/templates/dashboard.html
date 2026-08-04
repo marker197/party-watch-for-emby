@@ -2346,8 +2346,28 @@ async function backfillAll() {
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
-    btn.textContent = `✓ ${data.added || 0} added`;
+    // Build per-provider result summary
+    const parts = [];
+    const s = data.simkl;
+    if (s) {
+      const sParts = [];
+      if (s.movies) sParts.push(`${s.movies} movies`);
+      if (s.shows) sParts.push(`${s.shows} shows`);
+      if (s.episodes) sParts.push(`${s.episodes} episodes`);
+      if (sParts.length) parts.push('Simkl: ' + sParts.join(', '));
+    }
+    const m = data.mdblist;
+    if (m && m.active !== false && !m.error) {
+      const mParts = [];
+      if (m.movies) mParts.push(`${m.movies} movies`);
+      if (m.shows) mParts.push(`${m.shows} shows`);
+      if (m.episodes) mParts.push(`${m.episodes} episodes`);
+      if (mParts.length) parts.push('MDBList: ' + mParts.join(', '));
+    }
+    const summary = parts.length ? parts.join(' · ') : `${data.added || 0} added`;
+    btn.textContent = `✓ ${summary}`;
     btn.style.background = 'var(--green)';
+    btn.style.fontSize = '0.72rem';
     // Refresh the audit after a moment
     setTimeout(() => runAudit(), 2000);
   } catch(e) {

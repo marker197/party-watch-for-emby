@@ -231,12 +231,21 @@ class ScrobbleAuditService:
                      requested=len(items), payload_entries=len(payload), added=total)
 
             # Also backfill to MDBList if enabled
-            await self._backfill_mdblist(items)
+            mdblist_result = await self._backfill_mdblist(items)
 
             # Invalidate audit cache so next view reflects the backfill
             await self.invalidate_cache(user.id)
 
-            return {"added": total, "detail": result.get("added", {})}
+            return {
+                "added": total,
+                "detail": result.get("added", {}),
+                "simkl": {
+                    "movies": added_movies,
+                    "shows": added_shows,
+                    "episodes": added_episodes,
+                },
+                "mdblist": mdblist_result,
+            }
         finally:
             await simkl.close()
 
@@ -712,14 +721,15 @@ class ScrobbleAuditService:
         key = raw if isinstance(raw, str) else raw.decode()
         return MDBListClient(api_key=key)
 
-    async def _backfill_mdblist(self, items: list[dict]) -> None:
-        """Send backfill items to MDBList watched history if MDBList is active."""
+    async def _backfill_mdblist(self, items: list[dict]) -> dict:
+        """Send backfill items to MDBList watched history if MDBList is active.
+        Returns dict with movies/shows/episodes counts."""
         providers = await self._get_active_providers()
         if "mdblist" not in providers:
-            return
+            return {"active": False}
         mdb = await self._make_mdblist()
         if not mdb:
-            return
+            return {"active": False}
         try:
             movies = []
             shows = []
@@ -753,10 +763,20 @@ class ScrobbleAuditService:
                     movies=movies if movies else None,
                     shows=shows if shows else None,
                 )
+                updated = result.get("updated", {})
+                mdb_result = {
+                    "active": True,
+                    "movies": updated.get("movies", 0),
+                    "shows": updated.get("shows", 0),
+                    "episodes": updated.get("episodes", 0),
+                }
                 log.info("scrobble_audit.mdblist_backfill_done",
                          movies=len(movies), shows=len(shows),
                          result=result)
+                return mdb_result
+            return {"active": True, "movies": 0, "shows": 0, "episodes": 0}
         except Exception as e:
             log.warning("scrobble_audit.mdblist_backfill_failed", error=str(e)[:120])
+            return {"active": True, "error": str(e)[:120]}
         finally:
             await mdb.close()
