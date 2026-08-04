@@ -445,7 +445,6 @@ const imgObserver = new IntersectionObserver(function(entries) {
       const img = entry.target;
       const src = img.getAttribute('data-src');
       if (src) {
-        img.src = src;
         img.removeAttribute('data-src');
         img.onload = function() {
           this.classList.add('loaded');
@@ -462,6 +461,7 @@ const imgObserver = new IntersectionObserver(function(entries) {
             this.style.display = 'none';
           }
         };
+        img.src = src;
       }
       imgObserver.unobserve(img);
     }
@@ -509,7 +509,7 @@ async function loadHistory() {
     }
 
     observeNewImages();
-    applyRatingBadges();
+    if (ratedKeys.size > 0) applyRatingBadges();
 
     loadingEl.style.display = 'none';
     loadMoreWrap.style.display = nextBefore ? 'block' : 'none';
@@ -608,9 +608,13 @@ async function loadRatedKeys() {
 }
 
 function applyRatingBadges() {
+  if (ratedKeys.size === 0) return; // No data yet, wait
   document.querySelectorAll('.thumb-wrap[data-imdb], .thumb-wrap[data-ratetitle]').forEach(function(wrap) {
-    // Skip if already has a badge or overlay
-    if (wrap.querySelector('.rated-badge') || wrap.querySelector('.hover-rate-overlay')) return;
+    // Remove any existing badge/overlay to re-apply fresh
+    var old = wrap.querySelector('.rated-badge');
+    if (old) old.remove();
+    var oldOverlay = wrap.querySelector('.hover-rate-overlay');
+    if (oldOverlay) oldOverlay.remove();
 
     var imdb = wrap.getAttribute('data-imdb');
     var title = wrap.getAttribute('data-ratetitle');
@@ -634,12 +638,12 @@ function applyRatingBadges() {
       badge.className = 'rated-badge';
       badge.textContent = rating;
       wrap.appendChild(badge);
-    } else {
-      // Add hover-to-rate overlay for completed items
+    } else if (imdb || title) {
+      // Add hover-to-rate overlay for unrated items
       var itemJson = JSON.stringify({
         imdb_id: imdb || null,
         tmdb_id: tmdb || null,
-        title: (wrap.getAttribute('data-ratetitle') || ''),
+        title: title || '',
         item_type: itemType,
       });
       var overlay = document.createElement('div');
