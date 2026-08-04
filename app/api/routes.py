@@ -8034,6 +8034,19 @@ async def get_watch_history_by_date(
             if resolved:
                 item["emby_id"] = resolved.get("emby_id") or resolved.get("Id")
 
+    # ── Resolve series emby_id for episode items (poster fallback) ──
+    for _date_str, bucket in day_map.items():
+        for item in bucket.values():
+            if item.get("item_type") == "episode" and item.get("series_name"):
+                try:
+                    series_cached = await LibraryCache.find_by_title(
+                        item["series_name"], item_type="series"
+                    )
+                    if series_cached:
+                        item["series_emby_id"] = series_cached.get("emby_id") or series_cached.get("Id")
+                except Exception:
+                    pass
+
     # ── Build response ──────────────────────────────────────────────
     result_days = []
     last_date = None

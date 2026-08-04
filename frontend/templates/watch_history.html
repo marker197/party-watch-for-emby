@@ -381,8 +381,13 @@ function renderItem(item) {
   // Movies use Thumb, episodes/shows use Primary
   const imgType = item.item_type === 'movie' ? 'Thumb' : 'Primary';
   const url = imgUrl(item.emby_id, imgType);
-  // Fallback: if movie Thumb fails, try Primary
-  const fallbackUrl = item.item_type === 'movie' ? imgUrl(item.emby_id, 'Primary') : '';
+  // Fallback chain: movie Thumb→Primary, episode Primary→series Primary
+  let fallbackUrl = '';
+  if (item.item_type === 'movie') {
+    fallbackUrl = imgUrl(item.emby_id, 'Primary');
+  } else if (item.item_type === 'episode' && item.series_emby_id) {
+    fallbackUrl = imgUrl(item.series_emby_id, 'Primary');
+  }
 
   const badge = (item.item_type === 'show')
     ? '' // show mode uses play_count as episode count in subtitle, not badge
