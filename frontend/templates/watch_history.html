@@ -211,91 +211,37 @@
       background: var(--accent); color: #fff; border-color: var(--accent);
     }
 
-    /* ── Floating Rating Bar ── */
-    .rating-bar {
-      position: fixed; bottom: 0; left: 0; right: 0; z-index: 200;
-      background: var(--surface); border-top: 1px solid var(--border);
-      box-shadow: 0 -4px 24px rgba(0,0,0,0.4);
-      transition: transform 0.3s ease;
+    /* ── Hover-to-Rate Overlay ── */
+    .hover-rate-overlay {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      background: linear-gradient(transparent, rgba(0,0,0,0.85) 30%);
+      padding: 22px 6px 6px; display: flex; justify-content: center; gap: 2px;
+      opacity: 0; transition: opacity 0.2s ease; pointer-events: none;
+      z-index: 5;
     }
-    .rating-bar.collapsed { transform: translateY(calc(100% - 36px)); }
-    .rating-bar-toggle {
-      position: absolute; top: -32px; right: 24px;
-      background: var(--surface); border: 1px solid var(--border);
-      border-bottom: none; border-radius: 8px 8px 0 0;
-      padding: 4px 14px; font-size: 0.78rem; color: var(--text-dim);
-      cursor: pointer; font-weight: 600;
+    .thumb-wrap:hover .hover-rate-overlay { opacity: 1; pointer-events: auto; }
+    .hover-rate-btn {
+      width: 20px; height: 20px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.3);
+      background: rgba(255,255,255,0.1); color: #fff; font-size: 0.65rem;
+      font-weight: 700; cursor: pointer; display: flex; align-items: center;
+      justify-content: center; transition: all 0.1s; padding: 0;
     }
-    .rating-bar-toggle:hover { color: var(--text); }
-    .rating-bar-header {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 8px 20px; border-bottom: 1px solid var(--border);
-      cursor: pointer;
+    .hover-rate-btn:hover { background: var(--accent); border-color: var(--accent); transform: scale(1.15); }
+    .hover-rate-btn.rated-ok { background: var(--green); border-color: var(--green); pointer-events: none; }
+    .hover-rated-msg {
+      position: absolute; bottom: 6px; left: 0; right: 0;
+      text-align: center; color: var(--green); font-size: 0.75rem; font-weight: 700;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.8);
     }
-    .rating-bar-header h3 {
-      font-size: 0.85rem; font-weight: 700; color: var(--text);
-      display: flex; align-items: center; gap: 8px;
-    }
-    .rating-bar-header .rb-count {
-      background: var(--accent); color: #fff; font-size: 0.72rem;
-      padding: 1px 7px; border-radius: 10px; font-weight: 700;
-    }
-    .rating-bar-body {
-      display: flex; gap: 12px; padding: 12px 20px; overflow-x: auto;
-      scrollbar-width: thin;
-    }
-    .rating-card {
-      flex: 0 0 180px; background: var(--bg); border: 1px solid var(--border);
-      border-radius: 8px; overflow: hidden; position: relative;
-    }
-    .rating-card-poster {
-      width: 180px; height: 100px; object-fit: cover; display: block;
-      background: var(--surface);
-    }
-    .rating-card-poster-ph {
-      width: 180px; height: 100px; display: flex; align-items: center;
-      justify-content: center; background: var(--surface); color: var(--text-dim);
-      font-size: 1.4rem;
-    }
-    .rating-card-info {
-      padding: 8px 10px 6px;
-    }
-    .rating-card-title {
-      font-size: 0.78rem; font-weight: 600; color: var(--text);
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      line-height: 1.3; margin-bottom: 2px;
-    }
-    .rating-card-meta {
-      font-size: 0.7rem; color: var(--text-dim); margin-bottom: 6px;
-    }
-    .rating-selector {
-      display: flex; gap: 2px; justify-content: center; padding: 0 6px 8px;
-    }
+    /* rating-num reused in My Ratings edit row */
     .rating-num {
-      width: 22px; height: 22px; border-radius: 4px; border: 1px solid var(--border);
+      width: 24px; height: 24px; border-radius: 4px; border: 1px solid var(--border);
       background: var(--surface); color: var(--text-dim); font-size: 0.7rem;
       font-weight: 700; cursor: pointer; display: flex; align-items: center;
       justify-content: center; transition: all 0.12s;
     }
     .rating-num:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
     .rating-num.selected { background: var(--green); color: #fff; border-color: var(--green); }
-    .rating-card-dismiss {
-      position: absolute; top: 4px; right: 4px;
-      background: rgba(0,0,0,0.6); border: none; color: #fff;
-      width: 20px; height: 20px; border-radius: 50%; cursor: pointer;
-      font-size: 0.7rem; display: flex; align-items: center; justify-content: center;
-    }
-    .rating-card-dismiss:hover { background: var(--red); }
-    .rating-card.rated { opacity: 0; pointer-events: none; transition: opacity 0.5s ease; }
-    .rating-card .rated-check {
-      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      font-size: 2rem; display: none;
-    }
-    .rating-card.rated .rated-check { display: block; }
-    .rating-bar-empty {
-      padding: 16px 20px; color: var(--text-dim); font-size: 0.85rem;
-      text-align: center;
-    }
   </style>
 <script src="/static/js/csrf.js"></script>
 </head>
@@ -448,6 +394,23 @@ function renderItem(item) {
                  + '</div>';
   }
 
+  // Hover-to-rate overlay for unrated items
+  let rateOverlay = '';
+  const rateKey = _rateKey(item);
+  if (rateKey && !ratedKeys.has(rateKey) && (prog === null || prog === undefined || prog >= 80)) {
+    const itemJson = esc(JSON.stringify({
+      imdb_id: item.imdb_id || null,
+      tmdb_id: item.tmdb_id || null,
+      title: item.series_name || item.title || '',
+      item_type: (item.item_type === 'episode' || item.item_type === 'show') ? 'show' : 'movie',
+    }));
+    let btns = '';
+    for (let n = 1; n <= 10; n++) {
+      btns += '<button class="hover-rate-btn" onclick="event.stopPropagation();hoverRate(this,' + n + ')" data-item=\'' + itemJson + '\'>' + n + '</button>';
+    }
+    rateOverlay = '<div class="hover-rate-overlay">' + btns + '</div>';
+  }
+
   let imgHtml;
   if (url) {
     const fbAttr = fallbackUrl ? ' data-fallback="' + esc(fallbackUrl) + '"' : '';
@@ -462,7 +425,7 @@ function renderItem(item) {
   }
 
   return '<div class="history-item">'
-    + '<div class="thumb-wrap">' + imgHtml + badge + progressHtml + '</div>'
+    + '<div class="thumb-wrap">' + imgHtml + badge + progressHtml + rateOverlay + '</div>'
     + '<div class="item-title">' + esc(label.title) + '</div>'
     + '<div class="item-subtitle">' + esc(label.sub) + '</div>'
     + '</div>';
@@ -589,20 +552,19 @@ async function loadUsers() {
 
 loadUsers();
 
+
 /* ═══════════════════════════════════════════════════════════════════════
-   Floating Rating Bar
+   Hover-to-Rate System
    ═══════════════════════════════════════════════════════════════════════ */
 
-let ratingBarCollapsed = false;
-let ratingItems = [];
+let ratedKeys = new Set();
 let ratingSynced = false;
 
-function toggleRatingBar() {
-  const bar = document.getElementById('ratingBar');
-  ratingBarCollapsed = !ratingBarCollapsed;
-  bar.classList.toggle('collapsed', ratingBarCollapsed);
-  const toggleBtn = bar.querySelector('.rating-bar-toggle');
-  toggleBtn.textContent = ratingBarCollapsed ? '⭐ Rate ▲' : '▼ Collapse';
+function _rateKey(item) {
+  if (item.imdb_id) return 'imdb:' + item.imdb_id;
+  var t = (item.series_name || item.title || '').trim().toLowerCase();
+  if (t) return 'title:' + t;
+  return '';
 }
 
 async function syncRatingsOnce() {
@@ -610,91 +572,35 @@ async function syncRatingsOnce() {
   ratingSynced = true;
   try {
     await fetch('/api/ratings/sync/' + currentUserId, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'}
+      method: 'POST', headers: {'Content-Type': 'application/json'}
     });
-  } catch (e) {
-    console.error('syncRatings error:', e);
-  }
+  } catch (e) { console.error('syncRatings error:', e); }
 }
 
-async function loadUnratedItems() {
+async function loadRatedKeys() {
   if (!currentUserId) return;
-  // Sync provider ratings once per page load so we filter correctly
   await syncRatingsOnce();
   try {
-    const r = await fetch('/api/ratings/unrated/' + currentUserId + '?limit=5');
+    var r = await fetch('/api/ratings/user/' + currentUserId + '?limit=10000');
     if (!r.ok) return;
-    const data = await r.json();
-    ratingItems = data.items || [];
-    renderRatingBar();
-  } catch (e) {
-    console.error('loadUnrated error:', e);
-  }
+    var data = await r.json();
+    ratedKeys = new Set();
+    (data.items || []).forEach(function(item) {
+      if (item.imdb_id) ratedKeys.add('imdb:' + item.imdb_id);
+      if (item.title) ratedKeys.add('title:' + item.title.trim().toLowerCase());
+    });
+  } catch (e) { console.error('loadRatedKeys error:', e); }
 }
 
-function renderRatingBar() {
-  const bar = document.getElementById('ratingBar');
-  const body = document.getElementById('ratingBarBody');
-  const countEl = document.getElementById('ratingBarCount');
+async function hoverRate(btnEl, value) {
+  var itemData;
+  try { itemData = JSON.parse(btnEl.getAttribute('data-item')); } catch(e) { return; }
+  if (!itemData) return;
 
-  if (!ratingItems.length) {
-    body.innerHTML = '<div class="rating-bar-empty">All caught up — no unrated items.</div>';
-    countEl.textContent = '0';
-    bar.style.display = 'block';
-    return;
-  }
-
-  countEl.textContent = String(ratingItems.length);
-  body.innerHTML = ratingItems.map(function(item, idx) {
-    var posterHtml;
-    if (item.emby_id) {
-      var src = imgUrl(item.emby_id, item.item_type === 'show' ? 'Primary' : 'Thumb');
-      var fbSrc = item.item_type === 'movie' ? imgUrl(item.emby_id, 'Primary') : '';
-      posterHtml = '<img class="rating-card-poster" src="' + esc(src) + '"'
-                 + ' onerror="this.onerror=null;'
-                 + (fbSrc ? 'this.src=\'' + esc(fbSrc) + '\'' : 'this.style.display=\'none\';this.nextElementSibling&&(this.nextElementSibling.style.display=\'flex\')')
-                 + '">'
-                 + '<div class="rating-card-poster-ph" style="display:none">'
-                 + (item.item_type === 'show' ? '📺' : '🎬') + '</div>';
-    } else {
-      posterHtml = '<div class="rating-card-poster-ph">'
-                 + (item.item_type === 'show' ? '📺' : '🎬') + '</div>';
-    }
-
-    var meta = (item.item_type === 'show' ? 'Show' : 'Movie');
-    if (item.year) meta += ' · ' + item.year;
-
-    var nums = '';
-    for (var n = 1; n <= 10; n++) {
-      nums += '<button class="rating-num" data-idx="' + idx + '" data-val="' + n
-            + '" onclick="submitRating(' + idx + ',' + n + ',this)">' + n + '</button>';
-    }
-
-    return '<div class="rating-card" id="ratingCard' + idx + '">'
-      + '<button class="rating-card-dismiss" onclick="dismissRating(' + idx + ')" title="Skip">✕</button>'
-      + '<span class="rated-check">✓</span>'
-      + posterHtml
-      + '<div class="rating-card-info">'
-      + '<div class="rating-card-title" title="' + esc(item.title) + '">' + esc(item.title) + '</div>'
-      + '<div class="rating-card-meta">' + esc(meta) + '</div>'
-      + '</div>'
-      + '<div class="rating-selector">' + nums + '</div>'
-      + '</div>';
-  }).join('');
-
-  bar.style.display = 'block';
-}
-
-async function submitRating(idx, value, btnEl) {
-  var item = ratingItems[idx];
-  if (!item) return;
-
-  // Visual feedback
-  var card = document.getElementById('ratingCard' + idx);
-  var allBtns = card.querySelectorAll('.rating-num');
-  allBtns.forEach(function(b) { b.classList.remove('selected'); });
-  btnEl.classList.add('selected');
+  var overlay = btnEl.parentElement;
+  overlay.querySelectorAll('.hover-rate-btn').forEach(function(b) { b.style.opacity = '0.4'; });
+  btnEl.style.opacity = '1';
+  btnEl.classList.add('rated-ok');
 
   try {
     var r = await fetch('/api/rate', {
@@ -702,61 +608,30 @@ async function submitRating(idx, value, btnEl) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         user_id: currentUserId,
-        imdb_id: item.imdb_id || null,
-        tmdb_id: item.tmdb_id || null,
+        imdb_id: itemData.imdb_id || null,
+        tmdb_id: itemData.tmdb_id || null,
         rating: value,
-        item_type: item.item_type,
-        title: item.title
+        item_type: itemData.item_type,
+        title: itemData.title
       })
     });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-
-    // Mark as rated with fade
-    card.classList.add('rated');
-
-    // Remove from array and re-render after fade
-    setTimeout(function() {
-      // Remove this item from the local array
-      ratingItems = ratingItems.filter(function(_, i) { return i !== idx; });
-      // Re-render the bar immediately with remaining items
-      renderRatingBar();
-      // Then fetch fresh unrated items to refill
-      loadUnratedItems();
-    }, 800);
-
-  } catch (e) {
-    console.error('submitRating error:', e);
-    btnEl.classList.remove('selected');
-    // Show error on the card title area
-    var titleEl = card.querySelector('.rating-card-title');
-    if (titleEl) {
-      var origText = titleEl.textContent;
-      titleEl.textContent = '✗ ' + (e.message || 'Rating failed');
-      titleEl.style.color = 'var(--red)';
-      setTimeout(function() {
-        titleEl.textContent = origText;
-        titleEl.style.color = '';
-      }, 3000);
+    if (!r.ok) {
+      var errData = await r.json().catch(function() { return {}; });
+      throw new Error(errData.detail || 'HTTP ' + r.status);
     }
-  }
-}
-
-async function dismissRating(idx) {
-  var item = ratingItems[idx];
-  if (!item) return;
-
-  try {
-    await fetch('/api/ratings/dismiss/' + currentUserId, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ item_key: item.item_key })
-    });
+    var key = itemData.imdb_id ? 'imdb:' + itemData.imdb_id : 'title:' + itemData.title.trim().toLowerCase();
+    ratedKeys.add(key);
+    overlay.innerHTML = '<div class="hover-rated-msg">\u2713 ' + value + '/10</div>';
   } catch (e) {
-    console.error('dismissRating error:', e);
+    console.error('hoverRate error:', e);
+    overlay.querySelectorAll('.hover-rate-btn').forEach(function(b) { b.style.opacity = ''; });
+    btnEl.classList.remove('rated-ok');
+    overlay.insertAdjacentHTML('beforeend', '<div class="hover-rated-msg" style="color:var(--red)">\u2717 ' + (e.message || 'Error').substring(0, 40) + '</div>');
+    setTimeout(function() {
+      var msg = overlay.querySelector('.hover-rated-msg');
+      if (msg) msg.remove();
+    }, 3000);
   }
-
-  ratingItems.splice(idx, 1);
-  renderRatingBar();
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -930,26 +805,18 @@ async function deleteMyRating(idx) {
   }
 }
 
-// Load unrated items when user changes or page first loads
+// Load rated keys when user changes or page first loads
 var _origResetAndLoad = resetAndLoad;
 resetAndLoad = function() {
+  ratingSynced = false;
   _origResetAndLoad();
-  setTimeout(loadUnratedItems, 500);
+  loadRatedKeys();
   // If My Ratings tab was active, refresh it
   if (document.getElementById('myRatingsPanel').style.display !== 'none') {
     loadMyRatings();
   }
 };
 </script>
-
-<!-- Floating Rating Bar -->
-<div class="rating-bar collapsed" id="ratingBar" style="display:none">
-  <button class="rating-bar-toggle" onclick="toggleRatingBar()">⭐ Rate ▲</button>
-  <div class="rating-bar-header" onclick="toggleRatingBar()">
-    <h3>⭐ Rate Your Watches <span class="rb-count" id="ratingBarCount">0</span></h3>
-  </div>
-  <div class="rating-bar-body" id="ratingBarBody"></div>
-</div>
 
 </body>
 </html>
