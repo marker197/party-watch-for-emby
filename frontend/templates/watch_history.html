@@ -427,6 +427,7 @@ function renderItem(item) {
     + '<div class="item-title">' + esc(label.title) + '</div>'
     + '<div class="item-subtitle">' + esc(label.sub) + '</div>'
     + '</div>';
+}
 
 function renderDay(day) {
   const itemsHtml = day.items.map(renderItem).filter(Boolean).join('');
