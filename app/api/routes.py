@@ -9559,6 +9559,11 @@ async def get_user_ratings(
 
     rows = (await db.execute(q)).scalars().all()
     items = []
+
+    # Resolve emby_ids: try cache first, then batch Emby search for misses
+    emby_id_map: dict[int, str] = {}  # rating.id → emby_id
+    cache_misses: list = []  # (rating_id, title, item_type)
+
     for r in rows:
         emby_id = None
         try:
@@ -9573,6 +9578,40 @@ async def get_user_ratings(
                 emby_id = cached.get("emby_id") or cached.get("Id")
         except Exception:
             pass
+        if emby_id:
+            emby_id_map[r.id] = emby_id
+        elif r.title:
+            cache_misses.append((r.id, r.title, r.item_type))
+
+    # For cache misses, do batch Emby searches (max 30 to avoid hammering)
+    if cache_misses:
+        try:
+            from app.utils.emby_client import EmbyClient
+            emby = EmbyClient()
+            searched_titles: set[str] = set()
+            for rid, title, itype in cache_misses[:30]:
+                title_lower = title.strip().lower()
+                if title_lower in searched_titles:
+                    continue
+                searched_titles.add(title_lower)
+                try:
+                    search_type = "Series" if itype == "show" else "Movie"
+                    results = await emby.search_items(title, item_type=search_type)
+                    for res in results:
+                        if res.get("Name", "").strip().lower() == title_lower:
+                            eid = res.get("Id")
+                            # Apply to all ratings with this title
+                            for rid2, t2, _ in cache_misses:
+                                if t2.strip().lower() == title_lower:
+                                    emby_id_map[rid2] = eid
+                            break
+                except Exception:
+                    pass
+            await emby.close()
+        except Exception:
+            pass
+
+    for r in rows:
         items.append({
             "id": r.id,
             "title": r.title,
@@ -9583,7 +9622,7 @@ async def get_user_ratings(
             "simkl_id": r.simkl_id,
             "source": r.source or "imported",
             "rated_at": r.rated_at.isoformat() if r.rated_at else None,
-            "emby_id": emby_id,
+            "emby_id": emby_id_map.get(r.id),
         })
     return {"items": items, "count": len(items)}
 

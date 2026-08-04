@@ -777,7 +777,10 @@ function renderMyRatings() {
       posterHtml = '<div class="my-rating-poster-ph">'
                  + (item.item_type === 'show' ? '📺' : '🎬') + '</div>';
     }
-    var meta = (item.item_type === 'show' ? 'Show' : 'Movie');
+    var meta = (item.item_type === 'show' ? 'Show' : item.item_type === 'episode' ? 'Episode' : 'Movie');
+    if (item.season_number != null && item.episode_number != null) {
+      meta += ' · S' + String(item.season_number).padStart(2, '0') + 'E' + String(item.episode_number).padStart(2, '0');
+    }
     if (item.rated_at) {
       var d = new Date(item.rated_at);
       meta += ' · ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
