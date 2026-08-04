@@ -402,28 +402,12 @@ function renderItem(item) {
                  + '</div>';
   }
 
-  // Rating badge or hover-to-rate overlay
-  let rateOverlay = '';
-  const existingRating = _getRating(item);
-  if (existingRating !== null) {
-    // Show rating badge on the thumbnail
-    rateOverlay = '<div class="rated-badge">' + existingRating + '</div>';
-  } else {
-    const rateKey = _rateKey(item);
-    if (rateKey && (prog === null || prog === undefined || prog >= 80)) {
-    const itemJson = esc(JSON.stringify({
-      imdb_id: item.imdb_id || null,
-      tmdb_id: item.tmdb_id || null,
-      title: item.series_name || item.title || '',
-      item_type: (item.item_type === 'episode' || item.item_type === 'show') ? 'show' : 'movie',
-    }));
-    let btns = '';
-    for (let n = 1; n <= 10; n++) {
-      btns += '<button class="hover-rate-btn" onclick="event.stopPropagation();hoverRate(this,' + n + ')" data-item=\'' + itemJson + '\'>' + n + '</button>';
-    }
-    rateOverlay = '<div class="hover-rate-overlay">' + btns + '</div>';
-    }
-  }
+  // Build data attributes for post-render badge application
+  const itemImdb = item.imdb_id || '';
+  const itemTitle = (item.series_name || item.title || '').trim();
+  const itemType = (item.item_type === 'episode' || item.item_type === 'show') ? 'show' : 'movie';
+  const dataAttrs = ' data-imdb="' + esc(itemImdb) + '" data-ratetitle="' + esc(itemTitle.toLowerCase()) + '" data-ratetype="' + esc(itemType) + '"'
+    + ' data-tmdb="' + esc(item.tmdb_id || '') + '"';
 
   let imgHtml;
   if (url) {
@@ -439,11 +423,10 @@ function renderItem(item) {
   }
 
   return '<div class="history-item">'
-    + '<div class="thumb-wrap">' + imgHtml + badge + progressHtml + rateOverlay + '</div>'
+    + '<div class="thumb-wrap"' + dataAttrs + '>' + imgHtml + badge + progressHtml + '</div>'
     + '<div class="item-title">' + esc(label.title) + '</div>'
     + '<div class="item-subtitle">' + esc(label.sub) + '</div>'
     + '</div>';
-}
 
 function renderDay(day) {
   const itemsHtml = day.items.map(renderItem).filter(Boolean).join('');
@@ -525,6 +508,7 @@ async function loadHistory() {
     }
 
     observeNewImages();
+    applyRatingBadges();
 
     loadingEl.style.display = 'none';
     loadMoreWrap.style.display = nextBefore ? 'block' : 'none';
@@ -609,7 +593,7 @@ async function loadRatedKeys() {
   if (!currentUserId) return;
   await syncRatingsOnce();
   try {
-    var r = await fetch('/api/ratings/user/' + currentUserId + '?limit=10000');
+    var r = await fetch('/api/ratings/user/' + currentUserId + '?limit=50000');
     if (!r.ok) return;
     var data = await r.json();
     ratedKeys = new Map();
@@ -617,7 +601,56 @@ async function loadRatedKeys() {
       if (item.imdb_id) ratedKeys.set('imdb:' + item.imdb_id, item.rating);
       if (item.title) ratedKeys.set('title:' + item.title.trim().toLowerCase(), item.rating);
     });
+    // Apply badges to any already-rendered items
+    applyRatingBadges();
   } catch (e) { console.error('loadRatedKeys error:', e); }
+}
+
+function applyRatingBadges() {
+  document.querySelectorAll('.thumb-wrap[data-imdb], .thumb-wrap[data-ratetitle]').forEach(function(wrap) {
+    // Skip if already has a badge or overlay
+    if (wrap.querySelector('.rated-badge') || wrap.querySelector('.hover-rate-overlay')) return;
+
+    var imdb = wrap.getAttribute('data-imdb');
+    var title = wrap.getAttribute('data-ratetitle');
+    var tmdb = wrap.getAttribute('data-tmdb');
+    var itemType = wrap.getAttribute('data-ratetype') || 'movie';
+
+    // Check if rated
+    var rating = null;
+    if (imdb) {
+      var v = ratedKeys.get('imdb:' + imdb);
+      if (v !== undefined) rating = v;
+    }
+    if (rating === null && title) {
+      var v2 = ratedKeys.get('title:' + title);
+      if (v2 !== undefined) rating = v2;
+    }
+
+    if (rating !== null) {
+      // Add rating badge
+      var badge = document.createElement('div');
+      badge.className = 'rated-badge';
+      badge.textContent = rating;
+      wrap.appendChild(badge);
+    } else {
+      // Add hover-to-rate overlay for completed items
+      var itemJson = JSON.stringify({
+        imdb_id: imdb || null,
+        tmdb_id: tmdb || null,
+        title: (wrap.getAttribute('data-ratetitle') || ''),
+        item_type: itemType,
+      });
+      var overlay = document.createElement('div');
+      overlay.className = 'hover-rate-overlay';
+      var btns = '';
+      for (var n = 1; n <= 10; n++) {
+        btns += '<button class="hover-rate-btn" onclick="event.stopPropagation();hoverRate(this,' + n + ')" data-item=\'' + itemJson.replace(/'/g, '&#39;') + '\'>' + n + '</button>';
+      }
+      overlay.innerHTML = btns;
+      wrap.appendChild(overlay);
+    }
+  });
 }
 
 async function hoverRate(btnEl, value) {
