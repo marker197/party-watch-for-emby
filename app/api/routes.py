@@ -2165,7 +2165,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 elif action == "stop":
                     result = await mdb.scrobble_stop(payload, progress=progress)
                     await _activity_log(
-                        f"📋 MDBList stop: {display_name} ({progress_pct}%)",
+                        f"✓ Synced to MDBList: {display_name} ({progress_pct}%)",
                         category="simkl",
                     )
                     return result
@@ -2465,7 +2465,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         scrobble_already_added = True
                         simkl_synced = True
                         await _activity_log(
-                            f"✓ Simkl scrobbled: {display_name} ({progress:.0f}%)",
+                            f"✓ Synced to Simkl: {display_name} ({progress:.0f}%)",
                             category="simkl",
                         )
                     else:
@@ -2912,9 +2912,9 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                             log.info("webhook.recently_arrived_added",
                                      title=arrived_item["title"],
                                      type=arrived_item["type"])
-                            # Notify download arrival
+                            # Notify new arrival
                             from app.utils.notification_client import notify
-                            notify("download", "⬇️ Download Complete",
+                            notify("arrival", "📥 New Arrival",
                                    arrived_item.get("title", "Unknown"))
 
                         # Clear the result cache so the dashboard picks it up
@@ -3050,9 +3050,13 @@ def _maybe_notify(message: str) -> None:
     # Scrobble completions
     if msg.startswith("✓ Simkl scrobbled:") or msg.startswith("✓ Synced to Simkl:"):
         title = msg.split(":", 1)[1].strip() if ":" in msg else msg
-        notify("scrobble", "🎬 Scrobbled", title)
+        # Strip trailing percentage like " (100%)"
+        import re as _re
+        title = _re.sub(r'\s*\(\d+%?\)$', '', title)
+        notify("scrobble", "🎬 Simkl Sync", title)
     elif msg.startswith("✓ Synced to MDBList:"):
         title = msg.split(":", 1)[1].strip() if ":" in msg else msg
+        title = _re.sub(r'\s*\(\d+%?\)$', '', title)
         notify("scrobble", "🎬 MDBList Sync", title)
     # System errors
     elif "failed" in msg.lower() and ("token" in msg.lower() or "error" in msg.lower()):
@@ -6606,28 +6610,31 @@ async def get_recently_arrived():
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat() + "Z"
     existing_items = [i for i in existing_items if i.get("arrived_at", "") > cutoff]
 
-    # Add new arrivals with timestamp (dedup by id)
+    # Add new arrivals with timestamp (dedup by id, skip dismissed)
     existing_ids = {(i.get("type"), str(i.get("id", ""))) for i in existing_items}
+    # Load dismissed items
+    dismissed_key = "recently_arrived_dismissed_v1"
+    try:
+        raw_dismissed = await r.get(dismissed_key)
+        dismissed_set = set(_json.loads(raw_dismissed)) if raw_dismissed else set()
+    except Exception:
+        dismissed_set = set()
     new_arrival_names: list[str] = []
     for m in arrived_movies:
         key = ("movie", str(m.get("tmdb_id", "")))
-        if key not in existing_ids:
+        dismiss_key_str = f"movie:{m.get('tmdb_id', '')}"
+        if key not in existing_ids and dismiss_key_str not in dismissed_set:
             existing_items.append({**m, "id": m.get("tmdb_id"), "arrived_at": now_ts})
             new_arrival_names.append(m.get("title", "Unknown movie"))
     for s in arrived_shows:
         key = ("show", str(s.get("tvdb_id", "")))
-        if key not in existing_ids:
+        dismiss_key_str = f"show:{s.get('tvdb_id', '')}"
+        if key not in existing_ids and dismiss_key_str not in dismissed_set:
             existing_items.append({**s, "id": s.get("tvdb_id"), "arrived_at": now_ts})
             new_arrival_names.append(s.get("title", "Unknown show"))
 
-    # Notify for new arrivals
-    if new_arrival_names:
-        from app.utils.notification_client import notify
-        if len(new_arrival_names) == 1:
-            notify("arrival", "📥 New Arrival", new_arrival_names[0])
-        else:
-            notify("arrival", f"📥 {len(new_arrival_names)} New Arrivals",
-                   ", ".join(new_arrival_names[:5]))
+    # New arrivals tracked but NOT notified here — the Emby webhook
+    # item_added handler sends the notification in real-time instead.
 
     # Persist with 48hr TTL (items self-expire at 24hr via filter above)
     try:
@@ -6662,7 +6669,7 @@ async def dismiss_recently_arrived(_user: User = Depends(get_current_user)):
 
 @router.post("/api/recently-arrived/dismiss-item")
 async def dismiss_arrived_item(request: Request, _user: User = Depends(get_current_user)):
-    """Remove a single item from the recently arrived list."""
+    """Remove a single item from the recently arrived list and persist the dismissal."""
     import json as _json
     body = await request.json()
     item_type = body.get("type")  # "movie" or "show"
@@ -6670,11 +6677,20 @@ async def dismiss_arrived_item(request: Request, _user: User = Depends(get_curre
 
     r = await get_redis()
     arrived_key = "recently_arrived_items_v1"
+    dismissed_key = "recently_arrived_dismissed_v1"
     try:
+        # Remove from arrived list
         raw = await r.get(arrived_key)
         items = _json.loads(raw) if raw else []
         items = [i for i in items if not (i.get("type") == item_type and str(i.get("id", "")) == item_id)]
         await r.setex(arrived_key, 86400 * 2, _json.dumps(items))
+        # Persist dismissal (30 day TTL, same as pending snapshot)
+        raw_dismissed = await r.get(dismissed_key)
+        dismissed = _json.loads(raw_dismissed) if raw_dismissed else []
+        dismiss_entry = f"{item_type}:{item_id}"
+        if dismiss_entry not in dismissed:
+            dismissed.append(dismiss_entry)
+        await r.setex(dismissed_key, 86400 * 30, _json.dumps(dismissed))
         # Invalidate result cache
         await r.delete("recently_arrived_result_v1")
     except Exception:

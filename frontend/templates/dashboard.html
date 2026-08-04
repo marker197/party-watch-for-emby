@@ -1784,11 +1784,17 @@ async function viewAiring() {
     }
 
     // ── Main airing table ──
-    if (items.length > 0) {
+    // Filter out movies that are in library with digital/physical release dates
+    // — those belong in the Upcoming Releases section only
+    const mainItems = items.filter(i => {
+      if (i.media_type === 'movie' && i.in_library && (i.digital_release || i.physical_release)) return false;
+      return true;
+    });
+    if (mainItems.length > 0) {
     html += '<table class="queue-table" id="airingMainTable"><thead><tr>' +
       '<th>Title</th><th style="width:70px;">S/E</th><th style="width:70px;">Airs</th><th style="width:90px;">Status</th><th style="width:70px;"></th>' +
       '</tr></thead><tbody>' +
-      items.map((i, idx) => {
+      mainItems.map((i, idx) => {
         const epNum = (i.season != null && i.episode != null) ? `S${String(i.season).padStart(2,'0')}E${String(i.episode).padStart(2,'0')}` : '—';
         let se = i.media_type === 'movie'
           ? '<span style="color:var(--text-dim);">movie</span>'
@@ -1830,15 +1836,11 @@ async function viewAiring() {
             binge = `<div style="font-size:0.72rem;color:${diffColor};margin-top:2px;">📺 ${bp.message}</div>`;
           }
         }
-        // Movie release dates (cinema + digital + physical)
+        // Movie release dates — only show under main heading if NOT in library
+        // and only for upcoming airing (not release dates which go in the releases section)
         let releaseDates = '';
-        if (i.media_type === 'movie' && (i.theatrical_release || i.digital_release || i.physical_release)) {
-          const lines = [];
-          if (i.theatrical_release) lines.push(`🎬 Cinema: ${fmtDate(i.theatrical_release)}`);
-          if (i.digital_release) lines.push(`💿 Digital: ${fmtDate(i.digital_release)}`);
-          if (i.physical_release) lines.push(`📀 Physical: ${fmtDate(i.physical_release)}`);
-          const src = i.release_source ? ` <span style="opacity:0.5;">via ${i.release_source}</span>` : '';
-          releaseDates = `<div style="font-size:0.72rem;color:var(--text-dim);margin-top:2px;">${lines.join('<br>')}${src}</div>`;
+        if (i.media_type === 'movie' && !i.in_library && i.theatrical_release && !i.digital_release && !i.physical_release) {
+          releaseDates = `<div style="font-size:0.72rem;color:var(--text-dim);margin-top:2px;">🎬 Cinema: ${fmtDate(i.theatrical_release)}</div>`;
         }
         // Streaming service logos
         let streamBadges = '';
