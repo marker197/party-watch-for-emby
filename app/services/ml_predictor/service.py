@@ -274,17 +274,37 @@ class MLPredictorService:
                 )
                 .limit(limit)
             )).scalars().all()
-        return [
-            {
+        results = []
+        for r in rows:
+            item = {
                 "emby_item_id": r.emby_item_id,
                 "title": r.title,
                 "predicted_rating": r.predicted_rating,
                 "confidence": r.confidence,
                 "explanation": r.explanation,
                 "overview": r.overview or "",
+                "imdb_id": None,
+                "tmdb_id": None,
+                "item_type": "movie",
             }
-            for r in rows
-        ]
+            # Resolve provider IDs from library cache
+            try:
+                from app.utils.library_cache import LibraryCache
+                cached = None
+                if r.emby_item_id:
+                    # Try by emby ID first via title lookup (cache stores emby_id)
+                    if r.title:
+                        cached = await LibraryCache.find_by_title(r.title)
+                if cached:
+                    pids = cached.get("provider_ids") or cached.get("ProviderIds") or {}
+                    item["imdb_id"] = pids.get("Imdb") or pids.get("imdb")
+                    item["tmdb_id"] = pids.get("Tmdb") or pids.get("tmdb")
+                    item_type = cached.get("type", "movie")
+                    item["item_type"] = "show" if item_type == "series" else "movie"
+            except Exception:
+                pass
+            results.append(item)
+        return results
 
     # -----------------------------------------------------------------------
     # Fetch & cache Simkl ratings

@@ -161,6 +161,56 @@
     }
     .theme-toggle:hover { background: var(--surface-hover); }
 
+    /* ── My Ratings Panel ── */
+    .my-ratings-list { display: flex; flex-direction: column; gap: 8px; }
+    .my-rating-row {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--surface); border-radius: 8px; padding: 8px 12px;
+    }
+    .my-rating-poster {
+      width: 45px; height: 65px; border-radius: 4px; object-fit: cover; flex-shrink: 0;
+    }
+    .my-rating-poster-ph {
+      width: 45px; height: 65px; border-radius: 4px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.5rem; background: var(--card-bg);
+    }
+    .my-rating-info { flex: 1; min-width: 0; }
+    .my-rating-title {
+      font-size: 0.85rem; font-weight: 600; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .my-rating-meta { font-size: 0.72rem; color: var(--text-dim); }
+    .my-rating-value {
+      font-size: 1.3rem; font-weight: 800; color: var(--accent);
+      min-width: 30px; text-align: center;
+    }
+    .my-rating-actions { display: flex; gap: 4px; flex-shrink: 0; }
+    .my-rating-actions button {
+      background: var(--card-bg); border: 1px solid var(--border); color: var(--text-dim);
+      width: 28px; height: 28px; border-radius: 6px; cursor: pointer;
+      font-size: 0.75rem; display: flex; align-items: center; justify-content: center;
+    }
+    .my-rating-actions button:hover { background: var(--surface-hover); color: var(--text); }
+    .my-rating-actions button.delete:hover { background: var(--red); color: #fff; }
+    .my-rating-edit-row {
+      display: flex; gap: 3px; align-items: center; margin-top: 4px;
+    }
+    .my-rating-edit-row .rating-num {
+      width: 24px; height: 24px;
+    }
+    .my-ratings-empty { padding: 30px; text-align: center; color: var(--text-dim); }
+    .my-ratings-source-filter {
+      display: flex; gap: 6px; margin-bottom: 12px;
+    }
+    .my-ratings-source-filter button {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
+      padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 0.78rem;
+    }
+    .my-ratings-source-filter button.active {
+      background: var(--accent); color: #fff; border-color: var(--accent);
+    }
+
     /* ── Floating Rating Bar ── */
     .rating-bar {
       position: fixed; bottom: 0; left: 0; right: 0; z-index: 200;
@@ -286,9 +336,11 @@
     <button class="filter-btn" data-type="movie" onclick="setFilter('movie', this)">Movies</button>
     <button class="filter-btn" data-type="show" onclick="setFilter('show', this)">Shows</button>
     <button class="filter-btn" data-type="episode" onclick="setFilter('episode', this)">Episodes</button>
+    <button class="filter-btn" data-type="my-ratings" onclick="showMyRatings(this)">⭐ My Ratings</button>
   </div>
 
   <div id="timeline"></div>
+  <div id="myRatingsPanel" style="display:none;"></div>
   <div id="loadingMsg" class="loading">Select a user to load history…</div>
   <div id="loadMoreWrap" class="load-more-wrap" style="display:none;">
     <button class="load-more-btn" id="loadMoreBtn" onclick="loadMore()">Load more</button>
@@ -675,12 +727,17 @@ async function submitRating(idx, value, btnEl) {
   } catch (e) {
     console.error('submitRating error:', e);
     btnEl.classList.remove('selected');
-    btnEl.style.background = 'var(--red)';
-    btnEl.style.color = '#fff';
-    setTimeout(function() {
-      btnEl.style.background = '';
-      btnEl.style.color = '';
-    }, 1500);
+    // Show error on the card title area
+    var titleEl = card.querySelector('.rating-card-title');
+    if (titleEl) {
+      var origText = titleEl.textContent;
+      titleEl.textContent = '✗ ' + (e.message || 'Rating failed');
+      titleEl.style.color = 'var(--red)';
+      setTimeout(function() {
+        titleEl.textContent = origText;
+        titleEl.style.color = '';
+      }, 3000);
+    }
   }
 }
 
@@ -702,11 +759,186 @@ async function dismissRating(idx) {
   renderRatingBar();
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// My Ratings Panel
+// ═══════════════════════════════════════════════════════════════════════
+
+let myRatingsSource = 'user';
+let myRatingsData = [];
+
+function showMyRatings(btn) {
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('timeline').style.display = 'none';
+  document.getElementById('loadMoreWrap').style.display = 'none';
+  document.getElementById('myRatingsPanel').style.display = 'block';
+  loadMyRatings();
+}
+
+function setFilter_orig(type, btn) {
+  // Restore timeline when switching back from My Ratings
+  document.getElementById('myRatingsPanel').style.display = 'none';
+  document.getElementById('timeline').style.display = '';
+}
+
+// Monkey-patch setFilter to also hide My Ratings panel
+var _origSetFilter = setFilter;
+setFilter = function(type, btn) {
+  document.getElementById('myRatingsPanel').style.display = 'none';
+  document.getElementById('timeline').style.display = '';
+  _origSetFilter(type, btn);
+};
+
+async function loadMyRatings() {
+  if (!currentUserId) return;
+  var panel = document.getElementById('myRatingsPanel');
+  panel.innerHTML = '<div class="loading">Loading ratings…</div>';
+  try {
+    var url = '/api/ratings/user/' + currentUserId + '?limit=200';
+    if (myRatingsSource) url += '&source=' + myRatingsSource;
+    var r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var data = await r.json();
+    myRatingsData = data.items || [];
+    renderMyRatings();
+  } catch (e) {
+    panel.innerHTML = '<div class="my-ratings-empty">Error loading ratings: ' + esc(e.message) + '</div>';
+  }
+}
+
+function renderMyRatings() {
+  var panel = document.getElementById('myRatingsPanel');
+  var filterHtml = '<div class="my-ratings-source-filter">'
+    + '<button class="' + (myRatingsSource === 'user' ? 'active' : '') + '" onclick="setRatingSource(\'user\')">My Ratings</button>'
+    + '<button class="' + (myRatingsSource === '' ? 'active' : '') + '" onclick="setRatingSource(\'\')">All Ratings</button>'
+    + '<button class="' + (myRatingsSource === 'imported' ? 'active' : '') + '" onclick="setRatingSource(\'imported\')">Imported</button>'
+    + '</div>';
+
+  if (!myRatingsData.length) {
+    panel.innerHTML = filterHtml + '<div class="my-ratings-empty">No ratings found.</div>';
+    return;
+  }
+
+  var rows = myRatingsData.map(function(item, idx) {
+    var posterHtml;
+    if (item.emby_id) {
+      posterHtml = '<img class="my-rating-poster" src="' + esc(imgUrl(item.emby_id, 'Primary'))
+                 + '" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+                 + '<div class="my-rating-poster-ph" style="display:none">'
+                 + (item.item_type === 'show' ? '📺' : '🎬') + '</div>';
+    } else {
+      posterHtml = '<div class="my-rating-poster-ph">'
+                 + (item.item_type === 'show' ? '📺' : '🎬') + '</div>';
+    }
+    var meta = (item.item_type === 'show' ? 'Show' : 'Movie');
+    if (item.rated_at) {
+      var d = new Date(item.rated_at);
+      meta += ' · ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+    if (item.source === 'imported') meta += ' · imported';
+
+    var actions = '';
+    if (item.source === 'user') {
+      actions = '<div class="my-rating-actions">'
+        + '<button onclick="editMyRating(' + idx + ')" title="Edit">✏️</button>'
+        + '<button class="delete" onclick="deleteMyRating(' + idx + ')" title="Delete">🗑️</button>'
+        + '</div>';
+    }
+
+    return '<div class="my-rating-row" id="myRatingRow' + idx + '">'
+      + posterHtml
+      + '<div class="my-rating-info">'
+      + '<div class="my-rating-title" title="' + esc(item.title) + '">' + esc(item.title) + '</div>'
+      + '<div class="my-rating-meta">' + esc(meta) + '</div>'
+      + '<div class="my-rating-edit-row" id="myRatingEdit' + idx + '" style="display:none"></div>'
+      + '</div>'
+      + '<div class="my-rating-value">' + item.rating + '</div>'
+      + actions
+      + '</div>';
+  }).join('');
+
+  panel.innerHTML = filterHtml + '<div class="my-ratings-list">' + rows + '</div>';
+}
+
+function setRatingSource(src) {
+  myRatingsSource = src;
+  loadMyRatings();
+}
+
+function editMyRating(idx) {
+  var item = myRatingsData[idx];
+  if (!item) return;
+  var editRow = document.getElementById('myRatingEdit' + idx);
+  if (editRow.style.display !== 'none') {
+    editRow.style.display = 'none';
+    return;
+  }
+  var nums = '';
+  for (var n = 1; n <= 10; n++) {
+    var sel = (n === item.rating) ? ' selected' : '';
+    nums += '<button class="rating-num' + sel + '" onclick="saveMyRating(' + idx + ',' + n + ',this)">' + n + '</button>';
+  }
+  editRow.innerHTML = nums;
+  editRow.style.display = 'flex';
+}
+
+async function saveMyRating(idx, value, btnEl) {
+  var item = myRatingsData[idx];
+  if (!item || !item.id) return;
+  btnEl.parentElement.querySelectorAll('.rating-num').forEach(function(b) { b.classList.remove('selected'); });
+  btnEl.classList.add('selected');
+  try {
+    var r = await fetch('/api/ratings/' + item.id, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ rating: value })
+    });
+    if (!r.ok) {
+      var errData = await r.json().catch(function() { return {}; });
+      throw new Error(errData.detail || 'HTTP ' + r.status);
+    }
+    item.rating = value;
+    // Update display
+    var row = document.getElementById('myRatingRow' + idx);
+    row.querySelector('.my-rating-value').textContent = value;
+    document.getElementById('myRatingEdit' + idx).style.display = 'none';
+  } catch (e) {
+    console.error('saveMyRating error:', e);
+    alert('Error saving rating: ' + e.message);
+    btnEl.classList.remove('selected');
+  }
+}
+
+async function deleteMyRating(idx) {
+  var item = myRatingsData[idx];
+  if (!item || !item.id) return;
+  if (!confirm('Delete your ' + item.rating + '/10 rating for "' + item.title + '"?')) return;
+  try {
+    var r = await fetch('/api/ratings/' + item.id, {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'}
+    });
+    if (!r.ok) {
+      var errData = await r.json().catch(function() { return {}; });
+      throw new Error(errData.detail || 'HTTP ' + r.status);
+    }
+    myRatingsData.splice(idx, 1);
+    renderMyRatings();
+  } catch (e) {
+    console.error('deleteMyRating error:', e);
+    alert('Error deleting rating: ' + e.message);
+  }
+}
+
 // Load unrated items when user changes or page first loads
 var _origResetAndLoad = resetAndLoad;
 resetAndLoad = function() {
   _origResetAndLoad();
   setTimeout(loadUnratedItems, 500);
+  // If My Ratings tab was active, refresh it
+  if (document.getElementById('myRatingsPanel').style.display !== 'none') {
+    loadMyRatings();
+  }
 };
 </script>
 

@@ -39,7 +39,7 @@ class MDBListClient:
       - OAuth Bearer: passed via Authorization header
 
     When OAuth tokens are provided, the client uses Bearer auth and handles
-    token refresh automatically (similar to TraktClient pattern).
+    token refresh automatically (similar to SimklClient pattern).
     """
 
     def __init__(
@@ -528,6 +528,47 @@ class MDBListClient:
             params["since"] = since
         return await self._get("/sync/ratings", params)
 
+    async def get_all_ratings(self, since: str | None = None, page_size: int = 500) -> dict:
+        """Retrieve ALL user ratings with pagination.
+
+        MDBList defaults to ~100 items per call. This paginates through
+        all pages using limit/offset and merges results.
+
+        Returns {"movies": [...], "shows": [...], "episodes": [...]}.
+        """
+        all_movies: list = []
+        all_shows: list = []
+        all_episodes: list = []
+        offset = 0
+
+        while True:
+            params: dict = {"limit": page_size, "offset": offset}
+            if since:
+                params["since"] = since
+            try:
+                page = await self._get("/sync/ratings", params)
+            except Exception:
+                break
+
+            if not isinstance(page, dict):
+                break
+
+            movies = page.get("movies", [])
+            shows = page.get("shows", [])
+            episodes = page.get("episodes", [])
+
+            all_movies.extend(movies)
+            all_shows.extend(shows)
+            all_episodes.extend(episodes)
+
+            page_total = len(movies) + len(shows) + len(episodes)
+            if page_total < page_size:
+                break  # last page
+
+            offset += page_size
+
+        return {"movies": all_movies, "shows": all_shows, "episodes": all_episodes}
+
     async def add_ratings(
         self,
         movies: list[dict] | None = None,
@@ -678,7 +719,7 @@ class MDBListClient:
 
     async def get_media_info(self, provider: str, media_type: str, media_id: str) -> dict | None:
         """Get detailed media info by provider ID.
-        provider: 'imdb', 'tmdb', 'tvdb', 'trakt', 'mdblist'
+        provider: 'imdb', 'tmdb', 'tvdb', 'simkl', 'mdblist'
         media_type: 'movie' or 'show'
         """
         try:

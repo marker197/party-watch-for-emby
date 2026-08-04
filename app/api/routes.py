@@ -9253,7 +9253,7 @@ async def get_unrated_items(
         if item_type_out == "show" and not item_imdb and display_title:
             cache_item = await LibraryCache.find_by_title(display_title)
             if cache_item:
-                pids = cache_item.get("ProviderIds", {})
+                pids = cache_item.get("provider_ids") or cache_item.get("ProviderIds") or {}
                 item_imdb = pids.get("Imdb") or pids.get("imdb")
                 item_tmdb = pids.get("Tmdb") or pids.get("tmdb")
                 if not emby_id:
@@ -9331,9 +9331,30 @@ async def rate_item(
     if not imdb_id and not tmdb_id and title:
         cached = await LibraryCache.find_by_title(title)
         if cached:
-            pids = cached.get("ProviderIds", {})
+            pids = cached.get("provider_ids") or cached.get("ProviderIds") or {}
             imdb_id = pids.get("Imdb") or pids.get("imdb")
             tmdb_id = pids.get("Tmdb") or pids.get("tmdb")
+
+    # Fallback: search Emby directly by title if cache missed
+    if not imdb_id and not tmdb_id and title:
+        try:
+            from app.utils.emby_client import EmbyClient
+            emby = EmbyClient()
+            search_type = "Series" if item_type == "show" else "Movie"
+            results = await emby.search_items(title, item_type=search_type, limit=3)
+            if results:
+                for result in (results if isinstance(results, list) else results.get("Items", results)):
+                    r_pids = result.get("ProviderIds", {})
+                    r_title = result.get("Name", "").strip().lower()
+                    if r_title == title.strip().lower():
+                        imdb_id = r_pids.get("Imdb") or r_pids.get("imdb")
+                        tmdb_id = r_pids.get("Tmdb") or r_pids.get("tmdb")
+                        if imdb_id or tmdb_id:
+                            break
+            await emby.close()
+        except Exception as e:
+            log_init = structlog.get_logger()
+            log_init.debug("rate.emby_search_fallback_failed", error=str(e)[:120])
 
     if not imdb_id and not tmdb_id:
         raise HTTPException(400, "imdb_id or tmdb_id required (could not resolve from title)")
@@ -9524,23 +9545,34 @@ async def get_user_ratings(
     q = q.order_by(UserRating.rated_at.desc().nullslast()).limit(limit)
 
     rows = (await db.execute(q)).scalars().all()
-    return {
-        "items": [
-            {
-                "id": r.id,
-                "title": r.title,
-                "item_type": r.item_type,
-                "rating": r.rating,
-                "imdb_id": r.imdb_id,
-                "tmdb_id": r.tmdb_id,
-                "simkl_id": r.simkl_id,
-                "source": r.source or "imported",
-                "rated_at": r.rated_at.isoformat() if r.rated_at else None,
-            }
-            for r in rows
-        ],
-        "count": len(rows),
-    }
+    items = []
+    for r in rows:
+        emby_id = None
+        try:
+            cached = None
+            if r.imdb_id:
+                cached = await LibraryCache.find_by_provider_id("Imdb", r.imdb_id)
+            if not cached and r.tmdb_id:
+                cached = await LibraryCache.find_by_provider_id("Tmdb", r.tmdb_id)
+            if not cached and r.title:
+                cached = await LibraryCache.find_by_title(r.title)
+            if cached:
+                emby_id = cached.get("emby_id") or cached.get("Id")
+        except Exception:
+            pass
+        items.append({
+            "id": r.id,
+            "title": r.title,
+            "item_type": r.item_type,
+            "rating": r.rating,
+            "imdb_id": r.imdb_id,
+            "tmdb_id": r.tmdb_id,
+            "simkl_id": r.simkl_id,
+            "source": r.source or "imported",
+            "rated_at": r.rated_at.isoformat() if r.rated_at else None,
+            "emby_id": emby_id,
+        })
+    return {"items": items, "count": len(items)}
 
 
 @router.post("/api/ratings/sync/{user_id}")
@@ -9603,7 +9635,7 @@ async def sync_ratings_from_providers(
                 from app.utils.mdblist_client import MDBListClient
                 mdb = MDBListClient(api_key=key)
                 try:
-                    mdb_ratings = await mdb.get_ratings()
+                    mdb_ratings = await mdb.get_all_ratings()
                     if isinstance(mdb_ratings, dict):
                         for kind, item_type in (("movies", "movie"), ("shows", "show")):
                             for item in mdb_ratings.get(kind, []):
@@ -9678,3 +9710,127 @@ async def sync_ratings_from_providers(
     await db.commit()
     log.info("ratings_sync.done", imported=added, user_id=user_id)
     return {"ok": True, "imported": added, "providers": list(providers)}
+
+
+# ── Rating edit / delete ─────────────────────────────────────────────────
+
+@router.put("/api/ratings/{rating_id}")
+async def update_user_rating(
+    rating_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update a user-submitted rating value."""
+    from app.models.schema import UserRating
+
+    row = (await db.execute(
+        select(UserRating).where(UserRating.id == rating_id)
+    )).scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "Rating not found")
+    if row.user_id != current_user.id:
+        raise HTTPException(403, "Not your rating")
+    if row.source != "user":
+        raise HTTPException(400, "Only user-submitted ratings can be edited")
+
+    new_rating = payload.get("rating")
+    if not new_rating or not isinstance(new_rating, (int, float)) or new_rating < 1 or new_rating > 10:
+        raise HTTPException(400, "rating must be 1-10")
+
+    new_rating = int(new_rating)
+    old_rating = row.rating
+    row.rating = new_rating
+    row.rated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    await db.commit()
+
+    log = structlog.get_logger()
+
+    # Push updated rating to providers
+    providers = await _get_active_providers(db)
+    user = (await db.execute(select(User).where(User.id == row.user_id))).scalar_one_or_none()
+    ids_obj = {}
+    if row.imdb_id:
+        ids_obj["imdb"] = row.imdb_id
+    if row.tmdb_id:
+        try:
+            ids_obj["tmdb"] = int(row.tmdb_id)
+        except (ValueError, TypeError):
+            ids_obj["tmdb"] = row.tmdb_id
+
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    if ids_obj and "simkl" in providers and user and user.simkl_access_token:
+        try:
+            simkl = SimklClient(
+                access_token=user.simkl_access_token,
+                token_expires=user.simkl_token_expires,
+            )
+            simkl_item = {
+                "ids": ids_obj,
+                "rating": new_rating,
+                "rated_at": now_str,
+                "_type": "movies" if row.item_type == "movie" else "shows",
+            }
+            await simkl.add_ratings([simkl_item])
+            await simkl.close()
+        except Exception as e:
+            log.warning("rating_update.simkl_failed", error=str(e)[:200])
+
+    log.info("rating.updated", rating_id=rating_id, old=old_rating, new=new_rating)
+    return {"ok": True, "rating_id": rating_id, "old_rating": old_rating, "new_rating": new_rating}
+
+
+@router.delete("/api/ratings/{rating_id}")
+async def delete_user_rating(
+    rating_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a user-submitted rating."""
+    from app.models.schema import UserRating
+
+    row = (await db.execute(
+        select(UserRating).where(UserRating.id == rating_id)
+    )).scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "Rating not found")
+    if row.user_id != current_user.id:
+        raise HTTPException(403, "Not your rating")
+    if row.source != "user":
+        raise HTTPException(400, "Only user-submitted ratings can be deleted")
+
+    log = structlog.get_logger()
+
+    # Remove from providers
+    providers = await _get_active_providers(db)
+    user = (await db.execute(select(User).where(User.id == row.user_id))).scalar_one_or_none()
+    ids_obj = {}
+    if row.imdb_id:
+        ids_obj["imdb"] = row.imdb_id
+    if row.tmdb_id:
+        try:
+            ids_obj["tmdb"] = int(row.tmdb_id)
+        except (ValueError, TypeError):
+            ids_obj["tmdb"] = row.tmdb_id
+
+    if ids_obj and "simkl" in providers and user and user.simkl_access_token:
+        try:
+            simkl = SimklClient(
+                access_token=user.simkl_access_token,
+                token_expires=user.simkl_token_expires,
+            )
+            simkl_item = {
+                "ids": ids_obj,
+                "_type": "movies" if row.item_type == "movie" else "shows",
+            }
+            await simkl.remove_ratings([simkl_item])
+            await simkl.close()
+        except Exception as e:
+            log.warning("rating_delete.simkl_failed", error=str(e)[:200])
+
+    title = row.title
+    await db.delete(row)
+    await db.commit()
+    log.info("rating.deleted", rating_id=rating_id, title=title)
+    return {"ok": True, "rating_id": rating_id}

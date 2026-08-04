@@ -648,6 +648,83 @@
       padding: 8px;
     }
   }
+
+  /* ── Floating Rating Bar ─── */
+  .rating-bar {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 200;
+    background: var(--card-bg, #1a1d27); border-top: 1px solid var(--border, #2a2e3e);
+    box-shadow: 0 -4px 20px rgba(0,0,0,0.4); transition: transform 0.3s ease;
+  }
+  .rating-bar.collapsed { transform: translateY(calc(100% - 36px)); }
+  .rating-bar-toggle {
+    position: absolute; top: -32px; right: 20px;
+    background: var(--accent, #6c5ce7); color: #fff; border: none;
+    padding: 6px 14px; border-radius: 8px 8px 0 0; cursor: pointer;
+    font-size: 0.8rem; font-weight: 600;
+  }
+  .rating-bar-toggle:hover { filter: brightness(1.15); }
+  .rating-bar-header {
+    padding: 8px 16px; cursor: pointer; display: flex; align-items: center;
+  }
+  .rating-bar-header h3 {
+    margin: 0; font-size: 0.9rem; color: var(--text, #e0e0e6);
+  }
+  .rating-bar-header .rb-count {
+    background: var(--accent, #6c5ce7); color: #fff; border-radius: 10px;
+    padding: 1px 8px; font-size: 0.75rem; margin-left: 8px;
+  }
+  .rating-bar-body {
+    display: flex; gap: 10px; padding: 0 16px 12px; overflow-x: auto;
+  }
+  .rating-card {
+    position: relative; min-width: 130px; max-width: 150px;
+    background: var(--surface, #141620); border-radius: 8px; overflow: hidden;
+  }
+  .rating-card-poster {
+    width: 100%; height: 80px; object-fit: cover; display: block;
+  }
+  .rating-card-poster-ph {
+    width: 100%; height: 80px; display: flex; align-items: center;
+    justify-content: center; font-size: 2rem; background: var(--surface, #141620);
+  }
+  .rating-card-info {
+    padding: 4px 8px;
+  }
+  .rating-card-title {
+    font-size: 0.72rem; font-weight: 600; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; color: var(--text, #e0e0e6);
+  }
+  .rating-card-meta {
+    font-size: 0.65rem; color: var(--text-dim, #8b8fa3);
+  }
+  .rating-selector {
+    display: flex; gap: 2px; justify-content: center; padding: 0 6px 8px;
+  }
+  .rating-num {
+    width: 22px; height: 22px; border-radius: 4px; border: 1px solid var(--border, #2a2e3e);
+    background: var(--surface, #141620); color: var(--text-dim, #8b8fa3); font-size: 0.7rem;
+    font-weight: 700; cursor: pointer; display: flex; align-items: center;
+    justify-content: center; transition: all 0.12s;
+  }
+  .rating-num:hover { background: var(--accent, #6c5ce7); color: #fff; border-color: var(--accent, #6c5ce7); }
+  .rating-num.selected { background: var(--green, #00b894); color: #fff; border-color: var(--green, #00b894); }
+  .rating-card-dismiss {
+    position: absolute; top: 4px; right: 4px;
+    background: rgba(0,0,0,0.6); border: none; color: #fff;
+    width: 20px; height: 20px; border-radius: 50%; cursor: pointer;
+    font-size: 0.7rem; display: flex; align-items: center; justify-content: center;
+  }
+  .rating-card-dismiss:hover { background: var(--red, #e17055); }
+  .rating-card.rated { opacity: 0; pointer-events: none; transition: opacity 0.5s ease; }
+  .rating-card .rated-check {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    font-size: 2rem; display: none;
+  }
+  .rating-card.rated .rated-check { display: block; }
+  .rating-bar-empty {
+    padding: 16px 20px; color: var(--text-dim, #8b8fa3); font-size: 0.85rem;
+    text-align: center;
+  }
 </style>
 <script src="/static/js/csrf.js"></script>
 </head>
@@ -3353,6 +3430,167 @@ if (document.readyState === 'loading') {
   init();
 }
 </script>
+
+<!-- ═══ Floating Rating Bar ═══ -->
+<script>
+let ratingBarCollapsed = true;
+let ratingItems = [];
+let ratingSynced = false;
+
+function toggleRatingBar() {
+  const bar = document.getElementById('ratingBar');
+  ratingBarCollapsed = !ratingBarCollapsed;
+  bar.classList.toggle('collapsed', ratingBarCollapsed);
+  bar.querySelector('.rating-bar-toggle').textContent = ratingBarCollapsed ? '⭐ Rate ▲' : '▼ Collapse';
+}
+
+async function syncRatingsOnce() {
+  if (ratingSynced || !currentUserId) return;
+  ratingSynced = true;
+  try {
+    await fetch('/api/ratings/sync/' + currentUserId, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}
+    });
+  } catch (e) { console.error('syncRatings error:', e); }
+}
+
+async function loadUnratedItems() {
+  if (!currentUserId) return;
+  await syncRatingsOnce();
+  try {
+    const r = await fetch('/api/ratings/unrated/' + currentUserId + '?limit=5');
+    if (!r.ok) return;
+    const data = await r.json();
+    ratingItems = data.items || [];
+    renderRatingBar();
+  } catch (e) { console.error('loadUnrated error:', e); }
+}
+
+function ratingImgUrl(embyId, imageType) {
+  if (!embyId) return '';
+  return '/api/emby/image/' + embyId + '/' + imageType + '?maxWidth=400';
+}
+
+function renderRatingBar() {
+  const bar = document.getElementById('ratingBar');
+  const body = document.getElementById('ratingBarBody');
+  const countEl = document.getElementById('ratingBarCount');
+  if (!ratingItems.length) {
+    body.innerHTML = '<div class="rating-bar-empty">All caught up — no unrated items.</div>';
+    countEl.textContent = '0';
+    bar.style.display = 'block';
+    return;
+  }
+  countEl.textContent = String(ratingItems.length);
+  body.innerHTML = ratingItems.map(function(item, idx) {
+    var posterHtml;
+    if (item.emby_id) {
+      var src = ratingImgUrl(item.emby_id, item.item_type === 'show' ? 'Primary' : 'Thumb');
+      var fbSrc = item.item_type === 'movie' ? ratingImgUrl(item.emby_id, 'Primary') : '';
+      posterHtml = '<img class="rating-card-poster" src="' + esc(src) + '"'
+                 + ' onerror="this.onerror=null;'
+                 + (fbSrc ? "this.src='" + esc(fbSrc) + "'" : "this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='flex')")
+                 + '">'
+                 + '<div class="rating-card-poster-ph" style="display:none">'
+                 + (item.item_type === 'show' ? '📺' : '🎬') + '</div>';
+    } else {
+      posterHtml = '<div class="rating-card-poster-ph">'
+                 + (item.item_type === 'show' ? '📺' : '🎬') + '</div>';
+    }
+    var meta = (item.item_type === 'show' ? 'Show' : 'Movie');
+    if (item.year) meta += ' · ' + item.year;
+    var nums = '';
+    for (var n = 1; n <= 10; n++) {
+      nums += '<button class="rating-num" data-idx="' + idx + '" data-val="' + n
+            + '" onclick="submitDashRating(' + idx + ',' + n + ',this)">' + n + '</button>';
+    }
+    return '<div class="rating-card" id="dashRatingCard' + idx + '">'
+      + '<button class="rating-card-dismiss" onclick="dismissDashRating(' + idx + ')" title="Skip">✕</button>'
+      + '<span class="rated-check">✓</span>'
+      + posterHtml
+      + '<div class="rating-card-info">'
+      + '<div class="rating-card-title" title="' + esc(item.title) + '">' + esc(item.title) + '</div>'
+      + '<div class="rating-card-meta">' + esc(meta) + '</div>'
+      + '</div>'
+      + '<div class="rating-selector">' + nums + '</div>'
+      + '</div>';
+  }).join('');
+  bar.style.display = 'block';
+}
+
+async function submitDashRating(idx, value, btnEl) {
+  var item = ratingItems[idx];
+  if (!item) return;
+  var card = document.getElementById('dashRatingCard' + idx);
+  card.querySelectorAll('.rating-num').forEach(function(b) { b.classList.remove('selected'); });
+  btnEl.classList.add('selected');
+  try {
+    var r = await fetch('/api/rate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        user_id: currentUserId,
+        imdb_id: item.imdb_id || null,
+        tmdb_id: item.tmdb_id || null,
+        rating: value,
+        item_type: item.item_type,
+        title: item.title
+      })
+    });
+    if (!r.ok) {
+      var errData = await r.json().catch(function() { return {}; });
+      throw new Error(errData.detail || 'HTTP ' + r.status);
+    }
+    card.classList.add('rated');
+    setTimeout(function() {
+      ratingItems = ratingItems.filter(function(_, i) { return i !== idx; });
+      renderRatingBar();
+      loadUnratedItems();
+    }, 800);
+  } catch (e) {
+    console.error('submitDashRating error:', e);
+    showToast('rating', 'error', null, e.message || 'Rating failed');
+    btnEl.classList.remove('selected');
+  }
+}
+
+async function dismissDashRating(idx) {
+  var item = ratingItems[idx];
+  if (!item) return;
+  try {
+    await fetch('/api/ratings/dismiss/' + currentUserId, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ item_key: item.item_key })
+    });
+  } catch (e) { console.error('dismissDashRating error:', e); }
+  ratingItems.splice(idx, 1);
+  renderRatingBar();
+}
+
+// Load rating bar on user switch
+var _origSwitchUser = switchUser;
+switchUser = function() {
+  _origSwitchUser();
+  ratingSynced = false;
+  setTimeout(loadUnratedItems, 600);
+};
+
+// Also load on init after a delay
+var _origInit = init;
+init = function() {
+  _origInit();
+  setTimeout(loadUnratedItems, 1500);
+};
+</script>
+
+<div class="rating-bar collapsed" id="ratingBar" style="display:none">
+  <button class="rating-bar-toggle" onclick="toggleRatingBar()">⭐ Rate ▲</button>
+  <div class="rating-bar-header" onclick="toggleRatingBar()">
+    <h3>⭐ Rate Your Watches <span class="rb-count" id="ratingBarCount">0</span></h3>
+  </div>
+  <div class="rating-bar-body" id="ratingBarBody"></div>
+</div>
 
 </body>
 </html>

@@ -224,6 +224,33 @@
 
     .reason-icon { margin-right: 4px; }
 
+    /* Inline rating on predictions */
+    .pred-rate-section {
+      margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .pred-rate-label { font-size: 0.78rem; color: var(--text-dim); font-weight: 600; }
+    .pred-rate-nums { display: flex; gap: 3px; }
+    .pred-rate-num {
+      width: 26px; height: 26px; border-radius: 5px; border: 1px solid var(--border);
+      background: var(--surface-hover); color: var(--text-dim); font-size: 0.75rem;
+      font-weight: 700; cursor: pointer; display: flex; align-items: center;
+      justify-content: center; transition: all 0.12s;
+    }
+    .pred-rate-num:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .pred-rate-num.selected { background: var(--green); color: #fff; border-color: var(--green); }
+    .pred-rate-num.suggested {
+      border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);
+    }
+    .pred-agree-btn {
+      background: var(--accent); color: #fff; border: none; border-radius: 6px;
+      padding: 5px 12px; font-size: 0.75rem; font-weight: 600; cursor: pointer;
+    }
+    .pred-agree-btn:hover { filter: brightness(1.15); }
+    .pred-rated-msg {
+      font-size: 0.78rem; color: var(--green); font-weight: 600;
+    }
+
     /* Insights section */
     .insights {
       display: grid;
@@ -573,6 +600,9 @@
       document.getElementById('insights').innerHTML = html;
     }
 
+    // Track which predictions have been rated this session
+    const ratedPredictions = new Set();
+
     function renderTopPredictions() {
       if (!allPredictions.length) {
         document.getElementById('topPredictions').innerHTML = 
@@ -586,12 +616,35 @@
         String(a.title || '').localeCompare(String(b.title || ''))
       ).slice(0, 12);
 
-      const html = sorted.map(p => {
+      const html = sorted.map((p, idx) => {
         const confidence = getConfidenceLevel(p.confidence);
         const reasons = p.explanation
           ? String(p.explanation).replace(/^Based on\s*/i, '').split(';').map(s => s.trim()).filter(Boolean).slice(0, 3)
           : [];
         const overview = p.overview || '';
+        const suggested = Math.round(p.predicted_rating);
+        const predKey = p.imdb_id || p.tmdb_id || p.title;
+        const alreadyRated = ratedPredictions.has(predKey);
+        const hasIds = p.imdb_id || p.tmdb_id;
+
+        // Rating section
+        let rateSection = '';
+        if (alreadyRated) {
+          rateSection = `<div class="pred-rate-section">
+            <span class="pred-rated-msg">✓ Rated!</span>
+          </div>`;
+        } else if (hasIds) {
+          let nums = '';
+          for (let n = 1; n <= 10; n++) {
+            const sugClass = (n === suggested) ? ' suggested' : '';
+            nums += `<button class="pred-rate-num${sugClass}" onclick="ratePrediction(${idx},${n},this)">${n}</button>`;
+          }
+          rateSection = `<div class="pred-rate-section" id="predRate${idx}">
+            <span class="pred-rate-label">Your rating:</span>
+            <button class="pred-agree-btn" onclick="ratePrediction(${idx},${suggested},this)" title="Agree with ML prediction">👍 ${suggested}/10</button>
+            <div class="pred-rate-nums">${nums}</div>
+          </div>`;
+        }
 
         return `
           <div class="prediction-card">
@@ -615,6 +668,7 @@
                     </div>
                   `).join('')}
                 </div>` : ''}
+                ${rateSection}
               </div>
             </div>
           </div>
@@ -622,6 +676,52 @@
       }).join('');
 
       document.getElementById('topPredictions').innerHTML = html;
+    }
+
+    async function ratePrediction(idx, value, btnEl) {
+      const sorted = allPredictions.sort((a, b) =>
+        (b.predicted_rating - a.predicted_rating) ||
+        ((b.confidence ?? 0) - (a.confidence ?? 0)) ||
+        String(a.title || '').localeCompare(String(b.title || ''))
+      ).slice(0, 12);
+      const p = sorted[idx];
+      if (!p) return;
+
+      const section = document.getElementById('predRate' + idx);
+      if (section) {
+        section.querySelectorAll('.pred-rate-num').forEach(b => b.classList.remove('selected'));
+        if (btnEl.classList.contains('pred-rate-num')) btnEl.classList.add('selected');
+      }
+
+      try {
+        const userId = getCurrentUserId();
+        const r = await fetch('/api/rate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            user_id: parseInt(userId),
+            imdb_id: p.imdb_id || null,
+            tmdb_id: p.tmdb_id || null,
+            rating: value,
+            item_type: p.item_type || 'movie',
+            title: p.title
+          })
+        });
+        if (!r.ok) {
+          const errData = await r.json().catch(() => ({}));
+          throw new Error(errData.detail || 'HTTP ' + r.status);
+        }
+        const predKey = p.imdb_id || p.tmdb_id || p.title;
+        ratedPredictions.add(predKey);
+        if (section) {
+          section.innerHTML = '<span class="pred-rated-msg">✓ Rated ' + value + '/10</span>';
+        }
+        showNotification('Rated "' + (p.title || '') + '" ' + value + '/10', 'success');
+      } catch (e) {
+        console.error('ratePrediction error:', e);
+        showNotification('Rating failed: ' + e.message, 'error');
+        if (btnEl.classList.contains('pred-rate-num')) btnEl.classList.remove('selected');
+      }
     }
 
     function getConfidenceLevel(confidence) {
