@@ -9326,8 +9326,17 @@ async def rate_item(
         raise HTTPException(400, "user_id and rating are required")
     if not isinstance(rating, (int, float)) or rating < 1 or rating > 10:
         raise HTTPException(400, "rating must be 1-10")
+
+    # Try to resolve missing IDs from library cache (especially for shows)
+    if not imdb_id and not tmdb_id and title:
+        cached = await LibraryCache.find_by_title(title)
+        if cached:
+            pids = cached.get("ProviderIds", {})
+            imdb_id = pids.get("Imdb") or pids.get("imdb")
+            tmdb_id = pids.get("Tmdb") or pids.get("tmdb")
+
     if not imdb_id and not tmdb_id:
-        raise HTTPException(400, "imdb_id or tmdb_id required")
+        raise HTTPException(400, "imdb_id or tmdb_id required (could not resolve from title)")
 
     rating = int(rating)
 
@@ -9532,3 +9541,140 @@ async def get_user_ratings(
         ],
         "count": len(rows),
     }
+
+
+@router.post("/api/ratings/sync/{user_id}")
+async def sync_ratings_from_providers(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Pull ratings from Simkl + MDBList and store locally with imdb_id/tmdb_id.
+
+    This ensures the unrated-items endpoint correctly filters out items
+    the user has already rated on either provider. Preserves source='user' ratings.
+    """
+    from app.models.schema import UserRating
+    from sqlalchemy import delete
+
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    log = structlog.get_logger()
+    providers = await _get_active_providers(db)
+    imported_rows: list[dict] = []
+    seen_imdb: set[str] = set()
+
+    # ── Simkl ratings ──
+    if "simkl" in providers and user.simkl_access_token:
+        try:
+            simkl = SimklClient(
+                access_token=user.simkl_access_token,
+                token_expires=user.simkl_token_expires,
+            )
+            raw = await simkl.get_user_ratings(kind="all")
+            for entry in raw:
+                item = entry.get("movie") or entry.get("show") or entry
+                ids = item.get("ids", {})
+                imdb = ids.get("imdb", "")
+                tmdb = str(ids.get("tmdb", "")) if ids.get("tmdb") else ""
+                if imdb:
+                    seen_imdb.add(imdb)
+                imported_rows.append({
+                    "simkl_id": str(ids.get("simkl") or ids.get("simkl_id") or ""),
+                    "title": item.get("title", ""),
+                    "item_type": "movie" if entry.get("_type", "").startswith("movie") or "movie" in entry else "show",
+                    "rating": entry.get("rating", 0),
+                    "imdb_id": imdb or None,
+                    "tmdb_id": tmdb or None,
+                    "rated_at": entry.get("rated_at"),
+                })
+            await simkl.close()
+            log.info("ratings_sync.simkl_fetched", count=len(raw), user_id=user_id)
+        except Exception as e:
+            log.warning("ratings_sync.simkl_failed", error=str(e)[:200])
+
+    # ── MDBList ratings ──
+    if "mdblist" in providers:
+        try:
+            key = await _get_mdblist_key(db)
+            if key:
+                from app.utils.mdblist_client import MDBListClient
+                mdb = MDBListClient(api_key=key)
+                try:
+                    mdb_ratings = await mdb.get_ratings()
+                    if isinstance(mdb_ratings, dict):
+                        for kind, item_type in (("movies", "movie"), ("shows", "show")):
+                            for item in mdb_ratings.get(kind, []):
+                                inner = item.get("movie") or item.get("show") or item
+                                rating = item.get("rating")
+                                if rating is None:
+                                    continue
+                                ids = inner.get("ids", {})
+                                if not isinstance(ids, dict):
+                                    ids = {}
+                                imdb = ids.get("imdb", "") or inner.get("imdb_id", "") or ""
+                                if not imdb:
+                                    continue
+                                if imdb in seen_imdb:
+                                    continue
+                                seen_imdb.add(imdb)
+                                tmdb = str(ids.get("tmdb", "")) if ids.get("tmdb") else ""
+                                imported_rows.append({
+                                    "simkl_id": str(ids.get("simkl") or ""),
+                                    "title": inner.get("title", ""),
+                                    "item_type": item_type,
+                                    "rating": int(round(float(rating))),
+                                    "imdb_id": imdb or None,
+                                    "tmdb_id": tmdb or None,
+                                    "rated_at": item.get("rated_at"),
+                                })
+                finally:
+                    await mdb.close()
+                log.info("ratings_sync.mdblist_fetched", count=len(imported_rows), user_id=user_id)
+        except Exception as e:
+            log.warning("ratings_sync.mdblist_failed", error=str(e)[:200])
+
+    # ── Persist: delete old imports, keep user-submitted ──
+    await db.execute(
+        delete(UserRating).where(
+            UserRating.user_id == user_id,
+            UserRating.source != "user",
+        )
+    )
+
+    user_rated_q = select(UserRating.imdb_id).where(
+        UserRating.user_id == user_id,
+        UserRating.source == "user",
+        UserRating.imdb_id.isnot(None),
+    )
+    user_rated_imdb = set(r for r in (await db.execute(user_rated_q)).scalars().all() if r)
+
+    added = 0
+    for r in imported_rows:
+        if r.get("imdb_id") and r["imdb_id"] in user_rated_imdb:
+            continue
+        if not r.get("rating"):
+            continue
+        db.add(UserRating(
+            user_id=user_id,
+            simkl_id=r.get("simkl_id") or "",
+            title=r["title"],
+            item_type=r["item_type"],
+            rating=r["rating"],
+            source="imported",
+            imdb_id=r.get("imdb_id"),
+            tmdb_id=r.get("tmdb_id"),
+            rated_at=(
+                datetime.fromisoformat(r["rated_at"].replace("Z", "+00:00"))
+                .astimezone(timezone.utc)
+                .replace(tzinfo=None)
+                if r.get("rated_at") else None
+            ),
+        ))
+        added += 1
+
+    await db.commit()
+    log.info("ratings_sync.done", imported=added, user_id=user_id)
+    return {"ok": True, "imported": added, "providers": list(providers)}

@@ -392,10 +392,31 @@ class MLPredictorService:
         if mdb_added:
             log.info("ml_predictor.mdblist_ratings_merged", count=mdb_added)
 
-        # persist to DB
+        # persist to DB — preserve user-submitted ratings
         async with async_session() as db:
-            await db.execute(delete(UserRating).where(UserRating.user_id == user.id))
+            # Only delete imported ratings; keep source='user' rows
+            await db.execute(
+                delete(UserRating).where(
+                    UserRating.user_id == user.id,
+                    UserRating.source != "user",
+                )
+            )
+            # Load existing user-submitted imdb_ids to avoid duplicates
+            user_rated_q = select(UserRating.imdb_id).where(
+                UserRating.user_id == user.id,
+                UserRating.source == "user",
+                UserRating.imdb_id.isnot(None),
+            )
+            user_rated_imdb = set(
+                r for r in (await db.execute(user_rated_q)).scalars().all() if r
+            )
             for r in rows:
+                ids = r.get("ids", {})
+                imdb = ids.get("imdb", "") or ""
+                # Skip if user already rated this item manually
+                if imdb and imdb in user_rated_imdb:
+                    continue
+                tmdb = str(ids.get("tmdb", "")) if ids.get("tmdb") else ""
                 db.add(UserRating(
                     user_id=user.id,
                     simkl_id=r["simkl_id"],
@@ -407,6 +428,9 @@ class MLPredictorService:
                     year=r["year"],
                     runtime=r["runtime"],
                     simkl_rating=r.get("simkl_rating"),
+                    source="imported",
+                    imdb_id=imdb or None,
+                    tmdb_id=tmdb or None,
                     rated_at=(
                         datetime.fromisoformat(r["rated_at"].replace("Z", "+00:00"))
                         .astimezone(timezone.utc)
