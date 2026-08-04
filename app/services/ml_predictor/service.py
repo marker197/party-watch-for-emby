@@ -181,7 +181,7 @@ class MLPredictorService:
                             select(UserRating).where(
                                 UserRating.user_id == user.id,
                                 UserRating.title == item["title"],
-                            )
+                            ).limit(1)
                         )
                         row = result.scalar_one_or_none()
                         if row and (not row.genres or row.genres == []):
