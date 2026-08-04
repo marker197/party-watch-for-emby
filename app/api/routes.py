@@ -9128,3 +9128,389 @@ async def get_history_recommendations(
         pass
 
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# User Rating System
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/ratings/unrated/{user_id}")
+async def get_unrated_items(
+    user_id: int,
+    limit: int = Query(5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return recent watch-history items that the user hasn't rated yet.
+
+    Cross-references WatchHistory against UserRating (by imdb_id) and
+    DismissedRatingItem to find items eligible for rating prompts.
+    Returns movie-level items and series-level items (collapsed from episodes).
+    """
+    from app.models.schema import WatchHistory, UserRating, DismissedRatingItem
+    from sqlalchemy import cast, Date
+
+    # 1) Existing rated imdb_ids for this user
+    rated_q = select(UserRating.imdb_id).where(
+        UserRating.user_id == user_id,
+        UserRating.imdb_id.isnot(None),
+    )
+    rated_rows = (await db.execute(rated_q)).scalars().all()
+    rated_imdb = set(r for r in rated_rows if r)
+
+    # Also include simkl_id-based rated items (older imports without imdb_id)
+    rated_simkl_q = select(UserRating.simkl_id).where(
+        UserRating.user_id == user_id,
+    )
+    rated_simkl_rows = (await db.execute(rated_simkl_q)).scalars().all()
+    rated_simkl = set(r for r in rated_simkl_rows if r)
+
+    # 2) Dismissed item keys
+    dismissed_q = select(DismissedRatingItem.item_key).where(
+        DismissedRatingItem.user_id == user_id,
+    )
+    dismissed_rows = (await db.execute(dismissed_q)).scalars().all()
+    dismissed_keys = set(dismissed_rows)
+
+    # 3) Recent watch history (last 90 days, completed items only)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=90)
+    wh_q = (
+        select(WatchHistory)
+        .where(
+            WatchHistory.user_id == user_id,
+            WatchHistory.watched_at >= cutoff,
+        )
+        .order_by(WatchHistory.watched_at.desc())
+        .limit(500)
+    )
+    wh_rows = (await db.execute(wh_q)).scalars().all()
+
+    # 4) Collapse episodes to series level, movies stay as-is
+    # Key: imdb_id (preferred) or normalised title
+    seen: dict[str, dict] = {}
+    for r in wh_rows:
+        # Skip partial watches
+        if r.progress is not None and r.progress < 80:
+            continue
+
+        if r.item_type == "episode":
+            # Use series-level info
+            display_title = r.series_name or r.title or ""
+            item_type_out = "show"
+            # For series, we need the series imdb_id — but WatchHistory stores episode-level IDs
+            # Use series_name as fallback key
+            item_imdb = None  # episode imdb != series imdb
+            item_tmdb = None
+            item_simkl = r.simkl_id
+            key = f"show:{(display_title).strip().lower()}"
+        else:
+            display_title = r.title or ""
+            item_type_out = "movie"
+            item_imdb = r.imdb_id
+            item_tmdb = r.tmdb_id
+            item_simkl = r.simkl_id
+            key = f"imdb:{r.imdb_id}" if r.imdb_id else f"movie:{display_title.strip().lower()}"
+
+        if not display_title.strip():
+            continue
+
+        # Skip if already rated
+        if item_imdb and item_imdb in rated_imdb:
+            continue
+        if item_simkl and item_simkl in rated_simkl:
+            continue
+
+        # Skip if dismissed
+        if key in dismissed_keys:
+            continue
+
+        if key in seen:
+            continue
+
+        # Resolve emby_id for poster
+        emby_id = r.emby_id
+        if not emby_id:
+            resolved = None
+            if item_imdb:
+                resolved = await LibraryCache.find_by_provider_id("Imdb", item_imdb)
+            if not resolved and item_tmdb:
+                resolved = await LibraryCache.find_by_provider_id("Tmdb", item_tmdb)
+            if not resolved and display_title:
+                resolved = await LibraryCache.find_by_title(display_title)
+            if resolved:
+                emby_id = resolved.get("emby_id") or resolved.get("Id")
+
+        # For shows, try to get series-level imdb from library cache
+        if item_type_out == "show" and not item_imdb and display_title:
+            cache_item = await LibraryCache.find_by_title(display_title)
+            if cache_item:
+                pids = cache_item.get("ProviderIds", {})
+                item_imdb = pids.get("Imdb") or pids.get("imdb")
+                item_tmdb = pids.get("Tmdb") or pids.get("tmdb")
+                if not emby_id:
+                    emby_id = cache_item.get("emby_id") or cache_item.get("Id")
+
+        # Re-check rated after resolving series imdb
+        if item_imdb and item_imdb in rated_imdb:
+            continue
+        # Update key with resolved imdb
+        if item_imdb and key.startswith("show:"):
+            real_key = f"imdb:{item_imdb}"
+            if real_key in dismissed_keys:
+                continue
+            key = real_key
+
+        seen[key] = {
+            "item_key": key,
+            "title": display_title,
+            "item_type": item_type_out,
+            "imdb_id": item_imdb,
+            "tmdb_id": item_tmdb,
+            "simkl_id": item_simkl,
+            "emby_id": emby_id,
+            "watched_at": r.watched_at.isoformat() if r.watched_at else None,
+            "year": None,
+        }
+
+        if len(seen) >= limit:
+            break
+
+    # Try to enrich year from library cache
+    for item in seen.values():
+        if item["emby_id"]:
+            cached = await LibraryCache.get_item(item["emby_id"])
+            if cached:
+                item["year"] = cached.get("ProductionYear")
+
+    return {"items": list(seen.values()), "total_unrated": len(seen)}
+
+
+@router.post("/api/rate")
+async def rate_item(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Rate an item and push to Simkl + MDBList.
+
+    Payload: {user_id, imdb_id, tmdb_id?, rating (1-10), item_type (movie|show), title?}
+    """
+    from app.models.schema import UserRating
+
+    user_id = payload.get("user_id")
+    imdb_id = payload.get("imdb_id")
+    tmdb_id = payload.get("tmdb_id")
+    rating = payload.get("rating")
+    item_type = payload.get("item_type", "movie")
+    title = payload.get("title", "")
+
+    if not user_id or not rating:
+        raise HTTPException(400, "user_id and rating are required")
+    if not isinstance(rating, (int, float)) or rating < 1 or rating > 10:
+        raise HTTPException(400, "rating must be 1-10")
+    if not imdb_id and not tmdb_id:
+        raise HTTPException(400, "imdb_id or tmdb_id required")
+
+    rating = int(rating)
+
+    # Verify user exists
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    log = structlog.get_logger()
+    results = {"simkl": None, "mdblist": None, "local": None}
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    # ── Build provider payloads ──────────────────────────────────────
+    ids_obj = {}
+    if imdb_id:
+        ids_obj["imdb"] = imdb_id
+    if tmdb_id:
+        try:
+            ids_obj["tmdb"] = int(tmdb_id)
+        except (ValueError, TypeError):
+            ids_obj["tmdb"] = tmdb_id
+
+    # ── Push to Simkl ────────────────────────────────────────────────
+    providers = await _get_active_providers(db)
+    if "simkl" in providers and user.simkl_access_token:
+        try:
+            simkl = SimklClient(
+                access_token=user.simkl_access_token,
+                token_expires=user.simkl_token_expires,
+            )
+            simkl_item = {
+                "ids": ids_obj,
+                "rating": rating,
+                "rated_at": now_str,
+                "_type": "movies" if item_type == "movie" else "shows",
+            }
+            if title:
+                simkl_item["title"] = title
+            resp = await simkl.add_ratings([simkl_item])
+            results["simkl"] = {"ok": True, "response": resp}
+            log.info("rating.simkl_pushed", user_id=user_id, imdb=imdb_id, rating=rating)
+            await simkl.close()
+        except Exception as e:
+            results["simkl"] = {"ok": False, "error": str(e)[:200]}
+            log.warning("rating.simkl_failed", error=str(e)[:200])
+
+    # ── Push to MDBList ──────────────────────────────────────────────
+    if "mdblist" in providers:
+        try:
+            key = await _get_mdblist_key(db)
+            if key:
+                from app.utils.mdblist_client import MDBListClient
+                mdb = MDBListClient(api_key=key)
+                mdb_item = {"ids": {}, "rating": rating, "rated_at": now_str}
+                if imdb_id:
+                    mdb_item["ids"]["imdb"] = imdb_id
+                if tmdb_id:
+                    try:
+                        mdb_item["ids"]["tmdb"] = int(tmdb_id)
+                    except (ValueError, TypeError):
+                        pass
+
+                if item_type == "movie":
+                    resp = await mdb.add_ratings(movies=[mdb_item])
+                else:
+                    resp = await mdb.add_ratings(shows=[mdb_item])
+                results["mdblist"] = {"ok": True, "response": resp}
+                log.info("rating.mdblist_pushed", user_id=user_id, imdb=imdb_id, rating=rating)
+                await mdb.close()
+        except Exception as e:
+            results["mdblist"] = {"ok": False, "error": str(e)[:200]}
+            log.warning("rating.mdblist_failed", error=str(e)[:200])
+
+    # ── Store locally in UserRating ──────────────────────────────────
+    try:
+        # Check if a rating already exists (update vs insert)
+        existing_q = select(UserRating).where(
+            UserRating.user_id == user_id,
+        )
+        if imdb_id:
+            existing_q = existing_q.where(UserRating.imdb_id == imdb_id)
+        elif tmdb_id:
+            existing_q = existing_q.where(UserRating.tmdb_id == tmdb_id)
+
+        existing = (await db.execute(existing_q)).scalar_one_or_none()
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        if existing:
+            existing.rating = rating
+            existing.rated_at = now_naive
+            existing.source = "user"
+            if imdb_id:
+                existing.imdb_id = imdb_id
+            if tmdb_id:
+                existing.tmdb_id = tmdb_id
+        else:
+            new_rating = UserRating(
+                user_id=user_id,
+                simkl_id=imdb_id or tmdb_id or "",
+                title=title,
+                item_type=item_type,
+                rating=rating,
+                rated_at=now_naive,
+                source="user",
+                imdb_id=imdb_id,
+                tmdb_id=tmdb_id,
+            )
+            db.add(new_rating)
+
+        await db.commit()
+        results["local"] = {"ok": True}
+    except Exception as e:
+        await db.rollback()
+        results["local"] = {"ok": False, "error": str(e)[:200]}
+        log.warning("rating.local_failed", error=str(e)[:200])
+
+    # ── Remove from dismissed list if present ────────────────────────
+    from app.models.schema import DismissedRatingItem
+    try:
+        dismiss_key = f"imdb:{imdb_id}" if imdb_id else f"tmdb:{tmdb_id}"
+        dismiss_q = select(DismissedRatingItem).where(
+            DismissedRatingItem.user_id == user_id,
+            DismissedRatingItem.item_key == dismiss_key,
+        )
+        dismissed = (await db.execute(dismiss_q)).scalar_one_or_none()
+        if dismissed:
+            await db.delete(dismissed)
+            await db.commit()
+    except Exception:
+        pass
+
+    any_ok = any(r and r.get("ok") for r in results.values())
+    return {"ok": any_ok, "rating": rating, "results": results}
+
+
+@router.post("/api/ratings/dismiss/{user_id}")
+async def dismiss_rating_item(
+    user_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Dismiss an item from the rating prompt so it doesn't reappear.
+
+    Payload: {item_key: "imdb:tt1234567"}
+    """
+    from app.models.schema import DismissedRatingItem
+
+    item_key = payload.get("item_key", "").strip()
+    if not item_key:
+        raise HTTPException(400, "item_key required")
+
+    # Check if already dismissed
+    existing = (await db.execute(
+        select(DismissedRatingItem).where(
+            DismissedRatingItem.user_id == user_id,
+            DismissedRatingItem.item_key == item_key,
+        )
+    )).scalar_one_or_none()
+
+    if not existing:
+        db.add(DismissedRatingItem(
+            user_id=user_id,
+            item_key=item_key,
+        ))
+        await db.commit()
+
+    return {"ok": True, "item_key": item_key}
+
+
+@router.get("/api/ratings/user/{user_id}")
+async def get_user_ratings(
+    user_id: int,
+    source: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return user's ratings, optionally filtered by source (user/imported)."""
+    from app.models.schema import UserRating
+
+    q = select(UserRating).where(UserRating.user_id == user_id)
+    if source:
+        q = q.where(UserRating.source == source)
+    q = q.order_by(UserRating.rated_at.desc().nullslast()).limit(limit)
+
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "title": r.title,
+                "item_type": r.item_type,
+                "rating": r.rating,
+                "imdb_id": r.imdb_id,
+                "tmdb_id": r.tmdb_id,
+                "simkl_id": r.simkl_id,
+                "source": r.source or "imported",
+                "rated_at": r.rated_at.isoformat() if r.rated_at else None,
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }

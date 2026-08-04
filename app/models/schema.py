@@ -95,8 +95,27 @@ class UserRating(Base):
     simkl_rating = Column(Float)    # community rating
     network = Column(String(128))
     rated_at = Column(DateTime)
+    source = Column(String(32), default="imported")  # imported | user
+    imdb_id = Column(String(32), nullable=True)
+    tmdb_id = Column(String(32), nullable=True)
 
     user = relationship("User", back_populates="ratings")
+
+
+class DismissedRatingItem(Base):
+    """Items the user chose to skip in the rating prompt."""
+    __tablename__ = "dismissed_rating_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    item_key = Column(String(128), nullable=False)  # 'imdb:tt1234567' or 'title:Movie Name'
+    dismissed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    user = relationship("User", foreign_keys=[user_id])
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "item_key", name="uq_dismissed_rating_user_item"),
+    )
 
 
 class Prediction(Base):
