@@ -180,13 +180,35 @@ class LibraryHealthService:
             # This series has been started but not finished
             completion = round(played_eps / total_eps * 100, 1)
 
-            pids = series.get("ProviderIds", {})
-            imdb_id = pids.get("Imdb")
-            tvdb_id = pids.get("Tvdb")
-            tmdb_id = pids.get("Tmdb")
+            # Resolve provider IDs — library cache is the most reliable source
+            # (Emby bulk endpoint may not return ProviderIds for all items)
+            title_str = series.get("Name", "")
+            imdb_id = None
+            tvdb_id = None
+            tmdb_id = None
+
+            # 1. Try library cache by title (populated during cache indexing)
+            try:
+                cached = await LibraryCache.find_by_title(title_str)
+                if cached:
+                    cpids = cached.get("provider_ids", {})
+                    imdb_id = cpids.get("Imdb") or cpids.get("imdb")
+                    tvdb_id = cpids.get("Tvdb") or cpids.get("tvdb")
+                    tmdb_id = cpids.get("Tmdb") or cpids.get("tmdb")
+            except Exception:
+                pass
+
+            # 2. Supplement from Emby response ProviderIds
+            pids = series.get("ProviderIds") or {}
+            if not imdb_id:
+                imdb_id = pids.get("Imdb") or pids.get("imdb")
+            if not tvdb_id:
+                tvdb_id = pids.get("Tvdb") or pids.get("tvdb")
+            if not tmdb_id:
+                tmdb_id = pids.get("Tmdb") or pids.get("tmdb")
 
             results.append({
-                "title": series.get("Name", ""),
+                "title": title_str,
                 "year": series.get("ProductionYear"),
                 "emby_id": series.get("Id"),
                 "imdb_id": imdb_id,
