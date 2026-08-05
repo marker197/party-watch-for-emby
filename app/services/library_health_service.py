@@ -27,10 +27,20 @@ from app.utils.database import async_session
 from app.models.schema import User
 from sqlalchemy import select
 
+import re as _re
+
 log = structlog.get_logger()
 
 CACHE_KEY = "library_health_v1"
 CACHE_TTL = 6 * 3600  # 6 hours
+
+
+def _normalize_title(title: str) -> str:
+    """Strip punctuation and extra whitespace for fuzzy title comparison.
+    'Fired Up!' → 'fired up', 'Spider-Man: No Way Home' → 'spider man no way home'
+    """
+    t = _re.sub(r"[^\w\s]", " ", title.lower())
+    return " ".join(t.split())
 
 
 class LibraryHealthService:
@@ -67,7 +77,7 @@ class LibraryHealthService:
         try:
             # ── 1. Incomplete series ────────────────────────────────────
             report["incomplete_series"] = await self._scan_incomplete_series(
-                emby, user.emby_user_id,
+                emby, user.emby_user_id, simkl,
             )
 
             # ── 2. Simkl watched, not in library ───────────────────────
@@ -125,6 +135,7 @@ class LibraryHealthService:
 
     async def _scan_incomplete_series(
         self, emby: EmbyClient, emby_user_id: str,
+        simkl: SimklClient | None = None,
     ) -> list[dict]:
         """Find series in Emby where the user has started but not finished."""
         results: list[dict] = []
@@ -170,17 +181,43 @@ class LibraryHealthService:
             completion = round(played_eps / total_eps * 100, 1)
 
             pids = series.get("ProviderIds", {})
+            imdb_id = pids.get("Imdb")
+            tvdb_id = pids.get("Tvdb")
+            tmdb_id = pids.get("Tmdb")
+
             results.append({
                 "title": series.get("Name", ""),
                 "year": series.get("ProductionYear"),
                 "emby_id": series.get("Id"),
-                "imdb_id": pids.get("Imdb"),
-                "tvdb_id": pids.get("Tvdb"),
+                "imdb_id": imdb_id,
+                "tvdb_id": tvdb_id,
+                "tmdb_id": tmdb_id,
                 "played_episodes": played_eps,
                 "unplayed_episodes": unplayed,
                 "total_episodes": total_eps,
                 "completion_pct": completion,
             })
+
+        # ── Resolve missing IMDB IDs via Simkl ──
+        if simkl:
+            for item in results:
+                if item.get("imdb_id"):
+                    continue
+                try:
+                    search_result = None
+                    if item.get("tmdb_id"):
+                        search_result = await simkl.search_by_id("tmdb", str(item["tmdb_id"]))
+                    if not search_result and item.get("tvdb_id"):
+                        search_result = await simkl.search_by_id("tvdb", str(item["tvdb_id"]))
+                    if search_result and isinstance(search_result, list) and search_result:
+                        found_ids = search_result[0].get("ids", {})
+                        if found_ids.get("imdb"):
+                            item["imdb_id"] = found_ids["imdb"]
+                        if not item.get("tvdb_id") and found_ids.get("tvdb"):
+                            item["tvdb_id"] = str(found_ids["tvdb"])
+                except Exception:
+                    pass
+                await asyncio.sleep(0.2)  # Rate limit courtesy
 
         # Sort: most complete first (closest to finishing)
         results.sort(key=lambda x: x["completion_pct"], reverse=True)
@@ -437,7 +474,7 @@ class LibraryHealthService:
                 rel_imdb = rel_ids.get("imdb", "")
                 if rel_imdb and rel_imdb == entry.get("imdb_id"):
                     continue
-                if rel_title.strip().lower() == entry.get("title", "").strip().lower():
+                if _normalize_title(rel_title) == _normalize_title(entry.get("title", "")):
                     continue
 
                 # Resolve IMDB/TMDB if missing (Simkl recommendations often
@@ -461,11 +498,16 @@ class LibraryHealthService:
                 if rel_imdb and rel_imdb == entry.get("imdb_id"):
                     continue
 
-                # Dedup by title:year AND by IMDB ID
-                dedup = f"{rel_title}:{rel_year}"
+                # Dedup by normalized title AND by IMDB ID
+                norm_dedup = _normalize_title(rel_title)
+                dedup = f"{norm_dedup}:{rel_year}"
                 if dedup in seen_titles:
                     continue
                 if rel_imdb and rel_imdb in seen_imdb_ids:
+                    continue
+
+                # Skip items with no IMDB ID — can't link them
+                if not rel_imdb:
                     continue
 
                 in_library = await self._is_in_library(rel_ids, title=rel_title, year=rel_year)
@@ -509,15 +551,17 @@ class LibraryHealthService:
                 match = await LibraryCache.find_by_title(title, year=None)
                 if match and match.get("emby_id"):
                     return True
-            # Emby search fallback — cache may not have indexed this item
+            # Emby search fallback — cache may not have indexed this item,
+            # or title has punctuation differences (e.g. "Fired Up" vs "Fired Up!")
             try:
-                from app.utils.emby_client import EmbyClient
                 emby = EmbyClient()
                 try:
-                    results = await emby.search_items(title, item_type="Movie")
-                    for res in results:
-                        if res.get("Name", "").strip().lower() == title.strip().lower():
-                            return True
+                    norm_title = _normalize_title(title)
+                    for search_type in ("Movie", "Series"):
+                        results = await emby.search_items(title, item_type=search_type)
+                        for res in results:
+                            if _normalize_title(res.get("Name", "")) == norm_title:
+                                return True
                 finally:
                     await emby.close()
             except Exception:
