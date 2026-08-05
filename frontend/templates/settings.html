@@ -879,6 +879,68 @@
       <div id="notifyEvents"></div>
     </div>
 
+    <!-- Trakt Data Import -->
+    <div class="section">
+      <h2>📦 Trakt Data Import</h2>
+      <p style="color:var(--text-dim);margin-bottom:16px;">
+        Import your Trakt export zip to populate your watch history, ratings, and watchlist across the local database, Simkl, and MDBList in one go. Perfect for first-time setup or migration.
+      </p>
+
+      <!-- Upload -->
+      <div class="form-group">
+        <label>Upload Trakt Export (.zip)</label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="file" id="traktImportFile" accept=".zip" style="flex:1;padding:8px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;" />
+          <button class="btn btn-blue" onclick="parseTraktExport()" id="traktParseBtn">📂 Parse</button>
+        </div>
+        <div style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;">
+          Export from <a href="https://trakt.tv/settings/data" target="_blank" style="color:var(--blue);">trakt.tv/settings/data</a>, then upload the zip here.
+        </div>
+      </div>
+
+      <!-- Preview (hidden until parsed) -->
+      <div id="traktImportPreview" style="display:none;margin-top:16px;">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;">
+          <h3 style="font-size:0.92rem;margin-bottom:12px;color:var(--accent-light);">📋 Import Preview</h3>
+          <div id="traktImportSummary" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.85rem;"></div>
+
+          <!-- Checkboxes -->
+          <div style="margin-top:16px;display:flex;flex-direction:column;gap:8px;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="traktPushRatings" checked style="accent-color:var(--accent);"> Push Ratings
+              <span id="traktRatingCount" style="color:var(--text-dim);font-size:0.78rem;"></span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="traktPushWatched" checked style="accent-color:var(--accent);"> Push Watched History
+              <span id="traktWatchedCount" style="color:var(--text-dim);font-size:0.78rem;"></span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="traktPushWatchlist" checked style="accent-color:var(--accent);"> Push Watchlist
+              <span id="traktWatchlistCount" style="color:var(--text-dim);font-size:0.78rem;"></span>
+            </label>
+          </div>
+
+          <!-- Push button -->
+          <div style="margin-top:16px;display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-blue" onclick="pushTraktImport()" id="traktPushBtn" style="flex:1;">
+              🚀 Confirm & Push to Simkl + MDBList
+            </button>
+          </div>
+
+          <!-- Progress bar -->
+          <div id="traktImportProgress" style="display:none;margin-top:12px;">
+            <div style="background:var(--surface-hover);border-radius:6px;height:8px;overflow:hidden;">
+              <div id="traktProgressBar" style="background:var(--accent);height:100%;width:0%;transition:width 0.3s;"></div>
+            </div>
+            <div id="traktProgressText" style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;"></div>
+          </div>
+
+          <!-- Results (hidden until push completes) -->
+          <div id="traktImportResults" style="display:none;margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;font-size:0.82rem;"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Danger Zone -->
     <div class="section danger-zone">
       <h2>⚠️ Danger Zone</h2>
@@ -2740,6 +2802,156 @@
         btn.textContent = '🎭 Backfill Genres (for Stats)';
       }
       btn.disabled = false;
+    }
+
+    // ── Trakt Data Import ──────────────────────────────────────────────
+    let _traktImportId = null;
+    let _traktSummary = null;
+
+    async function parseTraktExport() {
+      const fileInput = document.getElementById('traktImportFile');
+      const btn = document.getElementById('traktParseBtn');
+      if (!fileInput.files || !fileInput.files[0]) {
+        showNotification('Please select a Trakt export zip file');
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = '⏳ Parsing…';
+
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+
+      try {
+        const res = await fetch('/api/import/trakt/parse', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Parse failed');
+
+        _traktImportId = data.import_id;
+        _traktSummary = data.summary;
+
+        // Build summary display
+        const summaryDiv = document.getElementById('traktImportSummary');
+        const labels = {
+          ratings_movies: '🎬 Movie Ratings',
+          ratings_shows: '📺 Show Ratings',
+          ratings_episodes: '🎞️ Episode Ratings',
+          watched_movies: '🎬 Watched Movies',
+          watched_shows: '📺 Watched Shows',
+          watched_history: '📜 History Entries',
+          watchlist: '📋 Watchlist Items',
+        };
+        summaryDiv.innerHTML = '';
+        for (const [key, label] of Object.entries(labels)) {
+          const count = data.summary[key] || 0;
+          if (count > 0) {
+            summaryDiv.innerHTML += `<div style="display:flex;justify-content:space-between;padding:4px 8px;background:var(--bg);border-radius:4px;"><span>${label}</span><strong>${count}</strong></div>`;
+          }
+        }
+
+        // Update count badges on checkboxes
+        const rCount = (data.summary.ratings_movies||0) + (data.summary.ratings_shows||0) + (data.summary.ratings_episodes||0);
+        const wCount = (data.summary.watched_movies||0) + (data.summary.watched_shows||0);
+        document.getElementById('traktRatingCount').textContent = rCount > 0 ? `(${rCount})` : '(0)';
+        document.getElementById('traktWatchedCount').textContent = wCount > 0 ? `(${wCount})` : '(0)';
+        document.getElementById('traktWatchlistCount').textContent = `(${data.summary.watchlist||0})`;
+
+        // Disable checkboxes with 0 items
+        document.getElementById('traktPushRatings').disabled = rCount === 0;
+        document.getElementById('traktPushWatched').disabled = wCount === 0;
+        document.getElementById('traktPushWatchlist').disabled = (data.summary.watchlist||0) === 0;
+
+        document.getElementById('traktImportPreview').style.display = '';
+        document.getElementById('traktImportResults').style.display = 'none';
+        showNotification(`Parsed ${data.total_items} items from Trakt export`);
+      } catch (e) {
+        showNotification('Error: ' + e.message);
+      }
+      btn.disabled = false;
+      btn.textContent = '📂 Parse';
+    }
+
+    async function pushTraktImport() {
+      if (!_traktImportId) {
+        showNotification('No parsed import — please upload and parse first');
+        return;
+      }
+      const btn = document.getElementById('traktPushBtn');
+      const progressWrap = document.getElementById('traktImportProgress');
+      const progressBar = document.getElementById('traktProgressBar');
+      const progressText = document.getElementById('traktProgressText');
+      const resultsDiv = document.getElementById('traktImportResults');
+
+      btn.disabled = true;
+      btn.textContent = '⏳ Pushing…';
+      progressWrap.style.display = '';
+      progressBar.style.width = '10%';
+      progressText.textContent = 'Sending to providers…';
+      resultsDiv.style.display = 'none';
+
+      try {
+        const body = {
+          import_id: _traktImportId,
+          push_ratings: document.getElementById('traktPushRatings').checked,
+          push_watched: document.getElementById('traktPushWatched').checked,
+          push_watchlist: document.getElementById('traktPushWatchlist').checked,
+          user_id: window._currentUserId || 1,
+        };
+
+        progressBar.style.width = '30%';
+        progressText.textContent = 'Pushing ratings…';
+
+        const res = await fetch('/api/import/trakt/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+
+        progressBar.style.width = '100%';
+
+        if (!res.ok) throw new Error(data.error || 'Push failed');
+
+        // Show results
+        let html = '<strong style="color:var(--green);">✓ Import Complete</strong><br><br>';
+        const r = data.results;
+        if (r.ratings && Object.keys(r.ratings).length) {
+          html += '<div style="margin-bottom:6px;"><strong>Ratings:</strong> ';
+          if (r.ratings.db !== undefined) html += `${r.ratings.db} to DB`;
+          if (r.ratings.simkl !== undefined) html += `, ${r.ratings.simkl} to Simkl`;
+          if (r.ratings.mdblist !== undefined) html += `, ${r.ratings.mdblist} to MDBList`;
+          html += '</div>';
+        }
+        if (r.watched && Object.keys(r.watched).length) {
+          html += '<div style="margin-bottom:6px;"><strong>Watched:</strong> ';
+          if (r.watched.db !== undefined) html += `${r.watched.db} to DB`;
+          if (r.watched.simkl !== undefined) html += `, ${r.watched.simkl} to Simkl`;
+          if (r.watched.mdblist !== undefined) html += `, ${r.watched.mdblist} to MDBList`;
+          html += '</div>';
+        }
+        if (r.watchlist && Object.keys(r.watchlist).length) {
+          html += '<div style="margin-bottom:6px;"><strong>Watchlist:</strong> ';
+          if (r.watchlist.simkl !== undefined) html += `${r.watchlist.simkl} to Simkl`;
+          html += '</div>';
+        }
+        if (r.errors && r.errors.length) {
+          html += '<div style="margin-top:8px;color:var(--red);"><strong>Errors:</strong><br>';
+          r.errors.forEach(e => { html += `• ${e}<br>`; });
+          html += '</div>';
+        }
+
+        resultsDiv.innerHTML = html;
+        resultsDiv.style.display = '';
+        progressText.textContent = 'Done!';
+        _traktImportId = null;
+        showNotification('Trakt import complete!');
+      } catch (e) {
+        progressBar.style.width = '100%';
+        progressBar.style.background = 'var(--red)';
+        progressText.textContent = 'Error: ' + e.message;
+        showNotification('Import error: ' + e.message);
+      }
+      btn.disabled = false;
+      btn.textContent = '🚀 Confirm & Push to Simkl + MDBList';
     }
 
     init();
