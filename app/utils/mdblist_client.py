@@ -573,6 +573,7 @@ class MDBListClient:
         self,
         movies: list[dict] | None = None,
         shows: list[dict] | None = None,
+        episodes: list[dict] | None = None,
     ) -> dict:
         """Add or update ratings.
         movies: [{"ids": {"tmdb": 123}, "rating": 8, "rated_at": "..."}, ...]
@@ -582,18 +583,23 @@ class MDBListClient:
             body["movies"] = movies
         if shows:
             body["shows"] = shows
+        if episodes:
+            body["episodes"] = episodes
         return await self._post("/sync/ratings", body)
 
     async def remove_ratings(
         self,
         movies: list[dict] | None = None,
         shows: list[dict] | None = None,
+        episodes: list[dict] | None = None,
     ) -> dict:
         body: dict = {}
         if movies:
             body["movies"] = movies
         if shows:
             body["shows"] = shows
+        if episodes:
+            body["episodes"] = episodes
         return await self._post("/sync/ratings/remove", body)
 
     # ═══════════════════════════════════════════════════════════════════════

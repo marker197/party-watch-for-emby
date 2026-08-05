@@ -9334,6 +9334,9 @@ async def rate_item(
     rating = payload.get("rating")
     item_type = payload.get("item_type", "movie")
     title = payload.get("title", "")
+    season_number = payload.get("season_number")
+    episode_number = payload.get("episode_number")
+    series_name = payload.get("series_name", "")
 
     if not user_id or not rating:
         raise HTTPException(400, "user_id and rating are required")
@@ -9407,8 +9410,11 @@ async def rate_item(
                 "rated_at": now_str,
                 "_type": "movies" if item_type == "movie" else "shows",
             }
+            if item_type == "episode" and season_number is not None and episode_number is not None:
+                simkl_item["_type"] = "shows"
+                simkl_item["seasons"] = [{"number": season_number, "episodes": [{"number": episode_number}]}]
             if title:
-                simkl_item["title"] = title
+                simkl_item["title"] = series_name or title
             resp = await simkl.add_ratings([simkl_item])
             results["simkl"] = {"ok": True, "response": resp}
             log.info("rating.simkl_pushed", user_id=user_id, imdb=imdb_id, rating=rating)
@@ -9435,6 +9441,8 @@ async def rate_item(
 
                 if item_type == "movie":
                     resp = await mdb.add_ratings(movies=[mdb_item])
+                elif item_type == "episode":
+                    resp = await mdb.add_ratings(episodes=[mdb_item])
                 else:
                     resp = await mdb.add_ratings(shows=[mdb_item])
                 results["mdblist"] = {"ok": True, "response": resp}
@@ -9449,13 +9457,21 @@ async def rate_item(
         # Check if a rating already exists (update vs insert)
         existing_q = select(UserRating).where(
             UserRating.user_id == user_id,
+            UserRating.item_type == item_type,
         )
-        if imdb_id:
+        if item_type == "episode" and season_number is not None and episode_number is not None:
+            # Episode-level: match by series+season+episode
+            existing_q = existing_q.where(
+                UserRating.series_name == series_name,
+                UserRating.season_number == season_number,
+                UserRating.episode_number == episode_number,
+            )
+        elif imdb_id:
             existing_q = existing_q.where(UserRating.imdb_id == imdb_id)
         elif tmdb_id:
             existing_q = existing_q.where(UserRating.tmdb_id == tmdb_id)
 
-        existing = (await db.execute(existing_q)).scalar_one_or_none()
+        existing = (await db.execute(existing_q.limit(1))).scalar_one_or_none()
         now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
 
         if existing:
@@ -9477,6 +9493,9 @@ async def rate_item(
                 source="user",
                 imdb_id=imdb_id,
                 tmdb_id=tmdb_id,
+                season_number=season_number if item_type == "episode" else None,
+                episode_number=episode_number if item_type == "episode" else None,
+                series_name=series_name if item_type == "episode" else None,
             )
             db.add(new_rating)
 
@@ -9611,33 +9630,7 @@ async def get_user_ratings(
         except Exception:
             pass
 
-    # Batch-fetch latest episode info from watch history for show ratings
-    from app.models.schema import WatchHistory
-    show_titles = [r.title for r in rows if r.item_type == "show" and r.title]
-    episode_info: dict[str, dict] = {}  # title_lower → {season, episode, ep_title}
-    if show_titles:
-        try:
-            from sqlalchemy import func
-            # Get the most recent watch history entry for each show
-            for title in set(show_titles):
-                wh_row = (await db.execute(
-                    select(WatchHistory).where(
-                        WatchHistory.user_id == user_id,
-                        WatchHistory.series_name == title,
-                        WatchHistory.season_number.isnot(None),
-                    ).order_by(WatchHistory.watched_at.desc()).limit(1)
-                )).scalar_one_or_none()
-                if wh_row:
-                    episode_info[title.lower()] = {
-                        "season_number": wh_row.season_number,
-                        "episode_number": wh_row.episode_number,
-                        "episode_title": wh_row.title,
-                    }
-        except Exception:
-            pass
-
     for r in rows:
-        ep = episode_info.get((r.title or "").lower(), {}) if r.item_type == "show" else {}
         items.append({
             "id": r.id,
             "title": r.title,
@@ -9649,8 +9642,9 @@ async def get_user_ratings(
             "source": r.source or "imported",
             "rated_at": r.rated_at.isoformat() if r.rated_at else None,
             "emby_id": emby_id_map.get(r.id),
-            "season_number": ep.get("season_number"),
-            "episode_number": ep.get("episode_number"),
+            "season_number": r.season_number,
+            "episode_number": r.episode_number,
+            "series_name": r.series_name,
         })
     return {"items": items, "count": len(items)}
 
@@ -9742,6 +9736,36 @@ async def sync_ratings_from_providers(
                                     "tmdb_id": tmdb or None,
                                     "rated_at": item.get("rated_at"),
                                 })
+                        # ── MDBList episode ratings ──
+                        for item in mdb_ratings.get("episodes", []):
+                            ep_inner = item.get("episode") or item
+                            show_inner = item.get("show") or {}
+                            rating = item.get("rating")
+                            if rating is None:
+                                continue
+                            ep_ids = ep_inner.get("ids", {})
+                            if not isinstance(ep_ids, dict):
+                                ep_ids = {}
+                            show_ids = show_inner.get("ids", {}) if isinstance(show_inner.get("ids"), dict) else {}
+                            ep_imdb = ep_ids.get("imdb", "") or ""
+                            # Use a composite key for episode dedup
+                            ep_dedup = ep_imdb or f"ep:{show_inner.get('title', '')}:s{ep_inner.get('season', '')}e{ep_inner.get('number', '')}"
+                            if ep_dedup in seen_imdb:
+                                continue
+                            seen_imdb.add(ep_dedup)
+                            tmdb = str(ep_ids.get("tmdb", "")) if ep_ids.get("tmdb") else ""
+                            imported_rows.append({
+                                "simkl_id": str(ep_ids.get("simkl") or ""),
+                                "title": ep_inner.get("title", ""),
+                                "item_type": "episode",
+                                "rating": int(round(float(rating))),
+                                "imdb_id": ep_imdb or None,
+                                "tmdb_id": tmdb or None,
+                                "rated_at": item.get("rated_at"),
+                                "season_number": ep_inner.get("season"),
+                                "episode_number": ep_inner.get("number") or ep_inner.get("episode"),
+                                "series_name": show_inner.get("title", ""),
+                            })
                 finally:
                     await mdb.close()
                 log.info("ratings_sync.mdblist_fetched", count=len(imported_rows), user_id=user_id)
@@ -9778,6 +9802,9 @@ async def sync_ratings_from_providers(
             source="imported",
             imdb_id=r.get("imdb_id"),
             tmdb_id=r.get("tmdb_id"),
+            season_number=r.get("season_number"),
+            episode_number=r.get("episode_number"),
+            series_name=r.get("series_name"),
             rated_at=(
                 datetime.fromisoformat(r["rated_at"].replace("Z", "+00:00"))
                 .astimezone(timezone.utc)

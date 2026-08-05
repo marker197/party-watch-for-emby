@@ -415,9 +415,19 @@ function renderItem(item) {
   // Build data attributes for post-render badge application
   const itemImdb = item.imdb_id || '';
   const itemTitle = (item.series_name || item.title || '').trim();
-  const itemType = (item.item_type === 'episode' || item.item_type === 'show') ? 'show' : 'movie';
+  const isEpisode = item.item_type === 'episode';
+  const itemType = isEpisode ? 'episode' : (item.item_type === 'show' ? 'show' : 'movie');
+  const sNum = item.season_number != null ? item.season_number : '';
+  const eNum = item.episode_number != null ? item.episode_number : '';
+  // For episodes: badge key includes S/E so each episode is independent
+  const badgeKey = isEpisode && sNum !== '' && eNum !== ''
+    ? 'ep:' + itemTitle.toLowerCase() + ':s' + sNum + 'e' + eNum
+    : (itemImdb ? 'imdb:' + itemImdb : 'title:' + itemTitle.toLowerCase());
   const dataAttrs = ' data-imdb="' + esc(itemImdb) + '" data-ratetitle="' + esc(itemTitle.toLowerCase()) + '" data-ratetype="' + esc(itemType) + '"'
-    + ' data-tmdb="' + esc(item.tmdb_id || '') + '"';
+    + ' data-tmdb="' + esc(item.tmdb_id || '') + '"'
+    + ' data-badgekey="' + esc(badgeKey) + '"'
+    + ' data-season="' + esc(String(sNum)) + '" data-episode="' + esc(String(eNum)) + '"'
+    + ' data-seriesname="' + esc(item.series_name || '') + '"';
 
   let imgHtml;
   if (url) {
@@ -609,6 +619,12 @@ async function loadRatedKeys() {
     var data = await r.json();
     ratedKeys = new Map();
     (data.items || []).forEach(function(item) {
+      // Episode-level key: ep:seriesname:s1e2
+      if (item.item_type === 'episode' && item.series_name && item.season_number != null && item.episode_number != null) {
+        var epKey = 'ep:' + item.series_name.trim().toLowerCase() + ':s' + item.season_number + 'e' + item.episode_number;
+        ratedKeys.set(epKey, item.rating);
+      }
+      // Also store by imdb and title for show/movie level
       if (item.imdb_id) ratedKeys.set('imdb:' + item.imdb_id, item.rating);
       if (item.title) ratedKeys.set('title:' + item.title.trim().toLowerCase(), item.rating);
     });
@@ -619,31 +635,28 @@ async function loadRatedKeys() {
 
 function applyRatingBadges() {
   if (ratedKeys.size === 0) return; // No data yet, wait
-  document.querySelectorAll('.thumb-wrap[data-imdb], .thumb-wrap[data-ratetitle]').forEach(function(wrap) {
+  document.querySelectorAll('.thumb-wrap[data-badgekey]').forEach(function(wrap) {
     // Remove any existing badge/overlay to re-apply fresh
     var old = wrap.querySelector('.rated-badge');
     if (old) old.remove();
     var oldOverlay = wrap.querySelector('.hover-rate-overlay');
     if (oldOverlay) oldOverlay.remove();
 
+    var badgeKey = wrap.getAttribute('data-badgekey');
     var imdb = wrap.getAttribute('data-imdb');
     var title = wrap.getAttribute('data-ratetitle');
     var tmdb = wrap.getAttribute('data-tmdb');
     var itemType = wrap.getAttribute('data-ratetype') || 'movie';
+    var season = wrap.getAttribute('data-season');
+    var episode = wrap.getAttribute('data-episode');
+    var seriesName = wrap.getAttribute('data-seriesname');
 
-    // Check if rated
-    var rating = null;
-    if (imdb) {
-      var v = ratedKeys.get('imdb:' + imdb);
-      if (v !== undefined) rating = v;
-    }
-    if (rating === null && title) {
-      var v2 = ratedKeys.get('title:' + title);
-      if (v2 !== undefined) rating = v2;
-    }
+    // Check if rated — use badge key first, then fallbacks
+    var rating = ratedKeys.get(badgeKey);
+    if (rating === undefined && imdb) rating = ratedKeys.get('imdb:' + imdb);
+    if (rating === undefined && title) rating = ratedKeys.get('title:' + title);
 
-    if (rating !== null) {
-      // Add rating badge
+    if (rating !== undefined) {
       var badge = document.createElement('div');
       badge.className = 'rated-badge';
       badge.textContent = rating;
@@ -653,8 +666,11 @@ function applyRatingBadges() {
       var itemJson = JSON.stringify({
         imdb_id: imdb || null,
         tmdb_id: tmdb || null,
-        title: title || '',
+        title: (itemType === 'episode' ? (seriesName || title) : title) || '',
         item_type: itemType,
+        season_number: season ? parseInt(season) : null,
+        episode_number: episode ? parseInt(episode) : null,
+        series_name: seriesName || '',
       });
       var overlay = document.createElement('div');
       overlay.className = 'hover-rate-overlay';
@@ -688,14 +704,23 @@ async function hoverRate(btnEl, value) {
         tmdb_id: itemData.tmdb_id || null,
         rating: value,
         item_type: itemData.item_type,
-        title: itemData.title
+        title: itemData.title,
+        season_number: itemData.season_number || null,
+        episode_number: itemData.episode_number || null,
+        series_name: itemData.series_name || ''
       })
     });
     if (!r.ok) {
       var errData = await r.json().catch(function() { return {}; });
       throw new Error(errData.detail || 'HTTP ' + r.status);
     }
-    var key = itemData.imdb_id ? 'imdb:' + itemData.imdb_id : 'title:' + itemData.title.trim().toLowerCase();
+    // Store rated key at correct level
+    var key;
+    if (itemData.item_type === 'episode' && itemData.series_name && itemData.season_number && itemData.episode_number) {
+      key = 'ep:' + itemData.series_name.trim().toLowerCase() + ':s' + itemData.season_number + 'e' + itemData.episode_number;
+    } else {
+      key = itemData.imdb_id ? 'imdb:' + itemData.imdb_id : 'title:' + itemData.title.trim().toLowerCase();
+    }
     ratedKeys.set(key, value);
     overlay.innerHTML = '<div class="hover-rated-msg">\u2713 ' + value + '/10</div>';
   } catch (e) {
@@ -781,9 +806,16 @@ function renderMyRatings() {
       posterHtml = '<div class="my-rating-poster-ph">'
                  + (item.item_type === 'show' ? '📺' : '🎬') + '</div>';
     }
-    var meta = (item.item_type === 'show' ? 'Show' : item.item_type === 'episode' ? 'Episode' : 'Movie');
-    if (item.season_number != null && item.episode_number != null) {
-      meta += ' · S' + String(item.season_number).padStart(2, '0') + 'E' + String(item.episode_number).padStart(2, '0');
+    var meta = '';
+    if (item.item_type === 'episode') {
+      meta = 'Episode';
+      if (item.season_number != null && item.episode_number != null) {
+        meta += ' · S' + String(item.season_number).padStart(2, '0') + 'E' + String(item.episode_number).padStart(2, '0');
+      }
+    } else if (item.item_type === 'show') {
+      meta = 'Show';
+    } else {
+      meta = 'Movie';
     }
     if (item.rated_at) {
       var d = new Date(item.rated_at);
@@ -799,10 +831,11 @@ function renderMyRatings() {
         + '</div>';
     }
 
-    return '<div class="my-rating-row" id="myRatingRow' + idx + '">'
+      var displayTitle = item.series_name || item.title;
+      return '<div class="my-rating-row" id="myRatingRow' + idx + '">'
       + posterHtml
       + '<div class="my-rating-info">'
-      + '<div class="my-rating-title" title="' + esc(item.title) + '">' + esc(item.title) + '</div>'
+      + '<div class="my-rating-title" title="' + esc(displayTitle) + '">' + esc(displayTitle) + '</div>'
       + '<div class="my-rating-meta">' + esc(meta) + '</div>'
       + '<div class="my-rating-edit-row" id="myRatingEdit' + idx + '" style="display:none"></div>'
       + '</div>'

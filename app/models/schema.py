@@ -98,6 +98,9 @@ class UserRating(Base):
     source = Column(String(32), default="imported")  # imported | user
     imdb_id = Column(String(32), nullable=True)
     tmdb_id = Column(String(32), nullable=True)
+    season_number = Column(Integer, nullable=True)
+    episode_number = Column(Integer, nullable=True)
+    series_name = Column(String(512), nullable=True)
 
     user = relationship("User", back_populates="ratings")
 
