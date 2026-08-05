@@ -31,7 +31,7 @@ import re as _re
 
 log = structlog.get_logger()
 
-CACHE_KEY = "library_health_v1"
+CACHE_KEY = "library_health_v2"
 CACHE_TTL = 6 * 3600  # 6 hours
 
 
@@ -195,28 +195,34 @@ class LibraryHealthService:
                 "completion_pct": completion,
             })
 
-        # ── Batch-resolve missing IDs via get_items_by_ids ──
-        # The initial bulk fetch may not return ProviderIds; re-fetch
-        # items missing IMDB in a single batched call that explicitly
-        # requests ProviderIds.
-        missing_ids = [item["emby_id"] for item in results
-                       if not item.get("imdb_id") and item.get("emby_id")]
-        if missing_ids:
+        # ── Resolve missing IDs via direct Emby search ──
+        # Bulk endpoint and library cache may both lack ProviderIds for
+        # some series.  Search Emby by title — the search endpoint always
+        # returns full metadata including ProviderIds.
+        needs_ids = [item for item in results
+                     if not item.get("imdb_id") and item.get("title")]
+        if needs_ids:
             try:
-                full_items = await emby.get_items_by_ids(missing_ids, user_id=emby_user_id)
-                id_lookup = {fi.get("Id"): fi for fi in full_items}
-                for item in results:
-                    if item.get("imdb_id") or not item.get("emby_id"):
+                searched: set[str] = set()
+                for item in needs_ids:
+                    title_lower = item["title"].strip().lower()
+                    if title_lower in searched:
                         continue
-                    fi = id_lookup.get(item["emby_id"])
-                    if not fi:
-                        continue
-                    fpids = fi.get("ProviderIds") or {}
-                    item["imdb_id"] = fpids.get("Imdb") or fpids.get("imdb")
-                    if not item.get("tvdb_id"):
-                        item["tvdb_id"] = fpids.get("Tvdb") or fpids.get("tvdb")
-                    if not item.get("tmdb_id"):
-                        item["tmdb_id"] = fpids.get("Tmdb") or fpids.get("tmdb")
+                    searched.add(title_lower)
+                    try:
+                        hits = await emby.search_items(item["title"], item_type="Series")
+                        for hit in hits:
+                            if hit.get("Name", "").strip().lower() == title_lower:
+                                fpids = hit.get("ProviderIds") or {}
+                                # Apply to all results with same title
+                                for r in needs_ids:
+                                    if r["title"].strip().lower() == title_lower:
+                                        r["imdb_id"] = r["imdb_id"] or fpids.get("Imdb") or fpids.get("imdb")
+                                        r["tvdb_id"] = r["tvdb_id"] or fpids.get("Tvdb") or fpids.get("tvdb")
+                                        r["tmdb_id"] = r["tmdb_id"] or fpids.get("Tmdb") or fpids.get("tmdb")
+                                break
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
