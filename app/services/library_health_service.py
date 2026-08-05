@@ -180,45 +180,45 @@ class LibraryHealthService:
             # This series has been started but not finished
             completion = round(played_eps / total_eps * 100, 1)
 
-            # Resolve provider IDs — library cache is the most reliable source
-            # (Emby bulk endpoint may not return ProviderIds for all items)
-            title_str = series.get("Name", "")
-            imdb_id = None
-            tvdb_id = None
-            tmdb_id = None
-
-            # 1. Try library cache by title (populated during cache indexing)
-            try:
-                cached = await LibraryCache.find_by_title(title_str)
-                if cached:
-                    cpids = cached.get("provider_ids", {})
-                    imdb_id = cpids.get("Imdb") or cpids.get("imdb")
-                    tvdb_id = cpids.get("Tvdb") or cpids.get("tvdb")
-                    tmdb_id = cpids.get("Tmdb") or cpids.get("tmdb")
-            except Exception:
-                pass
-
-            # 2. Supplement from Emby response ProviderIds
             pids = series.get("ProviderIds") or {}
-            if not imdb_id:
-                imdb_id = pids.get("Imdb") or pids.get("imdb")
-            if not tvdb_id:
-                tvdb_id = pids.get("Tvdb") or pids.get("tvdb")
-            if not tmdb_id:
-                tmdb_id = pids.get("Tmdb") or pids.get("tmdb")
 
             results.append({
-                "title": title_str,
+                "title": series.get("Name", ""),
                 "year": series.get("ProductionYear"),
                 "emby_id": series.get("Id"),
-                "imdb_id": imdb_id,
-                "tvdb_id": tvdb_id,
-                "tmdb_id": tmdb_id,
+                "imdb_id": pids.get("Imdb") or pids.get("imdb"),
+                "tvdb_id": pids.get("Tvdb") or pids.get("tvdb"),
+                "tmdb_id": pids.get("Tmdb") or pids.get("tmdb"),
                 "played_episodes": played_eps,
                 "unplayed_episodes": unplayed,
                 "total_episodes": total_eps,
                 "completion_pct": completion,
             })
+
+        # ── Batch-resolve missing IDs via get_items_by_ids ──
+        # The initial bulk fetch may not return ProviderIds; re-fetch
+        # items missing IMDB in a single batched call that explicitly
+        # requests ProviderIds.
+        missing_ids = [item["emby_id"] for item in results
+                       if not item.get("imdb_id") and item.get("emby_id")]
+        if missing_ids:
+            try:
+                full_items = await emby.get_items_by_ids(missing_ids, user_id=emby_user_id)
+                id_lookup = {fi.get("Id"): fi for fi in full_items}
+                for item in results:
+                    if item.get("imdb_id") or not item.get("emby_id"):
+                        continue
+                    fi = id_lookup.get(item["emby_id"])
+                    if not fi:
+                        continue
+                    fpids = fi.get("ProviderIds") or {}
+                    item["imdb_id"] = fpids.get("Imdb") or fpids.get("imdb")
+                    if not item.get("tvdb_id"):
+                        item["tvdb_id"] = fpids.get("Tvdb") or fpids.get("tvdb")
+                    if not item.get("tmdb_id"):
+                        item["tmdb_id"] = fpids.get("Tmdb") or fpids.get("tmdb")
+            except Exception:
+                pass
 
         # ── Resolve missing IMDB IDs via Simkl ──
         if simkl:
