@@ -2148,33 +2148,15 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                       action=action, progress=round(progress, 1),
                       payload=payload, item_type=item_type_raw)
             try:
-                progress_pct = round(progress, 1)
-                pos_secs = _get_position_ticks() // 10000000
-                mm, ss = divmod(pos_secs, 60)
-                time_str = f"{mm}:{ss:02d}"
-
                 if action == "start":
                     await mdb.scrobble_start(payload, progress=progress)
-                    await _activity_log(f"📋 MDBList watching: {display_name}", category="simkl")
                 elif action == "pause":
                     await mdb.scrobble_pause(payload, progress=progress)
-                    await _activity_log(
-                        f"📋 MDBList paused: {display_name} at {time_str} ({progress_pct}%)",
-                        category="simkl",
-                    )
                 elif action == "stop":
                     result = await mdb.scrobble_stop(payload, progress=progress)
-                    await _activity_log(
-                        f"✓ Synced to MDBList: {display_name} ({progress_pct}%)",
-                        category="simkl",
-                    )
                     return result
                 elif action == "resume":
                     await mdb.scrobble_start(payload, progress=progress)
-                    await _activity_log(
-                        f"📋 MDBList resumed: {display_name} at {time_str} ({progress_pct}%)",
-                        category="simkl",
-                    )
             finally:
                 await mdb.close()
         except Exception as e:
@@ -2231,15 +2213,8 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                             "seasons": [{"number": season_num, "episodes": [{"number": episode_num, "watched_at": watched_at}]}],
                         }],
                     )
-                if item_type_raw == "Movie":
-                    await _activity_log(f"✓ Synced to MDBList: {display_name}", category="simkl")
-                elif item_type_raw == "Episode":
-                    season_num = item_data.get("ParentIndexNumber", "?")
-                    episode_num = item_data.get("IndexNumber", "?")
-                    await _activity_log(
-                        f"✓ Synced to MDBList: {display_name}",
-                        category="simkl",
-                    )
+                log.debug("webhook.mdblist_history_synced",
+                         type=item_type_raw.lower(), title=display_name)
             finally:
                 await mdb.close()
         except Exception as e:
@@ -2340,6 +2315,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             except Exception:
                 pass
 
+        sync_ok = True
         if user.simkl_access_token:
             try:
                 simkl = await _get_simkl_client()
@@ -2348,12 +2324,16 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     progress = _calc_progress()
                     await simkl.scrobble_start(scrobble, progress=progress)
                     simkl_synced = True
-                    await _activity_log(f"▶ Simkl watching: {display_name}", category="simkl")
             except Exception as e:
+                sync_ok = False
                 log.warning("webhook.simkl_scrobble_start_failed", error=str(e))
-                await _activity_log(f"⚠ Simkl start failed: {display_name} — {str(e)[:80]}", category="simkl")
-        # MDBList scrobble start
+        # MDBList scrobble start (background — errors logged separately)
         asyncio.create_task(_mdblist_scrobble("start", _calc_progress()))
+        # One consolidated activity log line
+        await _activity_log(
+            f"Started Watching: {display_name}" + (" — Synced" if sync_ok else " — Sync error"),
+            category="playback",
+        )
         return {"status": "received", "event": event_type, "simkl_synced": simkl_synced}
 
     # ── playback.pause → Simkl scrobble/pause ───────────────────────────────
@@ -2362,37 +2342,21 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             progress = _calc_progress()
             # Simkl rejects pause at >80% progress (considers it watched).
             # Skip the scrobble — the stop event that follows will sync history.
-            if progress > 80:
-                await _activity_log(
-                    f"⏸ Paused near end: {item_name} ({progress:.0f}%) — skipped scrobble, stop will sync",
-                    category="simkl",
-                )
-            else:
+            if progress <= 80:
                 try:
                     simkl = await _get_simkl_client()
                     scrobble = await _build_scrobble_payload()
                     if scrobble:
                         await simkl.scrobble_pause(scrobble, progress=progress)
                         simkl_synced = True
-                        pos_secs = _get_position_ticks() // 10000000
-                        mm, ss = divmod(pos_secs, 60)
-                        await _activity_log(
-                            f"⏸ Simkl paused: {display_name} at {mm}:{ss:02d} ({progress:.0f}%)",
-                            category="simkl",
-                        )
                 except Exception as e:
                     err_str = str(e)
-                    if "422" in err_str:
-                        # Simkl rejected — likely near end of content, not a real error
-                        await _activity_log(
-                            f"⏸ Pause skipped by Simkl: {display_name} ({progress:.0f}%) — will sync on stop",
-                            category="simkl",
-                        )
-                    else:
+                    if "422" not in err_str:
                         log.warning("webhook.simkl_scrobble_pause_failed", error=err_str)
-                        await _activity_log(f"⚠ Simkl pause failed: {display_name} — {err_str[:80]}", category="simkl")
-        # MDBList scrobble pause
+        # MDBList scrobble pause (background)
         asyncio.create_task(_mdblist_scrobble("pause", _calc_progress()))
+        # One consolidated activity log line
+        await _activity_log(f"{display_name}: Paused", category="playback")
         return {"status": "received", "event": event_type, "simkl_synced": simkl_synced}
 
     # ── playback.unpause → Simkl scrobble/start (resume) ────────────────────
@@ -2405,17 +2369,12 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     progress = _calc_progress()
                     await simkl.scrobble_start(scrobble, progress=progress)
                     simkl_synced = True
-                    pos_secs = _get_position_ticks() // 10000000
-                    mm, ss = divmod(pos_secs, 60)
-                    await _activity_log(
-                        f"▶ Simkl resumed: {display_name} at {mm}:{ss:02d} ({progress:.0f}%)",
-                        category="simkl",
-                    )
             except Exception as e:
                 log.warning("webhook.simkl_scrobble_resume_failed", error=str(e))
-                await _activity_log(f"⚠ Simkl resume failed: {display_name} — {str(e)[:80]}", category="simkl")
-        # MDBList scrobble resume
+        # MDBList scrobble resume (background)
         asyncio.create_task(_mdblist_scrobble("resume", _calc_progress()))
+        # One consolidated activity log line
+        await _activity_log(f"{display_name}: Continued", category="playback")
         return {"status": "received", "event": event_type, "simkl_synced": simkl_synced}
 
     # ── playback.stop / item.markplayed → Simkl watch history ───────────────
@@ -2442,16 +2401,12 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         except Exception as e:
             log.warning("webhook.backfill_failed", error=str(e)[:120])
 
-        await _activity_log(
-            f"⏹ Stopped: {display_name} ({item_type_raw}) — {emby_username}",
-            category="playback",
-        )
-
         # ── Send scrobble/stop to clear Simkl "watching" state ──────────
         # Only for actual playback stops (not manual mark-as-played).
         # If progress > 80%, Simkl auto-adds to history (action=scrobble)
         # and we skip the manual add_to_history to avoid duplicates.
         scrobble_already_added = False
+        simkl_sync_error = ""
         if is_play_stop and user.simkl_access_token:
             try:
                 simkl = await _get_simkl_client()
@@ -2461,41 +2416,16 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     result = await simkl.scrobble_stop(scrobble, progress=progress)
                     action = result.get("action", "") if isinstance(result, dict) else ""
                     if action == "scrobble":
-                        # >80% progress — Simkl added to history automatically
                         scrobble_already_added = True
                         simkl_synced = True
-                        await _activity_log(
-                            f"✓ Synced to Simkl: {display_name} ({progress:.0f}%)",
-                            category="simkl",
-                        )
-                    else:
-                        # <80% — Simkl saved as pause/playback progress
-                        await _activity_log(
-                            f"⏹ Simkl stop: {display_name} ({progress:.0f}%) — action={action}",
-                            category="simkl",
-                        )
             except Exception as e:
                 err_str = str(e)
                 if "409" in err_str:
-                    # Already scrobbled recently — watching state is cleared
                     scrobble_already_added = True
                     simkl_synced = True
-                    await _activity_log(
-                        f"⏹ Simkl stop (already scrobbled): {display_name}",
-                        category="simkl",
-                    )
-                elif "422" in err_str:
-                    # Progress < 1% — Simkl ignores, but watching state is cleared
-                    await _activity_log(
-                        f"⏹ Simkl stop ignored (<1%): {display_name}",
-                        category="simkl",
-                    )
-                else:
+                elif "422" not in err_str:
                     log.warning("webhook.simkl_scrobble_stop_failed", error=err_str)
-                    await _activity_log(
-                        f"⚠ Simkl stop failed: {display_name} — {err_str[:80]}",
-                        category="simkl",
-                    )
+                    simkl_sync_error = err_str[:80]
 
         # Scrobble to Simkl watch history if user has a token
         if user.simkl_access_token and not scrobble_already_added:
@@ -2524,10 +2454,6 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         simkl_synced = True
                         log.info("webhook.simkl_history_synced",
                                  type="movie", ids=simkl_ids, user=user.id)
-                        await _activity_log(
-                            f"✓ Synced to Simkl: {display_name}",
-                            category="simkl",
-                        )
 
                     elif item_type_raw in ("Episode",):
                         series_ids = await _resolve_series_ids()
@@ -2556,45 +2482,38 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         log.info("webhook.simkl_history_synced",
                                  type="episode", ids=series_ids or simkl_ids,
                                  ep_ids=simkl_ids, user=user.id)
-                        await _activity_log(
-                            f"✓ Synced to Simkl: {display_name}",
-                            category="simkl",
-                        )
-                    else:
-                        await _activity_log(
-                            f"Skipped Simkl sync: {display_name} — unsupported type '{item_type_raw}'",
-                            category="simkl",
-                        )
-                else:
-                    await _activity_log(
-                        f"Skipped Simkl sync: {display_name} — no provider IDs (IMDB/TMDB/TVDB)",
-                        category="simkl",
-                    )
 
             except Exception as e:
                 log.error("webhook.simkl_sync_failed", error=str(e), user=user.id)
-                await _activity_log(
-                    f"✗ Simkl sync failed: {display_name} — {str(e)[:80]}",
-                    category="simkl",
-                )
+                simkl_sync_error = str(e)[:80]
 
             # Invalidate scrobble audit cache so newly synced items
             # don't appear as missed on the next audit view
             if simkl_synced:
                 await scrobble_audit_svc.invalidate_cache(user.id)
-        else:
-            if not scrobble_already_added:
-                await _activity_log(
-                    f"Skipped Simkl sync: {display_name} — user has no Simkl token",
-                    category="simkl",
-                )
 
         # ── MDBList: scrobble stop + history sync ─────────────────────────
         if is_play_stop:
             asyncio.create_task(_mdblist_scrobble("stop", _calc_progress()))
-        if not scrobble_already_added or True:
-            # Always try MDBList history (independent of Simkl scrobble state)
-            asyncio.create_task(_mdblist_add_to_history())
+        # Always try MDBList history (independent of Simkl scrobble state)
+        asyncio.create_task(_mdblist_add_to_history())
+
+        # ── One consolidated activity log line ────────────────────────────
+        if simkl_sync_error:
+            await _activity_log(
+                f"Stopped Watching: {display_name} — Sync error: {simkl_sync_error}",
+                category="playback",
+            )
+        elif simkl_synced:
+            await _activity_log(
+                f"Stopped Watching: {display_name} — Synced",
+                category="playback",
+            )
+        else:
+            await _activity_log(
+                f"Stopped Watching: {display_name}",
+                category="playback",
+            )
 
         # ── Persistent watch history (local DB) ──────────────────────────
         # Record every PlaybackStop regardless of progress (the history
@@ -3045,13 +2964,22 @@ async def _activity_log(message: str, category: str = "general"):
 def _maybe_notify(message: str) -> None:
     """Pattern-match activity log messages to notification event types.
     Fire-and-forget — never blocks, never crashes."""
+    import re as _re
     from app.utils.notification_client import notify
     msg = message.strip()
-    # Scrobble completions
-    if msg.startswith("✓ Simkl scrobbled:") or msg.startswith("✓ Synced to Simkl:"):
+    # Consolidated playback notifications (start/stop with sync status)
+    if msg.startswith("Started Watching:"):
+        title = msg.split(":", 1)[1].strip()
+        title = _re.sub(r'\s*—\s*(Synced|Sync error)$', '', title)
+        notify("scrobble", "▶️ Started Watching", title)
+    elif msg.startswith("Stopped Watching:"):
+        title = msg.split(":", 1)[1].strip()
+        title = _re.sub(r'\s*—\s*(Synced|Sync error.*)$', '', title)
+        synced = "Synced" in msg
+        notify("scrobble", "⏹️ Stopped Watching" + (" ✓" if synced else " ⚠"), title)
+    # Legacy patterns (kept for backwards compatibility)
+    elif msg.startswith("✓ Simkl scrobbled:") or msg.startswith("✓ Synced to Simkl:"):
         title = msg.split(":", 1)[1].strip() if ":" in msg else msg
-        # Strip trailing percentage like " (100%)"
-        import re as _re
         title = _re.sub(r'\s*\(\d+%?\)$', '', title)
         notify("scrobble", "🎬 Simkl Sync", title)
     elif msg.startswith("✓ Synced to MDBList:"):

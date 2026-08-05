@@ -2584,7 +2584,11 @@ async function dashboardPoll() {
         const apiHtml = entries.map(e => {
           let icon = '•';
           const m = e.msg;
-          if (m.startsWith('▶ Simkl watching') || m.startsWith('▶ Simkl resumed')) icon = '▶️';
+          if (m.startsWith('Started Watching:')) icon = '▶️';
+          else if (m.startsWith('Stopped Watching:')) icon = m.includes('Synced') ? '✅' : '⏹️';
+          else if (m.includes(': Paused')) icon = '⏸️';
+          else if (m.includes(': Continued')) icon = '▶️';
+          else if (m.startsWith('▶ Simkl watching') || m.startsWith('▶ Simkl resumed')) icon = '▶️';
           else if (m.startsWith('⏸')) icon = '⏸️';
           else if (m.startsWith('⏹') || m.includes('stopped')) icon = '⏹️';
           else if (m.startsWith('✓ Synced')) icon = '✅';
@@ -2600,7 +2604,10 @@ async function dashboardPoll() {
           else if (e.cat === 'simkl') icon = '🔄';
           else if (e.cat === 'webhook') icon = '📡';
           let cls = '';
-          if (m.includes('Synced to MDBList')) cls = 'mdblist';
+          if (m.startsWith('Started Watching:') || m.startsWith('Stopped Watching:')) {
+            cls = m.includes('Sync error') ? 'err' : m.includes('Synced') ? 'ok' : '';
+          } else if (m.includes(': Paused') || m.includes(': Continued')) cls = '';
+          else if (m.includes('Synced to MDBList')) cls = 'mdblist';
           else if (m.startsWith('✓ Simkl scrobbled') || m.includes('Synced to Simkl')) cls = 'simkl-ok';
           else if (m.startsWith('✓')) cls = 'ok';
           else if (m.startsWith('✗') || m.startsWith('⚠')) cls = 'err';
