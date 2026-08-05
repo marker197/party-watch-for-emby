@@ -777,14 +777,16 @@ function renderMyRatings() {
 
   var rows = myRatingsData.map(function(item, idx) {
     var posterHtml;
-    if (item.emby_id) {
-      posterHtml = '<img class="my-rating-poster" src="' + esc(imgUrl(item.emby_id, 'Primary'))
+    var posterId = item.emby_id || item.series_emby_id;
+    var posterEmoji = item.item_type === 'episode' ? '📺' : (item.item_type === 'show' ? '📺' : '🎬');
+    if (posterId) {
+      posterHtml = '<img class="my-rating-poster" src="' + esc(imgUrl(posterId, 'Primary'))
                  + '" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
                  + '<div class="my-rating-poster-ph" style="display:none">'
-                 + (item.item_type === 'show' ? '📺' : '🎬') + '</div>';
+                 + posterEmoji + '</div>';
     } else {
       posterHtml = '<div class="my-rating-poster-ph">'
-                 + (item.item_type === 'show' ? '📺' : '🎬') + '</div>';
+                 + posterEmoji + '</div>';
     }
     var meta = '';
     if (item.item_type === 'episode') {

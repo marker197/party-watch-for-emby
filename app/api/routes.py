@@ -9396,9 +9396,14 @@ async def rate_item(
         except (ValueError, TypeError):
             ids_obj["tmdb"] = tmdb_id
 
-    # ── Push to Simkl ────────────────────────────────────────────────
+    # ── Push to providers (skip episodes — neither Simkl nor MDBList support episode-level ratings) ──
     providers = await _get_active_providers(db)
-    if "simkl" in providers and user.simkl_access_token:
+    if item_type == "episode":
+        log.info("rating.episode_local_only", user_id=user_id, title=title,
+                 season=season_number, episode=episode_number)
+        results["note"] = "Episode ratings stored locally only (providers do not support episode-level ratings)"
+
+    if item_type != "episode" and "simkl" in providers and user.simkl_access_token:
         try:
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
@@ -9435,7 +9440,7 @@ async def rate_item(
             log.warning("rating.simkl_failed", error=str(e)[:200])
 
     # ── Push to MDBList ──────────────────────────────────────────────
-    if "mdblist" in providers:
+    if item_type != "episode" and "mdblist" in providers:
         try:
             key = await _get_mdblist_key(db)
             if key:
@@ -9647,7 +9652,22 @@ async def get_user_ratings(
         except Exception:
             pass
 
+    # Resolve series_emby_id for episode ratings (for poster fallback)
+    series_emby_cache: dict[str, str | None] = {}  # series_name → emby_id
     for r in rows:
+        if r.item_type == "episode" and r.series_name and r.series_name not in series_emby_cache:
+            try:
+                cached = await LibraryCache.find_by_title(r.series_name)
+                series_emby_cache[r.series_name] = (
+                    cached.get("emby_id") or cached.get("Id") if cached else None
+                )
+            except Exception:
+                series_emby_cache[r.series_name] = None
+
+    for r in rows:
+        series_eid = None
+        if r.item_type == "episode" and r.series_name:
+            series_eid = series_emby_cache.get(r.series_name)
         items.append({
             "id": r.id,
             "title": r.title,
@@ -9659,6 +9679,7 @@ async def get_user_ratings(
             "source": r.source or "imported",
             "rated_at": r.rated_at.isoformat() if r.rated_at else None,
             "emby_id": emby_id_map.get(r.id),
+            "series_emby_id": series_eid,
             "season_number": r.season_number,
             "episode_number": r.episode_number,
             "series_name": r.series_name,
