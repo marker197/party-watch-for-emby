@@ -453,7 +453,10 @@
   <div class="section">
     <span class="section-anchor" id="activity-log"></span>
     <h2>Activity Log</h2>
-    <p>Live feed of suite activity at the bottom of the page. When both Simkl and MDBList are active, you'll see separate entries for each provider's scrobbles. Filter by All, Webhook, Simkl, MDBList, Playback, or General. Updates every 30 seconds.</p>
+    <p>Live feed of suite activity at the bottom of the page. Playback events are consolidated into single lines — one for start, one for pause, one for resume, one for stop — instead of separate entries per provider. Scrobbling to Simkl and MDBList still happens in the background; the log just shows the result. Filter by All, Webhook, Playback, or General. Updates every 30 seconds.</p>
+    <p>Typical flow for a watch session:</p>
+    <p><strong>Started Watching: Movie Name — Synced</strong> → <strong>Movie Name: Paused</strong> → <strong>Movie Name: Continued</strong> → <strong>Stopped Watching: Movie Name — Synced</strong></p>
+    <p>Errors from either provider surface as separate lines so they're easy to spot.</p>
   </div>
 
   <hr class="divider">
@@ -737,7 +740,7 @@
 <!-- PAGE: WATCH HISTORY -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page" id="page-watch-history" data-sections="wh-overview,wh-filters,wh-cards,wh-progress,wh-images,wh-paging">
+<div class="page" id="page-watch-history" data-sections="wh-overview,wh-filters,wh-ratings,wh-cards,wh-progress,wh-images,wh-paging">
 
   <h1 class="page-title">📜 Watch History</h1>
   <p class="page-intro">A visual timeline of everything you've watched, grouped by date. Works like the history view on Simkl or MDBList, but built from your local watch history database with thumbnails pulled straight from your Emby server.</p>
@@ -753,11 +756,20 @@
   <div class="section">
     <span class="section-anchor" id="wh-filters"></span>
     <h2>Filters</h2>
-    <p>Three buttons at the top control what's shown:</p>
+    <p>Four buttons at the top control what's shown:</p>
     <p><strong>All</strong> — everything you've watched.</p>
     <p><strong>Movies</strong> — movies only.</p>
-    <p><strong>Episodes</strong> — TV episodes only.</p>
+    <p><strong>Shows</strong> — collapses episodes into one card per series per day. Shows how many episodes you watched as a subtitle (e.g. "3 episodes"). Uses the series poster instead of individual episode thumbnails.</p>
+    <p><strong>Episodes</strong> — TV episodes only, shown individually.</p>
     <p>Switching filters reloads the timeline from the most recent date.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="wh-ratings"></span>
+    <h2>My Ratings &amp; Floating Rating Bar</h2>
+    <p>A <span class="btn-label">⭐ My Ratings</span> button in the header opens a panel showing all your user-submitted ratings with poster thumbnails, filterable by source (user vs imported).</p>
+    <p>At the bottom of the page, a floating rating bar shows up to 5 recently watched items you haven't rated yet. Tap a number 1–10 to rate instantly — the rating is pushed to Simkl and MDBList simultaneously and stored locally. Click ✕ to permanently dismiss an item from the prompt. Rated items fade out and are replaced with the next unrated item.</p>
+    <div class="tip">Episode ratings are stored locally only — neither Simkl nor MDBList support episode-level ratings.</div>
   </div>
 
   <div class="section">
@@ -794,7 +806,7 @@
 <!-- PAGE: SETTINGS -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page" id="page-settings" data-sections="set-provider,set-mdblist,set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-simkl-import,set-watch-history,set-notifications,set-danger">
+<div class="page" id="page-settings" data-sections="set-provider,set-mdblist,set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-simkl-import,set-watch-history,set-trakt-import,set-notifications,set-danger">
 
   <h1 class="page-title">⚙️ Settings</h1>
   <p class="page-intro">Configure connections, features, schedules, and integrations.</p>
@@ -906,6 +918,16 @@
   </div>
 
   <div class="section">
+    <span class="section-anchor" id="set-trakt-import"></span>
+    <h2>Trakt Data Import</h2>
+    <p>Import a Trakt export zip file to migrate your entire Trakt history into the suite. Ideal for first-time setup or switching from a Trakt-based workflow.</p>
+    <p>Export your data from <strong>trakt.tv/settings/data</strong>, then upload the zip here. The parser recognises all standard Trakt export files — watched movies, watched shows (with full season/episode structure), ratings (movies, shows, episodes), watch history logs, and watchlists.</p>
+    <p>After parsing, a preview shows counts for each data category. Choose what to import with the checkboxes, then click <span class="btn-label">🚀 Confirm &amp; Push</span> to send to the local database, Simkl, and MDBList simultaneously.</p>
+    <p>Ratings are batched 50 at a time at 1 request/second to stay within Simkl's rate limits. A full import of 400+ ratings and 400+ watched movies typically completes in under 30 seconds.</p>
+    <div class="tip">Existing items are skipped automatically — safe to re-run if your first attempt was interrupted.</div>
+  </div>
+
+  <div class="section">
     <span class="section-anchor" id="set-notifications"></span>
     <h2>Notifications</h2>
     <p>Send alerts to Discord, Gotify, or any webhook endpoint when events happen. Configure up to 5 services.</p>
@@ -917,7 +939,7 @@
     </div>
     <div class="feature">
       <div class="feature-name"><span class="emoji">⚡</span> Event Triggers</div>
-      <p><strong>Scrobble</strong> — fires when a watch is synced to Simkl or MDBList. Off by default to avoid noise.</p>
+      <p><strong>Scrobble</strong> — fires when playback starts or stops. Sends a single combined notification per event rather than separate ones per provider.</p>
       <p><strong>Arrival</strong> — fires when new content appears in your library via Radarr or Sonarr.</p>
       <p><strong>Premiere</strong> — fires daily at 8 AM for shows premiering or reaching their finale today.</p>
       <p><strong>Download</strong> — fires when a download completes and is detected by the webhook handler.</p>
@@ -1031,7 +1053,7 @@
   <div class="section">
     <span class="section-anchor" id="health-incomplete"></span>
     <h2>Incomplete Series</h2>
-    <p>Shows in your Emby library where you've watched some episodes but not all. Each row shows the title, a progress bar, how many episodes you've played, and how many are left. Sorted with the most complete shows first, so you can quickly see what's closest to being finished.</p>
+    <p>Shows in your Emby library where you've watched some episodes but not all. Each row shows the title (linked to IMDB when available), a progress bar, how many episodes you've played, and how many are left. Sorted with the most complete shows first.</p>
   </div>
 
   <div class="section">
@@ -1049,7 +1071,7 @@
   <div class="section">
     <span class="section-anchor" id="health-suggestions"></span>
     <h2>Simkl Suggestions</h2>
-    <p>For every movie you rated 8 or higher on Simkl, the scan checks Simkl's "related movies" list and flags any that aren't in your library. Each row shows the suggested title, what it's related to, and the rating you gave the original. Good for discovering sequels, prequels, and similar films you might have missed.</p>
+    <p>For every movie you rated 8 or higher on Simkl, the scan checks Simkl's related movies and flags any that aren't in your library. Each row links to IMDB or TMDB for quick reference. Limited to 3 suggestions per source item, and self-suggestions are filtered out even when titles differ slightly (punctuation, subtitles).</p>
   </div>
 
   <div class="section">
