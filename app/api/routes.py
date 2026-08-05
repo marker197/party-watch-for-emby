@@ -9615,14 +9615,17 @@ async def get_user_ratings(
                 cached = await LibraryCache.find_by_provider_id("Tmdb", r.tmdb_id)
             if not cached and r.title:
                 cached = await LibraryCache.find_by_title(r.title)
+            # For episodes, also try series_name (library indexes Series, not Episodes)
+            if not cached and r.item_type == "episode" and r.series_name:
+                cached = await LibraryCache.find_by_title(r.series_name)
             if cached:
                 emby_id = cached.get("emby_id") or cached.get("Id")
         except Exception:
             pass
         if emby_id:
             emby_id_map[r.id] = emby_id
-        elif r.title:
-            cache_misses.append((r.id, r.title, r.item_type))
+        elif r.title or (r.item_type == "episode" and r.series_name):
+            cache_misses.append((r.id, r.series_name if r.item_type == "episode" and r.series_name else r.title, r.item_type))
 
     # For cache misses, do batch Emby searches (max 30 to avoid hammering)
     if cache_misses:
@@ -9636,7 +9639,7 @@ async def get_user_ratings(
                     continue
                 searched_titles.add(title_lower)
                 try:
-                    search_type = "Series" if itype == "show" else "Movie"
+                    search_type = "Movie" if itype == "movie" else "Series"
                     results = await emby.search_items(title, item_type=search_type)
                     for res in results:
                         if res.get("Name", "").strip().lower() == title_lower:
@@ -9658,11 +9661,34 @@ async def get_user_ratings(
         if r.item_type == "episode" and r.series_name and r.series_name not in series_emby_cache:
             try:
                 cached = await LibraryCache.find_by_title(r.series_name)
+                if not cached:
+                    cached = await LibraryCache.find_by_title(r.series_name, item_type="series")
                 series_emby_cache[r.series_name] = (
                     cached.get("emby_id") or cached.get("Id") if cached else None
                 )
             except Exception:
                 series_emby_cache[r.series_name] = None
+
+    # Emby search fallback for series that weren't in the cache
+    series_cache_misses = [
+        name for name, eid in series_emby_cache.items() if eid is None
+    ]
+    if series_cache_misses:
+        try:
+            from app.utils.emby_client import EmbyClient
+            emby_s = EmbyClient()
+            for sname in series_cache_misses:
+                try:
+                    results = await emby_s.search_items(sname, item_type="Series")
+                    for res in results:
+                        if res.get("Name", "").strip().lower() == sname.strip().lower():
+                            series_emby_cache[sname] = res.get("Id")
+                            break
+                except Exception:
+                    pass
+            await emby_s.close()
+        except Exception:
+            pass
 
     for r in rows:
         series_eid = None

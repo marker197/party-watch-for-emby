@@ -312,6 +312,7 @@ class LibraryHealthService:
         Uses both Simkl and MDBList ratings."""
         results: list[dict] = []
         seen_titles: set[str] = set()
+        seen_imdb_ids: set[str] = set()
 
         # ── Gather highly-rated movies from all sources ──
         high_rated: list[dict] = []  # [{title, rating, simkl_id, imdb_id}, ...]
@@ -374,6 +375,12 @@ class LibraryHealthService:
         import random as _random
         _random.shuffle(high_rated)
 
+        # Pre-populate seen sets with source items — prevents suggesting items
+        # the user already rated highly (i.e. the source items themselves)
+        for hr in high_rated:
+            if hr.get("imdb_id"):
+                seen_imdb_ids.add(hr["imdb_id"])
+
         log.info("library_health.high_rated_found", count=len(high_rated),
                  min_rating=min_rating)
 
@@ -408,7 +415,14 @@ class LibraryHealthService:
             except Exception:
                 continue
 
+            # Track how many suggestions this source item contributes
+            per_item_count = 0
+            max_per_item = 3
+
             for rel in (related or []):
+                if per_item_count >= max_per_item:
+                    break
+
                 rel_ids = rel.get("ids", {})
                 rel_title = rel.get("title", "")
                 rel_year = rel.get("year")
@@ -416,9 +430,18 @@ class LibraryHealthService:
                 if not rel_title:
                     continue
 
+                # Skip self-suggestion (recommended item is the source item itself)
+                rel_simkl = str(rel_ids.get("simkl") or rel_ids.get("simkl_id") or "")
+                if rel_simkl and rel_simkl == simkl_id:
+                    continue
+                rel_imdb = rel_ids.get("imdb", "")
+                if rel_imdb and rel_imdb == entry.get("imdb_id"):
+                    continue
+                if rel_title.strip().lower() == entry.get("title", "").strip().lower():
+                    continue
+
                 # Resolve IMDB/TMDB if missing (Simkl recommendations often
                 # only include simkl_id — need full IDs for IMDB links + Radarr)
-                rel_simkl = str(rel_ids.get("simkl") or rel_ids.get("simkl_id") or "")
                 if rel_simkl and not rel_ids.get("imdb") and not rel_ids.get("tmdb"):
                     try:
                         detail = await simkl.get_movie_detail(rel_simkl)
@@ -426,6 +449,7 @@ class LibraryHealthService:
                             full_ids = detail.get("ids", {})
                             if full_ids.get("imdb"):
                                 rel_ids["imdb"] = full_ids["imdb"]
+                                rel_imdb = full_ids["imdb"]
                             if full_ids.get("tmdb"):
                                 rel_ids["tmdb"] = full_ids["tmdb"]
                             if full_ids.get("tvdb"):
@@ -433,14 +457,22 @@ class LibraryHealthService:
                     except Exception:
                         pass
 
-                # Dedup
+                # Re-check self-suggestion after ID resolution
+                if rel_imdb and rel_imdb == entry.get("imdb_id"):
+                    continue
+
+                # Dedup by title:year AND by IMDB ID
                 dedup = f"{rel_title}:{rel_year}"
                 if dedup in seen_titles:
+                    continue
+                if rel_imdb and rel_imdb in seen_imdb_ids:
                     continue
 
                 in_library = await self._is_in_library(rel_ids, title=rel_title, year=rel_year)
                 if not in_library:
                     seen_titles.add(dedup)
+                    if rel_imdb:
+                        seen_imdb_ids.add(rel_imdb)
                     results.append({
                         "title": rel_title,
                         "year": rel_year,
@@ -450,6 +482,7 @@ class LibraryHealthService:
                         "related_to": entry.get("title", ""),
                         "your_rating": entry.get("rating"),
                     })
+                    per_item_count += 1
 
             # Brief pause to respect Simkl rate limits (1 POST/sec)
             await asyncio.sleep(0.3)
@@ -476,6 +509,19 @@ class LibraryHealthService:
                 match = await LibraryCache.find_by_title(title, year=None)
                 if match and match.get("emby_id"):
                     return True
+            # Emby search fallback — cache may not have indexed this item
+            try:
+                from app.utils.emby_client import EmbyClient
+                emby = EmbyClient()
+                try:
+                    results = await emby.search_items(title, item_type="Movie")
+                    for res in results:
+                        if res.get("Name", "").strip().lower() == title.strip().lower():
+                            return True
+                finally:
+                    await emby.close()
+            except Exception:
+                pass
         return False
 
     async def _get_dismissed_set(self, user_id: int) -> set[tuple[str, str]]:
