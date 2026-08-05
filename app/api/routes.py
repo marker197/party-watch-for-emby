@@ -9411,8 +9411,19 @@ async def rate_item(
                 "_type": "movies" if item_type == "movie" else "shows",
             }
             if item_type == "episode" and season_number is not None and episode_number is not None:
-                simkl_item["_type"] = "shows"
-                simkl_item["seasons"] = [{"number": season_number, "episodes": [{"number": episode_number}]}]
+                # Episode ratings: rating goes on the episode object, show is the container
+                simkl_item = {
+                    "ids": ids_obj,
+                    "_type": "shows",
+                    "seasons": [{
+                        "number": season_number,
+                        "episodes": [{
+                            "number": episode_number,
+                            "rating": rating,
+                            "rated_at": now_str,
+                        }],
+                    }],
+                }
             if title:
                 simkl_item["title"] = series_name or title
             resp = await simkl.add_ratings([simkl_item])
@@ -9442,7 +9453,13 @@ async def rate_item(
                 if item_type == "movie":
                     resp = await mdb.add_ratings(movies=[mdb_item])
                 elif item_type == "episode":
-                    resp = await mdb.add_ratings(episodes=[mdb_item])
+                    # MDBList expects episode nested under show wrapper
+                    ep_item = dict(mdb_item)
+                    if season_number is not None:
+                        ep_item["season"] = season_number
+                    if episode_number is not None:
+                        ep_item["number"] = episode_number
+                    resp = await mdb.add_ratings(episodes=[ep_item])
                 else:
                     resp = await mdb.add_ratings(shows=[mdb_item])
                 results["mdblist"] = {"ok": True, "response": resp}
@@ -9608,7 +9625,7 @@ async def get_user_ratings(
             from app.utils.emby_client import EmbyClient
             emby = EmbyClient()
             searched_titles: set[str] = set()
-            for rid, title, itype in cache_misses[:30]:
+            for rid, title, itype in cache_misses:
                 title_lower = title.strip().lower()
                 if title_lower in searched_titles:
                     continue
@@ -9787,10 +9804,29 @@ async def sync_ratings_from_providers(
     )
     user_rated_imdb = set(r for r in (await db.execute(user_rated_q)).scalars().all() if r)
 
+    # Also build set of user-submitted episode keys for dedup
+    user_ep_q = select(
+        UserRating.series_name, UserRating.season_number, UserRating.episode_number
+    ).where(
+        UserRating.user_id == user_id,
+        UserRating.source == "user",
+        UserRating.item_type == "episode",
+        UserRating.series_name.isnot(None),
+    )
+    user_rated_episodes = set()
+    for row in (await db.execute(user_ep_q)).all():
+        if row[0] and row[1] is not None and row[2] is not None:
+            user_rated_episodes.add(f"ep:{row[0].lower()}:s{row[1]}e{row[2]}")
+
     added = 0
     for r in imported_rows:
         if r.get("imdb_id") and r["imdb_id"] in user_rated_imdb:
             continue
+        # Check episode-level dedup for items without IMDB
+        if r.get("item_type") == "episode" and r.get("series_name") and r.get("season_number") is not None and r.get("episode_number") is not None:
+            ep_key = f"ep:{r['series_name'].lower()}:s{r['season_number']}e{r['episode_number']}"
+            if ep_key in user_rated_episodes:
+                continue
         if not r.get("rating"):
             continue
         db.add(UserRating(

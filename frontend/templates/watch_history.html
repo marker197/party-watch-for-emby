@@ -579,26 +579,6 @@ loadUsers();
 let ratedKeys = new Map();
 let ratingSynced = false;
 
-function _rateKey(item) {
-  if (item.imdb_id) return 'imdb:' + item.imdb_id;
-  var t = (item.series_name || item.title || '').trim().toLowerCase();
-  if (t) return 'title:' + t;
-  return '';
-}
-
-function _getRating(item) {
-  // Check by imdb first, then title
-  if (item.imdb_id) {
-    var v = ratedKeys.get('imdb:' + item.imdb_id);
-    if (v !== undefined) return v;
-  }
-  var t = (item.series_name || item.title || '').trim().toLowerCase();
-  if (t) {
-    var v2 = ratedKeys.get('title:' + t);
-    if (v2 !== undefined) return v2;
-  }
-  return null;
-}
 
 async function syncRatingsOnce() {
   if (ratingSynced || !currentUserId) return;
