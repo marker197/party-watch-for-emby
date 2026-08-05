@@ -254,8 +254,10 @@ class SimklClient:
         types = ["movies", "shows", "anime"] if kind == "all" else [kind]
         for item_type in types:
             try:
-                data = await self._get(
-                    f"/sync/all-items/{item_type}/plantowatch",
+                endpoint = f"/sync/all-items/{item_type}/plantowatch"
+                activity_key = self._ACTIVITY_KEYS.get(f"{item_type}/plantowatch", "all")
+                data = await self._activity_gated_get(
+                    endpoint, activity_key,
                     params={"extended": "full"},
                 )
                 items = self._unwrap_sync_response(data, item_type)
@@ -314,8 +316,10 @@ class SimklClient:
         types = ["movies", "shows", "anime"] if kind == "all" else [kind]
         for item_type in types:
             try:
-                data = await self._get(
-                    f"/sync/all-items/{item_type}/completed",
+                endpoint = f"/sync/all-items/{item_type}/completed"
+                activity_key = self._ACTIVITY_KEYS.get(f"{item_type}/completed", "all")
+                data = await self._activity_gated_get(
+                    endpoint, activity_key,
                     params={"extended": "full"},
                 )
                 items = self._unwrap_sync_response(data, item_type)
@@ -327,8 +331,10 @@ class SimklClient:
     async def get_watched(self, kind: str = "shows") -> list[dict]:
         """Fetch all watched items of a given type with extended metadata."""
         try:
-            data = await self._get(
-                f"/sync/all-items/{kind}/completed",
+            endpoint = f"/sync/all-items/{kind}/completed"
+            activity_key = self._ACTIVITY_KEYS.get(f"{kind}/completed", "all")
+            data = await self._activity_gated_get(
+                endpoint, activity_key,
                 params={"extended": "full"},
             )
             return self._unwrap_sync_response(data, kind)
@@ -341,8 +347,11 @@ class SimklClient:
         Falls back to show-level IMDB IDs if episode data isn't present."""
         watched = set()
         try:
-            data = await self._get("/sync/all-items/shows/completed",
-                                   params={"extended": "full"})
+            data = await self._activity_gated_get(
+                "/sync/all-items/shows/completed",
+                "tv_shows.completed",
+                params={"extended": "full"},
+            )
             items = self._unwrap_sync_response(data, "shows")
             for show in items:
                 show_obj = show.get("show") or show
@@ -413,6 +422,137 @@ class SimklClient:
     async def get_activities(self) -> dict:
         """GET /sync/activities — last-modified timestamps per category."""
         return await self._get("/sync/activities")
+
+    # ------------------------------------------------------------------
+    # Activity-gated sync (Simkl compliance: Rule 7)
+    # ------------------------------------------------------------------
+    # Never call /sync/all-items without first checking /sync/activities.
+    # This two-phase pattern avoids unconditional full-dataset fetches
+    # that can get a client_id suspended.
+    #
+    # Flow:
+    #   1. GET /sync/activities (cached 60s to avoid repeated calls)
+    #   2. Compare relevant timestamp against stored value in Redis
+    #   3. If unchanged → return cached response data
+    #   4. If changed → fetch fresh, cache response, store new timestamp
+    # ------------------------------------------------------------------
+
+    # Map sync endpoints → activity response key paths
+    _ACTIVITY_KEYS: dict[str, str] = {
+        "movies/completed":    "movies.completed",
+        "shows/completed":     "tv_shows.completed",
+        "anime/completed":     "anime.completed",
+        "movies/plantowatch":  "movies.plantowatch",
+        "shows/plantowatch":   "tv_shows.plantowatch",
+        "anime/plantowatch":   "anime.plantowatch",
+        "movies/watching":     "movies.watching",
+        "shows/watching":      "tv_shows.watching",
+        "anime/watching":      "anime.watching",
+    }
+
+    def _cache_prefix(self) -> str:
+        """Stable per-token prefix for Redis keys."""
+        import hashlib
+        t = self._access_token or ""
+        return hashlib.md5(t.encode()).hexdigest()[:12]
+
+    async def _get_activities_cached(self) -> dict:
+        """Get activities, cached 60s in Redis to avoid repeated calls
+        when multiple sync methods run in the same job."""
+        import json as _json
+        try:
+            from app.utils.redis_cache import get_redis
+            r = await get_redis()
+            key = f"simkl_activities_cache:{self._cache_prefix()}"
+            cached = await r.get(key)
+            if cached:
+                return _json.loads(cached)
+        except Exception:
+            pass
+
+        activities = await self.get_activities()
+
+        try:
+            from app.utils.redis_cache import get_redis
+            r = await get_redis()
+            key = f"simkl_activities_cache:{self._cache_prefix()}"
+            await r.set(key, _json.dumps(activities), ex=60)
+        except Exception:
+            pass
+
+        return activities
+
+    @staticmethod
+    def _extract_activity_ts(activities: dict, dotted_key: str) -> str | None:
+        """Extract a timestamp from nested activities dict.
+        e.g. 'movies.completed' → activities['movies']['completed']"""
+        parts = dotted_key.split(".")
+        obj: Any = activities
+        for p in parts:
+            if isinstance(obj, dict):
+                obj = obj.get(p)
+            else:
+                return None
+        return obj if isinstance(obj, str) else None
+
+    async def _activity_gated_get(
+        self, endpoint: str, activity_key: str,
+        params: dict | None = None,
+    ) -> Any:
+        """Fetch a /sync/all-items/* endpoint with activity gating.
+
+        Checks /sync/activities first. If the relevant timestamp hasn't
+        changed since last fetch, returns cached data from Redis.
+        Otherwise fetches fresh, caches, and stores the new timestamp.
+        """
+        import json as _json
+
+        prefix = self._cache_prefix()
+        data_cache_key = f"simkl_sync_data:{prefix}:{activity_key}"
+        ts_store_key = f"simkl_sync_ts:{prefix}:{activity_key}"
+
+        try:
+            from app.utils.redis_cache import get_redis
+            r = await get_redis()
+
+            # Step 1: check activities
+            activities = await self._get_activities_cached()
+            current_ts = self._extract_activity_ts(activities, activity_key)
+
+            # Step 2: compare against stored timestamp
+            stored_ts = await r.get(ts_store_key)
+            if stored_ts:
+                stored_ts = stored_ts if isinstance(stored_ts, str) else stored_ts.decode()
+
+            if current_ts and stored_ts and current_ts == stored_ts:
+                # Nothing changed — try to return cached data
+                cached = await r.get(data_cache_key)
+                if cached:
+                    log.debug("simkl.activity_gate_cache_hit",
+                              endpoint=endpoint, activity_key=activity_key)
+                    return _json.loads(cached)
+
+            # Step 3: fetch fresh data
+            log.debug("simkl.activity_gate_fetching",
+                       endpoint=endpoint, activity_key=activity_key,
+                       current_ts=current_ts, stored_ts=stored_ts)
+            data = await self._get(endpoint, params=params)
+
+            # Cache response (24h TTL) and store timestamp
+            await r.set(data_cache_key, _json.dumps(data), ex=86400)
+            if current_ts:
+                await r.set(ts_store_key, current_ts, ex=86400)
+
+            return data
+
+        except Exception as e:
+            # If Redis fails or activities check fails, fall back to direct fetch
+            # but log the issue so we know activity gating is broken
+            if "401" in str(e) or "429" in str(e):
+                raise  # auth/rate errors should propagate
+            log.warning("simkl.activity_gate_fallback",
+                        endpoint=endpoint, error=str(e)[:120])
+            return await self._get(endpoint, params=params)
 
     # ------------------------------------------------------------------
     # Trending & discovery (CDN — no auth, no rate limit)
@@ -801,8 +941,11 @@ class SimklClient:
         """Fetch user's actively-watched shows (watching status).
         Cross-references with CDN calendar for airing info when possible."""
         try:
-            data = await self._get("/sync/all-items/shows/watching",
-                                   params={"extended": "full"})
+            data = await self._activity_gated_get(
+                "/sync/all-items/shows/watching",
+                "tv_shows.watching",
+                params={"extended": "full"},
+            )
             return data if isinstance(data, list) else []
         except Exception:
             return []
@@ -810,8 +953,11 @@ class SimklClient:
     async def get_my_movies(self, **kw) -> list[dict]:
         """Fetch user's plan-to-watch movies."""
         try:
-            data = await self._get("/sync/all-items/movies/plantowatch",
-                                   params={"extended": "full"})
+            data = await self._activity_gated_get(
+                "/sync/all-items/movies/plantowatch",
+                "movies.plantowatch",
+                params={"extended": "full"},
+            )
             return data if isinstance(data, list) else []
         except Exception:
             return []
