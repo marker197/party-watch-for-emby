@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Settings - Emby-Simkl Suite</title>
 <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
   <style>
     :root {
       --bg: #0f1117;
@@ -2870,6 +2871,23 @@
       btn.textContent = '📂 Parse';
     }
 
+    // Socket.IO connection for import progress
+    let _importSocket = null;
+    function _ensureImportSocket() {
+      if (_importSocket && _importSocket.connected) return;
+      _importSocket = io({ path: '/ws/socket.io', transports: ['websocket'] });
+      _importSocket.on('import_progress', (data) => {
+        const progressBar = document.getElementById('traktProgressBar');
+        const progressText = document.getElementById('traktProgressText');
+        if (progressBar && data.pct) {
+          progressBar.style.width = data.pct + '%';
+        }
+        if (progressText && data.msg) {
+          progressText.textContent = data.msg;
+        }
+      });
+    }
+
     async function pushTraktImport() {
       if (!_traktImportId) {
         showNotification('No parsed import — please upload and parse first');
@@ -2884,9 +2902,13 @@
       btn.disabled = true;
       btn.textContent = '⏳ Pushing…';
       progressWrap.style.display = '';
-      progressBar.style.width = '10%';
-      progressText.textContent = 'Sending to providers…';
+      progressBar.style.width = '2%';
+      progressBar.style.background = 'var(--accent)';
+      progressText.textContent = 'Connecting…';
       resultsDiv.style.display = 'none';
+
+      // Connect Socket.IO for real-time progress
+      _ensureImportSocket();
 
       try {
         const body = {
@@ -2896,9 +2918,6 @@
           push_watchlist: document.getElementById('traktPushWatchlist').checked,
           user_id: window._currentUserId || 1,
         };
-
-        progressBar.style.width = '30%';
-        progressText.textContent = 'Pushing ratings…';
 
         const res = await fetch('/api/import/trakt/push', {
           method: 'POST',
@@ -2916,22 +2935,27 @@
         const r = data.results;
         if (r.ratings && Object.keys(r.ratings).length) {
           html += '<div style="margin-bottom:6px;"><strong>Ratings:</strong> ';
-          if (r.ratings.db !== undefined) html += `${r.ratings.db} to DB`;
-          if (r.ratings.simkl !== undefined) html += `, ${r.ratings.simkl} to Simkl`;
-          if (r.ratings.mdblist !== undefined) html += `, ${r.ratings.mdblist} to MDBList`;
-          html += '</div>';
+          const parts = [];
+          if (r.ratings.db !== undefined) parts.push(`${r.ratings.db} to DB`);
+          if (r.ratings.simkl !== undefined) parts.push(`${r.ratings.simkl} to Simkl`);
+          if (r.ratings.mdblist !== undefined) parts.push(`${r.ratings.mdblist} to MDBList`);
+          html += parts.join(', ') + '</div>';
         }
         if (r.watched && Object.keys(r.watched).length) {
           html += '<div style="margin-bottom:6px;"><strong>Watched:</strong> ';
-          if (r.watched.db !== undefined) html += `${r.watched.db} to DB`;
-          if (r.watched.simkl !== undefined) html += `, ${r.watched.simkl} to Simkl`;
-          if (r.watched.mdblist !== undefined) html += `, ${r.watched.mdblist} to MDBList`;
-          html += '</div>';
+          const parts = [];
+          if (r.watched.db !== undefined) parts.push(`${r.watched.db} movies to DB`);
+          if (r.watched.db_episodes !== undefined) parts.push(`${r.watched.db_episodes} episodes to DB`);
+          if (r.watched.simkl !== undefined) parts.push(`${r.watched.simkl} to Simkl`);
+          if (r.watched.mdblist !== undefined) parts.push(`${r.watched.mdblist} to MDBList`);
+          html += parts.join(', ') + '</div>';
         }
         if (r.watchlist && Object.keys(r.watchlist).length) {
           html += '<div style="margin-bottom:6px;"><strong>Watchlist:</strong> ';
-          if (r.watchlist.simkl !== undefined) html += `${r.watchlist.simkl} to Simkl`;
-          html += '</div>';
+          const parts = [];
+          if (r.watchlist.simkl !== undefined) parts.push(`${r.watchlist.simkl} to Simkl`);
+          if (r.watchlist.mdblist !== undefined) parts.push(`${r.watchlist.mdblist} to MDBList`);
+          html += parts.join(', ') + '</div>';
         }
         if (r.errors && r.errors.length) {
           html += '<div style="margin-top:8px;color:var(--red);"><strong>Errors:</strong><br>';

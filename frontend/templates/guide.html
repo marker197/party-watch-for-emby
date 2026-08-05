@@ -923,7 +923,9 @@
     <p>Import a Trakt export zip file to migrate your entire Trakt history into the suite. Ideal for first-time setup or switching from a Trakt-based workflow.</p>
     <p>Export your data from <strong>trakt.tv/settings/data</strong>, then upload the zip here. The parser recognises all standard Trakt export files — watched movies, watched shows (with full season/episode structure), ratings (movies, shows, episodes), watch history logs, and watchlists.</p>
     <p>After parsing, a preview shows counts for each data category. Choose what to import with the checkboxes, then click <span class="btn-label">🚀 Confirm &amp; Push</span> to send to the local database, Simkl, and MDBList simultaneously.</p>
-    <p>Ratings are batched 50 at a time at 1 request/second to stay within Simkl's rate limits. A full import of 400+ ratings and 400+ watched movies typically completes in under 30 seconds.</p>
+    <p><strong>Watched shows</strong> are imported as individual episode records — each episode from the Trakt export's season/episode structure gets its own row in the watch history table with the original watched-at date, series name, season number, and episode number. These show up on the Watch History page under the Shows filter.</p>
+    <p><strong>Watchlist items</strong> are pushed to both Simkl (as plan-to-watch) and MDBList, keeping both providers in sync.</p>
+    <p>Ratings are batched 50 at a time at 1 request/second to stay within Simkl's rate limits. The progress bar updates in real time via Socket.IO as each batch completes, so you can see exactly where the import stands rather than waiting for a silent HTTP request to finish.</p>
     <div class="tip">Existing items are skipped automatically — safe to re-run if your first attempt was interrupted.</div>
   </div>
 

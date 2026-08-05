@@ -10096,12 +10096,18 @@ async def trakt_import_push(
         obj = item.get(media_key, item) if media_key else item
         return obj.get("title", "Unknown")
 
-    # Helper: log progress via Socket.IO
-    async def _progress(msg: str):
+    # Helper: emit import progress via Socket.IO + activity log
+    async def _progress(msg: str, phase: str = "", pct: int = 0):
+        try:
+            from app.services.watch_party.service import sio
+            await sio.emit("import_progress", {"msg": msg, "phase": phase, "pct": pct})
+        except Exception:
+            pass
         await _activity_log(msg, category="general")
 
     # ── 1. RATINGS ──────────────────────────────────────────────────────
     if push_ratings:
+        await _progress("Processing ratings…", "ratings", 10)
         all_ratings = []
         for item in parsed.get("ratings_movies", []):
             ids = _ids(item, "movie")
@@ -10158,11 +10164,13 @@ async def trakt_import_push(
 
         # Push to Simkl (batch 50, 1/sec)
         if has_simkl and all_ratings:
+            await _progress("Pushing ratings to Simkl…", "ratings", 30)
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
                 token_expires=user.simkl_token_expires,
             )
             simkl_ok = 0
+            total_rating_batches = max(1, (len(all_ratings) + BATCH - 1) // BATCH)
             for i in range(0, len(all_ratings), BATCH):
                 batch = all_ratings[i:i + BATCH]
                 items = []
@@ -10175,6 +10183,9 @@ async def trakt_import_push(
                 try:
                     await simkl.add_ratings(items)
                     simkl_ok += len(batch)
+                    batch_num = i // BATCH + 1
+                    pct = 30 + int(40 * batch_num / total_rating_batches)
+                    await _progress(f"Simkl ratings: batch {batch_num}/{total_rating_batches}", "ratings", pct)
                     if i + BATCH < len(all_ratings):
                         await asyncio.sleep(1)
                 except Exception as e:
@@ -10204,7 +10215,7 @@ async def trakt_import_push(
                 results["errors"].append(f"MDBList ratings: {str(e)[:100]}")
             await mdb.close()
 
-        await _progress(f"📦 Trakt import: {len(all_ratings)} ratings processed")
+        await _progress(f"📦 Trakt import: {len(all_ratings)} ratings processed", "ratings", 100)
 
     # ── 2. WATCHED HISTORY ──────────────────────────────────────────────
     if push_watched:
@@ -10215,6 +10226,9 @@ async def trakt_import_push(
         from app.models.schema import WatchHistory
         from sqlalchemy import cast, Date as SADate
         wh_count = 0
+        wh_ep_count = 0
+
+        await _progress("Importing movie watch history to DB…", "watched", 5)
         for item in watched_movies:
             ids = _ids(item, "movie")
             title = _title(item, "movie")
@@ -10248,16 +10262,74 @@ async def trakt_import_push(
             await db.commit()
         except Exception as e:
             await db.rollback()
-            results["errors"].append(f"DB watched: {str(e)[:100]}")
+            results["errors"].append(f"DB watched movies: {str(e)[:100]}")
+
+        # Store show episodes in local DB
+        await _progress("Importing show watch history to DB…", "watched", 15)
+        for show in watched_shows:
+            show_ids = _ids(show, "show")
+            show_title = _title(show, "show")
+            show_imdb = show_ids.get("imdb") or None
+            show_tmdb = str(show_ids.get("tmdb", "")) if show_ids.get("tmdb") else None
+            show_tvdb = str(show_ids.get("tvdb", "")) if show_ids.get("tvdb") else None
+            for season in show.get("seasons", []):
+                season_num = season.get("number", 0)
+                for episode in season.get("episodes", []):
+                    ep_num = episode.get("number", 0)
+                    watched_at_str = episode.get("last_watched_at", "")
+                    try:
+                        watched_at = datetime.fromisoformat(watched_at_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                    except Exception:
+                        watched_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                    ep_title = f"{show_title} S{season_num:02d}E{ep_num:02d}"
+                    # Dedup by show imdb + season + episode + date
+                    if show_imdb:
+                        existing = (await db.execute(
+                            select(WatchHistory).where(
+                                WatchHistory.user_id == user_id,
+                                WatchHistory.imdb_id == show_imdb,
+                                WatchHistory.season_number == season_num,
+                                WatchHistory.episode_number == ep_num,
+                                cast(WatchHistory.watched_at, SADate) == watched_at.date(),
+                            )
+                        )).scalar_one_or_none()
+                    else:
+                        existing = None
+                    if not existing:
+                        db.add(WatchHistory(
+                            user_id=user_id,
+                            emby_id=None,
+                            item_type="episode",
+                            title=ep_title,
+                            series_name=show_title,
+                            season_number=season_num,
+                            episode_number=ep_num,
+                            imdb_id=show_imdb,
+                            tmdb_id=show_tmdb,
+                            tvdb_id=show_tvdb,
+                            watched_at=watched_at,
+                            progress=100,
+                            source="trakt_import",
+                        ))
+                        wh_ep_count += 1
+        try:
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            results["errors"].append(f"DB watched shows: {str(e)[:100]}")
+
         results["watched"]["db"] = wh_count
+        results["watched"]["db_episodes"] = wh_ep_count
 
         # Push movies to Simkl history
         if has_simkl and watched_movies:
+            await _progress("Pushing watched movies to Simkl…", "watched", 30)
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
                 token_expires=user.simkl_token_expires,
             )
             simkl_ok = 0
+            total_movie_batches = max(1, (len(watched_movies) + BATCH - 1) // BATCH)
             for i in range(0, len(watched_movies), BATCH):
                 batch = watched_movies[i:i + BATCH]
                 items = []
@@ -10273,13 +10345,18 @@ async def trakt_import_push(
                     if items:
                         await simkl.add_to_history(items)
                         simkl_ok += len(items)
+                    batch_num = i // BATCH + 1
+                    pct = 30 + int(30 * batch_num / total_movie_batches)
+                    await _progress(f"Simkl movies: batch {batch_num}/{total_movie_batches}", "watched", pct)
                     if i + BATCH < len(watched_movies):
                         await asyncio.sleep(1)
                 except Exception as e:
                     results["errors"].append(f"Simkl history batch {i//BATCH+1}: {str(e)[:100]}")
 
             # Push shows to Simkl history (with season/episode structure)
-            for show in watched_shows:
+            await _progress("Pushing watched shows to Simkl…", "watched", 60)
+            total_shows = max(1, len(watched_shows))
+            for idx, show in enumerate(watched_shows):
                 ids = _ids(show, "show")
                 if not ids:
                     continue
@@ -10296,11 +10373,15 @@ async def trakt_import_push(
                         await asyncio.sleep(1)
                     except Exception as e:
                         results["errors"].append(f"Simkl show {_title(show, 'show')}: {str(e)[:80]}")
+                if (idx + 1) % 10 == 0 or idx == len(watched_shows) - 1:
+                    pct = 60 + int(20 * (idx + 1) / total_shows)
+                    await _progress(f"Simkl shows: {idx + 1}/{total_shows}", "watched", pct)
 
             results["watched"]["simkl"] = simkl_ok
 
         # Push to MDBList history
         if has_mdblist and watched_movies:
+            await _progress("Pushing watched history to MDBList…", "watched", 85)
             key = await _get_mdblist_key()
             from app.utils.mdblist_client import MDBListClient
             mdb = MDBListClient(api_key=key)
@@ -10322,12 +10403,15 @@ async def trakt_import_push(
             await mdb.close()
 
         await _progress(
-            f"📦 Trakt import: {len(watched_movies)} movies + {len(watched_shows)} shows watched history processed"
+            f"📦 Trakt import: {len(watched_movies)} movies, {wh_ep_count} episodes from {len(watched_shows)} shows processed",
+            "watched", 100,
         )
 
     # ── 3. WATCHLIST ────────────────────────────────────────────────────
     if push_watchlist:
         watchlist = parsed.get("watchlist", [])
+        await _progress("Pushing watchlist…", "watchlist", 10)
+
         if has_simkl and watchlist:
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
@@ -10350,7 +10434,43 @@ async def trakt_import_push(
             except Exception as e:
                 results["errors"].append(f"Simkl watchlist: {str(e)[:100]}")
 
-        await _progress(f"📦 Trakt import: {len(watchlist)} watchlist items processed")
+        # Push to MDBList watchlist
+        if has_mdblist and watchlist:
+            await _progress("Pushing watchlist to MDBList…", "watchlist", 50)
+            key = await _get_mdblist_key()
+            from app.utils.mdblist_client import MDBListClient
+            mdb = MDBListClient(api_key=key)
+            mdb_wl_movies = []
+            mdb_wl_shows = []
+            for item in watchlist:
+                item_type = item.get("type", "movie")
+                ids = _ids(item, item_type)
+                if not ids:
+                    continue
+                # MDBList expects flat id dicts: {"imdb": "tt...", "tmdb": 630}
+                flat = {}
+                if ids.get("imdb"):
+                    flat["imdb"] = ids["imdb"]
+                if ids.get("tmdb"):
+                    flat["tmdb"] = ids["tmdb"]
+                if not flat:
+                    continue
+                if item_type == "movie":
+                    mdb_wl_movies.append(flat)
+                else:
+                    mdb_wl_shows.append(flat)
+            try:
+                if mdb_wl_movies or mdb_wl_shows:
+                    await mdb.add_to_watchlist(
+                        movies=mdb_wl_movies or None,
+                        shows=mdb_wl_shows or None,
+                    )
+                results["watchlist"]["mdblist"] = len(mdb_wl_movies) + len(mdb_wl_shows)
+            except Exception as e:
+                results["errors"].append(f"MDBList watchlist: {str(e)[:100]}")
+            await mdb.close()
+
+        await _progress(f"📦 Trakt import: {len(watchlist)} watchlist items processed", "watchlist", 100)
 
     # Clean up cached data
     try:
@@ -10369,6 +10489,6 @@ async def trakt_import_push(
         except Exception:
             pass
 
-    await _progress(f"✓ Trakt import complete — {results}")
+    await _progress("✓ Trakt import complete", "done", 100)
 
     return {"ok": True, "results": results}
