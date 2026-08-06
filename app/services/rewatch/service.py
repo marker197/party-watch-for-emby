@@ -460,22 +460,53 @@ class RewatchRecommender:
             history_movies = await simkl.get_history("movies", limit=10000)
             history_shows = await simkl.get_history("shows", limit=10000)
 
-            # Build last-watched lookup: simkl_id -> most_recent_date
-            last_watched: dict[str, str] = {}
+            # Build last-watched lookups:
+            #   simkl_id -> most_recent_date
+            #   imdb_id  -> most_recent_date (fallback)
+            # /sync/all-items/ returns flat objects (no movie/show wrapper)
+            # Date field can be "last_watched_at", "watched_at", or "updated_at"
+            last_watched_by_simkl: dict[str, str] = {}
+            last_watched_by_imdb: dict[str, str] = {}
             for entry in history_movies + history_shows:
+                # Flat format: IDs directly on entry; wrapper format: inside movie/show
                 item = entry.get("movie") or entry.get("show") or entry
-                tid = str(item.get("ids", {}).get("simkl") or item.get("ids", {}).get("simkl_id") or "")
-                watched_at = entry.get("watched_at", "")
+                ids = item.get("ids", {})
+                tid = str(ids.get("simkl") or ids.get("simkl_id") or "")
+                iid = ids.get("imdb", "")
+                watched_at = (
+                    entry.get("last_watched_at")
+                    or entry.get("watched_at")
+                    or entry.get("updated_at")
+                    or item.get("last_watched_at")
+                    or item.get("watched_at")
+                    or ""
+                )
                 if tid and watched_at:
-                    if tid not in last_watched or watched_at > last_watched[tid]:
-                        last_watched[tid] = watched_at
+                    if tid not in last_watched_by_simkl or watched_at > last_watched_by_simkl[tid]:
+                        last_watched_by_simkl[tid] = watched_at
+                if iid and watched_at:
+                    if iid not in last_watched_by_imdb or watched_at > last_watched_by_imdb[iid]:
+                        last_watched_by_imdb[iid] = watched_at
+
+            log.debug("rewatch.simkl_history_lookup",
+                      user_id=user_id,
+                      ratings_count=len(ratings),
+                      history_movies=len(history_movies),
+                      history_shows=len(history_shows),
+                      simkl_ids_mapped=len(last_watched_by_simkl),
+                      imdb_ids_mapped=len(last_watched_by_imdb))
 
             candidates = []
+            skipped_no_date = 0
+            skipped_too_recent = 0
+            skipped_low_rating = 0
             for rated in ratings:
                 rating = rated.get("rating", 0)
                 if rating < min_rating:
+                    skipped_low_rating += 1
                     continue
 
+                # /sync/ratings/ uses movie/show wrappers
                 item = rated.get("movie") or rated.get("show") or rated
                 ids = item.get("ids", {})
                 simkl_id = str(ids.get("simkl") or ids.get("simkl_id") or "")
@@ -486,9 +517,12 @@ class RewatchRecommender:
                 year = item.get("year")
                 genres = item.get("genres", [])
 
-                # Determine last watched date
-                lw = last_watched.get(simkl_id, "")
+                # Determine last watched date — try simkl_id first, then imdb fallback
+                lw = last_watched_by_simkl.get(simkl_id, "")
+                if not lw and imdb_id:
+                    lw = last_watched_by_imdb.get(imdb_id, "")
                 if not lw:
+                    skipped_no_date += 1
                     continue  # Never watched according to history
 
                 try:
@@ -497,6 +531,7 @@ class RewatchRecommender:
                     continue
 
                 if lw_dt > cutoff:
+                    skipped_too_recent += 1
                     continue  # Watched too recently
 
                 # Resolve Emby ID from library cache
@@ -527,6 +562,12 @@ class RewatchRecommender:
                     "source": "simkl",
                 })
 
+            log.debug("rewatch.simkl_candidates_built",
+                      user_id=user_id,
+                      candidates=len(candidates),
+                      skipped_low_rating=skipped_low_rating,
+                      skipped_no_date=skipped_no_date,
+                      skipped_too_recent=skipped_too_recent)
             return candidates
         except Exception as e:
             log.warning("rewatch.simkl_fetch_failed", user_id=user_id,
