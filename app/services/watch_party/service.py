@@ -605,8 +605,9 @@ class WatchPartyService:
             # ── MDBList: post to discussion page ──
             if "mdblist" in active:
                 imdb_id = provider_ids.get("Imdb") or provider_ids.get("imdb")
-                if imdb_id:
-                    target_type = "movie" if item_type == "movie" else "show"
+                tmdb_id = provider_ids.get("Tmdb") or provider_ids.get("tmdb")
+                target_type = "movie" if item_type == "movie" else "show"
+                if imdb_id or tmdb_id:
                     try:
                         from app.utils.secure_redis import secure_get
                         mdb_key = await secure_get("mdblist_api_key")
@@ -614,15 +615,31 @@ class WatchPartyService:
                             from app.utils.mdblist_client import MDBListClient
                             mdb = MDBListClient(api_key=mdb_key if isinstance(mdb_key, str) else mdb_key.decode())
                             try:
-                                await mdb.post_discussion("imdb", target_type, imdb_id, comment_text)
-                                log.info("watch_party.mdblist_comment_posted", party_id=party.id,
-                                         imdb_id=imdb_id, reactions=len(reactions), comments=len(comments))
+                                posted = False
+                                # Try IMDB first, then TMDB as fallback
+                                for id_provider, id_val in [("imdb", imdb_id), ("tmdb", tmdb_id)]:
+                                    if not id_val or posted:
+                                        continue
+                                    try:
+                                        await mdb.post_discussion(id_provider, target_type, str(id_val), comment_text)
+                                        log.info("watch_party.mdblist_comment_posted",
+                                                 party_id=party.id, provider=id_provider,
+                                                 id=str(id_val), reactions=len(reactions),
+                                                 comments=len(comments))
+                                        posted = True
+                                    except Exception as inner_e:
+                                        log.warning("watch_party.mdblist_comment_attempt_failed",
+                                                    party_id=party.id, provider=id_provider,
+                                                    id=str(id_val), error=str(inner_e)[:200])
+                                if not posted:
+                                    log.error("watch_party.mdblist_comment_all_failed",
+                                              party_id=party.id, imdb_id=imdb_id, tmdb_id=tmdb_id)
                             finally:
                                 await mdb.close()
                     except Exception as e:
                         log.error("watch_party.mdblist_comment_error", party_id=party.id, error=str(e))
                 else:
-                    log.warning("watch_party.mdblist_comment_skip_no_imdb", party_id=party.id)
+                    log.warning("watch_party.mdblist_comment_skip_no_id", party_id=party.id)
 
             # ── Simkl: no comments API — logged only ──
             if "simkl" in active and "mdblist" not in active:
