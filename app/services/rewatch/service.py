@@ -234,31 +234,71 @@ class RewatchRecommender:
     async def get_item_history(self, user_id: int, item_id: str) -> dict:
         """Return full watch history for a single item (hover flyout).
 
-        Tries local watch_history DB first (instant, no API calls).
-        Falls back to API sources if DB is empty (pre-backfill).
+        For items with a cached suggestion (which already carries last_watched),
+        uses that directly.  Falls back to local DB then API sources.
 
         Returns: {"watches": [{"date": str, "source": str}],
                   "play_count": int, "note": str|None}
         """
         r = await get_redis()
-        cache_key = f"{self.CACHE_PREFIX}:history_v3:{user_id}:{item_id}"
-        raw = await r.get(cache_key)
-        if raw:
-            return json.loads(raw)
 
-        # Try local DB first (populated by webhooks + backfill)
-        db_result = await self._history_from_db(user_id, item_id)
+        # Check cached suggestions for IMDB/emby resolution and fallback date
+        raw_suggestions = await r.get(f"{self.CACHE_PREFIX}:suggestions:{user_id}")
+        suggestion = None
+        if raw_suggestions:
+            for s in json.loads(raw_suggestions):
+                if s.get("item_key") == item_id:
+                    suggestion = s
+                    break
+
+        # Resolve the best IMDB/emby key for DB lookup
+        lookup_imdb = None
+        lookup_emby = None
+        if suggestion:
+            lookup_imdb = suggestion.get("imdb_id")
+            lookup_emby = suggestion.get("emby_id")
+
+        # Try local DB with the resolved ID
+        db_result = None
+        if ":" in item_id:
+            provider, value = item_id.split(":", 1)
+            # For simkl items, prefer IMDB lookup (simkl_id not in watch_history)
+            if provider == "simkl" and lookup_imdb:
+                db_result = await self._history_from_db(user_id, f"imdb:{lookup_imdb}")
+            elif provider == "simkl" and lookup_emby:
+                db_result = await self._history_from_db(user_id, f"emby:{lookup_emby}")
+            else:
+                db_result = await self._history_from_db(user_id, item_id)
+
         if db_result and db_result.get("watches"):
-            await r.set(cache_key, json.dumps(db_result), ex=self.CACHE_TTL)
+            # Dedup watches by date (same day = same watch)
+            seen_dates: set[str] = set()
+            deduped: list[dict] = []
+            for w in db_result["watches"]:
+                day = w["date"][:10] if w.get("date") else ""
+                if day and day not in seen_dates:
+                    seen_dates.add(day)
+                    deduped.append(w)
+            db_result["watches"] = deduped
+            db_result["play_count"] = len(deduped)
             return db_result
 
-        # Fallback: API sources (for pre-backfill state)
+        # If DB has nothing but suggestion has last_watched, use that
+        if suggestion and suggestion.get("last_watched"):
+            result = {
+                "watches": [{"date": suggestion["last_watched"], "source": suggestion.get("source", "simkl")}],
+                "play_count": 1,
+                "note": None,
+            }
+            return result
+
+        # Last resort: API sources (for pre-backfill state)
         simkl_result = await self._history_from_simkl(user_id, item_id)
         mdblist_result = await self._history_from_mdblist(user_id, item_id)
         emby_result = await self._history_from_emby(user_id, item_id)
 
         log.debug("rewatch.history_sources", user_id=user_id, item_id=item_id,
-                  db=False, simkl =bool(simkl_result), mdblist=bool(mdblist_result),
+                  db=False, simkl=bool(simkl_result), mdblist=bool(mdblist_result),
                   emby=bool(emby_result))
 
         all_watches: list[dict] = []
@@ -269,13 +309,13 @@ class RewatchRecommender:
         if emby_result and emby_result.get("watches"):
             all_watches.extend(emby_result["watches"])
 
-        deduped = self._deduplicate_watches(all_watches)
-        deduped.sort(key=lambda w: w["date"], reverse=True)
+        deduped_all = self._deduplicate_watches(all_watches)
+        deduped_all.sort(key=lambda w: w["date"], reverse=True)
 
         emby_play_count = emby_result.get("play_count", 0) if emby_result else 0
         mdblist_play_count = mdblist_result.get("play_count", 0) if mdblist_result else 0
         best_play_count = max(emby_play_count, mdblist_play_count)
-        total_known = len(deduped)
+        total_known = len(deduped_all)
         note = None
         if best_play_count > total_known and total_known > 0:
             extra = best_play_count - total_known
@@ -284,8 +324,7 @@ class RewatchRecommender:
             note = f"Watched {best_play_count} times (no dates recorded)"
         play_count = max(best_play_count, total_known)
 
-        result = {"watches": deduped, "play_count": play_count, "note": note}
-        await r.set(cache_key, json.dumps(result), ex=self.CACHE_TTL)
+        result = {"watches": deduped_all, "play_count": play_count, "note": note}
         return result
 
     async def _history_from_db(self, user_id: int, item_id: str) -> dict | None:
