@@ -7975,6 +7975,84 @@ async def get_watch_history_by_date(
                 except Exception:
                     pass
 
+    # ── All-time rewatch counts ─────────────────────────────────────
+    # Collect unique identifiers from visible items to query total watches
+    all_items_flat = []
+    for _ds, bucket in day_map.items():
+        for item in bucket.values():
+            all_items_flat.append(item)
+
+    # Movies: count by imdb_id across all time
+    movie_imdbs = {it["imdb_id"] for it in all_items_flat if it.get("imdb_id") and it["item_type"] == "movie"}
+    movie_counts: dict[str, int] = {}
+    if movie_imdbs:
+        mc_q = (
+            select(WatchHistory.imdb_id, func.count(WatchHistory.id))
+            .where(
+                WatchHistory.user_id == user_id,
+                WatchHistory.item_type == "movie",
+                WatchHistory.imdb_id.in_(movie_imdbs),
+            )
+            .group_by(WatchHistory.imdb_id)
+        )
+        for row in (await db.execute(mc_q)).all():
+            movie_counts[row[0]] = row[1]
+
+    # Episodes: count by imdb_id + season + episode across all time
+    ep_keys_set: set[tuple] = set()
+    for it in all_items_flat:
+        if it["item_type"] == "episode" and it.get("imdb_id") and it.get("season_number") is not None and it.get("episode_number") is not None:
+            ep_keys_set.add((it["imdb_id"], it["season_number"], it["episode_number"]))
+    ep_counts: dict[tuple, int] = {}
+    if ep_keys_set:
+        # Build OR conditions for each (imdb, season, episode) triple
+        from sqlalchemy import and_, or_, tuple_
+        ep_imdbs = {k[0] for k in ep_keys_set}
+        ec_q = (
+            select(
+                WatchHistory.imdb_id,
+                WatchHistory.season_number,
+                WatchHistory.episode_number,
+                func.count(WatchHistory.id),
+            )
+            .where(
+                WatchHistory.user_id == user_id,
+                WatchHistory.item_type == "episode",
+                WatchHistory.imdb_id.in_(ep_imdbs),
+            )
+            .group_by(WatchHistory.imdb_id, WatchHistory.season_number, WatchHistory.episode_number)
+        )
+        for row in (await db.execute(ec_q)).all():
+            ep_counts[(row[0], row[1], row[2])] = row[3]
+
+    # Shows (collapsed mode): count distinct watched dates for the series
+    show_imdbs = {it["imdb_id"] for it in all_items_flat if it.get("imdb_id") and it["item_type"] == "show"}
+    show_counts: dict[str, int] = {}
+    if show_imdbs:
+        # For shows, count total episode watch events (not distinct dates)
+        sc_q = (
+            select(WatchHistory.imdb_id, func.count(WatchHistory.id))
+            .where(
+                WatchHistory.user_id == user_id,
+                WatchHistory.item_type == "episode",
+                WatchHistory.imdb_id.in_(show_imdbs),
+            )
+            .group_by(WatchHistory.imdb_id)
+        )
+        for row in (await db.execute(sc_q)).all():
+            show_counts[row[0]] = row[1]
+
+    # Attach total_watches to each item
+    for it in all_items_flat:
+        tw = 1
+        if it["item_type"] == "movie" and it.get("imdb_id"):
+            tw = movie_counts.get(it["imdb_id"], 1)
+        elif it["item_type"] == "episode" and it.get("imdb_id") and it.get("season_number") is not None and it.get("episode_number") is not None:
+            tw = ep_counts.get((it["imdb_id"], it["season_number"], it["episode_number"]), 1)
+        elif it["item_type"] == "show" and it.get("imdb_id"):
+            tw = show_counts.get(it["imdb_id"], 1)
+        it["total_watches"] = tw
+
     # ── Build response ──────────────────────────────────────────────
     result_days = []
     last_date = None
