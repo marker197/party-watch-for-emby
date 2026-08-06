@@ -231,35 +231,63 @@ class SimklClient:
         for item_type in types:
             try:
                 data = await self._get(
-                    f"/sync/ratings/{item_type}",
+                    f"/sync/ratings/{item_type}/1,2,3,4,5,6,7,8,9,10",
                     params={"extended": "full"},
                 )
+                items_list = []
                 if isinstance(data, list):
-                    for item in data:
-                        item["_type"] = item_type
-                        # Rating may be at top level or missing
-                        if "rating" not in item:
-                            item["rating"] = 0
-                    results.extend(data)
+                    items_list = data
                 elif isinstance(data, dict):
                     # Handle dict wrapper (same as _unwrap_sync_response)
-                    items = (
+                    items_list = (
                         data.get(item_type)
                         or data.get("items")
                         or data.get("results")
                         or data.get("data")
-                    )
-                    if isinstance(items, list):
-                        for item in items:
-                            item["_type"] = item_type
-                            if "rating" not in item:
-                                item["rating"] = 0
-                        results.extend(items)
-                    else:
+                    ) or []
+                    if not isinstance(items_list, list):
                         log.debug("simkl.ratings_unexpected_format",
                                   type=item_type, keys=list(data.keys())[:10])
+                        items_list = []
+
+                # Log first item shape for debugging
+                if items_list:
+                    sample = items_list[0]
+                    sample_keys = list(sample.keys())[:15]
+                    # Check for rating in various locations
+                    sample_rating = sample.get("rating")
+                    sample_user_rating = sample.get("user_rating")
+                    inner = sample.get("movie") or sample.get("show") or {}
+                    inner_rating = inner.get("rating") if isinstance(inner, dict) else None
+                    log.debug("simkl.ratings_sample_item",
+                              type=item_type,
+                              keys=sample_keys,
+                              rating=sample_rating,
+                              user_rating=sample_user_rating,
+                              inner_rating=inner_rating)
+
+                for item in items_list:
+                    item["_type"] = item_type
+                    # Try multiple field names for the user's rating
+                    if "rating" not in item or item["rating"] is None:
+                        item["rating"] = (
+                            item.get("user_rating")
+                            or item.get("rate")
+                            or 0
+                        )
+                    # Also check if rating is inside the movie/show wrapper
+                    if item["rating"] == 0:
+                        inner = item.get("movie") or item.get("show") or {}
+                        if isinstance(inner, dict):
+                            item["rating"] = (
+                                inner.get("user_rating")
+                                or inner.get("rating")
+                                or inner.get("rate")
+                                or 0
+                            )
+                results.extend(items_list)
                 log.debug("simkl.ratings_fetched", type=item_type,
-                          count=len([r for r in results if r.get("_type") == item_type]))
+                          count=len(items_list))
             except Exception as e:
                 log.warning("simkl.ratings_fetch_failed",
                             type=item_type, error=str(e)[:120])
