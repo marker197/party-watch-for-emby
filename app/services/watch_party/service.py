@@ -236,10 +236,10 @@ class WatchPartyService:
             )
             await db.commit()
 
-        # NEW: Post a summary comment to Simkl (reactions + participant count)
+        # Post a summary comment to active providers (MDBList discussion / local)
         # via the host's account, before the Redis state is torn down.
         if party:
-            await self._post_party_summary_to_simkl(party, len(participants))
+            await self._post_party_summary(party, len(participants))
 
         # Stop playback on all participant Emby sessions
         stopped = 0
@@ -513,20 +513,35 @@ class WatchPartyService:
         except Exception as e:
             log.warning("watch_party.comment_persist_failed", code=code, error=str(e))
 
-    async def _post_party_summary_to_simkl(self, party: WatchParty, participant_count: int) -> None:
+    async def _post_party_summary(self, party: WatchParty, participant_count: int) -> None:
         """Aggregate this party's reactions and user comments, then post a
-        summary comment to Simkl (via the host's account) when the party ends.
+        summary comment to the active provider(s) when the party ends.
 
-        Skipped entirely if the host never linked Simkl, if the item can't
-        be resolved to a Simkl-recognised ID, or if the party had no
+        MDBList: posts to the item's discussion page via the Discussion API.
+        Simkl: no comments API — comment is stored locally only.
+
+        Skipped entirely if no provider is active, or if the party had no
         reactions, no comments, and only one participant.
         """
         try:
+            # Check which providers are active
+            r = await get_redis()
+            raw_provider = await r.get("integration_provider")
+            provider_str = (raw_provider if isinstance(raw_provider, str)
+                           else raw_provider.decode()) if raw_provider else "none"
+            active = set()
+            if provider_str == "both":
+                active = {"simkl", "mdblist"}
+            elif provider_str in ("simkl", "mdblist"):
+                active = {provider_str}
+            if not active:
+                return
+
             async with async_session() as db:
                 host = (await db.execute(
                     select(User).where(User.id == party.host_user_id)
                 )).scalar_one_or_none()
-                if not host or not host.simkl_access_token:
+                if not host:
                     return
 
                 reactions = (await db.execute(
@@ -561,35 +576,21 @@ class WatchPartyService:
             provider_ids = item.get("ProviderIds", {})
             item_type = item.get("Type", "Movie").lower()
 
-            payload = None
-            if item_type == "movie":
-                tmdb_id = provider_ids.get("Tmdb")
-                if tmdb_id:
-                    payload = {"movie": {"ids": {"tmdb": int(tmdb_id)}}}
-            else:
-                tvdb_id = provider_ids.get("Tvdb")
-                if tvdb_id:
-                    payload = {"show": {"ids": {"tvdb": int(tvdb_id)}}}
-            if not payload:
-                log.warning("watch_party.comment_skip_no_id", party_id=party.id, item_type=item_type)
-                return
-
             # Build emoji reaction summary
             counts: dict[str, int] = {}
-            for r in reactions:
-                counts[r.emoji] = counts.get(r.emoji, 0) + 1
+            for rx in reactions:
+                counts[rx.emoji] = counts.get(rx.emoji, 0) + 1
             reaction_summary = ", ".join(
                 f"{emoji} x{n}" for emoji, n in sorted(counts.items(), key=lambda kv: -kv[1])
             )
 
             # Build user comments section
-            # Format: "Name - Their comment." for each user comment
             comment_lines: list[str] = []
             for c in comments:
                 name = c.username or f"User {c.user_id or '?'}"
                 comment_lines.append(f"{name} - {c.comment_text}")
 
-            # Assemble full Simkl comment
+            # Assemble full comment text
             if participant_names:
                 names_str = ", ".join(participant_names)
                 parts = [f"Watched with {names_str} in a watch party."]
@@ -599,20 +600,37 @@ class WatchPartyService:
                 parts.append(" ".join(comment_lines))
             if reaction_summary:
                 parts.append(f"Reactions: {reaction_summary}.")
-            comment = " ".join(parts)
+            comment_text = " ".join(parts)
 
-            simkl = SimklClient(
-                access_token=host.simkl_access_token,
-                token_expires=host.simkl_token_expires,
-            )
-            try:
-                await simkl.post_comment(payload, comment, spoiler=False)
-                log.info("watch_party.simkl_comment_posted", party_id=party.id,
+            # ── MDBList: post to discussion page ──
+            if "mdblist" in active:
+                imdb_id = provider_ids.get("Imdb") or provider_ids.get("imdb")
+                if imdb_id:
+                    target_type = "movie" if item_type == "movie" else "show"
+                    try:
+                        from app.utils.secure_redis import secure_get
+                        mdb_key = await secure_get("mdblist_api_key")
+                        if mdb_key:
+                            from app.utils.mdblist_client import MDBListClient
+                            mdb = MDBListClient(api_key=mdb_key if isinstance(mdb_key, str) else mdb_key.decode())
+                            try:
+                                await mdb.post_discussion("imdb", target_type, imdb_id, comment_text)
+                                log.info("watch_party.mdblist_comment_posted", party_id=party.id,
+                                         imdb_id=imdb_id, reactions=len(reactions), comments=len(comments))
+                            finally:
+                                await mdb.close()
+                    except Exception as e:
+                        log.error("watch_party.mdblist_comment_error", party_id=party.id, error=str(e))
+                else:
+                    log.warning("watch_party.mdblist_comment_skip_no_imdb", party_id=party.id)
+
+            # ── Simkl: no comments API — logged only ──
+            if "simkl" in active and "mdblist" not in active:
+                log.info("watch_party.comment_stored_locally", party_id=party.id,
                          reactions=len(reactions), comments=len(comments))
-            finally:
-                await simkl.close()
+
         except Exception as e:
-            log.error("watch_party.simkl_comment_error", party_id=party.id, error=str(e))
+            log.error("watch_party.comment_error", party_id=party.id, error=str(e))
 
     def _make_token_callback(self, user: User):
         """Create a token refresh callback for a user."""

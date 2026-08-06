@@ -750,3 +750,46 @@ class MDBListClient:
     async def get_trending_lists(self, limit: int = 20) -> list[dict]:
         """Alias for top lists, since MDBList doesn't have a separate trending endpoint."""
         return await self.get_top_lists()
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Discussion / Comments
+    # ═══════════════════════════════════════════════════════════════════════
+
+    async def post_discussion(
+        self,
+        provider: str,
+        target_type: str,
+        target_id: str,
+        comment: str,
+    ) -> dict:
+        """Post a comment to an item's discussion page.
+
+        ``POST /discussion/{provider}/{target_type}/{target_id}``
+
+        Args:
+            provider: ID provider, e.g. ``"imdb"``, ``"tmdb"``.
+            target_type: ``"movie"`` or ``"show"``.
+            target_id: The ID value, e.g. ``"tt1234567"`` for IMDb.
+            comment: Comment text (max ~1000 chars).
+
+        Returns:
+            API response dict (comment_id, etc.) on success.
+        """
+        path = f"/discussion/{provider}/{target_type}/{target_id}"
+        return await self._post(path, {"comment": comment})
+
+    async def get_discussion(
+        self,
+        provider: str,
+        target_type: str,
+        target_id: str,
+    ) -> list[dict]:
+        """Get discussion comments for an item.
+
+        ``GET /discussion/{provider}/{target_type}/{target_id}``
+        """
+        path = f"/discussion/{provider}/{target_type}/{target_id}"
+        try:
+            return await self._get(path)
+        except Exception:
+            return []

@@ -429,7 +429,7 @@
         <div class="sidebar-title">Watching Now</div>
         <div id="membersList"></div>
       </div>
-      <div>
+      <div id="reactionsSection" style="display:none;">
         <div class="sidebar-title">Quick Reactions</div>
         <div class="quick-reactions">
           <button onclick="sendReaction('👍')">👍</button>
@@ -442,12 +442,12 @@
           <button onclick="sendReaction('😴')">😴</button>
         </div>
       </div>
-      <div class="simkl-comment-box">
-        <div class="sidebar-title">Simkl Comment</div>
-        <textarea id="simklCommentInput" placeholder="Leave a comment for the Simkl summary…" rows="2" maxlength="1000"></textarea>
+      <div class="simkl-comment-box" id="commentSection" style="display:none;">
+        <div class="sidebar-title" id="commentBoxTitle">Watch Party Comment</div>
+        <textarea id="simklCommentInput" placeholder="Leave a comment…" rows="2" maxlength="1000"></textarea>
         <button id="simklCommentBtn" onclick="submitSimklComment()">💬 Post Comment</button>
         <div id="simklCommentStatus" class="comment-status"></div>
-        <div class="comment-note">Posted to Simkl under the host's account when the party ends. Visible publicly on the item's Simkl page.</div>
+        <div class="comment-note" id="commentBoxNote">Stored with the watch party record.</div>
       </div>
       <div style="margin-top:20px;">
         <button class="btn btn-sm" style="background:var(--surface-hover);width:100%;" onclick="leaveParty()">← Back to Lobby</button>
@@ -462,16 +462,46 @@ let currentUserId = null;
 let allUsers = [];
 let socket = null;
 let partyCode = new URLSearchParams(window.location.search).get('code');
+let activeProvider = 'none';  // 'simkl', 'mdblist', 'both', 'none'
 
 // ═══════════ Init ═══════════
 
 async function init() {
   await loadUsers();
+  await loadProvider();
   if (partyCode) {
     enterParty(partyCode);
   } else {
     loadActiveParties();
     loadRecentParties();
+  }
+}
+
+async function loadProvider() {
+  try {
+    const res = await fetch(`${API}/api/integration-provider`);
+    const data = await res.json();
+    activeProvider = data.provider || 'none';
+  } catch { activeProvider = 'none'; }
+  const hasMdb = activeProvider === 'mdblist' || activeProvider === 'both';
+  const hasAny = activeProvider !== 'none';
+  const reactEl = document.getElementById('reactionsSection');
+  const commentEl = document.getElementById('commentSection');
+  if (hasAny) {
+    reactEl.style.display = '';
+    commentEl.style.display = '';
+  }
+  const titleEl = document.getElementById('commentBoxTitle');
+  const noteEl = document.getElementById('commentBoxNote');
+  const inputEl = document.getElementById('simklCommentInput');
+  if (hasMdb) {
+    titleEl.textContent = 'MDBList Discussion';
+    inputEl.placeholder = 'Leave a comment for the MDBList discussion…';
+    noteEl.textContent = "Posted to the item's MDBList discussion page when the party ends.";
+  } else if (activeProvider === 'simkl') {
+    titleEl.textContent = 'Watch Party Comment';
+    inputEl.placeholder = 'Leave a comment for the watch party summary…';
+    noteEl.textContent = 'Stored locally with the watch party record.';
   }
 }
 
@@ -940,7 +970,8 @@ function submitSimklComment() {
   el.value = '';
   const status = document.getElementById('simklCommentStatus');
   status.style.color = 'var(--green)';
-  status.textContent = '✓ Comment saved for Simkl';
+  const hasMdb = activeProvider === 'mdblist' || activeProvider === 'both';
+  status.textContent = hasMdb ? '✓ Will be posted to MDBList' : '✓ Comment saved';
   setTimeout(() => { status.textContent = ''; }, 3000);
 }
 
