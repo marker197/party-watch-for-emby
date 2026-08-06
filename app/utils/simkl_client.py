@@ -224,24 +224,45 @@ class SimklClient:
 
     async def get_user_ratings(self, kind: str = "all") -> list[dict]:
         """Fetch user's rated items with extended metadata (genres, runtime).
-        kind: 'movies', 'shows', 'anime', or 'all'."""
+        kind: 'movies', 'shows', 'anime', or 'all'.
+        Calls GET /sync/ratings/{type} — rating value is in each item."""
         results = []
         types = ["movies", "shows", "anime"] if kind == "all" else [kind]
         for item_type in types:
-            for rating in range(1, 11):
-                try:
-                    data = await self._get(
-                        f"/sync/ratings/{item_type}/{rating}",
-                        params={"extended": "full"},
+            try:
+                data = await self._get(
+                    f"/sync/ratings/{item_type}",
+                    params={"extended": "full"},
+                )
+                if isinstance(data, list):
+                    for item in data:
+                        item["_type"] = item_type
+                        # Rating may be at top level or missing
+                        if "rating" not in item:
+                            item["rating"] = 0
+                    results.extend(data)
+                elif isinstance(data, dict):
+                    # Handle dict wrapper (same as _unwrap_sync_response)
+                    items = (
+                        data.get(item_type)
+                        or data.get("items")
+                        or data.get("results")
+                        or data.get("data")
                     )
-                    if isinstance(data, list):
-                        for item in data:
+                    if isinstance(items, list):
+                        for item in items:
                             item["_type"] = item_type
-                            item["rating"] = rating
-                        results.extend(data)
-                except Exception as e:
-                    log.debug("simkl.ratings_fetch_partial",
-                              type=item_type, rating=rating, error=str(e)[:80])
+                            if "rating" not in item:
+                                item["rating"] = 0
+                        results.extend(items)
+                    else:
+                        log.debug("simkl.ratings_unexpected_format",
+                                  type=item_type, keys=list(data.keys())[:10])
+                log.debug("simkl.ratings_fetched", type=item_type,
+                          count=len([r for r in results if r.get("_type") == item_type]))
+            except Exception as e:
+                log.warning("simkl.ratings_fetch_failed",
+                            type=item_type, error=str(e)[:120])
         return results
 
     # ------------------------------------------------------------------
