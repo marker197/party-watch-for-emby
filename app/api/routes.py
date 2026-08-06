@@ -2646,6 +2646,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             # so all features (Library Health, Universe Discovery, etc.)
             # see the new item without waiting for the nightly rebuild.
             # Only when we have provider IDs (real item, not unpack stub).
+            already_cached = True  # default: don't notify unless confirmed new
             has_provider_ids = any(provider_ids.get(k) for k in ("Tmdb", "Imdb", "Tvdb"))
             if item_type_raw in ("Movie", "Series") and emby_item_id and has_provider_ids and not _is_unpack:
                 try:
@@ -2775,6 +2776,11 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     category="library",
                 )
 
+            # ── Notify on any new library item ────────────────────────────
+            if not already_cached:
+                from app.utils.notification_client import notify
+                notify("download", "📥 New Arrival", item_name or "Unknown")
+
             # ── Update Recently Arrived from webhook ──────────────────────
             # Check if this item was in the pending snapshot and surface it
             # as arrived immediately, rather than waiting for the next poll.
@@ -2831,10 +2837,6 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                             log.info("webhook.recently_arrived_added",
                                      title=arrived_item["title"],
                                      type=arrived_item["type"])
-                            # Notify new arrival (uses "download" event type)
-                            from app.utils.notification_client import notify
-                            notify("download", "📥 New Arrival",
-                                   arrived_item.get("title", "Unknown"))
 
                         # Clear the result cache so the dashboard picks it up
                         await _r.delete("recently_arrived_result_v1")
