@@ -22,9 +22,8 @@ log = structlog.get_logger()
 # Event types that can be individually toggled
 EVENT_TYPES = {
     "scrobble":   "Scrobble complete (Simkl/MDBList sync)",
-    "arrival":    "New content arrived in library",
     "premiere":   "Premiere or finale airing today",
-    "download":   "Download finished",
+    "download":   "Download finished / new content arrived",
     "prediction": "High-score ML prediction found",
     "system":     "System alerts (token failures, errors)",
 }
@@ -32,7 +31,6 @@ EVENT_TYPES = {
 # Defaults — only interesting events are on
 DEFAULT_EVENTS = {
     "scrobble":   False,
-    "arrival":    True,
     "premiere":   True,
     "download":   True,
     "prediction": False,
@@ -55,7 +53,14 @@ async def _load_config() -> dict:
     try:
         raw = await secure_get(_CONFIG_KEY)
         if raw:
-            return json.loads(raw)
+            config = json.loads(raw)
+            # Migrate: merge old "arrival" into "download"
+            events = config.get("events", {})
+            if "arrival" in events:
+                if events.get("arrival"):
+                    events["download"] = True
+                del events["arrival"]
+            return config
     except Exception:
         pass
     return {"services": [], "events": dict(DEFAULT_EVENTS)}

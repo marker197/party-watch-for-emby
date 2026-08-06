@@ -910,9 +910,9 @@ def _register_jobs():
                 return
             svc = AiringAlertsService()
             result = await svc.get_airing_soon(user, days=1)
-            episodes = result.get("episodes", [])
-            today_premieres = [e for e in episodes if e.get("is_premiere") and e.get("days_until_air", 99) == 0]
-            today_finales = [e for e in episodes if e.get("is_finale") and e.get("days_until_air", 99) == 0]
+            items = result.get("items", [])
+            today_premieres = [e for e in items if e.get("is_premiere") and e.get("days_until_air", 99) == 0]
+            today_finales = [e for e in items if e.get("is_finale") and e.get("days_until_air", 99) == 0]
             parts = []
             if today_premieres:
                 names = [e.get("title", "?") for e in today_premieres[:3]]

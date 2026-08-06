@@ -2831,9 +2831,9 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                             log.info("webhook.recently_arrived_added",
                                      title=arrived_item["title"],
                                      type=arrived_item["type"])
-                            # Notify new arrival
+                            # Notify new arrival (uses "download" event type)
                             from app.utils.notification_client import notify
-                            notify("arrival", "📥 New Arrival",
+                            notify("download", "📥 New Arrival",
                                    arrived_item.get("title", "Unknown"))
 
                         # Clear the result cache so the dashboard picks it up
