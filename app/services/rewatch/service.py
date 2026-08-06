@@ -58,7 +58,7 @@ class RewatchRecommender:
 
     CACHE_PREFIX = "rewatch"
     CACHE_TTL = 86400  # 24 hours
-    MAX_ITEMS = 30
+    MAX_ITEMS = 30  # Default page size
 
     # Scoring weights
     WEIGHT_RATING = 2.0
@@ -95,6 +95,9 @@ class RewatchRecommender:
         deduplicating by item_key.  Simkl is authoritative where overlap exists.
         """
         r = await get_redis()
+
+        # Clear existing cache so refresh always rebuilds from scratch
+        await r.delete(f"{self.CACHE_PREFIX}:suggestions:{user_id}")
 
         # Load settings overrides from Redis
         raw_settings = await r.get(f"{self.CACHE_PREFIX}:settings:{user_id}")
@@ -168,9 +171,9 @@ class RewatchRecommender:
             c["score"] = round(score, 2)
             scored.append(c)
 
-        # Sort and trim
+        # Sort by score
         scored.sort(key=lambda x: x["score"], reverse=True)
-        results = scored[:self.MAX_ITEMS]
+        results = scored  # Store ALL candidates; pagination handled by API
 
         # Enrich with poster URLs
         for item in results:

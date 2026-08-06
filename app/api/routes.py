@@ -7629,31 +7629,60 @@ _rewatch_svc = RewatchRecommender()
 @router.get("/api/rewatch/{user_id}")
 async def get_rewatch_suggestions(
     user_id: int,
+    page: int = 1,
+    page_size: int = 30,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return cached rewatch suggestions for a user."""
+    """Return cached rewatch suggestions for a user (paginated)."""
     require_user_ownership(current_user.id, user_id, "rewatch")
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(404, "User not found")
-    items = await _rewatch_svc.get_suggestions(user_id)
-    return {"items": items, "count": len(items)}
+    all_items = await _rewatch_svc.get_suggestions(user_id)
+    total = len(all_items)
+    start = (page - 1) * page_size
+    end = start + page_size
+    items = all_items[start:end]
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    return {
+        "items": items,
+        "count": len(items),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
 
 
 @router.post("/api/rewatch/{user_id}/refresh")
 async def refresh_rewatch(
     user_id: int,
+    page: int = 1,
+    page_size: int = 30,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """Force rebuild rewatch suggestions."""
+    """Force rebuild rewatch suggestions (clears cache first)."""
     require_user_ownership(_user.id, user_id, "rewatch_refresh")
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(404, "User not found")
-    items = await _rewatch_svc.build_suggestions(user_id)
-    return {"items": items, "count": len(items), "status": "rebuilt"}
+    all_items = await _rewatch_svc.build_suggestions(user_id)
+    total = len(all_items)
+    start = (page - 1) * page_size
+    end = start + page_size
+    items = all_items[start:end]
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    return {
+        "items": items,
+        "count": len(items),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "status": "rebuilt",
+    }
 
 
 @router.post("/api/rewatch/{user_id}/dismiss/{item_key:path}")

@@ -501,17 +501,28 @@ function switchUser() {
   loadSuggestions();
 }
 
+// ── Pagination state ──
+let currentPage = 1;
+let totalPages = 1;
+let totalItems = 0;
+const PAGE_SIZE = 30;
+
 // ── Load suggestions ──
-async function loadSuggestions() {
+async function loadSuggestions(page) {
   if (!currentUser) return;
+  if (page !== undefined) currentPage = page;
   const grid = document.getElementById('posterGrid');
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;"><span class="spinner"></span></div>';
 
   try {
-    const r = await fetch(API + `/api/rewatch/${currentUser}`);
+    const r = await fetch(API + `/api/rewatch/${currentUser}?page=${currentPage}&page_size=${PAGE_SIZE}`);
     const data = await r.json();
     allItems = data.items || [];
+    totalPages = data.total_pages || 1;
+    totalItems = data.total || 0;
+    currentPage = data.page || 1;
     renderGrid();
+    renderPagination();
   } catch (e) {
     console.error('Failed to load suggestions:', e);
     grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--red);">Failed to load suggestions</div>';
@@ -524,18 +535,48 @@ async function refreshSuggestions() {
   const btn = document.getElementById('refreshBtn');
   btn.disabled = true;
   btn.textContent = '⏳ Building...';
+  currentPage = 1;
 
   try {
-    const r = await fetch(API + `/api/rewatch/${currentUser}/refresh`, { method: 'POST' });
+    const r = await fetch(API + `/api/rewatch/${currentUser}/refresh?page=1&page_size=${PAGE_SIZE}`, { method: 'POST' });
     const data = await r.json();
     allItems = data.items || [];
+    totalPages = data.total_pages || 1;
+    totalItems = data.total || 0;
+    currentPage = data.page || 1;
     renderGrid();
+    renderPagination();
   } catch (e) {
     console.error('Refresh failed:', e);
   } finally {
     btn.disabled = false;
     btn.textContent = '🔄 Refresh';
   }
+}
+
+// ── Pagination controls ──
+function renderPagination() {
+  let el = document.getElementById('paginationControls');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'paginationControls';
+    el.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:12px;padding:20px 0;';
+    const grid = document.getElementById('posterGrid');
+    grid.parentNode.insertBefore(el, grid.nextSibling);
+  }
+  if (totalPages <= 1) {
+    el.innerHTML = totalItems > 0
+      ? `<span style="color:var(--text-dim);font-size:0.85rem;">${totalItems} candidate${totalItems === 1 ? '' : 's'}</span>`
+      : '';
+    return;
+  }
+  const prevDisabled = currentPage <= 1 ? 'disabled style="opacity:0.4;pointer-events:none;"' : '';
+  const nextDisabled = currentPage >= totalPages ? 'disabled style="opacity:0.4;pointer-events:none;"' : '';
+  el.innerHTML = `
+    <button class="btn" ${prevDisabled} onclick="loadSuggestions(${currentPage - 1})">← Prev</button>
+    <span style="color:var(--text-dim);font-size:0.85rem;">Page ${currentPage} of ${totalPages} · ${totalItems} candidates</span>
+    <button class="btn" ${nextDisabled} onclick="loadSuggestions(${currentPage + 1})">Next →</button>
+  `;
 }
 
 // ── Filter ──
