@@ -164,16 +164,56 @@ class RewatchRecommender:
         # Filter dismissed
         candidates = [c for c in candidates if c["item_key"] not in dismissed]
 
-        # Score
+        # Score and tag candidates
         scored = []
         for c in candidates:
             score = self._score_candidate(c, now, seasonal)
             c["score"] = round(score, 2)
+
+            # Tag anniversary items
+            c["is_anniversary"] = False
+            try:
+                lw = datetime.fromisoformat(c["last_watched_iso"].replace("Z", "+00:00"))
+                day_of_year_now = now.timetuple().tm_yday
+                day_of_year_watched = lw.timetuple().tm_yday
+                diff = abs(day_of_year_now - day_of_year_watched)
+                diff = min(diff, 365 - diff)
+                if diff <= 7 and lw.year < now.year:
+                    c["is_anniversary"] = True
+            except (ValueError, TypeError, KeyError):
+                pass
+
+            # Tag seasonal items
+            c["is_seasonal"] = False
+            if seasonal:
+                month = now.month
+                seasonal_genres = _SEASONAL_GENRES.get(month, [])
+                item_genres = [g.lower() for g in c.get("genres", [])]
+                if any(g in seasonal_genres for g in item_genres):
+                    c["is_seasonal"] = True
+
             scored.append(c)
 
-        # Sort by score
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        results = scored  # Store ALL candidates; pagination handled by API
+        # Sort: anniversary first (capped at 8), then seasonal, then rest
+        # Within each group, sort by score descending
+        anniversary = sorted(
+            [c for c in scored if c["is_anniversary"]],
+            key=lambda x: x["score"], reverse=True,
+        )[:8]
+        anniversary_keys = {c["item_key"] for c in anniversary}
+
+        seasonal_items = sorted(
+            [c for c in scored if c["is_seasonal"] and c["item_key"] not in anniversary_keys],
+            key=lambda x: x["score"], reverse=True,
+        )
+        pinned_keys = anniversary_keys | {c["item_key"] for c in seasonal_items}
+
+        rest = sorted(
+            [c for c in scored if c["item_key"] not in pinned_keys],
+            key=lambda x: x["score"], reverse=True,
+        )
+
+        results = anniversary + seasonal_items + rest
 
         # Enrich with poster URLs
         for item in results:
