@@ -444,16 +444,58 @@ class MLPredictorService:
                             for i in range(0, len(batch_ids), 100):
                                 chunk = batch_ids[i:i + 100]
                                 batch_resp = await mdb_cr.get_ratings_batch(media_type, chunk)
+                                # Log first response to discover field names
+                                if i == 0 and batch_resp:
+                                    sample = batch_resp[0] if isinstance(batch_resp, list) else batch_resp
+                                    log.info("ml_predictor.mdblist_batch_sample",
+                                             type=type(batch_resp).__name__,
+                                             sample_keys=list(sample.keys())[:20] if isinstance(sample, dict) else str(sample)[:200],
+                                             media_type=media_type)
                                 if isinstance(batch_resp, list):
                                     for item in batch_resp:
-                                        imdb = item.get("imdbid") or item.get("imdb_id") or item.get("imdb", "")
-                                        # MDBList score is 0-100, convert to 0-10 scale
-                                        score = item.get("score")
-                                        if imdb and score is not None:
+                                        # Try all plausible field names for IMDB ID
+                                        imdb = (
+                                            item.get("imdbid")
+                                            or item.get("imdb_id")
+                                            or item.get("imdb")
+                                            or (item.get("ids", {}) or {}).get("imdb", "")
+                                        )
+                                        # Try multiple score fields — MDBList may use
+                                        # score (0-100) or imdbrating or rating
+                                        score_raw = item.get("score")
+                                        if score_raw is not None:
                                             try:
-                                                cr_results[imdb] = round(float(score) / 10, 1)
+                                                cr_results[imdb] = round(float(score_raw) / 10, 1)
+                                                continue
                                             except (ValueError, TypeError):
                                                 pass
+                                        # imdbrating is typically on 0-100 scale too
+                                        imdb_rating = item.get("imdbrating")
+                                        if imdb_rating is not None:
+                                            try:
+                                                cr_results[imdb] = round(float(imdb_rating) / 10, 1)
+                                                continue
+                                            except (ValueError, TypeError):
+                                                pass
+                                        # Plain 'rating' on 1-10 scale
+                                        plain_rating = item.get("rating")
+                                        if plain_rating is not None and imdb:
+                                            try:
+                                                val = float(plain_rating)
+                                                cr_results[imdb] = round(val if val <= 10 else val / 10, 1)
+                                            except (ValueError, TypeError):
+                                                pass
+                                elif isinstance(batch_resp, dict):
+                                    # Response might be a dict keyed by IMDB ID
+                                    for imdb, data in batch_resp.items():
+                                        if isinstance(data, dict):
+                                            score_raw = data.get("score") or data.get("imdbrating") or data.get("rating")
+                                            if score_raw is not None:
+                                                try:
+                                                    val = float(score_raw)
+                                                    cr_results[imdb] = round(val if val <= 10 else val / 10, 1)
+                                                except (ValueError, TypeError):
+                                                    pass
 
                         # Apply community ratings to rows
                         filled = 0
