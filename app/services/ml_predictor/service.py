@@ -419,6 +419,58 @@ class MLPredictorService:
         if mdb_added:
             log.info("ml_predictor.mdblist_ratings_merged", count=mdb_added)
 
+        # ── Backfill community ratings via MDBList batch lookup ──
+        # Simkl /sync/ratings/ doesn't return community scores, so use
+        # MDBList's /rating/{type}/all batch endpoint to fill them in.
+        missing_community = [r for r in rows if not r.get("simkl_rating") and r.get("ids", {}).get("imdb")]
+        if missing_community:
+            try:
+                from app.utils.mdblist_client import MDBListClient
+                from app.utils.secure_redis import secure_get
+                mdb_key_cr = await secure_get("mdblist_api_key")
+                if mdb_key_cr:
+                    mdb_cr = MDBListClient(api_key=mdb_key_cr)
+                    try:
+                        # Split into movies and shows
+                        movie_ids = [{"imdb": r["ids"]["imdb"]} for r in missing_community if r.get("item_type") == "movie"]
+                        show_ids = [{"imdb": r["ids"]["imdb"]} for r in missing_community if r.get("item_type") == "show"]
+
+                        # Batch lookup (API handles up to ~500 per call)
+                        cr_results: dict[str, float] = {}
+                        for batch_ids, media_type in ((movie_ids, "movie"), (show_ids, "show")):
+                            if not batch_ids:
+                                continue
+                            # Send in chunks of 100 to avoid oversized requests
+                            for i in range(0, len(batch_ids), 100):
+                                chunk = batch_ids[i:i + 100]
+                                batch_resp = await mdb_cr.get_ratings_batch(media_type, chunk)
+                                if isinstance(batch_resp, list):
+                                    for item in batch_resp:
+                                        imdb = item.get("imdbid") or item.get("imdb_id") or item.get("imdb", "")
+                                        # MDBList score is 0-100, convert to 0-10 scale
+                                        score = item.get("score")
+                                        if imdb and score is not None:
+                                            try:
+                                                cr_results[imdb] = round(float(score) / 10, 1)
+                                            except (ValueError, TypeError):
+                                                pass
+
+                        # Apply community ratings to rows
+                        filled = 0
+                        for r in rows:
+                            if not r.get("simkl_rating"):
+                                imdb = r.get("ids", {}).get("imdb", "")
+                                if imdb and imdb in cr_results:
+                                    r["simkl_rating"] = cr_results[imdb]
+                                    filled += 1
+                        log.info("ml_predictor.community_ratings_backfilled",
+                                 queried=len(missing_community), filled=filled)
+                    finally:
+                        await mdb_cr.close()
+            except Exception as e:
+                log.warning("ml_predictor.community_ratings_backfill_failed",
+                            error=str(e)[:120])
+
         # persist to DB — preserve user-submitted ratings
         async with async_session() as db:
             # Only delete imported ratings; keep source='user' rows
