@@ -524,6 +524,7 @@ class AiringAlertsService:
                 finale_shows[show_simkl_id] = {
                     "days_until": days_until,
                     "season": episode.get("season"),
+                    "episode": episode.get("number"),
                     "emby_item_id": emby_item_id,
                     "title": show.get("title", ""),
                 }
@@ -594,6 +595,7 @@ class AiringAlertsService:
                     finale_shows[finale_key] = {
                         "days_until": days_until,
                         "season": ep.get("season"),
+                        "episode": ep.get("episode"),
                         "emby_item_id": emby_item_id,
                         "title": series_title,
                     }
@@ -704,8 +706,11 @@ class AiringAlertsService:
             if unwatched_in_library is None:
                 continue
 
-            # Count episodes airing before the finale (not including the finale)
+            # Count episodes airing up to and including the finale date,
+            # excluding the finale episode itself (handles batch drops where
+            # multiple episodes air on the same day as the finale).
             finale_season = info["season"]
+            finale_episode = info.get("episode")
             episodes_airing_before = 0
             counted_eps: set[tuple] = set()  # (season, episode) to avoid double-counting
 
@@ -718,8 +723,11 @@ class AiringAlertsService:
                 ep_season = ep.get("season")
                 ep_num = ep.get("number")
                 if ep_season == finale_season:
+                    # Skip the finale episode itself
+                    if finale_episode is not None and ep_num == finale_episode:
+                        continue
                     ep_days = self._days_until(entry.get("first_aired"))
-                    if ep_days is not None and ep_days >= 0 and ep_days < info["days_until"]:
+                    if ep_days is not None and ep_days >= 0 and ep_days <= info["days_until"]:
                         counted_eps.add((ep_season, ep_num))
                         episodes_airing_before += 1
 
@@ -747,8 +755,11 @@ class AiringAlertsService:
                         if (ep_season, ep_num) in counted_eps:
                             continue  # Already counted from Simkl
                         if ep_season == finale_season:
+                            # Skip the finale episode itself
+                            if finale_episode is not None and ep_num == finale_episode:
+                                continue
                             ep_days = self._days_until(sep.get("air_date_utc"))
-                            if ep_days is not None and ep_days >= 0 and ep_days < info["days_until"]:
+                            if ep_days is not None and ep_days >= 0 and ep_days <= info["days_until"]:
                                 counted_eps.add((ep_season, ep_num))
                                 episodes_airing_before += 1
 
