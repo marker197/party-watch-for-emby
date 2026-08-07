@@ -334,10 +334,17 @@ class MLPredictorService:
                 "genres": item.get("genres", []),
                 "year": item.get("year"),
                 "runtime": item.get("runtime"),
-                "simkl_rating": item.get("rating"),  # community rating
+                "simkl_rating": (
+                    item.get("ratings", {}).get("simkl", {}).get("rating")
+                    or item.get("ratings", {}).get("mal", {}).get("rating")
+                ),  # community rating from extended=full
                 "ids": item.get("ids", {}),
                 "rated_at": entry.get("rated_at"),
             })
+
+        community_count = sum(1 for r in rows if r.get("simkl_rating"))
+        log.info("ml_predictor.simkl_community_ratings",
+                 total=len(rows), with_community=community_count)
 
         # ── MDBList ratings (supplement — has a rating for every watched item) ──
         mdb_added = 0
