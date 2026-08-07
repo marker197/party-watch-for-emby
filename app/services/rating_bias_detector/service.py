@@ -263,21 +263,40 @@ class RatingBiasDetectorService:
         return curve
 
     def _find_hidden_gems(self, ratings: list[dict]) -> list[dict]:
-        """Find items the user rated lower than community (underrated)."""
+        """Find items rated well below the user's own genre average.
+
+        These are titles the user might want to revisit — they scored
+        significantly lower than similar content the user usually enjoys.
+        """
+        # Build per-genre averages from user's own ratings
+        from collections import defaultdict
+        genre_totals: dict[str, list[float]] = defaultdict(list)
+        for r in ratings:
+            for g in r.get("genres", []):
+                genre_totals[g].append(r["rating"])
+        genre_avg = {g: sum(v) / len(v) for g, v in genre_totals.items() if len(v) >= 3}
+
         gems = []
         for r in ratings:
             user_rating = r["rating"]
-            community_rating = r.get("simkl_rating", 0)
-            
-            # Underrated: community loves it, user rated it lower
-            if community_rating >= 7.5 and user_rating <= 6.0 and community_rating - user_rating >= 1.5:
+            item_genres = r.get("genres", [])
+            if not item_genres:
+                continue
+            # Average of the user's genre averages for this item's genres
+            matching = [genre_avg[g] for g in item_genres if g in genre_avg]
+            if not matching:
+                continue
+            expected = sum(matching) / len(matching)
+            gap = round(expected - user_rating, 2)
+            # Item rated ≥2 points below what the user typically gives this genre mix
+            if gap >= 2.0 and expected >= 7.0:
                 gems.append({
                     "title": r["title"],
                     "your_rating": user_rating,
-                    "community_rating": community_rating,
-                    "gap": round(community_rating - user_rating, 2),
-                    "reason": "Community loves it more than you rated",
-                    "genres": r.get("genres", []),
+                    "community_rating": round(expected, 1),  # reused field = genre avg
+                    "gap": gap,
+                    "reason": f"You average {round(expected, 1)} in {', '.join(item_genres[:2])}",
+                    "genres": item_genres,
                 })
 
         gems.sort(key=lambda x: x["gap"], reverse=True)

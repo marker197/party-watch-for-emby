@@ -682,9 +682,9 @@
                         <span class="gap-badge">Gap: ${g.gap}</span>
                     </div>
                     <p style="margin:6px 0;color:var(--text-dim);font-size:0.85rem;">
-                        You rated: <strong style="color:var(--text);">${g.your_rating}/10</strong> | Community: <strong style="color:var(--text);">${g.community_rating}/10</strong>
+                        You rated: <strong style="color:var(--text);">${g.your_rating}/10</strong> | Your genre avg: <strong style="color:var(--text);">${g.community_rating}/10</strong>
                     </p>
-                    <p style="margin:0;color:var(--text-dim);font-size:0.85rem;">${g.genres.join(', ')}</p>
+                    <p style="margin:0;color:var(--text-dim);font-size:0.85rem;">${g.reason || g.genres.join(', ')}</p>
                 </li>
             `).join('');
             document.getElementById('gemsList').innerHTML = html || '<p style="color:var(--text-dim);">No hidden gems found!</p>';
