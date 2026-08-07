@@ -593,11 +593,17 @@ class AiringAlertsService:
         if finale_shows and user and user.emby_user_id:
             binge_plans = await self._compute_binge_plans(
                 finale_shows, merged, user.emby_user_id,
+                sonarr_cal=sonarr_cal,
             )
             for r in results:
+                # Match by simkl_id (Simkl path) or tvdb: key (Sonarr-only path)
                 tid = r.get("simkl_id", "")
-                if tid in binge_plans:
+                if tid and tid in binge_plans:
                     r["binge_plan"] = binge_plans[tid]
+                elif r.get("tvdb_id"):
+                    tvdb_key = f"tvdb:{r['tvdb_id']}"
+                    if tvdb_key in binge_plans:
+                        r["binge_plan"] = binge_plans[tvdb_key]
 
         return results
 
@@ -651,12 +657,14 @@ class AiringAlertsService:
         finale_shows: dict[str, dict],
         merged_entries: dict[tuple, dict],
         emby_user_id: str,
+        sonarr_cal: dict | None = None,
     ) -> dict[str, dict]:
         """For each show with a finale in the window, compute how many
         unwatched episodes the user needs to get through and the daily
         pace required.
 
-        Returns {simkl_id: binge_plan_dict}.
+        Returns {show_key: binge_plan_dict} where show_key is either a
+        simkl_id or ``tvdb:<id>`` for Sonarr-only shows.
         """
         plans: dict[str, dict] = {}
 
@@ -676,7 +684,7 @@ class AiringAlertsService:
             finally:
                 await emby.close()
 
-        for simkl_id, info in finale_shows.items():
+        for show_key, info in finale_shows.items():
             eid = info["emby_item_id"]
             item = emby_data.get(eid)
             if not item:
@@ -690,24 +698,56 @@ class AiringAlertsService:
             # Count episodes airing before the finale (not including the finale)
             finale_season = info["season"]
             episodes_airing_before = 0
+            counted_eps: set[tuple] = set()  # (season, episode) to avoid double-counting
+
+            # Source 1: Simkl merged entries
             for key, entry in merged_entries.items():
                 entry_simkl_id = str(entry["show"].get("ids", {}).get("simkl") or entry["show"].get("ids", {}).get("simkl_id") or "")
-                if entry_simkl_id != simkl_id:
+                if entry_simkl_id != show_key:
                     continue
                 ep = entry["episode"]
                 ep_season = ep.get("season")
                 ep_num = ep.get("number")
-                # Only count episodes from same season that aren't the finale
                 if ep_season == finale_season:
                     ep_days = self._days_until(entry.get("first_aired"))
                     if ep_days is not None and ep_days >= 0 and ep_days < info["days_until"]:
+                        counted_eps.add((ep_season, ep_num))
                         episodes_airing_before += 1
+
+            # Source 2: Sonarr calendar (catches Sonarr-only shows and
+            # any episodes Simkl missed for shows it did cover)
+            if sonarr_cal:
+                # For tvdb: keyed shows, extract the TVDB ID directly
+                tvdb_id_str = None
+                if show_key.startswith("tvdb:"):
+                    tvdb_id_str = show_key[5:]
+                else:
+                    # Simkl-keyed show — find its TVDB ID from merged_entries
+                    for key, entry in merged_entries.items():
+                        entry_simkl_id = str(entry["show"].get("ids", {}).get("simkl") or entry["show"].get("ids", {}).get("simkl_id") or "")
+                        if entry_simkl_id == show_key:
+                            tvdb = entry["show"].get("ids", {}).get("tvdb")
+                            if tvdb:
+                                tvdb_id_str = str(tvdb)
+                            break
+
+                if tvdb_id_str and tvdb_id_str in sonarr_cal:
+                    for sep in sonarr_cal[tvdb_id_str]:
+                        ep_season = sep.get("season")
+                        ep_num = sep.get("episode")
+                        if (ep_season, ep_num) in counted_eps:
+                            continue  # Already counted from Simkl
+                        if ep_season == finale_season:
+                            ep_days = self._days_until(sep.get("air_date_utc"))
+                            if ep_days is not None and ep_days >= 0 and ep_days < info["days_until"]:
+                                counted_eps.add((ep_season, ep_num))
+                                episodes_airing_before += 1
 
             total_to_watch = unwatched_in_library + episodes_airing_before
             days_left = max(info["days_until"], 1)  # avoid /0
 
             if total_to_watch <= 0:
-                plans[simkl_id] = {
+                plans[show_key] = {
                     "status": "caught_up",
                     "total_to_watch": 0,
                     "days_until_finale": info["days_until"],
@@ -725,7 +765,7 @@ class AiringAlertsService:
                 else:
                     difficulty = "marathon"
 
-                plans[simkl_id] = {
+                plans[show_key] = {
                     "status": "behind",
                     "total_to_watch": total_to_watch,
                     "unwatched_available": unwatched_in_library,
