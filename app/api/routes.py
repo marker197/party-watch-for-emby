@@ -2777,7 +2777,15 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 )
 
             # ── Notify on any new library item ────────────────────────────
-            if not already_cached:
+            # Movies/Series: notify when not already in the library cache.
+            # Episodes: always notify (the parent series is already cached,
+            # but a new episode is still new content arriving).
+            _should_notify = False
+            if item_type_raw == "Episode":
+                _should_notify = True
+            elif not already_cached:
+                _should_notify = True
+            if _should_notify and not _is_unpack:
                 from app.utils.notification_client import notify
                 notify("download", "📥 New Arrival", item_name or "Unknown")
 
