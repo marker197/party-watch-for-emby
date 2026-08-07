@@ -712,6 +712,7 @@ class AiringAlertsService:
             finale_season = info["season"]
             finale_episode = info.get("episode")
             episodes_airing_before = 0
+            same_day_count = 0  # episodes airing on the exact same day as finale
             counted_eps: set[tuple] = set()  # (season, episode) to avoid double-counting
 
             # Source 1: Simkl merged entries
@@ -730,6 +731,8 @@ class AiringAlertsService:
                     if ep_days is not None and ep_days >= 0 and ep_days <= info["days_until"]:
                         counted_eps.add((ep_season, ep_num))
                         episodes_airing_before += 1
+                        if ep_days == info["days_until"]:
+                            same_day_count += 1
 
             # Source 2: Sonarr calendar (catches Sonarr-only shows and
             # any episodes Simkl missed for shows it did cover)
@@ -762,11 +765,35 @@ class AiringAlertsService:
                             if ep_days is not None and ep_days >= 0 and ep_days <= info["days_until"]:
                                 counted_eps.add((ep_season, ep_num))
                                 episodes_airing_before += 1
+                                if ep_days == info["days_until"]:
+                                    same_day_count += 1
 
-            total_to_watch = unwatched_in_library + episodes_airing_before
-            days_left = max(info["days_until"], 1)  # avoid /0
+            # Batch drop: all non-finale episodes air on the same day as
+            # the finale — the user can't watch anything until drop day.
+            is_batch_drop = (episodes_airing_before > 0
+                             and same_day_count == episodes_airing_before)
 
-            if total_to_watch <= 0:
+            if is_batch_drop:
+                # Include the finale itself — you need to watch all of them
+                total_to_watch = unwatched_in_library + episodes_airing_before + 1
+                days_left = max(info["days_until"], 1)
+
+                plans[show_key] = {
+                    "status": "batch_drop",
+                    "total_to_watch": total_to_watch,
+                    "unwatched_available": unwatched_in_library,
+                    "episodes_airing_before_finale": episodes_airing_before,
+                    "days_until_finale": info["days_until"],
+                    "episodes_per_day": total_to_watch,
+                    "difficulty": "marathon" if total_to_watch > 4 else (
+                        "ambitious" if total_to_watch > 2 else "moderate"
+                    ),
+                    "message": (
+                        f"{total_to_watch} episode{'s' if total_to_watch != 1 else ''} "
+                        f"drop in {days_left} day{'s' if days_left != 1 else ''}"
+                    ),
+                }
+            elif (unwatched_in_library + episodes_airing_before) <= 0:
                 plans[show_key] = {
                     "status": "caught_up",
                     "total_to_watch": 0,
@@ -775,6 +802,8 @@ class AiringAlertsService:
                     "message": "You're all caught up for the finale!",
                 }
             else:
+                total_to_watch = unwatched_in_library + episodes_airing_before
+                days_left = max(info["days_until"], 1)
                 pace = round(total_to_watch / days_left, 1)
                 if pace <= 1:
                     difficulty = "easy"
