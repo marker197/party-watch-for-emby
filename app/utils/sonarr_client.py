@@ -262,6 +262,7 @@ class SonarrClient:
                     "air_date_utc": ep.get("airDateUtc"),
                     "has_file": ep.get("hasFile", False),
                     "season_episode_count": season_ep_count,
+                    "finale_type": ep.get("finaleType"),
                 })
             return result
         except Exception as e:

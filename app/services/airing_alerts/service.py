@@ -235,6 +235,7 @@ class AiringAlertsService:
                             "episode_title": ep.get("episode_title", ""),
                             "series_title": ep.get("series_title", ""),
                             "season_episode_count": ep.get("season_episode_count"),
+                            "finale_type": ep.get("finale_type"),
                         })
                     log.debug("arr_release_index.sonarr_calendar_loaded",
                               server=srv.get("name"),
@@ -458,7 +459,7 @@ class AiringAlertsService:
             is_premiere = entry["is_premiere"] or episode.get("number") == 1
             is_finale = False
             if not is_premiere and episode.get("number"):
-                # Try Sonarr season episode count first (works without Simkl)
+                # Try Sonarr finale detection first (works without Simkl)
                 sonarr_finale = False
                 if show_tvdb_id and str(show_tvdb_id) in sonarr_cal:
                     sonarr_ep = _find_sonarr_episode(
@@ -467,9 +468,14 @@ class AiringAlertsService:
                         episode.get("number"),
                     )
                     if sonarr_ep:
-                        sec = sonarr_ep.get("season_episode_count")
-                        if sec and episode.get("number") == sec:
+                        # Primary: Sonarr's finaleType field ("season" or "series")
+                        if sonarr_ep.get("finale_type"):
                             sonarr_finale = True
+                        else:
+                            # Fallback: episode number matches season total
+                            sec = sonarr_ep.get("season_episode_count")
+                            if sec and episode.get("number") == sec:
+                                sonarr_finale = True
                 if sonarr_finale:
                     is_finale = True
                 elif show_simkl_id and simkl:
@@ -551,12 +557,15 @@ class AiringAlertsService:
                 if ep.get("episode") == 1:
                     is_premiere = True
 
-                # Finale detection from Sonarr season episode count
+                # Finale detection: Sonarr finaleType first, episode count fallback
                 is_finale = False
                 if not is_premiere and ep.get("episode"):
-                    sec = ep.get("season_episode_count")
-                    if sec and ep.get("episode") == sec:
+                    if ep.get("finale_type"):
                         is_finale = True
+                    else:
+                        sec = ep.get("season_episode_count")
+                        if sec and ep.get("episode") == sec:
+                            is_finale = True
 
                 results.append({
                     "media_type": "show",
