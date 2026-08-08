@@ -109,7 +109,7 @@
     color: var(--text-dim); white-space: nowrap;
   }
   .pill-rating {
-    border-color: var(--accent); color: var(--accent); font-weight: 700;
+    border-color: var(--orange); color: var(--orange); font-weight: 700;
   }
 
   .genre-tags {
@@ -122,8 +122,19 @@
 
   .overview-text {
     font-size: 0.92rem; color: var(--text); line-height: 1.7;
-    margin-bottom: 16px;
+    margin-bottom: 4px;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden;
   }
+  .overview-text.expanded {
+    -webkit-line-clamp: unset; display: block;
+  }
+  .overview-toggle {
+    background: none; border: none; color: var(--accent-light);
+    font-size: 0.82rem; cursor: pointer; padding: 0; margin-bottom: 14px;
+    display: none;
+  }
+  .overview-toggle:hover { text-decoration: underline; }
 
   .detail-row {
     font-size: 0.85rem; color: var(--text-dim); margin-bottom: 6px;
@@ -333,6 +344,7 @@
           <div class="meta-pills" id="metaPills"></div>
           <div class="genre-tags" id="genreTags"></div>
           <div class="overview-text" id="overview"></div>
+          <button class="overview-toggle" id="overviewToggle" onclick="toggleOverview()">Show more ▾</button>
           <div id="detailRows"></div>
           <div class="keywords-wrap" id="keywords" style="display:none;"></div>
           <div class="action-row" id="actionRow"></div>
@@ -384,6 +396,18 @@ function formatNum(n) {
 function formatMoney(n) {
   if (!n) return '';
   return '$' + n.toLocaleString();
+}
+
+function toggleOverview() {
+  var el = document.getElementById('overview');
+  var btn = document.getElementById('overviewToggle');
+  if (el.classList.contains('expanded')) {
+    el.classList.remove('expanded');
+    btn.textContent = 'Show more ▾';
+  } else {
+    el.classList.add('expanded');
+    btn.textContent = 'Show less ▴';
+  }
 }
 
 function showToast(msg, type) {
@@ -476,10 +500,8 @@ function render(d) {
     pillsHtml += '<span class="pill">👥 ' + esc(d.certification || d.mdb_certification) + '</span>';
   }
   if (d.status) pillsHtml += '<span class="pill">' + esc(d.status) + '</span>';
-  if (d.in_library) pillsHtml += '<span class="pill" style="border-color:var(--green);color:var(--green);">✓ In Library</span>';
-  if (d.is_played) pillsHtml += '<span class="pill" style="border-color:var(--green);color:var(--green);">✓ Watched</span>';
   if (d.number_of_seasons) pillsHtml += '<span class="pill">' + d.number_of_seasons + ' Seasons</span>';
-  // User rating as a pill in this row
+  // User rating as a gold pill
   if (d.user_rating && d.user_rating.rating) {
     pillsHtml += '<span class="pill pill-rating">⭐ Your Rating: ' + d.user_rating.rating + '/10</span>';
   }
@@ -493,7 +515,15 @@ function render(d) {
   document.getElementById('genreTags').innerHTML = genresHtml;
 
   // Overview
-  document.getElementById('overview').textContent = d.overview || '';
+  // Overview with clamp + "Show more" toggle
+  const overviewEl = document.getElementById('overview');
+  overviewEl.textContent = d.overview || '';
+  // After render, check if text is clamped (overflowing)
+  requestAnimationFrame(function() {
+    if (overviewEl.scrollHeight > overviewEl.clientHeight + 2) {
+      document.getElementById('overviewToggle').style.display = 'inline';
+    }
+  });
 
   // Detail rows
   let detailsHtml = '';
