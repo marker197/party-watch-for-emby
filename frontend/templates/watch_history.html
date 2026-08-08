@@ -46,7 +46,7 @@
     #bgBackdrop {
       position: fixed; top: 0; left: 0; width: 100%; height: 100%;
       z-index: -1; background-size: cover; background-position: center;
-      filter: blur(20px) brightness(0.25); transform: scale(1.1);
+      filter: blur(10px) brightness(0.25); transform: scale(1.1);
       transition: opacity 0.8s; opacity: 0;
     }
     #bgBackdrop.loaded { opacity: 1; }
@@ -118,7 +118,7 @@
     .jump-select {
       background: var(--surface); color: var(--text); border: 1px solid var(--border);
       padding: 4px 8px; border-radius: 6px; font-size: 0.8rem; cursor: pointer;
-      flex-shrink: 0; margin-left: auto;
+      flex-shrink: 0;
     }
 
     /* ── Content panel ── */
@@ -221,6 +221,24 @@
       min-width: 36px; height: 36px; display: flex; align-items: center;
       justify-content: center; color: var(--text-dim); font-size: 0.85rem;
     }
+
+    /* ── Hover action buttons (top of card) ── */
+    .hover-actions {
+      position: absolute; top: 0; left: 0; right: 0;
+      background: linear-gradient(rgba(0,0,0,0.8), transparent);
+      padding: 6px 8px 16px; display: flex; gap: 5px; justify-content: flex-end;
+      opacity: 0; transition: opacity 0.2s ease; pointer-events: none; z-index: 6;
+    }
+    .thumb-wrap:hover .hover-actions { opacity: 1; pointer-events: auto; }
+    .action-btn {
+      padding: 4px 10px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.25);
+      background: rgba(255,255,255,0.12); color: #fff; font-size: 0.68rem;
+      font-weight: 700; cursor: pointer; transition: all 0.12s;
+      white-space: nowrap; backdrop-filter: blur(4px);
+    }
+    .action-btn:hover { background: var(--accent); border-color: var(--accent); transform: scale(1.05); }
+    .action-btn.mark-done:hover { background: var(--green); border-color: var(--green); }
+    .action-btn.mark-done.done { background: var(--green); border-color: var(--green); pointer-events: none; }
 
     /* ── Rated badge ── */
     .rated-badge {
@@ -384,22 +402,28 @@ function toggleSuiteTheme() {
   localStorage.setItem('suite-theme', isLight ? 'light' : 'dark');
 }
 
+// Track which types are hidden (toggled off)
+let hiddenTypes = new Set();
+
 function toggleTypeFilter(type, btn) {
-  // Toggle: if already active, deactivate (show all). Otherwise activate this one.
   document.getElementById('myRatingsPanel').style.display = 'none';
   document.getElementById('timeline').style.display = '';
   document.getElementById('pagination').style.display = '';
 
-  if (btn.classList.contains('active')) {
-    // Deactivate — show all
+  // Independent toggle: click = hide that type, click again = show it
+  if (hiddenTypes.has(type)) {
+    hiddenTypes.delete(type);
     btn.classList.remove('active');
-    currentFilter = 'all';
   } else {
-    // Deactivate all type buttons, activate this one
-    document.querySelectorAll('.filter-btn[data-type]').forEach(b => b.classList.remove('active'));
+    hiddenTypes.add(type);
     btn.classList.add('active');
-    currentFilter = type;
   }
+
+  // Deactivate my-ratings button if it was active
+  var ratingsBtn = document.querySelector('.filter-btn[data-type="my-ratings"]');
+  if (ratingsBtn) ratingsBtn.classList.remove('active');
+
+  currentFilter = 'all'; // always fetch all, filter client-side
   currentPage = 1;
   nextBefore = null;
   document.getElementById('timeline').innerHTML = '';
@@ -408,6 +432,25 @@ function toggleTypeFilter(type, btn) {
 
 // Legacy setFilter for compatibility
 function setFilter(type, btn) { toggleTypeFilter(type, btn); }
+
+// Client-side filter: remove hidden types from day items
+function applyTypeFilters(days) {
+  if (hiddenTypes.size === 0) return days;
+  var filtered = [];
+  for (var i = 0; i < days.length; i++) {
+    var day = days[i];
+    var items = day.items.filter(function(item) {
+      var t = item.item_type;
+      // Map: episodes also hidden when "episode" is hidden
+      // Shows filter hides item_type=show
+      return !hiddenTypes.has(t);
+    });
+    if (items.length > 0) {
+      filtered.push({ date: day.date, items: items });
+    }
+  }
+  return filtered;
+}
 
 function setRatingFilter(val, btn) {
   currentRatingFilter = val;
@@ -516,7 +559,30 @@ function renderItem(item) {
     + ' data-tmdb="' + esc(item.tmdb_id || '') + '"'
     + ' data-badgekey="' + esc(badgeKey) + '"'
     + ' data-season="' + esc(String(sNum)) + '" data-episode="' + esc(String(eNum)) + '"'
-    + ' data-seriesname="' + esc(item.series_name || '') + '"';
+    + ' data-seriesname="' + esc(item.series_name || '') + '"'
+    + ' data-embyid="' + esc(item.emby_id || '') + '"';
+
+  // Build hover action buttons
+  let actionsHtml = '<div class="hover-actions">';
+  // Mark Watched — only when >=90% progress (less than 10% left)
+  if (prog !== null && prog !== undefined && prog >= 90 && prog < 100) {
+    const mwData = JSON.stringify({
+      emby_item_id: item.emby_id || null,
+      imdb_id: itemImdb || null,
+      tmdb_id: item.tmdb_id || null,
+      item_type: itemType,
+      title: itemTitle,
+      season_number: sNum !== '' ? parseInt(sNum) : null,
+      episode_number: eNum !== '' ? parseInt(eNum) : null,
+      series_name: item.series_name || '',
+    });
+    actionsHtml += '<button class="action-btn mark-done" onclick="event.stopPropagation();markWatched(this)" data-mw=\'' + mwData.replace(/'/g, '&#39;') + '\'>✓ Mark Watched</button>';
+  }
+  // Play on Emby — always show if we have an emby_id
+  if (item.emby_id) {
+    actionsHtml += '<button class="action-btn" onclick="event.stopPropagation();pickDeviceAndPlay(\'' + esc(item.emby_id) + '\', 0)">▶ Play</button>';
+  }
+  actionsHtml += '</div>';
 
   let imgHtml;
   if (url) {
@@ -532,7 +598,7 @@ function renderItem(item) {
   }
 
   return '<div class="history-item">'
-    + '<div class="thumb-wrap"' + dataAttrs + '>' + imgHtml + rewatchBadge + progressHtml + '</div>'
+    + '<div class="thumb-wrap"' + dataAttrs + '>' + imgHtml + actionsHtml + rewatchBadge + progressHtml + '</div>'
     + '<div class="item-title">' + esc(label.title) + '</div>'
     + '<div class="item-subtitle">' + esc(label.sub) + '</div>'
     + '</div>';
@@ -651,9 +717,6 @@ async function loadHistory() {
       for (var p = 1; p < currentPage; p++) {
         var skipUrl = '/api/watch-history/' + currentUserId + '/by-date?days=30';
         if (cursor) skipUrl += '&before=' + cursor;
-        if (currentFilter === 'movie') skipUrl += '&item_type=movie';
-        else if (currentFilter === 'show') skipUrl += '&item_type=show';
-        else if (currentFilter === 'episode') skipUrl += '&item_type=episode';
         if (currentRatingFilter !== 'all') skipUrl += '&rating_filter=' + currentRatingFilter;
         var skipR = await fetch(skipUrl);
         if (!skipR.ok) throw new Error('HTTP ' + skipR.status);
@@ -664,9 +727,6 @@ async function loadHistory() {
       if (cursor) url += '&before=' + cursor;
     }
 
-    if (currentFilter === 'movie') url += '&item_type=movie';
-    else if (currentFilter === 'show') url += '&item_type=show';
-    else if (currentFilter === 'episode') url += '&item_type=episode';
     if (currentRatingFilter !== 'all') url += '&rating_filter=' + currentRatingFilter;
 
     var r = await fetch(url);
@@ -681,8 +741,9 @@ async function loadHistory() {
     var timeline = document.getElementById('timeline');
     timeline.innerHTML = '';
 
-    for (var i = 0; i < data.days.length; i++) {
-      var html = renderDay(data.days[i]);
+    var filteredDays = applyTypeFilters(data.days);
+    for (var i = 0; i < filteredDays.length; i++) {
+      var html = renderDay(filteredDays[i]);
       if (html) timeline.insertAdjacentHTML('beforeend', html);
     }
 
@@ -694,7 +755,7 @@ async function loadHistory() {
     // Render pagination
     renderPagination(data.total_days || 0, currentPage);
 
-    if (data.days.length === 0 && !timeline.innerHTML.trim()) {
+    if (filteredDays.length === 0 && !timeline.innerHTML.trim()) {
       loadingEl.textContent = 'No watch history found.';
       loadingEl.style.display = 'block';
     }
@@ -747,17 +808,15 @@ function jumpToMonth(val) {
   loadingEl.style.display = 'block';
 
   var url = '/api/watch-history/' + currentUserId + '/by-date?days=30&before=' + beforeDate;
-  if (currentFilter === 'movie') url += '&item_type=movie';
-  else if (currentFilter === 'show') url += '&item_type=show';
-  else if (currentFilter === 'episode') url += '&item_type=episode';
   if (currentRatingFilter !== 'all') url += '&rating_filter=' + currentRatingFilter;
 
   fetch(url).then(function(r) { return r.json(); }).then(function(data) {
     nextBefore = data.next_before;
     document.getElementById('itemCount').textContent = (data.total_items || 0).toLocaleString() + ' items';
     var timeline = document.getElementById('timeline');
-    for (var i = 0; i < data.days.length; i++) {
-      var html = renderDay(data.days[i]);
+    var jmFiltered = applyTypeFilters(data.days);
+    for (var i = 0; i < jmFiltered.length; i++) {
+      var html = renderDay(jmFiltered[i]);
       if (html) timeline.insertAdjacentHTML('beforeend', html);
     }
     observeNewImages();
@@ -766,7 +825,7 @@ function jumpToMonth(val) {
     // Hide pagination when jumping to month — show load-more style
     document.getElementById('pagination').innerHTML =
       nextBefore ? '<button class="page-btn" onclick="loadMoreFromCursor()" style="padding:8px 24px;">Load more</button>' : '';
-    if (data.days.length === 0) {
+    if (jmFiltered.length === 0) {
       loadingEl.textContent = 'No history for this month.';
       loadingEl.style.display = 'block';
     }
@@ -782,16 +841,14 @@ function loadMoreFromCursor() {
   if (!nextBefore || isLoading) return;
   isLoading = true;
   var url = '/api/watch-history/' + currentUserId + '/by-date?days=30&before=' + nextBefore;
-  if (currentFilter === 'movie') url += '&item_type=movie';
-  else if (currentFilter === 'show') url += '&item_type=show';
-  else if (currentFilter === 'episode') url += '&item_type=episode';
   if (currentRatingFilter !== 'all') url += '&rating_filter=' + currentRatingFilter;
 
   fetch(url).then(function(r) { return r.json(); }).then(function(data) {
     nextBefore = data.next_before;
     var timeline = document.getElementById('timeline');
-    for (var i = 0; i < data.days.length; i++) {
-      var html = renderDay(data.days[i]);
+    var lmFiltered = applyTypeFilters(data.days);
+    for (var i = 0; i < lmFiltered.length; i++) {
+      var html = renderDay(lmFiltered[i]);
       if (html) timeline.insertAdjacentHTML('beforeend', html);
     }
     observeNewImages();
@@ -1149,6 +1206,107 @@ resetAndLoad = function() {
     loadMyRatings();
   }
 };
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Mark Watched + Play on Emby
+   ═══════════════════════════════════════════════════════════════════════ */
+
+async function markWatched(btnEl) {
+  var data;
+  try { data = JSON.parse(btnEl.getAttribute('data-mw')); } catch(e) { return; }
+  if (!data || !currentUserId) return;
+
+  btnEl.textContent = '⏳…';
+  btnEl.style.pointerEvents = 'none';
+  try {
+    var r = await fetch('/api/mark-watched', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(Object.assign({user_id: currentUserId}, data))
+    });
+    if (!r.ok) {
+      var err = await r.json().catch(function() { return {}; });
+      throw new Error(err.detail || 'HTTP ' + r.status);
+    }
+    btnEl.textContent = '✓ Done';
+    btnEl.classList.add('done');
+    showToast('Marked as watched — synced to providers', 'ok');
+    // Remove progress bar from this card
+    var wrap = btnEl.closest('.thumb-wrap');
+    if (wrap) {
+      var pw = wrap.querySelector('.progress-wrap');
+      if (pw) pw.remove();
+    }
+  } catch (e) {
+    btnEl.textContent = '✓ Mark Watched';
+    btnEl.style.pointerEvents = '';
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function pickDeviceAndPlay(embyId, ticks) {
+  if (!currentUserId) return;
+  try {
+    var r = await fetch('/api/remote-play/sessions/' + currentUserId);
+    var d = await r.json();
+    var sessions = d.sessions || [];
+
+    if (!sessions.length) {
+      showToast('No active Emby devices found', 'error');
+      return;
+    }
+
+    if (sessions.length === 1) {
+      await playOnDevice(embyId, sessions[0].session_id, sessions[0].device_name, ticks);
+      return;
+    }
+
+    // Multiple devices — show picker modal
+    var pickerHtml = '<div id="devicePicker" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;" onclick="if(event.target===this)this.remove()">';
+    pickerHtml += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;min-width:260px;max-width:400px;">';
+    pickerHtml += '<div style="font-weight:600;margin-bottom:12px;font-size:0.92rem;">Choose device</div>';
+    sessions.forEach(function(s) {
+      var safeName = s.device_name.replace(/'/g, "\\'");
+      var label = esc(s.device_name) + (s.client ? ' (' + esc(s.client) + ')' : '') + (s.now_playing ? ' — ' + esc(s.now_playing) : '');
+      pickerHtml += '<button onclick="document.getElementById(\'devicePicker\').remove();playOnDevice(\'' + embyId + '\',\'' + s.session_id + '\',\'' + safeName + '\',' + (ticks||0) + ')" style="display:block;width:100%;text-align:left;background:var(--surface-hover);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;cursor:pointer;margin-bottom:6px;font-size:0.85rem;">' + label + '</button>';
+    });
+    pickerHtml += '<button onclick="document.getElementById(\'devicePicker\').remove()" style="display:block;width:100%;text-align:center;background:none;border:1px solid var(--border);color:var(--text-dim);padding:8px;border-radius:6px;cursor:pointer;font-size:0.82rem;margin-top:4px;">Cancel</button>';
+    pickerHtml += '</div></div>';
+    document.body.insertAdjacentHTML('beforeend', pickerHtml);
+  } catch(e) {
+    showToast('Failed to fetch devices: ' + e.message, 'error');
+  }
+}
+
+async function playOnDevice(embyId, sessionId, deviceName, ticks) {
+  try {
+    var r = await fetch('/api/play-on-session', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_id: currentUserId, emby_item_id: embyId, session_id: sessionId, start_position_ticks: ticks || 0}),
+    });
+    var d = await r.json();
+    if (d.status === 'playing') {
+      showToast('▶ Playing on ' + deviceName, 'ok');
+    } else {
+      showToast(d.message || 'Playback failed', 'error');
+    }
+  } catch(e) {
+    showToast('Playback error: ' + e.message, 'error');
+  }
+}
+
+function showToast(msg, type) {
+  var existing = document.getElementById('suiteToast');
+  if (existing) existing.remove();
+  var bg = type === 'ok' ? 'var(--green)' : (type === 'error' ? 'var(--red)' : 'var(--accent)');
+  var el = document.createElement('div');
+  el.id = 'suiteToast';
+  el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:' + bg + ';color:#fff;padding:10px 24px;border-radius:8px;font-size:0.85rem;font-weight:600;z-index:10000;box-shadow:0 4px 16px rgba(0,0,0,0.4);transition:opacity 0.3s;';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(function() { el.style.opacity = '0'; setTimeout(function() { el.remove(); }, 300); }, 3000);
+}
 </script>
 
 </body>
