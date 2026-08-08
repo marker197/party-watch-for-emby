@@ -10926,12 +10926,14 @@ async def get_item_detail(
             result["tmdb_id"] = tmdb_id
 
     # ── Parallel fetch from all sources ──
+    emby_user_guid = current_user.emby_user_id  # Emby needs the GUID, not DB integer id
+
     async def fetch_emby():
         if not emby_id:
             return None
         try:
             emby = EmbyClient()
-            item = await emby.get_item(emby_id, user_id=str(user_id))
+            item = await emby.get_item(emby_id, user_id=emby_user_guid)
             await emby.close()
             return item
         except Exception as e:
@@ -10942,10 +10944,13 @@ async def get_item_detail(
         if not imdb_id:
             return None
         try:
-            mdb = await _get_mdblist_client(db, user_id)
-            provider = "imdb"
+            mdb_key = await _get_mdblist_key(db)
+            if not mdb_key:
+                return None
+            from app.utils.mdblist_client import MDBListClient
+            mdb = MDBListClient(api_key=mdb_key)
             mdb_type = "movie" if media_type == "movie" else "show"
-            info = await mdb.get_media_info(provider, mdb_type, imdb_id)
+            info = await mdb.get_media_info("imdb", mdb_type, imdb_id)
             await mdb.close()
             return info
         except Exception as e:
