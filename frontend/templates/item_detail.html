@@ -153,13 +153,13 @@
     border-radius: 12px; padding: 18px; margin-bottom: 28px;
   }
   .ratings-grid {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-    gap: 12px;
+    display: flex; gap: 10px; overflow-x: auto;
   }
   .rating-card {
     display: flex; align-items: center; gap: 8px;
     padding: 8px 10px; border-radius: 8px;
     background: var(--surface-hover); border: 1px solid var(--border);
+    flex: 1 1 0; min-width: 0; white-space: nowrap;
   }
   .rating-icon {
     font-size: 1.1rem; flex-shrink: 0; width: 22px; text-align: center;
@@ -270,7 +270,8 @@
     .hero { flex-direction: column; gap: 16px; }
     .poster-col { width: 220px; margin: 0 auto; }
     .item-title { font-size: 1.4rem; }
-    .ratings-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
+    .ratings-grid { gap: 8px; }
+    .rating-card { flex: 0 0 auto; min-width: 90px; }
     .cast-grid { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
   }
 
