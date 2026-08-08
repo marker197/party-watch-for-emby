@@ -420,23 +420,23 @@ function render(d) {
     document.getElementById('itemTagline').style.display = '';
   }
 
-  // Backdrop
-  if (d.backdrop_path) {
-    const bd = document.getElementById('backdrop');
-    bd.style.backgroundImage = 'url(' + TMDB_IMG + 'w1280' + d.backdrop_path + ')';
-    bd.classList.add('loaded');
-  } else if (d.emby_id) {
-    const bd = document.getElementById('backdrop');
+  // Backdrop — Emby first, TMDB fallback
+  const bd = document.getElementById('backdrop');
+  if (d.emby_id) {
     bd.style.backgroundImage = 'url(' + imgUrl(d.emby_id, 'Backdrop', 1280) + ')';
+    bd.classList.add('loaded');
+  } else if (d.backdrop_path) {
+    bd.style.backgroundImage = 'url(' + TMDB_IMG + 'w1280' + d.backdrop_path + ')';
     bd.classList.add('loaded');
   }
 
-  // Poster
+  // Poster — Emby first, TMDB fallback
   const posterCol = document.getElementById('posterCol');
-  if (d.poster_path) {
-    posterCol.innerHTML = '<img src="' + TMDB_IMG + 'w500' + d.poster_path + '" alt="' + esc(d.title) + '">';
-  } else if (d.emby_id) {
+  if (d.emby_id) {
     posterCol.innerHTML = '<img src="' + imgUrl(d.emby_id, 'Primary', 500) + '" alt="' + esc(d.title) + '"'
+      + ' onerror="this.outerHTML=\'<div class=poster-placeholder>🎬</div>\'">';
+  } else if (d.poster_path) {
+    posterCol.innerHTML = '<img src="' + TMDB_IMG + 'w500' + d.poster_path + '" alt="' + esc(d.title) + '"'
       + ' onerror="this.outerHTML=\'<div class=poster-placeholder>🎬</div>\'">';
   } else {
     posterCol.innerHTML = '<div class="poster-placeholder">🎬</div>';
@@ -571,29 +571,42 @@ function renderCast(d) {
   const crew = d.tmdb_crew || [];
   const embyCast = d.emby_cast || [];
 
-  // Use Emby cast as fallback if TMDB has none
+  // Build name→emby_id lookup from Emby people (for local images)
+  const embyIdByName = {};
+  embyCast.forEach(function(p) {
+    if (p.name && p.emby_id) embyIdByName[p.name.toLowerCase()] = p.emby_id;
+  });
+
+  // Merge Emby IDs into TMDB cast/crew for local image serving
+  cast.forEach(function(p) { p._emby_id = embyIdByName[(p.name || '').toLowerCase()] || null; });
+  crew.forEach(function(p) { p._emby_id = embyIdByName[(p.name || '').toLowerCase()] || null; });
+
   const directors = crew.filter(function(c) { return c.job === 'Director'; });
   const writers = crew.filter(function(c) { return c.job === 'Writer' || c.job === 'Screenplay' || c.job === 'Creator'; });
 
-  if (!cast.length && !directors.length && !embyCast.length) return;
+  // Fall back to Emby-only cast if TMDB has nothing
+  const useTmdb = cast.length || directors.length;
+  if (!useTmdb && !embyCast.length) return;
 
   document.getElementById('castSection').style.display = '';
 
-  // Build tabs
   const tabsEl = document.getElementById('castTabs');
   let tabsHtml = '';
-  if (cast.length) tabsHtml += '<button class="cast-tab active" onclick="showCastTab(\'cast\', this)">Cast <span class="tab-count">' + cast.length + '</span></button>';
-  if (directors.length) tabsHtml += '<button class="cast-tab' + (!cast.length ? ' active' : '') + '" onclick="showCastTab(\'directors\', this)">Directors <span class="tab-count">' + directors.length + '</span></button>';
-  if (writers.length) tabsHtml += '<button class="cast-tab" onclick="showCastTab(\'writers\', this)">Writers <span class="tab-count">' + writers.length + '</span></button>';
+  if (useTmdb) {
+    if (cast.length) tabsHtml += '<button class="cast-tab active" onclick="showCastTab(\'cast\', this)">Cast <span class="tab-count">' + cast.length + '</span></button>';
+    if (directors.length) tabsHtml += '<button class="cast-tab' + (!cast.length ? ' active' : '') + '" onclick="showCastTab(\'directors\', this)">Directors <span class="tab-count">' + directors.length + '</span></button>';
+    if (writers.length) tabsHtml += '<button class="cast-tab" onclick="showCastTab(\'writers\', this)">Writers <span class="tab-count">' + writers.length + '</span></button>';
+  }
   tabsEl.innerHTML = tabsHtml;
 
-  // Store data for tab switching
   window._castData = { cast: cast, directors: directors, writers: writers, embyCast: embyCast };
 
-  // Show first tab
-  if (cast.length) showCastGrid(cast, true);
-  else if (directors.length) showCastGrid(directors, false);
-  else showCastGridEmby(embyCast);
+  if (useTmdb) {
+    if (cast.length) showCastGrid(cast, true);
+    else showCastGrid(directors, false);
+  } else {
+    showCastGridEmby(embyCast);
+  }
 }
 
 function showCastTab(type, btn) {
@@ -608,9 +621,17 @@ function showCastTab(type, btn) {
 function showCastGrid(people, isCast) {
   const grid = document.getElementById('castGrid');
   grid.innerHTML = people.map(function(p) {
-    const photo = p.profile_path
-      ? '<img class="cast-photo" src="' + TMDB_IMG + 'w185' + p.profile_path + '" alt="' + esc(p.name) + '">'
-      : '<div class="cast-photo-placeholder">👤</div>';
+    // Emby person image first, TMDB fallback, then placeholder
+    var photo;
+    if (p._emby_id) {
+      photo = '<img class="cast-photo" src="' + imgUrl(p._emby_id, 'Primary', 185) + '"'
+        + ' onerror="this.outerHTML=\'<div class=cast-photo-placeholder>👤</div>\'">';
+    } else if (p.profile_path) {
+      photo = '<img class="cast-photo" src="' + TMDB_IMG + 'w185' + p.profile_path + '"'
+        + ' onerror="this.outerHTML=\'<div class=cast-photo-placeholder>👤</div>\'">';
+    } else {
+      photo = '<div class="cast-photo-placeholder">👤</div>';
+    }
     const role = isCast ? (p.character || '') : (p.job || '');
     return '<div class="cast-card">' + photo
       + '<div class="cast-name">' + esc(p.name) + '</div>'
