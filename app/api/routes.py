@@ -10872,12 +10872,16 @@ async def trakt_import_push(
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.get("/item/{imdb_id}")
-async def item_detail_page(request: Request, imdb_id: str):
-    """Render the item detail HTML page (template populated via JS fetch)."""
-    return templates.TemplateResponse("item_detail.html", {
-        "request": request,
-        "imdb_id": imdb_id,
-    })
+async def item_detail_page(imdb_id: str):
+    """Render the item detail HTML page."""
+    try:
+        with open("frontend/templates/item_detail.html", "r") as f:
+            html = f.read()
+        # Inject the imdb_id into the template (replaces {{ imdb_id }})
+        html = html.replace("{{ imdb_id }}", imdb_id)
+        return HTMLResponse(html)
+    except FileNotFoundError:
+        return HTMLResponse("<h1>Page not found</h1>", status_code=404)
 
 
 @router.get("/api/item/detail")
