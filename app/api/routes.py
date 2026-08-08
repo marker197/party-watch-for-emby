@@ -8204,65 +8204,71 @@ async def mark_watched(
 
     results = {"emby": False, "simkl": False, "mdblist": False}
 
+    # Build provider IDs dict
+    ids = {}
+    if imdb_id:
+        ids["imdb"] = imdb_id
+    if tmdb_id:
+        try:
+            ids["tmdb"] = int(tmdb_id)
+        except (ValueError, TypeError):
+            pass
+
     # ── Mark played on Emby ──
     if emby_item_id and user.emby_user_id:
         try:
-            emby = EmbyClient(base_url=EMBY_URL, api_key=EMBY_API_KEY)
-            try:
+            async with EmbyClient() as emby:
                 await emby.mark_played(user.emby_user_id, emby_item_id)
                 results["emby"] = True
-            finally:
-                await emby.close()
         except Exception as e:
             log.warning("mark_watched.emby_failed", error=str(e)[:120])
 
     # ── Scrobble stop at 100% to Simkl ──
-    try:
-        from app.utils.simkl_client import SimklClient
-        simkl = await SimklClient.for_user(user, db)
-        if simkl:
+    if user.simkl_access_token and ids:
+        try:
+            simkl = SimklClient(access_token=user.simkl_access_token)
             try:
-                ids = {}
-                if imdb_id:
-                    ids["imdb"] = imdb_id
-                if tmdb_id:
-                    ids["tmdb"] = tmdb_id
-                payload = {"ids": ids, "title": title}
                 if item_type == "episode" and season_number is not None and episode_number is not None:
-                    payload["season"] = season_number
-                    payload["episode"] = episode_number
-                    payload["show"] = {"title": series_name or title, "ids": ids}
-                await simkl.scrobble("stop", payload, progress=100)
+                    payload = {
+                        "show": {"ids": ids},
+                        "episode": {"season": int(season_number), "number": int(episode_number)},
+                    }
+                else:
+                    payload = {"movie": {"ids": ids}}
+                await simkl.scrobble_stop(payload, progress=100)
                 results["simkl"] = True
             finally:
                 await simkl.close()
-    except Exception as e:
-        log.warning("mark_watched.simkl_failed", error=str(e)[:120])
+        except Exception as e:
+            log.warning("mark_watched.simkl_failed", error=str(e)[:120])
 
     # ── Scrobble stop at 100% to MDBList ──
-    try:
-        from app.utils.mdblist_client import MDBListClient
-        from app.utils.secure_redis import secure_get
-        mdb_key = await secure_get("mdblist_api_key")
-        mdb_token = await secure_get(f"mdblist_access_token:{user.id}")
-        if mdb_key or mdb_token:
-            mdb = MDBListClient(api_key=mdb_key, access_token=mdb_token)
-            try:
-                mdb_payload = {"title": title}
-                if imdb_id:
-                    mdb_payload["ids"] = {"imdb": imdb_id}
-                elif tmdb_id:
-                    mdb_payload["ids"] = {"tmdb": tmdb_id}
-                if item_type == "episode" and season_number is not None and episode_number is not None:
-                    mdb_payload["season"] = season_number
-                    mdb_payload["episode"] = episode_number
-                    mdb_payload["show"] = {"title": series_name or title, "ids": mdb_payload.get("ids", {})}
-                await mdb.scrobble_stop(mdb_payload, progress=100)
-                results["mdblist"] = True
-            finally:
-                await mdb.close()
-    except Exception as e:
-        log.warning("mark_watched.mdblist_failed", error=str(e)[:120])
+    if ids:
+        try:
+            from app.utils.mdblist_client import MDBListClient
+            from app.utils.secure_redis import secure_get
+            mdb_key = await secure_get("mdblist_api_key")
+            if mdb_key:
+                mdb = MDBListClient(api_key=mdb_key)
+                try:
+                    if item_type == "episode" and season_number is not None and episode_number is not None:
+                        mdb_payload = {
+                            "show": {
+                                "ids": ids,
+                                "season": {
+                                    "number": int(season_number),
+                                    "episode": {"number": int(episode_number)},
+                                },
+                            },
+                        }
+                    else:
+                        mdb_payload = {"movie": {"ids": ids}}
+                    await mdb.scrobble_stop(mdb_payload, progress=100)
+                    results["mdblist"] = True
+                finally:
+                    await mdb.close()
+        except Exception as e:
+            log.warning("mark_watched.mdblist_failed", error=str(e)[:120])
 
     log.info("mark_watched.completed", user=user.emby_username, item=title,
              emby=results["emby"], simkl=results["simkl"], mdblist=results["mdblist"])
