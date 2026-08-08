@@ -402,26 +402,23 @@ function toggleSuiteTheme() {
   localStorage.setItem('suite-theme', isLight ? 'light' : 'dark');
 }
 
-// Active type filter — only one at a time, click again to deactivate
-let activeTypeFilter = null;
+// Active type filters — multiple can be active at once
+let activeTypeFilters = new Set();
 
 function toggleTypeFilter(type, btn) {
   document.getElementById('myRatingsPanel').style.display = 'none';
   document.getElementById('timeline').style.display = '';
   document.getElementById('pagination').style.display = '';
 
-  // Deactivate all type buttons
-  document.querySelectorAll('.filter-btn[data-type]').forEach(b => b.classList.remove('active'));
-
-  if (activeTypeFilter === type) {
-    // Click same button again — deactivate, show all
-    activeTypeFilter = null;
+  // Toggle this button on/off independently
+  if (activeTypeFilters.has(type)) {
+    activeTypeFilters.delete(type);
+    btn.classList.remove('active');
   } else {
-    activeTypeFilter = type;
+    activeTypeFilters.add(type);
     btn.classList.add('active');
   }
 
-  currentFilter = activeTypeFilter || 'all';
   currentPage = 1;
   nextBefore = null;
   document.getElementById('timeline').innerHTML = '';
@@ -687,10 +684,8 @@ function goToPage(pg) {
 }
 
 function buildTypeParam() {
-  if (currentFilter === 'movie') return '&item_type=movie';
-  if (currentFilter === 'show') return '&item_type=show';
-  if (currentFilter === 'episode') return '&item_type=episode';
-  return '';
+  if (activeTypeFilters.size === 0 || activeTypeFilters.size === 3) return '';
+  return '&item_type=' + Array.from(activeTypeFilters).join(',');
 }
 
 async function loadHistory() {
@@ -1041,6 +1036,7 @@ let myRatingsSource = 'user';
 let myRatingsData = [];
 
 function showMyRatings(btn) {
+  activeTypeFilters.clear();
   document.querySelectorAll('.filter-btn[data-type]').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   document.getElementById('timeline').style.display = 'none';

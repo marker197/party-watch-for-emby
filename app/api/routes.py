@@ -7889,12 +7889,21 @@ async def get_watch_history_by_date(
     from collections import OrderedDict
 
     filters = [WatchHistory.user_id == user_id]
-    if item_type and item_type in ("movie", "episode", "show"):
-        if item_type == "show":
-            # Shows mode: fetch episodes, collapse to series level below
-            filters.append(WatchHistory.item_type == "episode")
+    # Parse multi-select type filter (comma-separated, e.g. "movie,show")
+    requested_types = set()
+    if item_type:
+        requested_types = {t.strip() for t in item_type.split(",") if t.strip() in ("movie", "episode", "show")}
+    if requested_types and len(requested_types) < 3:
+        # Map requested types to DB item_type values
+        db_types: set[str] = set()
+        if "movie" in requested_types:
+            db_types.add("movie")
+        if "show" in requested_types or "episode" in requested_types:
+            db_types.add("episode")
+        if len(db_types) == 1:
+            filters.append(WatchHistory.item_type == next(iter(db_types)))
         else:
-            filters.append(WatchHistory.item_type == item_type)
+            filters.append(WatchHistory.item_type.in_(db_types))
     if before:
         try:
             before_date = datetime.strptime(before, "%Y-%m-%d").date()
@@ -7930,11 +7939,16 @@ async def get_watch_history_by_date(
 
     # ── Total items count (all time, with current type filter) ─────
     total_count_filters = [WatchHistory.user_id == user_id]
-    if item_type and item_type in ("movie", "episode", "show"):
-        if item_type == "show":
-            total_count_filters.append(WatchHistory.item_type == "episode")
+    if requested_types and len(requested_types) < 3:
+        tc_db_types: set[str] = set()
+        if "movie" in requested_types:
+            tc_db_types.add("movie")
+        if "show" in requested_types or "episode" in requested_types:
+            tc_db_types.add("episode")
+        if len(tc_db_types) == 1:
+            total_count_filters.append(WatchHistory.item_type == next(iter(tc_db_types)))
         else:
-            total_count_filters.append(WatchHistory.item_type == item_type)
+            total_count_filters.append(WatchHistory.item_type.in_(tc_db_types))
     total_items = (await db.execute(
         select(func.count(WatchHistory.id)).where(*total_count_filters)
     )).scalar() or 0
@@ -7948,7 +7962,9 @@ async def get_watch_history_by_date(
     rows = (await db.execute(q)).scalars().all()
 
     # ── Normalised dedup key ────────────────────────────────────────
-    collapse_to_show = (item_type == "show")
+    # Collapse episodes to series-level cards only when "show" is selected
+    # without "episode" (episode = more granular view takes precedence)
+    collapse_to_show = ("show" in requested_types and "episode" not in requested_types)
 
     def _dedup_key(r):
         """Build a stable key that merges rows from different sources."""
