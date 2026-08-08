@@ -85,27 +85,31 @@
     }
     .history-title-row .theme-toggle:hover { background: var(--surface-hover); }
 
-    /* ── Filter bar row ── */
+    /* ── Filter bar ── */
     .history-filters {
-      display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+      display: flex; gap: 4px; align-items: center; flex-wrap: nowrap;
+      overflow-x: auto; -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
     }
+    .history-filters::-webkit-scrollbar { display: none; }
     .filter-btn {
-      padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
-      background: var(--surface); color: var(--text-dim); font-size: 0.82rem;
+      padding: 5px 11px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text-dim); font-size: 0.8rem;
       cursor: pointer; transition: all 0.15s; font-weight: 500; white-space: nowrap;
+      flex-shrink: 0;
     }
     .filter-btn:hover { background: var(--surface-hover); color: var(--text); }
     .filter-btn.active {
       background: var(--accent); color: #fff; border-color: var(--accent);
     }
     .filter-sep {
-      width: 1px; height: 22px; background: var(--border); margin: 0 4px;
+      width: 1px; height: 20px; background: var(--border); margin: 0 2px; flex-shrink: 0;
     }
     .rating-pill {
-      padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border);
-      background: transparent; color: var(--text-dim); font-size: 0.78rem;
+      padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);
+      background: transparent; color: var(--text-dim); font-size: 0.76rem;
       cursor: pointer; transition: all 0.15s; font-weight: 600;
-      min-width: 28px; text-align: center;
+      min-width: 26px; text-align: center; white-space: nowrap; flex-shrink: 0;
     }
     .rating-pill:hover { background: var(--surface-hover); color: var(--text); }
     .rating-pill.active {
@@ -113,13 +117,14 @@
     }
     .jump-select {
       background: var(--surface); color: var(--text); border: 1px solid var(--border);
-      padding: 5px 10px; border-radius: 6px; font-size: 0.82rem; cursor: pointer;
+      padding: 4px 8px; border-radius: 6px; font-size: 0.8rem; cursor: pointer;
+      flex-shrink: 0; margin-left: auto;
     }
 
     /* ── Content panel ── */
     .content-panel {
       max-width: 1200px; margin: 0 auto; padding: 28px 32px;
-      background: rgba(18,20,28,0.85); min-height: calc(100vh - 180px);
+      background: rgba(18,20,28,0.55); min-height: calc(100vh - 180px);
       border-radius: 0 0 12px 12px;
     }
 
@@ -328,11 +333,10 @@
       <button class="theme-toggle" onclick="toggleSuiteTheme()">☀️ Light</button>
     </div>
     <div class="history-filters">
-      <button class="filter-btn active" data-type="all" onclick="setFilter('all', this)">🎬 All</button>
-      <button class="filter-btn" data-type="movie" onclick="setFilter('movie', this)">🎥 Movies</button>
-      <button class="filter-btn" data-type="show" onclick="setFilter('show', this)">📺 Shows</button>
-      <button class="filter-btn" data-type="episode" onclick="setFilter('episode', this)">▶️ Episodes</button>
-      <button class="filter-btn" data-type="my-ratings" onclick="showMyRatings(this)">⭐ My Ratings</button>
+      <button class="filter-btn" data-type="movie" onclick="toggleTypeFilter('movie', this)">🎥 Movies</button>
+      <button class="filter-btn" data-type="show" onclick="toggleTypeFilter('show', this)">📺 Shows</button>
+      <button class="filter-btn" data-type="episode" onclick="toggleTypeFilter('episode', this)">▶️ Episodes</button>
+      <button class="filter-btn" data-type="my-ratings" onclick="showMyRatings(this)">⭐ Ratings</button>
 
       <div class="filter-sep"></div>
 
@@ -380,19 +384,30 @@ function toggleSuiteTheme() {
   localStorage.setItem('suite-theme', isLight ? 'light' : 'dark');
 }
 
-function setFilter(type, btn) {
-  currentFilter = type;
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  // Restore timeline when switching back from My Ratings
+function toggleTypeFilter(type, btn) {
+  // Toggle: if already active, deactivate (show all). Otherwise activate this one.
   document.getElementById('myRatingsPanel').style.display = 'none';
   document.getElementById('timeline').style.display = '';
   document.getElementById('pagination').style.display = '';
+
+  if (btn.classList.contains('active')) {
+    // Deactivate — show all
+    btn.classList.remove('active');
+    currentFilter = 'all';
+  } else {
+    // Deactivate all type buttons, activate this one
+    document.querySelectorAll('.filter-btn[data-type]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentFilter = type;
+  }
   currentPage = 1;
   nextBefore = null;
   document.getElementById('timeline').innerHTML = '';
   loadHistory();
 }
+
+// Legacy setFilter for compatibility
+function setFilter(type, btn) { toggleTypeFilter(type, btn); }
 
 function setRatingFilter(val, btn) {
   currentRatingFilter = val;
@@ -970,7 +985,7 @@ let myRatingsSource = 'user';
 let myRatingsData = [];
 
 function showMyRatings(btn) {
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.filter-btn[data-type]').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   document.getElementById('timeline').style.display = 'none';
   document.getElementById('pagination').style.display = 'none';
