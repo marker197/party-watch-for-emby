@@ -497,7 +497,7 @@ function itemLabel(item) {
   return { title: item.title || '', sub: 'Movie' };
 }
 
-function renderItem(item) {
+function renderItem(item, _idx, _arr, dayDate) {
   const label = itemLabel(item);
   if (!label.title) return '';
 
@@ -546,8 +546,13 @@ function renderItem(item) {
 
   // Build hover action buttons
   let actionsHtml = '<div class="hover-actions">';
-  // Mark Watched — only when >=90% progress (less than 10% left)
-  if (prog !== null && prog !== undefined && prog >= 90 && prog < 100) {
+  // Mark Watched — show for in-progress items (not already at 100%).
+  // For older days, hide if progress >= 80% (effectively watched per Simkl rules).
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const isToday = (dayDate === todayStr);
+  const showMarkWatched = prog !== null && prog !== undefined && prog > 0 && prog < 100
+    && (isToday || prog < 80);
+  if (showMarkWatched) {
     const mwData = JSON.stringify({
       emby_item_id: item.emby_id || null,
       imdb_id: itemImdb || null,
@@ -587,7 +592,8 @@ function renderItem(item) {
 }
 
 function renderDay(day) {
-  const itemsHtml = day.items.map(renderItem).filter(Boolean).join('');
+  const dd = day.date;
+  const itemsHtml = day.items.map(function(item, i, arr) { return renderItem(item, i, arr, dd); }).filter(Boolean).join('');
   if (!itemsHtml) return '';
   return '<div class="date-group">'
     + '<div class="date-label">' + esc(formatDate(day.date)) + '</div>'
