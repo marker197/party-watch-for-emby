@@ -21,8 +21,6 @@
       --blue: #74b9ff;
       --radius: 10px;
       --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      /* Card dimensions — base for 1440px, scales via clamp */
-      --card-w: clamp(240px, 23vw, 340px);
     }
 
     body.light-mode {
@@ -44,38 +42,92 @@
       min-height: 100vh;
     }
 
-    .header {
-      padding: 28px 32px 20px;
+    /* ── Full-viewport blurred backdrop ── */
+    #bgBackdrop {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      z-index: -1; background-size: cover; background-position: center;
+      filter: blur(20px) brightness(0.25); transform: scale(1.1);
+      transition: opacity 0.8s; opacity: 0;
+    }
+    #bgBackdrop.loaded { opacity: 1; }
+
+    /* ── History header bar ── */
+    .history-header {
+      background: rgba(18,20,28,0.92);
       border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      flex-wrap: wrap;
+      padding: 18px 0 14px;
     }
-    .header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
-
-    .container { max-width: 1200px; margin: 0 auto; padding: 28px 32px; }
-
-    .user-select-row {
-      display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+    .history-header-inner {
+      max-width: 1200px; margin: 0 auto; padding: 0 32px;
     }
-    .user-select-row label { font-size: 0.92rem; font-weight: 600; }
-    .user-select-row select {
+    .history-title-row {
+      display: flex; align-items: center; gap: 14px; margin-bottom: 14px; flex-wrap: wrap;
+    }
+    .history-title-row h1 {
+      font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .item-count-badge {
+      background: var(--accent); color: #fff; font-size: 0.75rem;
+      font-weight: 700; padding: 3px 10px; border-radius: 12px;
+    }
+    .history-title-row .user-select {
       background: var(--surface); color: var(--text); border: 1px solid var(--border);
-      padding: 8px 14px; border-radius: 8px; font-size: 0.88rem; min-width: 180px;
+      padding: 6px 12px; border-radius: 8px; font-size: 0.85rem; min-width: 160px;
+      margin-left: auto;
     }
+    .history-title-row .theme-toggle {
+      padding: 6px 14px; border-radius: 8px;
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text-dim); cursor: pointer; font-size: 0.82rem;
+    }
+    .history-title-row .theme-toggle:hover { background: var(--surface-hover); }
 
-    .filter-bar {
-      display: flex; gap: 8px; margin-bottom: 28px; flex-wrap: wrap; align-items: center;
+    /* ── Filter bar row ── */
+    .history-filters {
+      display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
     }
     .filter-btn {
-      padding: 7px 16px; border-radius: 8px; border: 1px solid var(--border);
-      background: var(--surface); color: var(--text-dim); font-size: 0.85rem;
-      cursor: pointer; transition: all 0.15s; font-weight: 500;
+      padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text-dim); font-size: 0.82rem;
+      cursor: pointer; transition: all 0.15s; font-weight: 500; white-space: nowrap;
     }
     .filter-btn:hover { background: var(--surface-hover); color: var(--text); }
     .filter-btn.active {
       background: var(--accent); color: #fff; border-color: var(--accent);
+    }
+    .filter-sep {
+      width: 1px; height: 22px; background: var(--border); margin: 0 4px;
+    }
+    .rating-pill {
+      padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border);
+      background: transparent; color: var(--text-dim); font-size: 0.78rem;
+      cursor: pointer; transition: all 0.15s; font-weight: 600;
+      min-width: 28px; text-align: center;
+    }
+    .rating-pill:hover { background: var(--surface-hover); color: var(--text); }
+    .rating-pill.active {
+      background: var(--blue); color: #fff; border-color: var(--blue);
+    }
+    .filter-right {
+      margin-left: auto; display: flex; gap: 6px; align-items: center;
+    }
+    .jump-select {
+      background: var(--surface); color: var(--text); border: 1px solid var(--border);
+      padding: 6px 10px; border-radius: 8px; font-size: 0.82rem; cursor: pointer;
+    }
+    .dash-link {
+      padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text-dim); font-size: 0.82rem;
+      cursor: pointer; text-decoration: none; font-weight: 500; white-space: nowrap;
+    }
+    .dash-link:hover { background: var(--surface-hover); color: var(--text); }
+
+    /* ── Content panel ── */
+    .content-panel {
+      max-width: 1200px; margin: 0 auto; padding: 28px 32px;
+      background: rgba(18,20,28,0.85); min-height: calc(100vh - 180px);
+      border-radius: 0 0 12px 12px;
     }
 
     .date-group { margin-bottom: 32px; }
@@ -83,21 +135,29 @@
       font-size: 0.88rem; font-weight: 600; color: var(--text-dim);
       margin-bottom: 14px; padding-bottom: 8px;
       border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 2;
+      background: rgba(18,20,28,0.95); padding-top: 6px;
     }
     .date-items {
-      display: flex; gap: 14px; flex-wrap: wrap;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 14px;
+      max-width: 100%;
+    }
+    /* Cap at 4 columns */
+    @media (min-width: 1060px) {
+      .date-items { grid-template-columns: repeat(4, 1fr); }
     }
 
-    /* ── Card: landscape 16:9 thumbnail ── */
+    /* ── Card ── */
     .history-item {
-      width: var(--card-w); cursor: default;
+      cursor: default;
       background: var(--surface); border-radius: 10px;
       overflow: hidden; border: 1px solid var(--border);
     }
     .thumb-wrap {
       position: relative; width: 100%; aspect-ratio: 16 / 9;
-      overflow: hidden;
-      background: var(--surface);
+      overflow: hidden; background: var(--surface);
     }
     .thumb-wrap img {
       width: 100%; height: 100%; object-fit: cover;
@@ -132,12 +192,8 @@
       padding: 2px 8px; text-align: right;
       text-shadow: 0 1px 3px rgba(0,0,0,0.8);
     }
-    .progress-track {
-      height: 4px; background: rgba(255,255,255,0.2);
-    }
-    .progress-fill {
-      height: 100%; background: var(--orange);
-    }
+    .progress-track { height: 4px; background: rgba(255,255,255,0.2); }
+    .progress-fill { height: 100%; background: var(--orange); }
 
     .item-title {
       margin: 0; padding: 8px 10px 0; font-size: 0.82rem; color: var(--text);
@@ -149,87 +205,40 @@
     }
 
     .loading { text-align: center; padding: 48px 0; color: var(--text-dim); font-size: 0.92rem; }
-    .load-more-wrap { text-align: center; padding: 20px 0; }
-    .load-more-btn {
-      padding: 10px 28px; border-radius: 8px; border: 1px solid var(--border);
-      background: var(--surface); color: var(--text); font-size: 0.88rem;
-      cursor: pointer; transition: all 0.15s; font-weight: 500;
-    }
-    .load-more-btn:hover { background: var(--surface-hover); }
-    .load-more-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    .theme-toggle {
-      margin-left: auto; padding: 6px 14px; border-radius: 8px;
-      background: var(--surface); border: 1px solid var(--border);
-      color: var(--text-dim); cursor: pointer; font-size: 0.82rem;
+    /* ── Pagination ── */
+    .pagination {
+      display: flex; justify-content: center; gap: 4px; padding: 24px 0 8px;
+      flex-wrap: wrap;
     }
-    .theme-toggle:hover { background: var(--surface-hover); }
-
-    /* ── My Ratings Panel ── */
-    .my-ratings-list { display: flex; flex-direction: column; gap: 8px; }
-    .my-rating-row {
-      display: flex; align-items: center; gap: 10px;
-      background: var(--surface); border-radius: 8px; padding: 8px 12px;
-    }
-    .my-rating-poster {
-      width: 45px; height: 65px; border-radius: 4px; object-fit: cover; flex-shrink: 0;
-    }
-    .my-rating-poster-ph {
-      width: 45px; height: 65px; border-radius: 4px; flex-shrink: 0;
+    .page-btn {
+      min-width: 36px; height: 36px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--surface);
+      color: var(--text-dim); font-size: 0.85rem; font-weight: 600;
+      cursor: pointer; transition: all 0.15s;
       display: flex; align-items: center; justify-content: center;
-      font-size: 1.5rem; background: var(--card-bg);
     }
-    .my-rating-info { flex: 1; min-width: 0; }
-    .my-rating-title {
-      font-size: 0.85rem; font-weight: 600; color: var(--text);
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .my-rating-meta { font-size: 0.72rem; color: var(--text-dim); }
-    .my-rating-value {
-      font-size: 1.3rem; font-weight: 800; color: var(--accent);
-      min-width: 30px; text-align: center;
-    }
-    .my-rating-actions { display: flex; gap: 4px; flex-shrink: 0; }
-    .my-rating-actions button {
-      background: var(--card-bg); border: 1px solid var(--border); color: var(--text-dim);
-      width: 28px; height: 28px; border-radius: 6px; cursor: pointer;
-      font-size: 0.75rem; display: flex; align-items: center; justify-content: center;
-    }
-    .my-rating-actions button:hover { background: var(--surface-hover); color: var(--text); }
-    .my-rating-actions button.delete:hover { background: var(--red); color: #fff; }
-    .my-rating-edit-row {
-      display: flex; gap: 3px; align-items: center; margin-top: 4px;
-    }
-    .my-rating-edit-row .rating-num {
-      width: 24px; height: 24px;
-    }
-    .my-ratings-empty { padding: 30px; text-align: center; color: var(--text-dim); }
-    .my-ratings-source-filter {
-      display: flex; gap: 6px; margin-bottom: 12px;
-    }
-    .my-ratings-source-filter button {
-      background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
-      padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 0.78rem;
-    }
-    .my-ratings-source-filter button.active {
-      background: var(--accent); color: #fff; border-color: var(--accent);
+    .page-btn:hover { background: var(--surface-hover); color: var(--text); }
+    .page-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .page-btn.disabled { opacity: 0.4; cursor: default; pointer-events: none; }
+    .page-ellipsis {
+      min-width: 36px; height: 36px; display: flex; align-items: center;
+      justify-content: center; color: var(--text-dim); font-size: 0.85rem;
     }
 
-    /* ── Hover-to-Rate Overlay ── */
+    /* ── Rated badge ── */
     .rated-badge {
       position: absolute; top: 6px; left: 6px; z-index: 4;
       background: var(--green, #00b894); color: #fff;
       font-size: 0.72rem; font-weight: 800; min-width: 22px; height: 22px;
       border-radius: 5px; display: flex; align-items: center; justify-content: center;
-      padding: 0 5px; box-shadow: 0 2px 6px rgba(0,0,0,0.4);
-      line-height: 1;
+      padding: 0 5px; box-shadow: 0 2px 6px rgba(0,0,0,0.4); line-height: 1;
     }
     .hover-rate-overlay {
       position: absolute; bottom: 0; left: 0; right: 0;
       background: linear-gradient(transparent, rgba(0,0,0,0.85) 30%);
       padding: 22px 6px 6px; display: flex; justify-content: center; gap: 2px;
-      opacity: 0; transition: opacity 0.2s ease; pointer-events: none;
-      z-index: 5;
+      opacity: 0; transition: opacity 0.2s ease; pointer-events: none; z-index: 5;
     }
     .thumb-wrap:hover .hover-rate-overlay { opacity: 1; pointer-events: auto; }
     .hover-rate-btn {
@@ -245,7 +254,6 @@
       text-align: center; color: var(--green); font-size: 0.75rem; font-weight: 700;
       text-shadow: 0 1px 4px rgba(0,0,0,0.8);
     }
-    /* rating-num reused in My Ratings edit row */
     .rating-num {
       width: 24px; height: 24px; border-radius: 4px; border: 1px solid var(--border);
       background: var(--surface); color: var(--text-dim); font-size: 0.7rem;
@@ -254,12 +262,55 @@
     }
     .rating-num:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
     .rating-num.selected { background: var(--green); color: #fff; border-color: var(--green); }
+
+    /* ── My Ratings Panel ── */
+    .my-ratings-list { display: flex; flex-direction: column; gap: 8px; }
+    .my-rating-row {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--surface); border-radius: 8px; padding: 8px 12px;
+    }
+    .my-rating-poster { width: 45px; height: 65px; border-radius: 4px; object-fit: cover; flex-shrink: 0; }
+    .my-rating-poster-ph {
+      width: 45px; height: 65px; border-radius: 4px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.5rem; background: var(--surface);
+    }
+    .my-rating-info { flex: 1; min-width: 0; }
+    .my-rating-title {
+      font-size: 0.85rem; font-weight: 600; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .my-rating-meta { font-size: 0.72rem; color: var(--text-dim); }
+    .my-rating-value { font-size: 1.3rem; font-weight: 800; color: var(--accent); min-width: 30px; text-align: center; }
+    .my-rating-actions { display: flex; gap: 4px; flex-shrink: 0; }
+    .my-rating-actions button {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
+      width: 28px; height: 28px; border-radius: 6px; cursor: pointer;
+      font-size: 0.75rem; display: flex; align-items: center; justify-content: center;
+    }
+    .my-rating-actions button:hover { background: var(--surface-hover); color: var(--text); }
+    .my-rating-actions button.delete:hover { background: var(--red); color: #fff; }
+    .my-rating-edit-row { display: flex; gap: 3px; align-items: center; margin-top: 4px; }
+    .my-rating-edit-row .rating-num { width: 24px; height: 24px; }
+    .my-ratings-empty { padding: 30px; text-align: center; color: var(--text-dim); }
+    .my-ratings-source-filter { display: flex; gap: 6px; margin-bottom: 12px; }
+    .my-ratings-source-filter button {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
+      padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 0.78rem;
+    }
+    .my-ratings-source-filter button.active {
+      background: var(--accent); color: #fff; border-color: var(--accent);
+    }
   </style>
 <script src="/static/js/csrf.js"></script>
 </head>
 <body>
 <script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
 
+<!-- Background image -->
+<div id="bgBackdrop"></div>
+
+<!-- Nav bar (unchanged) -->
 <nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
     <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
     <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
@@ -275,35 +326,54 @@
     <a href="/guide" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📖 Guide</a>
 </nav>
 
-<div class="header">
-  <h1>📜 Watch History</h1>
-  <button class="theme-toggle" onclick="toggleSuiteTheme()">☀️ Light</button>
+<!-- History header bar -->
+<div class="history-header">
+  <div class="history-header-inner">
+    <div class="history-title-row">
+      <h1>📜 History <span class="item-count-badge" id="itemCount">0 items</span></h1>
+      <select id="userSelect" class="user-select" onchange="resetAndLoad()">
+        <option value="">Loading…</option>
+      </select>
+      <button class="theme-toggle" onclick="toggleSuiteTheme()">☀️ Light</button>
+    </div>
+    <div class="history-filters">
+      <button class="filter-btn active" data-type="all" onclick="setFilter('all', this)">🎬 All</button>
+      <button class="filter-btn" data-type="movie" onclick="setFilter('movie', this)">🎥 Movies</button>
+      <button class="filter-btn" data-type="show" onclick="setFilter('show', this)">📺 Shows</button>
+      <button class="filter-btn" data-type="episode" onclick="setFilter('episode', this)">▶️ Episodes</button>
+      <button class="filter-btn" data-type="my-ratings" onclick="showMyRatings(this)">⭐ My Ratings</button>
+
+      <div class="filter-sep"></div>
+
+      <button class="rating-pill active" data-rating="all" onclick="setRatingFilter('all', this)">All</button>
+      <button class="rating-pill" data-rating="10" onclick="setRatingFilter('10', this)">10</button>
+      <button class="rating-pill" data-rating="9" onclick="setRatingFilter('9', this)">9</button>
+      <button class="rating-pill" data-rating="8" onclick="setRatingFilter('8', this)">8</button>
+      <button class="rating-pill" data-rating="7" onclick="setRatingFilter('7', this)">7</button>
+      <button class="rating-pill" data-rating="6" onclick="setRatingFilter('6', this)">6</button>
+      <button class="rating-pill" data-rating="5" onclick="setRatingFilter('5', this)">5</button>
+      <button class="rating-pill" data-rating="4" onclick="setRatingFilter('4', this)">4</button>
+      <button class="rating-pill" data-rating="3" onclick="setRatingFilter('3', this)">3</button>
+      <button class="rating-pill" data-rating="2" onclick="setRatingFilter('2', this)">2</button>
+      <button class="rating-pill" data-rating="1" onclick="setRatingFilter('1', this)">1</button>
+      <button class="rating-pill" data-rating="unrated" onclick="setRatingFilter('unrated', this)">👁 Unrated</button>
+
+      <div class="filter-right">
+        <select id="jumpMonth" class="jump-select" onchange="jumpToMonth(this.value)">
+          <option value="">📅 Jump to month</option>
+        </select>
+        <a href="/" class="dash-link">← Dashboard</a>
+      </div>
+    </div>
+  </div>
 </div>
 
-<div class="container">
-
-  <div class="user-select-row">
-    <label>👤 User:</label>
-    <select id="userSelect" onchange="resetAndLoad()">
-      <option value="">Loading…</option>
-    </select>
-  </div>
-
-  <div class="filter-bar">
-    <button class="filter-btn active" data-type="all" onclick="setFilter('all', this)">All</button>
-    <button class="filter-btn" data-type="movie" onclick="setFilter('movie', this)">Movies</button>
-    <button class="filter-btn" data-type="show" onclick="setFilter('show', this)">Shows</button>
-    <button class="filter-btn" data-type="episode" onclick="setFilter('episode', this)">Episodes</button>
-    <button class="filter-btn" data-type="my-ratings" onclick="showMyRatings(this)">⭐ My Ratings</button>
-  </div>
-
+<!-- Content -->
+<div class="content-panel">
   <div id="timeline"></div>
   <div id="myRatingsPanel" style="display:none;"></div>
   <div id="loadingMsg" class="loading">Select a user to load history…</div>
-  <div id="loadMoreWrap" class="load-more-wrap" style="display:none;">
-    <button class="load-more-btn" id="loadMoreBtn" onclick="loadMore()">Load more</button>
-  </div>
-
+  <div id="pagination" class="pagination"></div>
 </div>
 
 <script>
@@ -311,6 +381,8 @@ function esc(s) { if (!s && s !== 0) return ''; return String(s).replace(/&/g,'&
 
 let currentUserId = null;
 let currentFilter = 'all';
+let currentRatingFilter = 'all';
+let currentPage = 1;
 let nextBefore = null;
 let isLoading = false;
 
@@ -324,15 +396,34 @@ function setFilter(type, btn) {
   currentFilter = type;
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  resetAndLoad();
+  // Restore timeline when switching back from My Ratings
+  document.getElementById('myRatingsPanel').style.display = 'none';
+  document.getElementById('timeline').style.display = '';
+  document.getElementById('pagination').style.display = '';
+  currentPage = 1;
+  nextBefore = null;
+  document.getElementById('timeline').innerHTML = '';
+  loadHistory();
+}
+
+function setRatingFilter(val, btn) {
+  currentRatingFilter = val;
+  document.querySelectorAll('.rating-pill').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentPage = 1;
+  nextBefore = null;
+  document.getElementById('timeline').innerHTML = '';
+  loadHistory();
 }
 
 function resetAndLoad() {
   currentUserId = parseInt(document.getElementById('userSelect').value);
   if (!currentUserId) return;
+  currentPage = 1;
   nextBefore = null;
   document.getElementById('timeline').innerHTML = '';
   loadHistory();
+  loadMonths();
 }
 
 function imgUrl(embyId, imageType) {
@@ -382,11 +473,9 @@ function renderItem(item) {
   const label = itemLabel(item);
   if (!label.title) return '';
 
-  // Movies use Thumb, episodes/shows use Primary
   const imgType = item.item_type === 'movie' ? 'Thumb' : 'Primary';
   const effectiveId = item.emby_id || (item.item_type === 'episode' ? item.series_emby_id : null);
   const url = imgUrl(effectiveId, imgType);
-  // Fallback chain: movie Thumb→Primary, episode Primary→series Primary
   let fallbackUrl = '';
   if (item.item_type === 'movie') {
     fallbackUrl = imgUrl(item.emby_id, 'Primary');
@@ -400,7 +489,6 @@ function renderItem(item) {
   const icon = item.item_type === 'movie' ? '🎬' : '📺';
   const phTitle = esc(label.title);
 
-  // Progress bar + time remaining for partial watches
   let progressHtml = '';
   const prog = item.progress;
   if (prog !== null && prog !== undefined && prog < 95) {
@@ -412,14 +500,12 @@ function renderItem(item) {
                  + '</div>';
   }
 
-  // Build data attributes for post-render badge application
   const itemImdb = item.imdb_id || '';
   const itemTitle = (item.series_name || item.title || '').trim();
   const isEpisode = item.item_type === 'episode';
   const itemType = isEpisode ? 'episode' : (item.item_type === 'show' ? 'show' : 'movie');
   const sNum = item.season_number != null ? item.season_number : '';
   const eNum = item.episode_number != null ? item.episode_number : '';
-  // For episodes: badge key includes S/E so each episode is independent
   const badgeKey = isEpisode && sNum !== '' && eNum !== ''
     ? 'ep:' + itemTitle.toLowerCase() + ':s' + sNum + 'e' + eNum
     : (itemImdb ? 'imdb:' + itemImdb : 'title:' + itemTitle.toLowerCase());
@@ -472,7 +558,6 @@ const imgObserver = new IntersectionObserver(function(entries) {
           if (ph) ph.style.display = 'none';
         };
         img.onerror = function() {
-          // Try fallback (movie Thumb → Primary)
           const fb = this.getAttribute('data-fallback');
           if (fb) {
             this.removeAttribute('data-fallback');
@@ -494,26 +579,92 @@ function observeNewImages() {
   });
 }
 
+/* ── Pagination rendering ── */
+function renderPagination(totalDays, currentPg) {
+  // Each page = 30 days worth of data
+  const totalPages = Math.max(1, Math.ceil(totalDays / 30));
+  if (totalPages <= 1) { document.getElementById('pagination').innerHTML = ''; return; }
+
+  let html = '';
+  // Prev
+  html += '<button class="page-btn' + (currentPg <= 1 ? ' disabled' : '') + '" onclick="goToPage(' + (currentPg - 1) + ')">‹</button>';
+
+  // Page numbers with ellipsis
+  const maxVisible = 7;
+  let pages = [];
+  if (totalPages <= maxVisible) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    let start = Math.max(2, currentPg - 2);
+    let end = Math.min(totalPages - 1, currentPg + 2);
+    if (start > 2) pages.push('...');
+    for (let i = start; i <= end; i++) pages.push(i);
+    if (end < totalPages - 1) pages.push('...');
+    pages.push(totalPages);
+  }
+
+  for (const p of pages) {
+    if (p === '...') {
+      html += '<span class="page-ellipsis">…</span>';
+    } else {
+      html += '<button class="page-btn' + (p === currentPg ? ' active' : '') + '" onclick="goToPage(' + p + ')">' + p + '</button>';
+    }
+  }
+
+  // Next
+  html += '<button class="page-btn' + (currentPg >= totalPages ? ' disabled' : '') + '" onclick="goToPage(' + (currentPg + 1) + ')">›</button>';
+
+  document.getElementById('pagination').innerHTML = html;
+}
+
+function goToPage(pg) {
+  if (pg < 1) return;
+  currentPage = pg;
+  // Calculate the before date for pagination: skip (pg-1)*30 days
+  // We use the load-more mechanism: reset and load page 1 data, or use before cursor
+  // Simpler: always load from scratch with a date offset
+  nextBefore = null;
+  document.getElementById('timeline').innerHTML = '';
+  loadHistory();
+}
+
 async function loadHistory() {
   if (isLoading || !currentUserId) return;
   isLoading = true;
   var loadingEl = document.getElementById('loadingMsg');
-  var loadMoreWrap = document.getElementById('loadMoreWrap');
-  var btn = document.getElementById('loadMoreBtn');
 
-  if (!nextBefore) {
-    loadingEl.textContent = 'Loading history\u2026';
-    loadingEl.style.display = 'block';
-  }
-  btn.disabled = true;
-  btn.textContent = 'Loading\u2026';
+  loadingEl.textContent = 'Loading history…';
+  loadingEl.style.display = 'block';
 
   try {
     var url = '/api/watch-history/' + currentUserId + '/by-date?days=30';
-    if (nextBefore) url += '&before=' + nextBefore;
+
+    // For pagination: skip forward by loading with before dates
+    // Page 1 = no before, page 2+ = we need to chain-load
+    if (currentPage > 1) {
+      // Load all pages up to currentPage by chaining before cursors
+      var cursor = null;
+      for (var p = 1; p < currentPage; p++) {
+        var skipUrl = '/api/watch-history/' + currentUserId + '/by-date?days=30';
+        if (cursor) skipUrl += '&before=' + cursor;
+        if (currentFilter === 'movie') skipUrl += '&item_type=movie';
+        else if (currentFilter === 'show') skipUrl += '&item_type=show';
+        else if (currentFilter === 'episode') skipUrl += '&item_type=episode';
+        if (currentRatingFilter !== 'all') skipUrl += '&rating_filter=' + currentRatingFilter;
+        var skipR = await fetch(skipUrl);
+        if (!skipR.ok) throw new Error('HTTP ' + skipR.status);
+        var skipData = await skipR.json();
+        cursor = skipData.next_before;
+        if (!cursor) { currentPage = p; break; } // no more pages
+      }
+      if (cursor) url += '&before=' + cursor;
+    }
+
     if (currentFilter === 'movie') url += '&item_type=movie';
     else if (currentFilter === 'show') url += '&item_type=show';
     else if (currentFilter === 'episode') url += '&item_type=episode';
+    if (currentRatingFilter !== 'all') url += '&rating_filter=' + currentRatingFilter;
 
     var r = await fetch(url);
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -521,7 +672,11 @@ async function loadHistory() {
 
     nextBefore = data.next_before;
 
+    // Update item count badge
+    document.getElementById('itemCount').textContent = (data.total_items || 0).toLocaleString() + ' items';
+
     var timeline = document.getElementById('timeline');
+    timeline.innerHTML = '';
 
     for (var i = 0; i < data.days.length; i++) {
       var html = renderDay(data.days[i]);
@@ -532,26 +687,135 @@ async function loadHistory() {
     if (ratedKeys.size > 0) applyRatingBadges();
 
     loadingEl.style.display = 'none';
-    loadMoreWrap.style.display = nextBefore ? 'block' : 'none';
-    btn.disabled = false;
-    btn.textContent = 'Load more';
 
-    if (data.days.length === 0 && !nextBefore && !timeline.innerHTML.trim()) {
+    // Render pagination
+    renderPagination(data.total_days || 0, currentPage);
+
+    if (data.days.length === 0 && !timeline.innerHTML.trim()) {
       loadingEl.textContent = 'No watch history found.';
       loadingEl.style.display = 'block';
+    }
+
+    // Scroll to top on page change
+    if (currentPage > 1) {
+      document.querySelector('.content-panel').scrollIntoView({ behavior: 'smooth' });
     }
 
   } catch (e) {
     console.error(e);
     loadingEl.textContent = 'Error: ' + e.message;
     loadingEl.style.display = 'block';
-    btn.disabled = false;
-    btn.textContent = 'Retry';
   }
   isLoading = false;
 }
 
-function loadMore() { loadHistory(); }
+/* ── Jump to month ── */
+async function loadMonths() {
+  if (!currentUserId) return;
+  try {
+    var r = await fetch('/api/watch-history/' + currentUserId + '/months');
+    if (!r.ok) return;
+    var data = await r.json();
+    var sel = document.getElementById('jumpMonth');
+    sel.innerHTML = '<option value="">📅 Jump to month</option>';
+    (data.months || []).forEach(function(m) {
+      sel.innerHTML += '<option value="' + esc(m.value) + '">' + esc(m.label) + '</option>';
+    });
+  } catch (e) { console.error('loadMonths error:', e); }
+}
+
+function jumpToMonth(val) {
+  if (!val) return;
+  // val = "2026-08" — set before to first day of next month
+  var parts = val.split('-');
+  var y = parseInt(parts[0]), m = parseInt(parts[1]);
+  // First day of next month
+  if (m === 12) { y++; m = 1; } else { m++; }
+  var beforeDate = y + '-' + String(m).padStart(2, '0') + '-01';
+
+  // Direct load with this before date instead of pagination
+  currentPage = 1;
+  nextBefore = null;
+  document.getElementById('timeline').innerHTML = '';
+
+  isLoading = true;
+  var loadingEl = document.getElementById('loadingMsg');
+  loadingEl.textContent = 'Loading history…';
+  loadingEl.style.display = 'block';
+
+  var url = '/api/watch-history/' + currentUserId + '/by-date?days=30&before=' + beforeDate;
+  if (currentFilter === 'movie') url += '&item_type=movie';
+  else if (currentFilter === 'show') url += '&item_type=show';
+  else if (currentFilter === 'episode') url += '&item_type=episode';
+  if (currentRatingFilter !== 'all') url += '&rating_filter=' + currentRatingFilter;
+
+  fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+    nextBefore = data.next_before;
+    document.getElementById('itemCount').textContent = (data.total_items || 0).toLocaleString() + ' items';
+    var timeline = document.getElementById('timeline');
+    for (var i = 0; i < data.days.length; i++) {
+      var html = renderDay(data.days[i]);
+      if (html) timeline.insertAdjacentHTML('beforeend', html);
+    }
+    observeNewImages();
+    if (ratedKeys.size > 0) applyRatingBadges();
+    loadingEl.style.display = 'none';
+    // Hide pagination when jumping to month — show load-more style
+    document.getElementById('pagination').innerHTML =
+      nextBefore ? '<button class="page-btn" onclick="loadMoreFromCursor()" style="padding:8px 24px;">Load more</button>' : '';
+    if (data.days.length === 0) {
+      loadingEl.textContent = 'No history for this month.';
+      loadingEl.style.display = 'block';
+    }
+    isLoading = false;
+  }).catch(function(e) {
+    loadingEl.textContent = 'Error: ' + e.message;
+    loadingEl.style.display = 'block';
+    isLoading = false;
+  });
+}
+
+function loadMoreFromCursor() {
+  if (!nextBefore || isLoading) return;
+  isLoading = true;
+  var url = '/api/watch-history/' + currentUserId + '/by-date?days=30&before=' + nextBefore;
+  if (currentFilter === 'movie') url += '&item_type=movie';
+  else if (currentFilter === 'show') url += '&item_type=show';
+  else if (currentFilter === 'episode') url += '&item_type=episode';
+  if (currentRatingFilter !== 'all') url += '&rating_filter=' + currentRatingFilter;
+
+  fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+    nextBefore = data.next_before;
+    var timeline = document.getElementById('timeline');
+    for (var i = 0; i < data.days.length; i++) {
+      var html = renderDay(data.days[i]);
+      if (html) timeline.insertAdjacentHTML('beforeend', html);
+    }
+    observeNewImages();
+    if (ratedKeys.size > 0) applyRatingBadges();
+    document.getElementById('pagination').innerHTML =
+      nextBefore ? '<button class="page-btn" onclick="loadMoreFromCursor()" style="padding:8px 24px;">Load more</button>' : '';
+    isLoading = false;
+  }).catch(function(e) { console.error(e); isLoading = false; });
+}
+
+/* ── Background image ── */
+async function loadBackdrop() {
+  try {
+    var r = await fetch('/api/library/random-backdrop');
+    if (!r.ok) return;
+    var data = await r.json();
+    if (data.emby_id) {
+      var bg = document.getElementById('bgBackdrop');
+      var img = new Image();
+      img.onload = function() {
+        bg.style.backgroundImage = 'url(' + imgUrl(data.emby_id, 'Backdrop') + ')';
+        bg.classList.add('loaded');
+      };
+      img.src = imgUrl(data.emby_id, 'Backdrop');
+    }
+  } catch (e) { /* silent */ }
+}
 
 async function loadUsers() {
   try {
@@ -570,6 +834,7 @@ async function loadUsers() {
 }
 
 loadUsers();
+loadBackdrop();
 
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -578,7 +843,6 @@ loadUsers();
 
 let ratedKeys = new Map();
 let ratingSynced = false;
-
 
 async function syncRatingsOnce() {
   if (ratingSynced || !currentUserId) return;
@@ -599,24 +863,20 @@ async function loadRatedKeys() {
     var data = await r.json();
     ratedKeys = new Map();
     (data.items || []).forEach(function(item) {
-      // Episode-level key: ep:seriesname:s1e2
       if (item.item_type === 'episode' && item.series_name && item.season_number != null && item.episode_number != null) {
         var epKey = 'ep:' + item.series_name.trim().toLowerCase() + ':s' + item.season_number + 'e' + item.episode_number;
         ratedKeys.set(epKey, item.rating);
       }
-      // Also store by imdb and title for show/movie level
       if (item.imdb_id) ratedKeys.set('imdb:' + item.imdb_id, item.rating);
       if (item.title) ratedKeys.set('title:' + item.title.trim().toLowerCase(), item.rating);
     });
-    // Apply badges to any already-rendered items
     applyRatingBadges();
   } catch (e) { console.error('loadRatedKeys error:', e); }
 }
 
 function applyRatingBadges() {
-  if (ratedKeys.size === 0) return; // No data yet, wait
+  if (ratedKeys.size === 0) return;
   document.querySelectorAll('.thumb-wrap[data-badgekey]').forEach(function(wrap) {
-    // Remove any existing badge/overlay to re-apply fresh
     var old = wrap.querySelector('.rated-badge');
     if (old) old.remove();
     var oldOverlay = wrap.querySelector('.hover-rate-overlay');
@@ -631,7 +891,6 @@ function applyRatingBadges() {
     var episode = wrap.getAttribute('data-episode');
     var seriesName = wrap.getAttribute('data-seriesname');
 
-    // Check if rated — use badge key first, then fallbacks
     var rating = ratedKeys.get(badgeKey);
     if (rating === undefined && imdb) rating = ratedKeys.get('imdb:' + imdb);
     if (rating === undefined && title) rating = ratedKeys.get('title:' + title);
@@ -642,7 +901,6 @@ function applyRatingBadges() {
       badge.textContent = rating;
       wrap.appendChild(badge);
     } else if (imdb || title) {
-      // Add hover-to-rate overlay for unrated items
       var itemJson = JSON.stringify({
         imdb_id: imdb || null,
         tmdb_id: tmdb || null,
@@ -694,12 +952,13 @@ async function hoverRate(btnEl, value) {
       var errData = await r.json().catch(function() { return {}; });
       throw new Error(errData.detail || 'HTTP ' + r.status);
     }
-    // Store rated key at correct level
     var key;
     if (itemData.item_type === 'episode' && itemData.series_name && itemData.season_number && itemData.episode_number) {
       key = 'ep:' + itemData.series_name.trim().toLowerCase() + ':s' + itemData.season_number + 'e' + itemData.episode_number;
+    } else if (itemData.imdb_id) {
+      key = 'imdb:' + itemData.imdb_id;
     } else {
-      key = itemData.imdb_id ? 'imdb:' + itemData.imdb_id : 'title:' + itemData.title.trim().toLowerCase();
+      key = 'title:' + (itemData.title || '').trim().toLowerCase();
     }
     ratedKeys.set(key, value);
     overlay.innerHTML = '<div class="hover-rated-msg">\u2713 ' + value + '/10</div>';
@@ -715,9 +974,9 @@ async function hoverRate(btnEl, value) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// My Ratings Panel
-// ═══════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════
+   My Ratings Panel
+   ═══════════════════════════════════════════════════════════════════════ */
 
 let myRatingsSource = 'user';
 let myRatingsData = [];
@@ -726,24 +985,10 @@ function showMyRatings(btn) {
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   document.getElementById('timeline').style.display = 'none';
-  document.getElementById('loadMoreWrap').style.display = 'none';
+  document.getElementById('pagination').style.display = 'none';
   document.getElementById('myRatingsPanel').style.display = 'block';
   loadMyRatings();
 }
-
-function setFilter_orig(type, btn) {
-  // Restore timeline when switching back from My Ratings
-  document.getElementById('myRatingsPanel').style.display = 'none';
-  document.getElementById('timeline').style.display = '';
-}
-
-// Monkey-patch setFilter to also hide My Ratings panel
-var _origSetFilter = setFilter;
-setFilter = function(type, btn) {
-  document.getElementById('myRatingsPanel').style.display = 'none';
-  document.getElementById('timeline').style.display = '';
-  _origSetFilter(type, btn);
-};
 
 async function loadMyRatings() {
   if (!currentUserId) return;
@@ -785,8 +1030,7 @@ function renderMyRatings() {
                  + '<div class="my-rating-poster-ph" style="display:none">'
                  + posterEmoji + '</div>';
     } else {
-      posterHtml = '<div class="my-rating-poster-ph">'
-                 + posterEmoji + '</div>';
+      posterHtml = '<div class="my-rating-poster-ph">' + posterEmoji + '</div>';
     }
     var meta = '';
     if (item.item_type === 'episode') {
@@ -813,8 +1057,8 @@ function renderMyRatings() {
         + '</div>';
     }
 
-      var displayTitle = item.series_name || item.title;
-      return '<div class="my-rating-row" id="myRatingRow' + idx + '">'
+    var displayTitle = item.series_name || item.title;
+    return '<div class="my-rating-row" id="myRatingRow' + idx + '">'
       + posterHtml
       + '<div class="my-rating-info">'
       + '<div class="my-rating-title" title="' + esc(displayTitle) + '">' + esc(displayTitle) + '</div>'
@@ -829,19 +1073,13 @@ function renderMyRatings() {
   panel.innerHTML = filterHtml + '<div class="my-ratings-list">' + rows + '</div>';
 }
 
-function setRatingSource(src) {
-  myRatingsSource = src;
-  loadMyRatings();
-}
+function setRatingSource(src) { myRatingsSource = src; loadMyRatings(); }
 
 function editMyRating(idx) {
   var item = myRatingsData[idx];
   if (!item) return;
   var editRow = document.getElementById('myRatingEdit' + idx);
-  if (editRow.style.display !== 'none') {
-    editRow.style.display = 'none';
-    return;
-  }
+  if (editRow.style.display !== 'none') { editRow.style.display = 'none'; return; }
   var nums = '';
   for (var n = 1; n <= 10; n++) {
     var sel = (n === item.rating) ? ' selected' : '';
@@ -867,7 +1105,6 @@ async function saveMyRating(idx, value, btnEl) {
       throw new Error(errData.detail || 'HTTP ' + r.status);
     }
     item.rating = value;
-    // Update display
     var row = document.getElementById('myRatingRow' + idx);
     row.querySelector('.my-rating-value').textContent = value;
     document.getElementById('myRatingEdit' + idx).style.display = 'none';
@@ -899,13 +1136,12 @@ async function deleteMyRating(idx) {
   }
 }
 
-// Load rated keys when user changes or page first loads
+// Load rated keys when user changes
 var _origResetAndLoad = resetAndLoad;
 resetAndLoad = function() {
   ratingSynced = false;
   _origResetAndLoad();
   loadRatedKeys();
-  // If My Ratings tab was active, refresh it
   if (document.getElementById('myRatingsPanel').style.display !== 'none') {
     loadMyRatings();
   }

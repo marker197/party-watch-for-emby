@@ -7866,6 +7866,9 @@ async def get_watch_history_by_date(
     user_id: int,
     before: str | None = None,
     item_type: str | None = None,
+    rating_filter: str | None = None,
+    page: int = 1,
+    page_size: int = 60,
     days: int = 30,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -7898,6 +7901,43 @@ async def get_watch_history_by_date(
         except ValueError:
             raise HTTPException(400, "before must be YYYY-MM-DD")
         filters.append(cast(WatchHistory.watched_at, Date) < before_date)
+
+    # ── Rating filter: join UserRating to filter by score ──────────
+    rated_imdb_set: set[str] | None = None
+    unrated_mode = False
+    if rating_filter:
+        from app.models.schema import UserRating as UR
+        if rating_filter == "unrated":
+            unrated_mode = True
+            # Get all rated IMDB IDs so we can exclude them
+            rated_q = select(UR.imdb_id).where(
+                UR.user_id == user_id,
+                UR.imdb_id.isnot(None),
+            )
+            rated_imdb_set = {r for r in (await db.execute(rated_q)).scalars().all() if r}
+        else:
+            try:
+                rating_val = int(rating_filter)
+            except ValueError:
+                rating_val = None
+            if rating_val and 1 <= rating_val <= 10:
+                rated_q = select(UR.imdb_id).where(
+                    UR.user_id == user_id,
+                    UR.rating == rating_val,
+                    UR.imdb_id.isnot(None),
+                )
+                rated_imdb_set = {r for r in (await db.execute(rated_q)).scalars().all() if r}
+
+    # ── Total items count (all time, with current type filter) ─────
+    total_count_filters = [WatchHistory.user_id == user_id]
+    if item_type and item_type in ("movie", "episode", "show"):
+        if item_type == "show":
+            total_count_filters.append(WatchHistory.item_type == "episode")
+        else:
+            total_count_filters.append(WatchHistory.item_type == item_type)
+    total_items = (await db.execute(
+        select(func.count(WatchHistory.id)).where(*total_count_filters)
+    )).scalar() or 0
 
     q = (
         select(WatchHistory)
@@ -7975,6 +8015,23 @@ async def get_watch_history_by_date(
                      if v.get("progress") is not None and v["progress"] < 2]
         for k in to_remove:
             del bucket[k]
+
+    # ── Apply rating filter (after dedup so we have imdb_ids) ─────
+    if rated_imdb_set is not None:
+        for _date_str, bucket in list(day_map.items()):
+            if unrated_mode:
+                # Keep only items whose imdb_id is NOT in the rated set
+                to_remove = [k for k, v in bucket.items()
+                             if v.get("imdb_id") and v["imdb_id"] in rated_imdb_set]
+            else:
+                # Keep only items whose imdb_id IS in the rated set
+                to_remove = [k for k, v in bucket.items()
+                             if not v.get("imdb_id") or v["imdb_id"] not in rated_imdb_set]
+            for k in to_remove:
+                del bucket[k]
+        # Remove empty days
+        for _date_str in [d for d, b in day_map.items() if not b]:
+            del day_map[_date_str]
 
     # ── Resolve missing emby_ids from library cache ─────────────────
     items_needing_id: list[dict] = []
@@ -8114,10 +8171,62 @@ async def get_watch_history_by_date(
         "days": result_days,
         "next_before": next_before,
         "total_days": total_days,
+        "total_items": total_items,
     }
 
 
-@router.get("/api/watch-history/{user_id}/item/{item_key:path}")
+@router.get("/api/watch-history/{user_id}/months")
+async def get_watch_history_months(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return distinct year-months that have watch history for jump-to-month."""
+    from app.models.schema import WatchHistory
+    require_user_ownership(current_user.id, user_id, "watch_history_months")
+
+    q = (
+        select(
+            func.extract("year", WatchHistory.watched_at).label("y"),
+            func.extract("month", WatchHistory.watched_at).label("m"),
+        )
+        .where(WatchHistory.user_id == user_id, WatchHistory.watched_at.isnot(None))
+        .group_by("y", "m")
+        .order_by(func.extract("year", WatchHistory.watched_at).desc(),
+                  func.extract("month", WatchHistory.watched_at).desc())
+    )
+    rows = (await db.execute(q)).all()
+    month_names = [
+        "", "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    ]
+    months = []
+    for row in rows:
+        y, m = int(row.y), int(row.m)
+        months.append({
+            "label": f"{month_names[m]} {y}",
+            "value": f"{y}-{str(m).zfill(2)}",
+        })
+    return {"months": months}
+
+
+@router.get("/api/library/random-backdrop")
+async def get_random_backdrop(current_user: User = Depends(get_current_user)):
+    """Return a random Emby item ID that has a Backdrop image."""
+    import random as _random
+    from app.utils.redis_cache import cache_keys, cache_get
+    try:
+        keys = await cache_keys("library:title:*")
+        if not keys:
+            return {"emby_id": None}
+        sample = _random.sample(keys, min(len(keys), 30))
+        for key in sample:
+            item = await cache_get(key)
+            if item and isinstance(item, dict) and item.get("emby_id"):
+                return {"emby_id": item["emby_id"]}
+        return {"emby_id": None}
+    except Exception:
+        return {"emby_id": None}
 async def get_item_watch_history(
     user_id: int,
     item_key: str,
