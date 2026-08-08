@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loading…</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface-hover: #22263a;
+    --border: #2a2e3e;
+    --text: #e0e0e6;
+    --text-dim: #8b8fa3;
+    --accent: #6c5ce7;
+    --accent-light: #a29bfe;
+    --green: #00b894;
+    --orange: #fdcb6e;
+    --red: #e17055;
+    --blue: #74b9ff;
+    --radius: 10px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f5f6fa;
+      --surface: #ffffff;
+      --surface-hover: #f0f1f5;
+      --border: #e2e4ea;
+      --text: #1f2937;
+      --text-dim: #6b7280;
+    }
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* ── Backdrop ── */
+  #backdrop {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 0;
+    background-size: cover; background-position: center top;
+    filter: blur(16px) brightness(0.2); transform: scale(1.1);
+    opacity: 0; transition: opacity 0.6s ease;
+  }
+  #backdrop.loaded { opacity: 1; }
+
+  .page-wrap {
+    position: relative; z-index: 1;
+    max-width: 1160px; margin: 0 auto; padding: 24px 20px 60px;
+  }
+
+  /* ── Back link ── */
+  .back-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--text-dim); text-decoration: none; font-size: 0.85rem;
+    margin-bottom: 20px; transition: color 0.15s;
+  }
+  .back-link:hover { color: var(--accent-light); }
+
+  /* ── Hero: poster + info ── */
+  .hero {
+    display: flex; gap: 28px; margin-bottom: 32px;
+  }
+
+  .poster-col {
+    flex-shrink: 0; width: 260px;
+  }
+  .poster-col img {
+    width: 100%; border-radius: 10px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .poster-placeholder {
+    width: 100%; aspect-ratio: 2/3; border-radius: 10px;
+    background: var(--surface); display: flex; align-items: center;
+    justify-content: center; font-size: 3rem; color: var(--text-dim);
+  }
+
+  .info-col { flex: 1; min-width: 0; }
+
+  .item-title {
+    font-size: 2rem; font-weight: 700; line-height: 1.2;
+    margin-bottom: 6px;
+  }
+  .item-tagline {
+    font-style: italic; color: var(--text-dim); font-size: 0.95rem;
+    margin-bottom: 12px;
+  }
+
+  .meta-pills {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px;
+  }
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 20px; padding: 4px 12px; font-size: 0.8rem;
+    color: var(--text-dim); white-space: nowrap;
+  }
+
+  .genre-tags {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px;
+  }
+  .genre-tag {
+    background: var(--accent); color: #fff; border-radius: 4px;
+    padding: 2px 10px; font-size: 0.75rem; font-weight: 600;
+  }
+
+  .overview-text {
+    font-size: 0.92rem; color: var(--text); line-height: 1.7;
+    margin-bottom: 16px;
+  }
+
+  .detail-row {
+    font-size: 0.85rem; color: var(--text-dim); margin-bottom: 6px;
+  }
+  .detail-row strong { color: var(--text); margin-right: 6px; }
+
+  .keywords-wrap {
+    display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px;
+  }
+  .keyword-chip {
+    background: var(--surface-hover); color: var(--text-dim);
+    border-radius: 4px; padding: 2px 8px; font-size: 0.72rem;
+  }
+
+  /* ── Action buttons ── */
+  .action-row {
+    display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px;
+  }
+  .action-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 18px; border-radius: 8px; border: none;
+    font-size: 0.85rem; font-weight: 600; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-play { background: var(--green); color: #fff; }
+  .btn-play:hover { background: #00d2a0; transform: scale(1.03); }
+  .btn-trailer { background: var(--red); color: #fff; }
+  .btn-trailer:hover { background: #e84c3d; }
+  .btn-rate { background: var(--accent); color: #fff; }
+  .btn-rate:hover { background: var(--accent-light); }
+
+  /* ── Ratings panel ── */
+  .ratings-panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px; margin-bottom: 28px;
+  }
+  .ratings-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 12px;
+  }
+  .rating-card {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-radius: 8px;
+    background: var(--surface-hover); border: 1px solid var(--border);
+  }
+  .rating-icon {
+    font-size: 1.1rem; flex-shrink: 0; width: 22px; text-align: center;
+  }
+  .rating-info { min-width: 0; }
+  .rating-source { font-size: 0.68rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.3px; }
+  .rating-value { font-size: 1.05rem; font-weight: 700; line-height: 1.2; }
+  .rating-votes { font-size: 0.65rem; color: var(--text-dim); }
+
+  .user-rating-card {
+    border: 2px solid var(--accent);
+  }
+
+  /* ── MDBList score circle ── */
+  .score-circle {
+    width: 64px; height: 64px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.4rem; font-weight: 800; color: #fff;
+    flex-shrink: 0;
+  }
+  .score-high { background: var(--green); }
+  .score-mid { background: var(--orange); color: #1a1d27; }
+  .score-low { background: var(--red); }
+
+  /* ── Cast & Crew ── */
+  .section-title {
+    font-size: 1.1rem; font-weight: 700; margin-bottom: 14px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  }
+  .cast-section { margin-bottom: 28px; }
+
+  .cast-tabs {
+    display: flex; gap: 6px; margin-bottom: 14px;
+  }
+  .cast-tab {
+    padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: none; color: var(--text-dim); font-size: 0.8rem;
+    cursor: pointer; font-weight: 500; transition: all 0.12s;
+  }
+  .cast-tab.active {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+  }
+  .cast-tab .tab-count {
+    background: rgba(255,255,255,0.15); border-radius: 3px;
+    padding: 0 5px; font-size: 0.7rem; margin-left: 4px;
+  }
+
+  .cast-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 12px;
+  }
+  .cast-card {
+    text-align: center;
+  }
+  .cast-photo {
+    width: 80px; height: 80px; border-radius: 50%; object-fit: cover;
+    margin: 0 auto 6px; display: block;
+    border: 2px solid var(--border);
+  }
+  .cast-photo-placeholder {
+    width: 80px; height: 80px; border-radius: 50%;
+    background: var(--surface-hover); display: flex; align-items: center;
+    justify-content: center; margin: 0 auto 6px; font-size: 1.4rem;
+    color: var(--text-dim); border: 2px solid var(--border);
+  }
+  .cast-name { font-size: 0.78rem; font-weight: 600; line-height: 1.2; }
+  .cast-role { font-size: 0.7rem; color: var(--text-dim); line-height: 1.2; }
+
+  /* ── Watch History ── */
+  .history-section { margin-bottom: 28px; }
+  .history-list {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .history-event {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 12px; background: var(--surface-hover);
+    border-radius: 6px; font-size: 0.82rem;
+  }
+  .history-date { color: var(--text-dim); min-width: 140px; }
+  .history-progress { font-weight: 600; }
+  .prog-100 { color: var(--green); }
+  .prog-partial { color: var(--orange); }
+
+  /* ── Financial info ── */
+  .finance-row {
+    display: flex; gap: 20px; flex-wrap: wrap; margin-top: 10px;
+  }
+  .finance-item {
+    font-size: 0.85rem;
+  }
+  .finance-item strong { margin-right: 4px; }
+  .finance-item .money { font-weight: 700; color: var(--green); }
+
+  /* ── Loading ── */
+  .loading-state {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 400px; font-size: 1.1rem; color: var(--text-dim);
+  }
+  .loading-state .spinner {
+    width: 28px; height: 28px; border: 3px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.8s linear infinite; margin-right: 12px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Responsive ── */
+  @media (max-width: 700px) {
+    .hero { flex-direction: column; gap: 16px; }
+    .poster-col { width: 180px; margin: 0 auto; }
+    .item-title { font-size: 1.4rem; }
+    .ratings-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
+    .cast-grid { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
+  }
+
+  /* ── Toast ── */
+  #toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    padding: 10px 22px; border-radius: 8px; font-size: 0.85rem;
+    font-weight: 600; z-index: 9999; opacity: 0;
+    transition: opacity 0.3s; pointer-events: none;
+    background: var(--green); color: #fff;
+  }
+  #toast.show { opacity: 1; }
+  #toast.error { background: var(--red); }
+
+  /* ── Device picker modal ── */
+  .modal-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7); z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; min-width: 260px; max-width: 400px;
+  }
+  .modal-title { font-weight: 600; margin-bottom: 12px; font-size: 0.92rem; }
+  .device-btn {
+    display: block; width: 100%; padding: 10px 14px; margin-bottom: 6px;
+    background: var(--surface-hover); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text); font-size: 0.85rem;
+    cursor: pointer; text-align: left; transition: all 0.12s;
+  }
+  .device-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+</style>
+</head>
+<body>
+  <div id="backdrop"></div>
+  <div class="page-wrap">
+    <a href="javascript:history.back()" class="back-link">← Back</a>
+
+    <div id="loading" class="loading-state">
+      <div class="spinner"></div> Loading item details…
+    </div>
+
+    <div id="content" style="display:none;">
+      <!-- Hero: poster + info -->
+      <div class="hero">
+        <div class="poster-col" id="posterCol"></div>
+        <div class="info-col">
+          <div class="item-title" id="itemTitle"></div>
+          <div class="item-tagline" id="itemTagline" style="display:none;"></div>
+          <div class="meta-pills" id="metaPills"></div>
+          <div class="genre-tags" id="genreTags"></div>
+          <div class="overview-text" id="overview"></div>
+          <div id="detailRows"></div>
+          <div class="keywords-wrap" id="keywords" style="display:none;"></div>
+          <div class="action-row" id="actionRow"></div>
+        </div>
+      </div>
+
+      <!-- Ratings -->
+      <div class="ratings-panel" id="ratingsPanel" style="display:none;">
+        <div class="section-title">Ratings</div>
+        <div class="ratings-grid" id="ratingsGrid"></div>
+      </div>
+
+      <!-- Cast & Crew -->
+      <div class="cast-section" id="castSection" style="display:none;">
+        <div class="section-title">Cast & Crew</div>
+        <div class="cast-tabs" id="castTabs"></div>
+        <div class="cast-grid" id="castGrid"></div>
+      </div>
+
+      <!-- Watch History -->
+      <div class="history-section" id="historySection" style="display:none;">
+        <div class="section-title">Your Watch History</div>
+        <div class="history-list" id="historyList"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+<script>
+const TMDB_IMG = 'https://image.tmdb.org/t/p/';
+const imdbId = '{{ imdb_id }}';
+let itemData = null;
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+function imgUrl(embyId, imageType, maxWidth) {
+  if (!embyId) return '';
+  return '/api/emby/image/' + embyId + '/' + imageType + '?maxWidth=' + (maxWidth || 400);
+}
+
+function formatNum(n) {
+  if (!n && n !== 0) return '';
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+  return String(n);
+}
+
+function formatMoney(n) {
+  if (!n) return '';
+  return '$' + n.toLocaleString();
+}
+
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'show' + (type === 'error' ? ' error' : '');
+  setTimeout(function() { t.className = ''; }, 3000);
+}
+
+async function loadDetail() {
+  const params = new URLSearchParams(window.location.search);
+  const mediaType = params.get('type') || 'movie';
+  let url = '/api/item/detail?imdb_id=' + encodeURIComponent(imdbId);
+  if (params.get('tmdb_id')) url += '&tmdb_id=' + params.get('tmdb_id');
+  if (params.get('emby_id')) url += '&emby_id=' + params.get('emby_id');
+  url += '&media_type=' + mediaType;
+
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    itemData = await r.json();
+    render(itemData);
+  } catch (e) {
+    document.getElementById('loading').innerHTML =
+      '<span style="color:var(--red);">Failed to load: ' + esc(e.message) + '</span>';
+  }
+}
+
+function render(d) {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('content').style.display = '';
+
+  // Title
+  const year = d.year || (d.release_date ? d.release_date.slice(0, 4) : '');
+  const titleText = (d.title || 'Unknown') + (year ? ' (' + year + ')' : '');
+  document.getElementById('itemTitle').textContent = titleText;
+  document.title = titleText;
+
+  // Tagline
+  const tagline = d.tagline || (d.taglines && d.taglines[0]) || '';
+  if (tagline) {
+    document.getElementById('itemTagline').textContent = tagline;
+    document.getElementById('itemTagline').style.display = '';
+  }
+
+  // Backdrop
+  if (d.backdrop_path) {
+    const bd = document.getElementById('backdrop');
+    bd.style.backgroundImage = 'url(' + TMDB_IMG + 'w1280' + d.backdrop_path + ')';
+    bd.classList.add('loaded');
+  } else if (d.emby_id) {
+    const bd = document.getElementById('backdrop');
+    bd.style.backgroundImage = 'url(' + imgUrl(d.emby_id, 'Backdrop', 1280) + ')';
+    bd.classList.add('loaded');
+  }
+
+  // Poster
+  const posterCol = document.getElementById('posterCol');
+  if (d.poster_path) {
+    posterCol.innerHTML = '<img src="' + TMDB_IMG + 'w500' + d.poster_path + '" alt="' + esc(d.title) + '">';
+  } else if (d.emby_id) {
+    posterCol.innerHTML = '<img src="' + imgUrl(d.emby_id, 'Primary', 500) + '" alt="' + esc(d.title) + '"'
+      + ' onerror="this.outerHTML=\'<div class=poster-placeholder>🎬</div>\'">';
+  } else {
+    posterCol.innerHTML = '<div class="poster-placeholder">🎬</div>';
+  }
+
+  // Meta pills
+  let pillsHtml = '';
+  if (d.release_date) pillsHtml += '<span class="pill">📅 ' + esc(d.release_date) + '</span>';
+  if (d.runtime_minutes) pillsHtml += '<span class="pill">⏱ ' + d.runtime_minutes + ' min</span>';
+  if (d.certification || d.mdb_certification) {
+    pillsHtml += '<span class="pill">👥 ' + esc(d.certification || d.mdb_certification) + '</span>';
+  }
+  if (d.status) pillsHtml += '<span class="pill">' + esc(d.status) + '</span>';
+  if (d.in_library) pillsHtml += '<span class="pill" style="border-color:var(--green);color:var(--green);">✓ In Library</span>';
+  if (d.is_played) pillsHtml += '<span class="pill" style="border-color:var(--green);color:var(--green);">✓ Watched</span>';
+  if (d.number_of_seasons) pillsHtml += '<span class="pill">' + d.number_of_seasons + ' Seasons</span>';
+  document.getElementById('metaPills').innerHTML = pillsHtml;
+
+  // Genres
+  let genresHtml = '';
+  (d.genres || []).forEach(function(g) {
+    genresHtml += '<span class="genre-tag">' + esc(g) + '</span>';
+  });
+  document.getElementById('genreTags').innerHTML = genresHtml;
+
+  // Overview
+  document.getElementById('overview').textContent = d.overview || '';
+
+  // Detail rows
+  let detailsHtml = '';
+  if (d.production_companies && d.production_companies.length) {
+    detailsHtml += '<div class="detail-row"><strong>Production:</strong> ' + d.production_companies.map(esc).join(', ') + '</div>';
+  }
+  if (d.production_countries && d.production_countries.length) {
+    detailsHtml += '<div class="detail-row"><strong>Country:</strong> ' + d.production_countries.map(esc).join(', ') + '</div>';
+  }
+  if (d.spoken_languages && d.spoken_languages.length) {
+    detailsHtml += '<div class="detail-row"><strong>Languages:</strong> ' + d.spoken_languages.map(esc).join(', ') + '</div>';
+  }
+  if (d.studios && d.studios.length && !d.production_companies?.length) {
+    detailsHtml += '<div class="detail-row"><strong>Studios:</strong> ' + d.studios.map(esc).join(', ') + '</div>';
+  }
+  if (d.networks && d.networks.length) {
+    detailsHtml += '<div class="detail-row"><strong>Networks:</strong> ' + d.networks.map(esc).join(', ') + '</div>';
+  }
+  // Budget/Revenue
+  if (d.budget || d.revenue) {
+    detailsHtml += '<div class="finance-row">';
+    if (d.budget) detailsHtml += '<div class="finance-item"><strong>💰 Budget:</strong> <span class="money">' + formatMoney(d.budget) + '</span></div>';
+    if (d.revenue) detailsHtml += '<div class="finance-item"><strong>💵 Revenue:</strong> <span class="money">' + formatMoney(d.revenue) + '</span></div>';
+    detailsHtml += '</div>';
+  }
+  document.getElementById('detailRows').innerHTML = detailsHtml;
+
+  // Keywords
+  if (d.keywords && d.keywords.length) {
+    const kwEl = document.getElementById('keywords');
+    kwEl.style.display = '';
+    kwEl.innerHTML = '<strong style="font-size:0.82rem;margin-right:6px;">Keywords:</strong> '
+      + d.keywords.slice(0, 15).map(function(k) { return '<span class="keyword-chip">' + esc(k) + '</span>'; }).join('')
+      + (d.keywords.length > 15 ? '<span class="keyword-chip">+' + (d.keywords.length - 15) + ' more</span>' : '');
+  }
+
+  // Action buttons
+  let actionsHtml = '';
+  if (d.emby_id) {
+    actionsHtml += '<button class="action-btn btn-play" onclick="playOnEmby()">▶ Play on Emby</button>';
+  }
+  if (d.trailer) {
+    actionsHtml += '<a class="action-btn btn-trailer" href="' + esc(d.trailer) + '" target="_blank" style="text-decoration:none;">▶ Watch Trailer</a>';
+  }
+  document.getElementById('actionRow').innerHTML = actionsHtml;
+
+  // Ratings
+  renderRatings(d);
+
+  // Cast & Crew
+  renderCast(d);
+
+  // Watch History
+  renderHistory(d);
+}
+
+function renderRatings(d) {
+  const ratings = d.ratings || {};
+  const grid = document.getElementById('ratingsGrid');
+  let html = '';
+
+  const sources = [
+    { key: 'imdb', icon: '⭐', label: 'IMDb' },
+    { key: 'trakt', icon: '🟥', label: 'Trakt' },
+    { key: 'tmdb', icon: '🎬', label: 'TMDb' },
+    { key: 'letterboxd', icon: '💚', label: 'Letterboxd' },
+    { key: 'tomatoes', icon: '🍅', label: 'Tomatoes' },
+    { key: 'popcorn', icon: '🍿', label: 'Popcorn' },
+    { key: 'metacritic', icon: 'Ⓜ️', label: 'Metacritic' },
+    { key: 'mdblist', icon: '📊', label: 'MDBList' },
+  ];
+
+  sources.forEach(function(s) {
+    const r = ratings[s.key];
+    if (!r || r.value == null) return;
+    const val = typeof r.value === 'number' ? (r.value % 1 === 0 ? r.value : r.value.toFixed(1)) : r.value;
+    const votes = r.votes ? formatNum(r.votes) : '';
+    html += '<div class="rating-card">'
+      + '<div class="rating-icon">' + s.icon + '</div>'
+      + '<div class="rating-info">'
+      + '<div class="rating-source">' + s.label + '</div>'
+      + '<div class="rating-value">' + val + '</div>'
+      + (votes ? '<div class="rating-votes">' + votes + '</div>' : '')
+      + '</div></div>';
+  });
+
+  // User rating
+  if (d.user_rating) {
+    html += '<div class="rating-card user-rating-card">'
+      + '<div class="rating-icon">👤</div>'
+      + '<div class="rating-info">'
+      + '<div class="rating-source">Your Rating</div>'
+      + '<div class="rating-value">' + d.user_rating.rating + '</div>'
+      + '</div></div>';
+  }
+
+  if (html) {
+    document.getElementById('ratingsPanel').style.display = '';
+    grid.innerHTML = html;
+  }
+}
+
+function renderCast(d) {
+  const cast = d.tmdb_cast || [];
+  const crew = d.tmdb_crew || [];
+  const embyCast = d.emby_cast || [];
+
+  // Use Emby cast as fallback if TMDB has none
+  const directors = crew.filter(function(c) { return c.job === 'Director'; });
+  const writers = crew.filter(function(c) { return c.job === 'Writer' || c.job === 'Screenplay' || c.job === 'Creator'; });
+
+  if (!cast.length && !directors.length && !embyCast.length) return;
+
+  document.getElementById('castSection').style.display = '';
+
+  // Build tabs
+  const tabsEl = document.getElementById('castTabs');
+  let tabsHtml = '';
+  if (cast.length) tabsHtml += '<button class="cast-tab active" onclick="showCastTab(\'cast\', this)">Cast <span class="tab-count">' + cast.length + '</span></button>';
+  if (directors.length) tabsHtml += '<button class="cast-tab' + (!cast.length ? ' active' : '') + '" onclick="showCastTab(\'directors\', this)">Directors <span class="tab-count">' + directors.length + '</span></button>';
+  if (writers.length) tabsHtml += '<button class="cast-tab" onclick="showCastTab(\'writers\', this)">Writers <span class="tab-count">' + writers.length + '</span></button>';
+  tabsEl.innerHTML = tabsHtml;
+
+  // Store data for tab switching
+  window._castData = { cast: cast, directors: directors, writers: writers, embyCast: embyCast };
+
+  // Show first tab
+  if (cast.length) showCastGrid(cast, true);
+  else if (directors.length) showCastGrid(directors, false);
+  else showCastGridEmby(embyCast);
+}
+
+function showCastTab(type, btn) {
+  document.querySelectorAll('.cast-tab').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  const data = window._castData;
+  if (type === 'cast') showCastGrid(data.cast, true);
+  else if (type === 'directors') showCastGrid(data.directors, false);
+  else if (type === 'writers') showCastGrid(data.writers, false);
+}
+
+function showCastGrid(people, isCast) {
+  const grid = document.getElementById('castGrid');
+  grid.innerHTML = people.map(function(p) {
+    const photo = p.profile_path
+      ? '<img class="cast-photo" src="' + TMDB_IMG + 'w185' + p.profile_path + '" alt="' + esc(p.name) + '">'
+      : '<div class="cast-photo-placeholder">👤</div>';
+    const role = isCast ? (p.character || '') : (p.job || '');
+    return '<div class="cast-card">' + photo
+      + '<div class="cast-name">' + esc(p.name) + '</div>'
+      + (role ? '<div class="cast-role">' + esc(role) + '</div>' : '')
+      + '</div>';
+  }).join('');
+}
+
+function showCastGridEmby(people) {
+  const grid = document.getElementById('castGrid');
+  grid.innerHTML = people.map(function(p) {
+    const photo = p.emby_id
+      ? '<img class="cast-photo" src="' + imgUrl(p.emby_id, 'Primary', 185) + '"'
+        + ' onerror="this.outerHTML=\'<div class=cast-photo-placeholder>👤</div>\'">'
+      : '<div class="cast-photo-placeholder">👤</div>';
+    return '<div class="cast-card">' + photo
+      + '<div class="cast-name">' + esc(p.name) + '</div>'
+      + (p.role ? '<div class="cast-role">' + esc(p.role) + '</div>' : '')
+      + '</div>';
+  }).join('');
+}
+
+function renderHistory(d) {
+  const history = d.watch_history || [];
+  if (!history.length) return;
+
+  document.getElementById('historySection').style.display = '';
+  const listEl = document.getElementById('historyList');
+  listEl.innerHTML = history.map(function(h) {
+    const prog = h.progress != null ? h.progress : null;
+    const progClass = prog != null ? (prog >= 100 ? 'prog-100' : 'prog-partial') : '';
+    const progLabel = prog != null ? prog + '%' : 'Recorded';
+    const dateStr = h.watched_at ? new Date(h.watched_at).toLocaleDateString('en-GB', {
+      weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    }) : 'Unknown';
+    return '<div class="history-event">'
+      + '<span class="history-date">' + dateStr + '</span>'
+      + '<span class="history-progress ' + progClass + '">' + progLabel + '</span>'
+      + '</div>';
+  }).join('');
+}
+
+// Play on Emby
+async function playOnEmby() {
+  if (!itemData || !itemData.emby_id) return;
+  try {
+    const r = await fetch('/api/remote-play/sessions/' + (itemData.user_rating ? 1 : 1));
+    const d = await r.json();
+    const sessions = d.sessions || [];
+    if (!sessions.length) { showToast('No active Emby devices found', 'error'); return; }
+    if (sessions.length === 1) {
+      await doPlay(itemData.emby_id, sessions[0].session_id, sessions[0].device_name);
+      return;
+    }
+    // Show device picker
+    let html = '<div class="modal-overlay" onclick="if(event.target===this)this.remove()">';
+    html += '<div class="modal-box"><div class="modal-title">Choose device</div>';
+    sessions.forEach(function(s) {
+      html += '<button class="device-btn" onclick="this.closest(\'.modal-overlay\').remove();doPlay(\''
+        + esc(itemData.emby_id) + '\',\'' + esc(s.session_id) + '\',\'' + esc(s.device_name) + '\')">'
+        + esc(s.device_name) + ' — ' + esc(s.client || '') + '</button>';
+    });
+    html += '</div></div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function doPlay(embyId, sessionId, deviceName) {
+  try {
+    const r = await fetch('/api/play-on-session', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ emby_item_id: embyId, session_id: sessionId }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    showToast('Playing on ' + deviceName, 'ok');
+  } catch (e) {
+    showToast('Play failed: ' + e.message, 'error');
+  }
+}
+
+// Init
+loadDetail();
+</script>
+</body>
+</html>

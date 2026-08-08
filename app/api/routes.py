@@ -10865,3 +10865,260 @@ async def trakt_import_push(
     await _progress("✓ Trakt import complete", "done", 100)
 
     return {"ok": True, "results": results}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Item Detail Page — aggregates Emby + MDBList + TMDB + local DB
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.get("/item/{imdb_id}")
+async def item_detail_page(request: Request, imdb_id: str):
+    """Render the item detail HTML page (template populated via JS fetch)."""
+    return templates.TemplateResponse("item_detail.html", {
+        "request": request,
+        "imdb_id": imdb_id,
+    })
+
+
+@router.get("/api/item/detail")
+async def get_item_detail(
+    imdb_id: str | None = None,
+    tmdb_id: str | None = None,
+    emby_id: str | None = None,
+    media_type: str = "movie",
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Aggregate item detail from Emby, MDBList, TMDB, and local DB."""
+    import asyncio
+    from app.utils.tmdb_client import get_full_details as tmdb_full_details
+    from app.utils.tmdb_client import get_watch_providers as tmdb_providers
+
+    if not imdb_id and not tmdb_id and not emby_id:
+        raise HTTPException(400, "At least one of imdb_id, tmdb_id, or emby_id required")
+
+    user_id = current_user.id
+    result: dict = {"imdb_id": imdb_id, "tmdb_id": tmdb_id, "emby_id": emby_id, "media_type": media_type}
+
+    # ── Resolve IDs from library cache if we only have one ──
+    if emby_id and not imdb_id:
+        cached = await LibraryCache.find_by_provider_id("Emby", emby_id)
+        if not cached:
+            # Try direct lookup by emby_id as the cache key
+            from app.utils.redis_cache import cache_get
+            cached = await cache_get(f"library:id:{emby_id}")
+        if cached:
+            imdb_id = imdb_id or (cached.get("provider_ids") or {}).get("Imdb")
+            tmdb_id = tmdb_id or (cached.get("provider_ids") or {}).get("Tmdb")
+            result["imdb_id"] = imdb_id
+            result["tmdb_id"] = tmdb_id
+
+    if imdb_id and not emby_id:
+        cached = await LibraryCache.find_by_provider_id("Imdb", imdb_id)
+        if cached:
+            emby_id = cached.get("emby_id") or cached.get("Id")
+            tmdb_id = tmdb_id or (cached.get("provider_ids") or {}).get("Tmdb")
+            result["emby_id"] = emby_id
+            result["tmdb_id"] = tmdb_id
+
+    # ── Parallel fetch from all sources ──
+    async def fetch_emby():
+        if not emby_id:
+            return None
+        try:
+            emby = EmbyClient()
+            item = await emby.get_item(emby_id, user_id=str(user_id))
+            await emby.close()
+            return item
+        except Exception as e:
+            log.debug("item_detail.emby_failed", error=str(e)[:120])
+            return None
+
+    async def fetch_mdblist():
+        if not imdb_id:
+            return None
+        try:
+            mdb = await _get_mdblist_client(db, user_id)
+            provider = "imdb"
+            mdb_type = "movie" if media_type == "movie" else "show"
+            info = await mdb.get_media_info(provider, mdb_type, imdb_id)
+            await mdb.close()
+            return info
+        except Exception as e:
+            log.debug("item_detail.mdblist_failed", error=str(e)[:120])
+            return None
+
+    async def fetch_tmdb():
+        tid = tmdb_id or None
+        if not tid and imdb_id:
+            # Try to resolve tmdb_id from imdb_id via library cache
+            cached = await LibraryCache.find_by_provider_id("Imdb", imdb_id)
+            if cached:
+                tid = (cached.get("provider_ids") or {}).get("Tmdb")
+        if not tid:
+            return None
+        try:
+            tmdb_type = "movie" if media_type == "movie" else "tv"
+            return await tmdb_full_details(int(tid), media_type=tmdb_type)
+        except Exception as e:
+            log.debug("item_detail.tmdb_failed", error=str(e)[:120])
+            return None
+
+    async def fetch_tmdb_providers():
+        tid = tmdb_id or None
+        if not tid and imdb_id:
+            cached = await LibraryCache.find_by_provider_id("Imdb", imdb_id)
+            if cached:
+                tid = (cached.get("provider_ids") or {}).get("Tmdb")
+        if not tid:
+            return []
+        try:
+            tmdb_type = "movie" if media_type == "movie" else "tv"
+            return await tmdb_providers(int(tid), media_type=tmdb_type, country="GB")
+        except Exception:
+            return []
+
+    async def fetch_user_rating():
+        if not imdb_id:
+            return None
+        try:
+            from app.models.schema import UserRating
+            q = select(UserRating).where(
+                UserRating.user_id == user_id,
+                UserRating.imdb_id == imdb_id,
+            ).order_by(UserRating.rated_at.desc()).limit(1)
+            row = (await db.execute(q)).scalar_one_or_none()
+            return {"rating": row.rating, "source": row.source, "rated_at": str(row.rated_at)} if row else None
+        except Exception:
+            return None
+
+    async def fetch_watch_history():
+        if not imdb_id:
+            return []
+        try:
+            from app.models.schema import WatchHistory
+            q = (
+                select(WatchHistory)
+                .where(WatchHistory.user_id == user_id, WatchHistory.imdb_id == imdb_id)
+                .order_by(WatchHistory.watched_at.desc())
+                .limit(20)
+            )
+            rows = (await db.execute(q)).scalars().all()
+            return [{"watched_at": str(r.watched_at), "progress": r.progress} for r in rows]
+        except Exception:
+            return []
+
+    emby_data, mdb_data, tmdb_data, providers, user_rating, history = await asyncio.gather(
+        fetch_emby(), fetch_mdblist(), fetch_tmdb(),
+        fetch_tmdb_providers(), fetch_user_rating(), fetch_watch_history(),
+    )
+
+    # ── Merge into unified response ──
+
+    # Emby data
+    if emby_data:
+        result["title"] = emby_data.get("Name")
+        result["overview"] = emby_data.get("Overview")
+        result["year"] = emby_data.get("ProductionYear")
+        result["genres"] = emby_data.get("Genres", [])
+        result["certification"] = emby_data.get("OfficialRating")
+        result["community_rating"] = emby_data.get("CommunityRating")
+        result["taglines"] = emby_data.get("Taglines", [])
+        result["studios"] = [s.get("Name") for s in (emby_data.get("Studios") or [])]
+        runtime_ticks = emby_data.get("RunTimeTicks")
+        result["runtime_minutes"] = int(runtime_ticks / 600_000_000) if runtime_ticks else None
+        # People from Emby
+        people = emby_data.get("People", [])
+        result["emby_cast"] = [
+            {"name": p.get("Name"), "role": p.get("Role"), "type": p.get("Type"), "emby_id": p.get("Id")}
+            for p in people
+        ]
+        # Provider IDs
+        pids = emby_data.get("ProviderIds") or {}
+        result["imdb_id"] = result.get("imdb_id") or pids.get("Imdb")
+        result["tmdb_id"] = result.get("tmdb_id") or pids.get("Tmdb")
+        result["tvdb_id"] = pids.get("Tvdb")
+        # UserData (played status, play count)
+        ud = emby_data.get("UserData") or {}
+        result["is_played"] = ud.get("Played", False)
+        result["emby_play_count"] = ud.get("PlayCount", 0)
+        result["in_library"] = True
+    else:
+        result["in_library"] = False
+
+    # TMDB data — richer cast with photos, budget, revenue
+    if tmdb_data:
+        result["title"] = result.get("title") or tmdb_data.get("title")
+        result["overview"] = result.get("overview") or tmdb_data.get("overview")
+        result["tagline"] = tmdb_data.get("tagline")
+        result["release_date"] = tmdb_data.get("release_date")
+        result["runtime_minutes"] = result.get("runtime_minutes") or tmdb_data.get("runtime")
+        result["budget"] = tmdb_data.get("budget")
+        result["revenue"] = tmdb_data.get("revenue")
+        result["status"] = tmdb_data.get("status")
+        result["genres"] = result.get("genres") or tmdb_data.get("genres", [])
+        result["poster_path"] = tmdb_data.get("poster_path")
+        result["backdrop_path"] = tmdb_data.get("backdrop_path")
+        result["production_companies"] = tmdb_data.get("production_companies", [])
+        result["production_countries"] = tmdb_data.get("production_countries", [])
+        result["spoken_languages"] = tmdb_data.get("spoken_languages", [])
+        result["keywords"] = tmdb_data.get("keywords", [])
+        result["tmdb_cast"] = tmdb_data.get("cast", [])
+        result["tmdb_crew"] = tmdb_data.get("crew", [])
+        result["tmdb_vote_average"] = tmdb_data.get("vote_average")
+        result["tmdb_vote_count"] = tmdb_data.get("vote_count")
+        result["number_of_seasons"] = tmdb_data.get("number_of_seasons")
+        result["number_of_episodes"] = tmdb_data.get("number_of_episodes")
+        result["networks"] = tmdb_data.get("networks", [])
+        result["belongs_to_collection"] = tmdb_data.get("belongs_to_collection")
+
+    # MDBList ratings
+    if mdb_data:
+        result["title"] = result.get("title") or mdb_data.get("title")
+        result["overview"] = result.get("overview") or mdb_data.get("description")
+        result["year"] = result.get("year") or mdb_data.get("year")
+        # Extract all rating sources
+        ratings = {}
+        for r_item in (mdb_data.get("ratings") or []):
+            src = r_item.get("source")
+            if src:
+                ratings[src.lower()] = {
+                    "value": r_item.get("value"),
+                    "score": r_item.get("score"),
+                    "votes": r_item.get("votes") or r_item.get("vote_count"),
+                }
+        # Also check top-level score fields
+        if mdb_data.get("score"):
+            ratings["mdblist"] = {"value": mdb_data["score"], "votes": mdb_data.get("score_average_count")}
+        if mdb_data.get("imdbrating"):
+            ratings.setdefault("imdb", {})["value"] = mdb_data["imdbrating"]
+            ratings["imdb"]["votes"] = mdb_data.get("imdbvotes")
+        if mdb_data.get("traktrating"):
+            ratings.setdefault("trakt", {})["value"] = mdb_data["traktrating"]
+            ratings["trakt"]["votes"] = mdb_data.get("traktvotes")
+        if mdb_data.get("tmdbrating"):
+            ratings.setdefault("tmdb", {})["value"] = mdb_data["tmdbrating"]
+            ratings["tmdb"]["votes"] = mdb_data.get("tmdbvotes")
+        if mdb_data.get("letterboxdrating"):
+            ratings.setdefault("letterboxd", {})["value"] = mdb_data["letterboxdrating"]
+            ratings["letterboxd"]["votes"] = mdb_data.get("letterboxdvotes")
+        if mdb_data.get("tomatoesrating"):
+            ratings.setdefault("tomatoes", {})["value"] = mdb_data["tomatoesrating"]
+            ratings["tomatoes"]["votes"] = mdb_data.get("tomatoes_audience_count") or mdb_data.get("tomatoesvotes")
+        if mdb_data.get("tomatoesaudience"):
+            ratings["popcorn"] = {"value": mdb_data["tomatoesaudience"], "votes": mdb_data.get("tomatoes_audience_count")}
+        if mdb_data.get("metacritic"):
+            ratings.setdefault("metacritic", {})["value"] = mdb_data["metacritic"]
+            ratings["metacritic"]["votes"] = mdb_data.get("metacriticvotes")
+        result["ratings"] = ratings
+        result["mdb_certification"] = mdb_data.get("certification")
+        result["trailer"] = mdb_data.get("trailer")
+
+    # Watch providers
+    result["watch_providers"] = providers or []
+
+    # User data
+    result["user_rating"] = user_rating
+    result["watch_history"] = history
+
+    return result

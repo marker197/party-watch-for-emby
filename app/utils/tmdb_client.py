@@ -381,3 +381,112 @@ async def get_collection(collection_id: int) -> dict | None:
         log.debug("tmdb.collection_failed", collection_id=collection_id,
                   error=str(e)[:120])
         return None
+
+
+async def get_full_details(tmdb_id: int, media_type: str = "movie") -> dict | None:
+    """Return rich details including credits, keywords, budget, revenue.
+
+    media_type: 'movie' or 'tv'
+    Cached 7 days.
+    """
+    api_key = await _get_api_key()
+    if not api_key or not tmdb_id:
+        return None
+
+    import json
+
+    cache_key = f"tmdb_full:{media_type}:{tmdb_id}"
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{TMDB_BASE}/{media_type}/{tmdb_id}",
+                params={
+                    "api_key": api_key,
+                    "append_to_response": "credits,keywords",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        # Extract cast (top 20)
+        credits = data.get("credits", {})
+        cast = []
+        for p in (credits.get("cast") or [])[:20]:
+            cast.append({
+                "name": p.get("name"),
+                "character": p.get("character"),
+                "profile_path": p.get("profile_path"),
+                "order": p.get("order"),
+            })
+
+        # Extract crew (directors, writers)
+        crew = []
+        for p in credits.get("crew") or []:
+            if p.get("job") in ("Director", "Writer", "Screenplay", "Creator"):
+                crew.append({
+                    "name": p.get("name"),
+                    "job": p.get("job"),
+                    "profile_path": p.get("profile_path"),
+                })
+
+        # Keywords
+        kw_obj = data.get("keywords", {})
+        keywords = [k.get("name") for k in (kw_obj.get("keywords") or kw_obj.get("results") or [])]
+
+        # Production companies
+        companies = [c.get("name") for c in (data.get("production_companies") or [])]
+
+        # Production countries
+        countries = [c.get("name") for c in (data.get("production_countries") or [])]
+
+        # Languages
+        languages = [l.get("english_name") for l in (data.get("spoken_languages") or [])]
+
+        result = {
+            "id": data.get("id"),
+            "title": data.get("title") or data.get("name"),
+            "overview": data.get("overview"),
+            "tagline": data.get("tagline"),
+            "release_date": data.get("release_date") or data.get("first_air_date"),
+            "runtime": data.get("runtime") or (data.get("episode_run_time") or [None])[0],
+            "status": data.get("status"),
+            "budget": data.get("budget"),
+            "revenue": data.get("revenue"),
+            "poster_path": data.get("poster_path"),
+            "backdrop_path": data.get("backdrop_path"),
+            "genres": [g.get("name") for g in (data.get("genres") or [])],
+            "certification": data.get("certification"),
+            "vote_average": data.get("vote_average"),
+            "vote_count": data.get("vote_count"),
+            "belongs_to_collection": data.get("belongs_to_collection"),
+            "production_companies": companies,
+            "production_countries": countries,
+            "spoken_languages": languages,
+            "cast": cast,
+            "crew": crew,
+            "keywords": keywords,
+            "number_of_seasons": data.get("number_of_seasons"),
+            "number_of_episodes": data.get("number_of_episodes"),
+            "networks": [n.get("name") for n in (data.get("networks") or [])],
+        }
+
+        try:
+            r = await get_redis()
+            await r.setex(cache_key, 604800, json.dumps(result))
+        except Exception:
+            pass
+
+        return result
+
+    except Exception as e:
+        log.debug("tmdb.full_details_failed", tmdb_id=tmdb_id,
+                  media_type=media_type, error=str(e)[:120])
+        return None

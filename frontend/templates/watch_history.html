@@ -196,6 +196,10 @@
       line-height: 1.35; overflow: hidden;
       display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
     }
+    a.item-link {
+      text-decoration: none; color: var(--text); transition: color 0.12s;
+    }
+    a.item-link:hover { color: var(--accent-light); }
     .item-subtitle {
       font-size: 0.74rem; color: var(--text-dim); padding: 2px 10px 8px;
     }
@@ -581,9 +585,19 @@ function renderItem(item, _idx, _arr, dayDate) {
             + '<span class="ph-title">' + phTitle + '</span></div>';
   }
 
+  // Build detail page link
+  const detailType = itemType === 'episode' ? 'show' : itemType;
+  const detailImdb = itemImdb || '';
+  const detailLink = detailImdb
+    ? '/item/' + encodeURIComponent(detailImdb) + '?type=' + detailType
+      + (item.emby_id ? '&emby_id=' + encodeURIComponent(item.emby_id) : '')
+    : '';
+
   return '<div class="history-item">'
     + '<div class="thumb-wrap"' + dataAttrs + '>' + imgHtml + actionsHtml + rewatchBadge + progressHtml + '</div>'
-    + '<div class="item-title">' + esc(label.title) + '</div>'
+    + (detailLink
+      ? '<a class="item-title item-link" href="' + detailLink + '">' + esc(label.title) + '</a>'
+      : '<div class="item-title">' + esc(label.title) + '</div>')
     + '<div class="item-subtitle">' + esc(label.sub) + '</div>'
     + '</div>';
 }
