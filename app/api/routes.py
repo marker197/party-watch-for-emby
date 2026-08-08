@@ -8270,8 +8270,39 @@ async def mark_watched(
         except Exception as e:
             log.warning("mark_watched.mdblist_failed", error=str(e)[:120])
 
+    # ── Update local WatchHistory progress to 100 ──
+    try:
+        from app.models.schema import WatchHistory
+        wh_filters = [WatchHistory.user_id == int(user_id)]
+        if imdb_id:
+            wh_filters.append(WatchHistory.imdb_id == imdb_id)
+        elif emby_item_id:
+            wh_filters.append(WatchHistory.emby_id == emby_item_id)
+        else:
+            wh_filters.append(WatchHistory.title == title)
+        if item_type == "episode" and season_number is not None and episode_number is not None:
+            wh_filters.append(WatchHistory.season_number == int(season_number))
+            wh_filters.append(WatchHistory.episode_number == int(episode_number))
+        wh_q = (
+            select(WatchHistory)
+            .where(*wh_filters)
+            .order_by(WatchHistory.watched_at.desc())
+            .limit(1)
+        )
+        wh_row = (await db.execute(wh_q)).scalar_one_or_none()
+        if wh_row:
+            wh_row.progress = 100
+            await db.commit()
+            results["db"] = True
+        else:
+            results["db"] = False
+    except Exception as e:
+        log.warning("mark_watched.db_update_failed", error=str(e)[:120])
+        results["db"] = False
+
     log.info("mark_watched.completed", user=user.emby_username, item=title,
-             emby=results["emby"], simkl=results["simkl"], mdblist=results["mdblist"])
+             emby=results["emby"], simkl=results["simkl"], mdblist=results["mdblist"],
+             db=results.get("db", False))
     return {"status": "ok", "results": results}
 
 

@@ -441,9 +441,12 @@ function applyTypeFilters(days) {
     var day = days[i];
     var items = day.items.filter(function(item) {
       var t = item.item_type;
-      // Map: episodes also hidden when "episode" is hidden
-      // Shows filter hides item_type=show
-      return !hiddenTypes.has(t);
+      if (hiddenTypes.has('movie') && t === 'movie') return false;
+      // "show" hides TV content (episodes with a series_name)
+      if (hiddenTypes.has('show') && (t === 'episode' || t === 'show')) return false;
+      // "episode" also hides individual episodes
+      if (hiddenTypes.has('episode') && t === 'episode') return false;
+      return true;
     });
     if (items.length > 0) {
       filtered.push({ date: day.date, items: items });
