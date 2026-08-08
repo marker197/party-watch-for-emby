@@ -8012,7 +8012,7 @@ async def get_watch_history_by_date(
         else:
             bucket[key] = {
                 "emby_id": r.emby_id,
-                "item_type": "show" if collapse_to_show else r.item_type,
+                "item_type": "show" if (collapse_to_show and r.item_type == "episode") else r.item_type,
                 "title": r.title,
                 "series_name": r.series_name,
                 "season_number": r.season_number,
