@@ -2777,17 +2777,24 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 )
 
             # ── Notify on any new library item ────────────────────────────
-            # Movies/Series: notify when not already in the library cache.
-            # Episodes: always notify (the parent series is already cached,
-            # but a new episode is still new content arriving).
-            _should_notify = False
-            if item_type_raw == "Episode":
-                _should_notify = True
-            elif not already_cached:
-                _should_notify = True
-            if _should_notify and not _is_unpack:
-                from app.utils.notification_client import notify
-                notify("download", "📥 New Arrival", item_name or "Unknown")
+            # Fire for every library.new/item.added event regardless of
+            # whether the item was already in the cache (covers quality
+            # upgrades, re-downloads, and direct Radarr/Sonarr imports).
+            # Short-lived Redis dedup key prevents duplicate notifications
+            # when Emby fires multiple webhooks for the same item.
+            if not _is_unpack:
+                _notify_dedup_key = f"notify_dedup:library:{emby_item_id}"
+                try:
+                    _r = await get_redis()
+                    _already_notified = await _r.get(_notify_dedup_key)
+                    if not _already_notified:
+                        await _r.set(_notify_dedup_key, "1", ex=60)
+                        from app.utils.notification_client import notify
+                        notify("download", "📥 New Arrival", item_name or "Unknown")
+                except Exception:
+                    # Redis unavailable — send anyway, risk of duplicate is minor
+                    from app.utils.notification_client import notify
+                    notify("download", "📥 New Arrival", item_name or "Unknown")
 
             # ── Update Recently Arrived from webhook ──────────────────────
             # Check if this item was in the pending snapshot and surface it
