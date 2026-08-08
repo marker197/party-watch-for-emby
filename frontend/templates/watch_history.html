@@ -402,28 +402,26 @@ function toggleSuiteTheme() {
   localStorage.setItem('suite-theme', isLight ? 'light' : 'dark');
 }
 
-// Track which types are hidden (toggled off)
-let hiddenTypes = new Set();
+// Active type filter — only one at a time, click again to deactivate
+let activeTypeFilter = null;
 
 function toggleTypeFilter(type, btn) {
   document.getElementById('myRatingsPanel').style.display = 'none';
   document.getElementById('timeline').style.display = '';
   document.getElementById('pagination').style.display = '';
 
-  // Independent toggle: click = hide that type, click again = show it
-  if (hiddenTypes.has(type)) {
-    hiddenTypes.delete(type);
-    btn.classList.remove('active');
+  // Deactivate all type buttons
+  document.querySelectorAll('.filter-btn[data-type]').forEach(b => b.classList.remove('active'));
+
+  if (activeTypeFilter === type) {
+    // Click same button again — deactivate, show all
+    activeTypeFilter = null;
   } else {
-    hiddenTypes.add(type);
+    activeTypeFilter = type;
     btn.classList.add('active');
   }
 
-  // Deactivate my-ratings button if it was active
-  var ratingsBtn = document.querySelector('.filter-btn[data-type="my-ratings"]');
-  if (ratingsBtn) ratingsBtn.classList.remove('active');
-
-  currentFilter = 'all'; // always fetch all, filter client-side
+  currentFilter = activeTypeFilter || 'all';
   currentPage = 1;
   nextBefore = null;
   document.getElementById('timeline').innerHTML = '';
@@ -433,27 +431,8 @@ function toggleTypeFilter(type, btn) {
 // Legacy setFilter for compatibility
 function setFilter(type, btn) { toggleTypeFilter(type, btn); }
 
-// Client-side filter: remove hidden types from day items
-function applyTypeFilters(days) {
-  if (hiddenTypes.size === 0) return days;
-  var filtered = [];
-  for (var i = 0; i < days.length; i++) {
-    var day = days[i];
-    var items = day.items.filter(function(item) {
-      var t = item.item_type;
-      if (hiddenTypes.has('movie') && t === 'movie') return false;
-      // "show" hides TV content (episodes with a series_name)
-      if (hiddenTypes.has('show') && (t === 'episode' || t === 'show')) return false;
-      // "episode" also hides individual episodes
-      if (hiddenTypes.has('episode') && t === 'episode') return false;
-      return true;
-    });
-    if (items.length > 0) {
-      filtered.push({ date: day.date, items: items });
-    }
-  }
-  return filtered;
-}
+// No client-side type filtering needed — API handles it via item_type param
+function applyTypeFilters(days) { return days; }
 
 function setRatingFilter(val, btn) {
   currentRatingFilter = val;
@@ -701,6 +680,13 @@ function goToPage(pg) {
   loadHistory();
 }
 
+function buildTypeParam() {
+  if (currentFilter === 'movie') return '&item_type=movie';
+  if (currentFilter === 'show') return '&item_type=show';
+  if (currentFilter === 'episode') return '&item_type=episode';
+  return '';
+}
+
 async function loadHistory() {
   if (isLoading || !currentUserId) return;
   isLoading = true;
@@ -720,6 +706,7 @@ async function loadHistory() {
       for (var p = 1; p < currentPage; p++) {
         var skipUrl = '/api/watch-history/' + currentUserId + '/by-date?days=30';
         if (cursor) skipUrl += '&before=' + cursor;
+        skipUrl += buildTypeParam();
         if (currentRatingFilter !== 'all') skipUrl += '&rating_filter=' + currentRatingFilter;
         var skipR = await fetch(skipUrl);
         if (!skipR.ok) throw new Error('HTTP ' + skipR.status);
@@ -730,6 +717,7 @@ async function loadHistory() {
       if (cursor) url += '&before=' + cursor;
     }
 
+    url += buildTypeParam();
     if (currentRatingFilter !== 'all') url += '&rating_filter=' + currentRatingFilter;
 
     var r = await fetch(url);
@@ -811,6 +799,7 @@ function jumpToMonth(val) {
   loadingEl.style.display = 'block';
 
   var url = '/api/watch-history/' + currentUserId + '/by-date?days=30&before=' + beforeDate;
+  url += buildTypeParam();
   if (currentRatingFilter !== 'all') url += '&rating_filter=' + currentRatingFilter;
 
   fetch(url).then(function(r) { return r.json(); }).then(function(data) {
@@ -844,6 +833,7 @@ function loadMoreFromCursor() {
   if (!nextBefore || isLoading) return;
   isLoading = true;
   var url = '/api/watch-history/' + currentUserId + '/by-date?days=30&before=' + nextBefore;
+  url += buildTypeParam();
   if (currentRatingFilter !== 'all') url += '&rating_filter=' + currentRatingFilter;
 
   fetch(url).then(function(r) { return r.json(); }).then(function(data) {
