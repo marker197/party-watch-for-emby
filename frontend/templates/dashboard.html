@@ -194,6 +194,10 @@
   .log-area .entry.err { color: var(--red); }
   .log-area .entry.mdblist { color: #3D7ABD; }
   .log-area .entry.simkl-ok { color: #9F42C6; }
+  .log-area .entry.lib-movie { color: var(--blue); }
+  .log-area .entry.lib-episode { color: #79C0FF; }
+  .log-area .entry.play-start { color: var(--green); }
+  .log-area .entry.play-stop { color: var(--red); }
 
   /* Auth section */
   .auth-section {
@@ -2604,9 +2608,11 @@ async function dashboardPoll() {
           else if (e.cat === 'simkl') icon = '🔄';
           else if (e.cat === 'webhook') icon = '📡';
           let cls = '';
-          if (m.startsWith('Started Watching:') || m.startsWith('Stopped Watching:')) {
-            cls = m.includes('Sync error') ? 'err' : m.includes('Synced') ? 'ok' : '';
-          } else if (m.includes(': Paused') || m.includes(': Continued')) cls = '';
+          // Category-based colouring (from backend category field)
+          if (e.cat === 'play-start') cls = 'play-start';
+          else if (e.cat === 'play-stop') cls = m.includes('Sync error') ? 'err' : 'play-stop';
+          else if (e.cat === 'library-movie') cls = 'lib-movie';
+          else if (e.cat === 'library-episode') cls = 'lib-episode';
           else if (m.includes('Synced to MDBList')) cls = 'mdblist';
           else if (m.startsWith('✓ Simkl scrobbled') || m.includes('Synced to Simkl')) cls = 'simkl-ok';
           else if (m.startsWith('✓')) cls = 'ok';

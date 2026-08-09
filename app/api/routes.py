@@ -2332,7 +2332,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         # One consolidated activity log line
         await _activity_log(
             f"Started Watching: {display_name}" + (" — Synced" if sync_ok else " — Sync error"),
-            category="playback",
+            category="play-start",
         )
         return {"status": "received", "event": event_type, "simkl_synced": simkl_synced}
 
@@ -2502,17 +2502,17 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         if simkl_sync_error:
             await _activity_log(
                 f"Stopped Watching: {display_name} — Sync error: {simkl_sync_error}",
-                category="playback",
+                category="play-stop",
             )
         elif simkl_synced:
             await _activity_log(
                 f"Stopped Watching: {display_name} — Synced",
-                category="playback",
+                category="play-stop",
             )
         else:
             await _activity_log(
                 f"Stopped Watching: {display_name}",
-                category="playback",
+                category="play-stop",
             )
 
         # ── Persistent watch history (local DB) ──────────────────────────
@@ -2762,21 +2762,24 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                             log.warning("webhook.playlist_resync_failed", user_id=uid)
 
                     if not _is_unpack:
+                        _lib_cat = "library-movie" if item_type_raw == "Movie" else "library-episode"
                         await _activity_log(
-                            f"📥 Library added: {item_name} — promoted {promoted} queue item(s) to in-library",
-                            category="queue",
+                            f"📥 Library added: {display_name} — promoted {promoted} queue item(s) to in-library",
+                            category=_lib_cat,
                         )
                 else:
                     if not _is_unpack:
+                        _lib_cat = "library-movie" if item_type_raw == "Movie" else "library-episode"
                         await _activity_log(
-                            f"📥 Library added: {item_name} ({item_type_raw}) — not in smart queue",
-                            category="library",
+                            f"📥 Library added: {display_name} ({item_type_raw}) — not in smart queue",
+                            category=_lib_cat,
                         )
             else:
                 if not _is_unpack:
+                    _lib_cat = "library-movie" if item_type_raw == "Movie" else "library-episode"
                     await _activity_log(
-                        f"📥 Library added: {item_name} ({item_type_raw}) — no provider IDs to match",
-                        category="library",
+                        f"📥 Library added: {display_name} ({item_type_raw}) — no provider IDs to match",
+                        category=_lib_cat,
                     )
 
             # ── Notify on any new library item ────────────────────────────
@@ -2793,11 +2796,11 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     if not _already_notified:
                         await _r.set(_notify_dedup_key, "1", ex=60)
                         from app.utils.notification_client import notify
-                        notify("download", "📥 New Arrival", item_name or "Unknown")
+                        notify("download", "📥 New Arrival", display_name or "Unknown")
                 except Exception:
                     # Redis unavailable — send anyway, risk of duplicate is minor
                     from app.utils.notification_client import notify
-                    notify("download", "📥 New Arrival", item_name or "Unknown")
+                    notify("download", "📥 New Arrival", display_name or "Unknown")
 
             # ── Update Recently Arrived from webhook ──────────────────────
             # Check if this item was in the pending snapshot and surface it
@@ -2926,17 +2929,17 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
                 if removed_for:
                     await _activity_log(
-                        f"🗑️ Library removed: {item_name} — removed from Simkl watchlist for {', '.join(removed_for)}",
+                        f"🗑️ Library removed: {display_name} — removed from Simkl watchlist for {', '.join(removed_for)}",
                         category="simkl",
                     )
                 else:
                     await _activity_log(
-                        f"🗑️ Library removed: {item_name} — not on any user's Simkl watchlist",
+                        f"🗑️ Library removed: {display_name} — not on any user's Simkl watchlist",
                         category="library",
                     )
             else:
                 await _activity_log(
-                    f"🗑️ Library removed: {item_name} ({item_type_raw}) — no provider IDs",
+                    f"🗑️ Library removed: {display_name} ({item_type_raw}) — no provider IDs",
                     category="library",
                 )
         except Exception as e:
@@ -2947,7 +2950,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     if not is_watched and not is_library_removed:
         # Unmatched event — log for debugging
         await _activity_log(
-            f"📡 Unhandled webhook: {event_type} — {item_name}",
+            f"📡 Unhandled webhook: {event_type} — {display_name}",
             category="webhook",
         )
 
