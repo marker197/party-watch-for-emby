@@ -9,29 +9,29 @@
 <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 <style>
   :root {
-    --bg: #0f1117;
-    --surface: #1a1d27;
-    --surface-hover: #22263a;
-    --border: #2a2e3e;
-    --text: #e0e0e6;
-    --text-dim: #8b8fa3;
-    --accent: #6c5ce7;
-    --accent-light: #a29bfe;
-    --green: #00b894;
-    --orange: #fdcb6e;
-    --red: #e17055;
-    --blue: #74b9ff;
+    --bg: #0D1117;
+    --surface: #161B22;
+    --surface-hover: #1C2333;
+    --border: #1B2332;
+    --text: #E6EDF3;
+    --text-dim: #7D8590;
+    --accent: #3D9A56;
+    --accent-light: #57B36E;
+    --green: #3D9A56;
+    --orange: #D29922;
+    --red: #F85149;
+    --blue: #58A6FF;
     --radius: 10px;
     --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   }
 
   body.light-mode {
-    --bg: #f5f6fa;
-    --surface: #ffffff;
-    --surface-hover: #f0f1f5;
-    --border: #e2e4ea;
-    --text: #1f2937;
-    --text-dim: #6b7280;
+    --bg: #F6F8FA;
+    --surface: #FFFFFF;
+    --surface-hover: #E8ECF1;
+    --border: #D0D7DE;
+    --text: #1F2328;
+    --text-dim: #656D76;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -129,8 +129,8 @@
     letter-spacing: 0.05em;
   }
 
-  .badge-on { background: rgba(0,184,148,0.15); color: var(--green); }
-  .badge-off { background: rgba(225,112,85,0.15); color: var(--red); }
+  .badge-on { background: rgba(61,154,86,0.15); color: var(--green); }
+  .badge-off { background: rgba(248,81,73,0.15); color: var(--red); }
 
   .card p { color: var(--text-dim); font-size: 0.88rem; margin-bottom: 16px; }
 
@@ -282,7 +282,7 @@
     align-items: center;
     gap: 6px;
     padding: 6px 12px;
-    background: rgba(108, 92, 231, 0.1);
+    background: rgba(88, 166, 255, 0.1);
     border-radius: 6px;
     font-size: 0.82rem;
     color: var(--accent-light);
@@ -406,12 +406,12 @@
   }
 
   .queue-badge.played {
-    background: rgba(0, 184, 148, 0.15);
+    background: rgba(74, 194, 107, 0.15);
     color: var(--green);
   }
 
   .queue-badge.unwatched {
-    background: rgba(116, 185, 255, 0.15);
+    background: rgba(88, 166, 255, 0.15);
     color: var(--blue);
   }
 
@@ -422,17 +422,17 @@
   }
 
   .queue-badge.premiere {
-    background: rgba(108, 92, 231, 0.15);
-    color: var(--accent-light);
-    border: 1px solid rgba(108, 92, 231, 0.3);
+    background: rgba(88, 166, 255, 0.15);
+    color: var(--blue);
+    border: 1px solid rgba(88, 166, 255, 0.3);
     font-size: 0.68rem;
     font-weight: 700;
     letter-spacing: 0.03em;
   }
 
   .airing-premiere-row {
-    background: rgba(108, 92, 231, 0.06) !important;
-    border-left: 3px solid var(--accent);
+    background: rgba(88, 166, 255, 0.06) !important;
+    border-left: 3px solid var(--blue);
   }
 
   .airing-filter-btn {
@@ -443,9 +443,9 @@
     transition: background 0.15s, color 0.15s;
   }
   .airing-filter-btn.active {
-    background: var(--accent);
-    color: #fff;
-    border-color: var(--accent);
+    background: var(--blue);
+    color: var(--bg);
+    border-color: var(--blue);
   }
   .airing-filter-btn:hover:not(.active) {
     background: var(--surface);
@@ -471,8 +471,8 @@
   .queue-radarr-btn:disabled { opacity: 0.4; cursor: default; }
 
   .queue-sonarr-btn {
-    background: #6366f1;
-    color: #fff;
+    background: var(--blue);
+    color: var(--bg);
     border: none;
     padding: 2px 7px;
     font-size: 0.68rem;
@@ -499,7 +499,7 @@
     max-width: 80px;
   }
   .arr-dropdown.radarr { border-color: var(--red); }
-  .arr-dropdown.sonarr { border-color: #6366f1; }
+  .arr-dropdown.sonarr { border-color: var(--blue); }
 
   .queue-imdb-link {
     color: #f5c518;
@@ -540,16 +540,16 @@
     white-space: nowrap;
   }
   .dl-badge {
-    background: rgba(116, 185, 255, 0.15);
+    background: rgba(88, 166, 255, 0.15);
     color: var(--blue);
     padding: 2px 6px;
     border-radius: 4px;
     font-size: 0.65rem;
     font-weight: 600;
-    border: 1px solid rgba(116, 185, 255, 0.25);
+    border: 1px solid rgba(88, 166, 255, 0.25);
   }
   .arr-in-badge {
-    color: var(--green);
+    color: var(--blue);
     padding: 2px 6px;
     border-radius: 4px;
     font-size: 0.68rem;
@@ -557,9 +557,9 @@
     white-space: nowrap;
   }
   .dl-badge.warning {
-    background: rgba(253, 203, 110, 0.15);
+    background: rgba(210, 153, 34, 0.15);
     color: var(--orange);
-    border-color: rgba(253, 203, 110, 0.25);
+    border-color: rgba(210, 153, 34, 0.25);
   }
   .queue-block-btn {
     background: none;
@@ -628,7 +628,7 @@
   .cache-stat .value {
     font-size: 1.2rem;
     font-weight: 700;
-    color: var(--accent-light);
+    color: var(--blue);
   }
 
   @media (max-width: 720px) {
@@ -653,19 +653,19 @@
 </head>
 <body>
 <script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
-<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
-    <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='#22263a'">Dashboard</a>
-    <a href="/lists" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📋 Lists</a>
-    <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
-    <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
-    <a href="/rewatch" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🔁 Rewatch</a>
-    <a href="/stats" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📊 Stats</a>
-    <a href="/watch-history" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📜 History</a>
-    <a href="/library-health" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🏥 Health</a>
-    <a href="/settings" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
-    <a href="/watch-party" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
-    <a href="/guide" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📖 Guide</a>
+<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#0D1117;border-bottom:1px solid #1B2332;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <span style="color:#7D8590;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
+    <a href="/" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#1C2333;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='#1C2333'">Dashboard</a>
+    <a href="/lists" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">📋 Lists</a>
+    <a href="/predictions" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
+    <a href="/bias" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
+    <a href="/rewatch" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">🔁 Rewatch</a>
+    <a href="/stats" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">📊 Stats</a>
+    <a href="/watch-history" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">📜 History</a>
+    <a href="/library-health" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">🏥 Health</a>
+    <a href="/settings" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
+    <a href="/watch-party" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
+    <a href="/guide" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">📖 Guide</a>
 </nav>
 
 <div id="toastContainer" class="toast-container"></div>
@@ -740,7 +740,7 @@
     <div class="input-group">
       <input id="embyUserId" placeholder="Emby User ID" />
       <input id="embyUsername" placeholder="Emby Username" />
-      <button class="btn btn-accent" onclick="startLink()">Get Code</button>
+      <button class="btn btn-blue" onclick="startLink()">Get Code</button>
     </div>
     <div id="authOutput" class="log-area" style="display:none; max-height:150px;"></div>
     <div class="user-list" id="userList"></div>
@@ -750,7 +750,7 @@
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
     <span style="color:var(--text-dim);font-size:0.82rem;font-weight:600;letter-spacing:0.3px;">FEATURES</span>
     <div style="display:flex;gap:8px;align-items:center;">
-      <button id="btnWlSync" onclick="runWatchlistSync()" style="background:none;border:1px solid var(--accent);color:var(--accent);padding:5px 14px;border-radius:5px;font-size:0.8rem;font-weight:600;cursor:pointer;letter-spacing:0.3px;">Watchlist Sync</button>
+      <button id="btnWlSync" onclick="runWatchlistSync()" style="background:none;border:1px solid var(--blue);color:var(--blue);padding:5px 14px;border-radius:5px;font-size:0.8rem;font-weight:600;cursor:pointer;letter-spacing:0.3px;">Watchlist Sync</button>
       <button onclick="this.textContent=this.textContent==='Show'?'Hide':'Show';var g=document.getElementById('featureCardsGrid');if(g.style.maxHeight==='0px'){g.style.maxHeight=g.scrollHeight+'px';g.style.opacity='1';g.style.marginBottom='20px';var _t=function(){g.style.maxHeight='none';g.removeEventListener('transitionend',_t)};g.addEventListener('transitionend',_t)}else{g.style.maxHeight=g.scrollHeight+'px';requestAnimationFrame(function(){g.style.maxHeight='0px';g.style.opacity='0';g.style.marginBottom='0'})}" style="background:var(--accent);color:#fff;border:none;padding:5px 18px;border-radius:5px;font-size:0.8rem;font-weight:600;cursor:pointer;letter-spacing:0.3px;">Show</button>
     </div>
   </div>
@@ -1859,7 +1859,7 @@ async function viewAiring() {
         const importKey = i.tvdb_id && i.season != null && i.episode != null
           ? `${i.tvdb_id}:S${i.season}E${i.episode}` : '';
         if (importKey && sonarrImported[importKey]) {
-          statusBadge = '<span class="queue-badge watched" style="background:rgba(0,184,148,0.15);color:var(--green);border-color:var(--green);">Imported</span>';
+          statusBadge = '<span class="queue-badge watched" style="background:rgba(61,154,86,0.15);color:var(--green);border-color:var(--green);">Imported</span>';
         } else if (i.media_type === 'movie') {
           if (i.in_library) {
             statusBadge = '<span class="queue-badge unwatched">in library</span>';
@@ -2703,7 +2703,7 @@ async function loadContinueWatching() {
           const playId = item.type === 'show' ? (item.resume_emby_id || item.emby_id) : item.emby_id;
           const playTicks = item.type === 'show' ? (item.resume_ticks || 0) : (item.position_ticks || 0);
           playBtn = playId
-            ? '<button onclick="pickDeviceAndPlay(\'' + playId + '\',' + playTicks + ')" style="background:none;border:1px solid var(--green);color:var(--green);padding:2px 7px;border-radius:4px;cursor:pointer;font-size:0.72rem;white-space:nowrap;" title="Play on Emby">▶ Play</button>'
+            ? '<button onclick="pickDeviceAndPlay(\'' + playId + '\',' + playTicks + ')" style="background:none;border:1px solid var(--blue);color:var(--blue);padding:2px 7px;border-radius:4px;cursor:pointer;font-size:0.72rem;white-space:nowrap;" title="Play on Emby">▶ Play</button>'
             : '';
         }
 
@@ -2716,7 +2716,7 @@ async function loadContinueWatching() {
           : pct;
         const partyDataAttr = encodeURIComponent(JSON.stringify({id: partyItemId, title: partyTitle, ticks: partyTicks, pct: partyPct}));
         const partyBtn = WATCH_PARTY_ENABLED
-          ? '<button onclick="quickStartPartyFromBtn(this)" data-party="' + partyDataAttr + '" style="background:none;border:1px solid var(--accent);color:var(--accent);padding:2px 7px;border-radius:4px;cursor:pointer;font-size:0.72rem;white-space:nowrap;" title="Start Watch Party">🎉 Party</button>'
+          ? '<button onclick="quickStartPartyFromBtn(this)" data-party="' + partyDataAttr + '" style="background:none;border:1px solid var(--blue);color:var(--blue);padding:2px 7px;border-radius:4px;cursor:pointer;font-size:0.72rem;white-space:nowrap;" title="Start Watch Party">🎉 Party</button>'
           : '';
 
         return '<div style="display:flex;align-items:center;gap:12px;padding:8px 10px;border-bottom:1px solid var(--border);">'
@@ -3102,7 +3102,7 @@ async function loadAvailability() {
     const failedServers = availData.failed_servers || [];
 
     if (isPartial) {
-      html += '<div style="background:rgba(253,203,110,0.12);border:1px solid rgba(253,203,110,0.3);border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:0.8rem;color:var(--orange);">'
+      html += '<div style="background:rgba(210,153,34,0.12);border:1px solid rgba(210,153,34,0.3);border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:0.8rem;color:var(--orange);">'
         + '⚠️ ' + esc(failedServers.join(', ')) + ' unreachable — results are partial.'
         + ' <button onclick="_availLoaded=false;loadAvailability()" style="background:none;border:1px solid var(--orange);color:var(--orange);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:0.75rem;margin-left:8px;">Retry</button>'
         + '</div>';

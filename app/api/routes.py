@@ -2761,20 +2761,23 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         except Exception:
                             log.warning("webhook.playlist_resync_failed", user_id=uid)
 
-                    await _activity_log(
-                        f"📥 Library added: {item_name} — promoted {promoted} queue item(s) to in-library",
-                        category="queue",
-                    )
+                    if not _is_unpack:
+                        await _activity_log(
+                            f"📥 Library added: {item_name} — promoted {promoted} queue item(s) to in-library",
+                            category="queue",
+                        )
                 else:
+                    if not _is_unpack:
+                        await _activity_log(
+                            f"📥 Library added: {item_name} ({item_type_raw}) — not in smart queue",
+                            category="library",
+                        )
+            else:
+                if not _is_unpack:
                     await _activity_log(
-                        f"📥 Library added: {item_name} ({item_type_raw}) — not in smart queue",
+                        f"📥 Library added: {item_name} ({item_type_raw}) — no provider IDs to match",
                         category="library",
                     )
-            else:
-                await _activity_log(
-                    f"📥 Library added: {item_name} ({item_type_raw}) — no provider IDs to match",
-                    category="library",
-                )
 
             # ── Notify on any new library item ────────────────────────────
             # Fire for every library.new/item.added event regardless of
@@ -2896,7 +2899,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                             if imdb_id:
                                 ids["imdb"] = imdb_id
                             result = await simkl.remove_from_watchlist(
-                                movies=[{"ids": ids}]
+                                [{"ids": ids}]
                             )
                             deleted = (result.get("deleted") or {}).get("movies", 0)
                         else:
@@ -2906,7 +2909,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                             if imdb_id:
                                 ids["imdb"] = imdb_id
                             result = await simkl.remove_from_watchlist(
-                                shows=[{"ids": ids}]
+                                [{"ids": ids}]
                             )
                             deleted = (result.get("deleted") or {}).get("shows", 0)
 

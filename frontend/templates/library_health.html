@@ -7,24 +7,24 @@
   <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
   <style>
     :root {
-      --bg: #0f1117;
-      --surface: #1a1d27;
-      --surface-hover: #22263a;
-      --border: #2a2e3e;
-      --text: #e0e0e6;
-      --text-dim: #8b8fa3;
-      --accent: #6c5ce7;
-      --accent-light: #a29bfe;
-      --green: #00b894;
-      --orange: #fdcb6e;
-      --red: #e17055;
-      --blue: #74b9ff;
+      --bg: #0D1117;
+      --surface: #161B22;
+      --surface-hover: #1C2333;
+      --border: #1B2332;
+      --text: #E6EDF3;
+      --text-dim: #7D8590;
+      --accent: #3D9A56;
+      --accent-light: #57B36E;
+      --green: #3D9A56;
+      --orange: #D29922;
+      --red: #F85149;
+      --blue: #58A6FF;
       --radius: 10px;
       --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
     body.light-mode {
-      --bg: #f5f6fa; --surface: #ffffff; --surface-hover: #f0f1f5;
-      --border: #e2e4ea; --text: #1f2937; --text-dim: #6b7280;
+      --bg: #F6F8FA; --surface: #FFFFFF; --surface-hover: #E8ECF1;
+      --border: #D0D7DE; --text: #1F2328; --text-dim: #656D76;
     }
     * { margin:0; padding:0; box-sizing:border-box; }
     body { background:var(--bg); color:var(--text); font-family:var(--font); line-height:1.6; min-height:100vh; }
@@ -63,8 +63,8 @@
 
     .badge { display:inline-block; padding:1px 8px; border-radius:4px; font-size:0.72rem; font-weight:600; }
     .badge-movie { background:rgba(116,185,255,0.15); color:var(--blue); }
-    .badge-show { background:rgba(0,184,148,0.15); color:var(--green); }
-    .badge-rating { background:rgba(253,203,110,0.15); color:var(--orange); }
+    .badge-show { background:rgba(61,154,86,0.15); color:var(--green); }
+    .badge-rating { background:rgba(210,153,34,0.15); color:var(--orange); }
 
     .empty { color:var(--text-dim); padding:16px; text-align:center; font-size:0.85rem; }
     .loading { color:var(--text-dim); padding:24px; text-align:center; }
@@ -80,19 +80,19 @@
 <body>
 <script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
 
-<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#12141c;border-bottom:1px solid #2a2e42;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-    <span style="color:#8b8fa3;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
-    <a href="/" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">Dashboard</a>
-    <a href="/lists" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📋 Lists</a>
-    <a href="/predictions" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
-    <a href="/bias" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
-    <a href="/rewatch" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">🔁 Rewatch</a>
-    <a href="/stats" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📊 Stats</a>
-    <a href="/watch-history" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📜 History</a>
-    <a href="/library-health" style="color:#ffffff;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22263a;font-weight:600;">🏥 Library Health</a>
-    <a href="/settings" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
-    <a href="/watch-party" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
-    <a href="/guide" style="color:#e0e0e6;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22263a'" onmouseout="this.style.background='transparent'">📖 Guide</a>
+<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#0D1117;border-bottom:1px solid #1B2332;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <span style="color:#7D8590;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
+    <a href="/" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">Dashboard</a>
+    <a href="/lists" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">📋 Lists</a>
+    <a href="/predictions" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
+    <a href="/bias" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
+    <a href="/rewatch" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">🔁 Rewatch</a>
+    <a href="/stats" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">📊 Stats</a>
+    <a href="/watch-history" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">📜 History</a>
+    <a href="/library-health" style="color:#ffffff;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#1C2333;font-weight:600;">🏥 Library Health</a>
+    <a href="/settings" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
+    <a href="/watch-party" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
+    <a href="/guide" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">📖 Guide</a>
 </nav>
 
 <div class="header">
@@ -371,12 +371,12 @@ function arrButton(type, item, prefix) {
         return '<option value="' + si + '">' + escapeHtml(s.quality_profile_name || s.name || ('Server ' + (si+1))) + '</option>';
       }).join('');
       return '<span style="display:inline-flex;align-items:center;gap:2px;">'
-        + '<select id="sonarr-sel-' + prefix + '" style="background:var(--surface-hover);color:var(--text);border:1px solid #6366f1;border-radius:5px;padding:1px 2px;font-size:0.65rem;max-width:80px;">' + opts + '</select>'
-        + '<button id="' + id + '" class="btn" style="background:#6c5ce7;color:#fff;padding:3px 8px;font-size:0.72rem;" '
+        + '<select id="sonarr-sel-' + prefix + '" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--blue);border-radius:5px;padding:1px 2px;font-size:0.65rem;max-width:80px;">' + opts + '</select>'
+        + '<button id="' + id + '" class="btn" style="background:#27863A;color:#fff;padding:3px 8px;font-size:0.72rem;" '
         + 'onclick="sendToSonarr(\'' + id + '\',' + (tvdbId || 'null') + ',\'' + escapeHtml(imdbId) + '\',\'' + safeTitle + '\',' + (item.year||'null')
         + ',parseInt(document.getElementById(\'sonarr-sel-' + prefix + '\').value))">📥</button></span>';
     }
-    return '<button id="' + id + '" class="btn" style="background:#6c5ce7;color:#fff;padding:3px 10px;font-size:0.72rem;" '
+    return '<button id="' + id + '" class="btn" style="background:#27863A;color:#fff;padding:3px 10px;font-size:0.72rem;" '
       + 'onclick="sendToSonarr(\'' + id + '\',' + (tvdbId || 'null') + ',\'' + escapeHtml(imdbId) + '\',\'' + safeTitle + '\',' + (item.year||'null') + ',0)">'
       + '📥 Sonarr</button>';
   }
