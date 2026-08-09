@@ -312,17 +312,26 @@ function renderMissing(title, items, type) {
 }
 
 function renderSequels(items) {
-  if (!items.length) return '<div class="section"><h2>🔗 Simkl Suggestions <span class="count">(0)</span></h2><div class="empty">No missing related movies found!</div></div>';
+  if (!items.length) return '<div class="section"><h2>🔗 Simkl Suggestions <span class="count">(0)</span></h2><div class="empty">No missing related items found!</div></div>';
 
   let html = '<div class="section"><h2>🔗 Simkl Suggestions <span class="count">(' + items.length + ')</span></h2>';
-  html += '<table class="item-table"><thead><tr><th>Missing Title</th><th>Year</th><th>Related To</th><th>Your Rating</th><th></th></tr></thead><tbody>';
+  html += '<table class="item-table"><thead><tr><th>Missing Title</th><th>Year</th><th>Type</th><th>Related To</th><th>Your Rating</th><th></th><th></th></tr></thead><tbody>';
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const link = titleLink(it);
+    const isShow = it.item_type === 'show';
+    const itemType = isShow ? 'show' : 'movie';
+    const typeBadge = isShow
+      ? '<span class="badge" style="background:#58A6FF;color:#fff;font-size:0.65rem;">📺 Show</span>'
+      : '<span class="badge" style="background:var(--accent);color:#fff;font-size:0.65rem;">🎬 Movie</span>';
+    const itemId = it.imdb_id || it.tmdb_id || it.tvdb_id || it.simkl_id || '';
     html += '<tr><td>' + link + '</td><td>' + (it.year || '') + '</td>';
+    html += '<td>' + typeBadge + '</td>';
     html += '<td>' + escapeHtml(it.related_to || '') + '</td>';
     html += '<td><span class="badge badge-rating">★ ' + (it.your_rating || '?') + '</span></td>';
-    html += '<td>' + arrButton('movie', it, 'seq-' + i) + '</td></tr>';
+    html += '<td>' + arrButton(itemType, it, 'seq-' + i) + '</td>';
+    html += '<td><button class="btn" style="background:none;border:1px solid var(--text-dim);color:var(--text-dim);padding:2px 6px;font-size:0.7rem;border-radius:4px;" '
+      + 'onclick="dismissHealthItem(\'' + itemType + '\',\'' + escapeHtml(String(itemId)) + '\',this)" title="Dismiss — hide from future reports">✕</button></td></tr>';
   }
   html += '</tbody></table></div>';
   return html;

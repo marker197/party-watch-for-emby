@@ -734,6 +734,11 @@ class SimklClient:
         detail = await self.get_movie_detail(simkl_id)
         return detail.get("users_recommendations", [])
 
+    async def get_similar_shows(self, simkl_id: str) -> list[dict]:
+        """Get show recommendations from TV detail endpoint."""
+        detail = await self.get_tv_detail(simkl_id)
+        return detail.get("users_recommendations", [])
+
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
@@ -941,9 +946,11 @@ class SimklClient:
         return await self.get_movie_detail(simkl_id)
 
     async def get_related(self, kind: str, simkl_id: str, **kw) -> list[dict]:
-        """Get related/similar items. Maps to Simkl similar-movies for movies."""
+        """Get related/similar items from Simkl detail endpoint."""
         if kind == "movies":
             return await self.get_similar_movies(simkl_id)
+        if kind == "shows":
+            return await self.get_similar_shows(simkl_id)
         return []
 
     async def get_movie_related(self, simkl_id: str, **kw) -> list[dict]:

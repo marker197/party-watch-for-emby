@@ -373,16 +373,18 @@ class LibraryHealthService:
     async def _scan_missing_sequels(
         self, simkl: SimklClient, min_rating: int = 7, max_lookups: int = 30,
     ) -> list[dict]:
-        """For movies you rated highly, check if Simkl's similar movies are in your library.
-        Uses both Simkl and MDBList ratings."""
+        """For movies AND shows you rated highly, check if Simkl's similar
+        items are in your library.  Uses both Simkl and MDBList ratings."""
         results: list[dict] = []
         seen_titles: set[str] = set()
         seen_imdb_ids: set[str] = set()
 
-        # ── Gather highly-rated movies from all sources ──
-        high_rated: list[dict] = []  # [{title, rating, simkl_id, imdb_id}, ...]
+        # ── Gather highly-rated items from all sources ──
+        # Each entry carries an `item_type` ("movie" or "show") so we know
+        # which Simkl detail/related endpoint to call later.
+        high_rated: list[dict] = []  # [{title, rating, simkl_id, imdb_id, item_type}, ...]
 
-        # Simkl ratings
+        # Simkl ratings — movies
         try:
             simkl_ratings = await simkl.get_user_ratings(kind="movies")
             for entry in simkl_ratings:
@@ -397,11 +399,34 @@ class LibraryHealthService:
                     "simkl_id": str(ids.get("simkl") or ids.get("simkl_id") or ""),
                     "imdb_id": ids.get("imdb", ""),
                     "tmdb_id": str(ids.get("tmdb", "")),
+                    "tvdb_id": "",
+                    "item_type": "movie",
                 })
         except Exception as e:
             log.warning("library_health.simkl_ratings_failed", error=str(e)[:120])
 
-        # MDBList ratings (supplement)
+        # Simkl ratings — shows
+        try:
+            simkl_show_ratings = await simkl.get_user_ratings(kind="shows")
+            for entry in simkl_show_ratings:
+                r_val = entry.get("rating") or 0
+                if r_val < min_rating:
+                    continue
+                inner = entry.get("show") or entry
+                ids = inner.get("ids", {})
+                high_rated.append({
+                    "title": inner.get("title", ""),
+                    "rating": r_val,
+                    "simkl_id": str(ids.get("simkl") or ids.get("simkl_id") or ""),
+                    "imdb_id": ids.get("imdb", ""),
+                    "tmdb_id": str(ids.get("tmdb", "")),
+                    "tvdb_id": str(ids.get("tvdb") or ""),
+                    "item_type": "show",
+                })
+        except Exception as e:
+            log.warning("library_health.simkl_show_ratings_failed", error=str(e)[:120])
+
+        # MDBList ratings (supplement — movies and shows)
         try:
             mdb = await self._get_mdblist_client()
             if mdb:
@@ -409,24 +434,27 @@ class LibraryHealthService:
                     mdb_ratings = await mdb.get_ratings()
                     if isinstance(mdb_ratings, dict):
                         seen_imdb: set[str] = {h["imdb_id"] for h in high_rated if h["imdb_id"]}
-                        for item in mdb_ratings.get("movies", []):
-                            r_val = item.get("rating") or 0
-                            if r_val < min_rating:
-                                continue
-                            inner = item.get("movie") or item
-                            ids = inner.get("ids", {})
-                            imdb = ids.get("imdb", "")
-                            if imdb and imdb in seen_imdb:
-                                continue
-                            high_rated.append({
-                                "title": inner.get("title", ""),
-                                "rating": r_val,
-                                "simkl_id": "",
-                                "imdb_id": imdb,
-                                "tmdb_id": str(ids.get("tmdb", "")),
-                            })
-                            if imdb:
-                                seen_imdb.add(imdb)
+                        for mdb_kind, mdb_type in [("movies", "movie"), ("shows", "show")]:
+                            for item in mdb_ratings.get(mdb_kind, []):
+                                r_val = item.get("rating") or 0
+                                if r_val < min_rating:
+                                    continue
+                                inner = item.get(mdb_type) or item
+                                ids = inner.get("ids", {})
+                                imdb = ids.get("imdb", "")
+                                if imdb and imdb in seen_imdb:
+                                    continue
+                                high_rated.append({
+                                    "title": inner.get("title", ""),
+                                    "rating": r_val,
+                                    "simkl_id": "",
+                                    "imdb_id": imdb,
+                                    "tmdb_id": str(ids.get("tmdb", "")),
+                                    "tvdb_id": str(ids.get("tvdb") or ""),
+                                    "item_type": mdb_type,
+                                })
+                                if imdb:
+                                    seen_imdb.add(imdb)
                 finally:
                     await mdb.close()
         except Exception:
@@ -447,15 +475,19 @@ class LibraryHealthService:
                 seen_imdb_ids.add(hr["imdb_id"])
 
         log.info("library_health.high_rated_found", count=len(high_rated),
-                 min_rating=min_rating)
+                 min_rating=min_rating,
+                 movies=sum(1 for h in high_rated if h["item_type"] == "movie"),
+                 shows=sum(1 for h in high_rated if h["item_type"] == "show"))
 
-        # ── Look up similar movies for each highly-rated item ──
+        # ── Look up similar items for each highly-rated item ──
         lookups_done = 0
         for entry in high_rated:
             if lookups_done >= max_lookups:
                 break
 
             simkl_id = entry.get("simkl_id")
+            item_type = entry.get("item_type", "movie")
+            kind = "movies" if item_type == "movie" else "shows"
 
             # If no simkl_id, try to resolve from IMDB ID
             if not simkl_id and entry.get("imdb_id"):
@@ -475,7 +507,7 @@ class LibraryHealthService:
                 continue
 
             try:
-                related = await simkl.get_related("movies", str(simkl_id), limit=5)
+                related = await simkl.get_related(kind, str(simkl_id), limit=5)
                 lookups_done += 1
             except Exception:
                 continue
@@ -506,10 +538,13 @@ class LibraryHealthService:
                     continue
 
                 # Resolve IMDB/TMDB if missing (Simkl recommendations often
-                # only include simkl_id — need full IDs for IMDB links + Radarr)
+                # only include simkl_id — need full IDs for IMDB links + Radarr/Sonarr)
                 if rel_simkl and not rel_ids.get("imdb") and not rel_ids.get("tmdb"):
                     try:
-                        detail = await simkl.get_movie_detail(rel_simkl)
+                        if item_type == "show":
+                            detail = await simkl.get_tv_detail(rel_simkl)
+                        else:
+                            detail = await simkl.get_movie_detail(rel_simkl)
                         if detail and isinstance(detail, dict):
                             full_ids = detail.get("ids", {})
                             if full_ids.get("imdb"):
@@ -548,9 +583,11 @@ class LibraryHealthService:
                         "year": rel_year,
                         "imdb_id": rel_ids.get("imdb"),
                         "tmdb_id": rel_ids.get("tmdb"),
+                        "tvdb_id": rel_ids.get("tvdb"),
                         "simkl_id": rel_ids.get("simkl") or rel_ids.get("simkl_id"),
                         "related_to": entry.get("title", ""),
                         "your_rating": entry.get("rating"),
+                        "item_type": item_type,
                     })
                     per_item_count += 1
 
@@ -630,9 +667,10 @@ class LibraryHealthService:
         report["watched_not_in_library"]["movies"] = movies
         report["watched_not_in_library"]["shows"] = shows
 
-        # Filter missing_sequels (Simkl Suggestions) — dismissed as type "movie"
+        # Filter missing_sequels (Simkl Suggestions) — dismissed by item_type
         sequels = report.get("missing_sequels", [])
-        sequels = [s for s in sequels if ("movie", _item_id(s)) not in dismissed]
+        sequels = [s for s in sequels
+                   if (s.get("item_type", "movie"), _item_id(s)) not in dismissed]
         report["missing_sequels"] = sequels
 
         # Recalculate summary
