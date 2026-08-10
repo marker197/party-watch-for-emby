@@ -323,6 +323,75 @@
     cursor: pointer; text-align: left; transition: all 0.12s;
   }
   .device-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  /* ── Rate inline ── */
+  .rate-section { margin-bottom: 28px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .rate-label { font-size: 0.85rem; font-weight: 600; color: var(--text-dim); }
+  .rate-row { display: flex; gap: 6px; }
+  .rate-btn {
+    width: 32px; height: 32px; border-radius: 50%; border: 2px solid var(--border);
+    background: var(--surface); color: var(--text-dim); font-size: 0.8rem; font-weight: 700;
+    cursor: pointer; transition: all 0.15s; display: flex; align-items: center; justify-content: center;
+  }
+  .rate-btn:hover { border-color: var(--blue); color: var(--blue); background: var(--surface-hover); }
+  .rate-btn.active { border-color: var(--green); background: var(--green); color: #fff; }
+  .rate-status { font-size: 0.78rem; color: var(--text-dim); }
+
+  /* ── Episodes ── */
+  .episodes-section { margin-bottom: 28px; }
+  .season-tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+  .season-tab {
+    padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text-dim); font-size: 0.8rem; font-weight: 600;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .season-tab:hover { background: var(--surface-hover); color: var(--text); }
+  .season-tab.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .season-tab .tab-pct { font-size: 0.7rem; opacity: 0.7; margin-left: 4px; }
+  .episode-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+  .ep-card {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    transition: background 0.15s;
+  }
+  .ep-card:hover { background: var(--surface-hover); }
+  .ep-num { font-weight: 700; font-size: 0.85rem; min-width: 28px; text-align: center; color: var(--text-dim); }
+  .ep-info { flex: 1; min-width: 0; }
+  .ep-title { font-size: 0.82rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ep-meta { font-size: 0.72rem; color: var(--text-dim); }
+  .ep-status { font-size: 1rem; flex-shrink: 0; }
+
+  /* ── Recommendations ── */
+  .recs-section { margin-bottom: 28px; }
+  .recs-scroll {
+    display: flex; gap: 14px; overflow-x: auto; padding-bottom: 8px;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  .rec-card {
+    flex-shrink: 0; width: 130px; text-decoration: none; color: var(--text);
+    transition: transform 0.15s;
+  }
+  .rec-card:hover { transform: scale(1.04); }
+  .rec-poster {
+    width: 130px; height: 195px; border-radius: 8px; object-fit: cover;
+    background: var(--surface); display: block;
+  }
+  .rec-poster-ph {
+    width: 130px; height: 195px; border-radius: 8px; background: var(--surface);
+    display: flex; align-items: center; justify-content: center; font-size: 2rem; color: var(--text-dim);
+  }
+  .rec-title { font-size: 0.75rem; font-weight: 600; margin-top: 6px; line-height: 1.2;
+    overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .rec-meta { font-size: 0.68rem; color: var(--text-dim); margin-top: 2px; }
+  .rec-lib-badge {
+    display: inline-block; font-size: 0.6rem; padding: 1px 5px; border-radius: 3px;
+    background: rgba(61,154,86,0.2); color: var(--green); font-weight: 600; margin-top: 2px;
+  }
+
+  /* ── Watchlist button ── */
+  .btn-watchlist { background: var(--surface-hover); border: 1px solid var(--border); color: var(--text); }
+  .btn-watchlist:hover { border-color: var(--blue); color: var(--blue); }
+  .btn-watchlist.on-list { background: rgba(61,154,86,0.15); border-color: var(--green); color: var(--green); }
+
 </style>
 </head>
 <body>
@@ -357,11 +426,31 @@
         <div class="ratings-grid" id="ratingsGrid"></div>
       </div>
 
+      <!-- Rate This Item -->
+      <div class="rate-section" id="rateSection" style="display:none;">
+        <div class="rate-label">Rate this:</div>
+        <div class="rate-row" id="rateRow"></div>
+        <div class="rate-status" id="rateStatus"></div>
+      </div>
+
+      <!-- Seasons / Episodes (shows only) -->
+      <div class="episodes-section" id="episodesSection" style="display:none;">
+        <div class="section-title">Seasons & Episodes</div>
+        <div class="season-tabs" id="seasonTabs"></div>
+        <div class="episode-grid" id="episodeGrid"></div>
+      </div>
+
       <!-- Cast & Crew -->
       <div class="cast-section" id="castSection" style="display:none;">
         <div class="section-title">Cast & Crew</div>
         <div class="cast-tabs" id="castTabs"></div>
         <div class="cast-grid" id="castGrid"></div>
+      </div>
+
+      <!-- Recommendations -->
+      <div class="recs-section" id="recsSection" style="display:none;">
+        <div class="section-title">You Might Also Like</div>
+        <div class="recs-scroll" id="recsScroll"></div>
       </div>
 
       <!-- Watch History -->
@@ -420,7 +509,8 @@ function showToast(msg, type) {
 async function loadDetail() {
   const params = new URLSearchParams(window.location.search);
   const mediaType = params.get('type') || 'movie';
-  let url = '/api/item/detail?imdb_id=' + encodeURIComponent(imdbId);
+  const effectiveImdb = (imdbId && imdbId !== '_') ? imdbId : '';
+  let url = '/api/item/detail?imdb_id=' + encodeURIComponent(effectiveImdb);
   if (params.get('tmdb_id')) url += '&tmdb_id=' + params.get('tmdb_id');
   if (params.get('emby_id')) url += '&emby_id=' + params.get('emby_id');
   url += '&media_type=' + mediaType;
@@ -568,13 +658,36 @@ function render(d) {
   if (d.trailer) {
     actionsHtml += '<a class="action-btn btn-trailer" href="' + esc(d.trailer) + '" target="_blank" style="text-decoration:none;">▶ Watch Trailer</a>';
   }
+  // Watchlist toggle
+  var wlClass = d.on_watchlist ? ' on-list' : '';
+  var wlLabel = d.on_watchlist ? '✓ On Watchlist' : '＋ Add to Watchlist';
+  actionsHtml += '<button class="action-btn btn-watchlist' + wlClass + '" id="wlBtn" onclick="toggleWatchlist()">' + wlLabel + '</button>';
+  // Radarr/Sonarr request button for items not in library
+  if (!d.emby_id) {
+    if (d.media_type === 'show') {
+      actionsHtml += '<button class="action-btn" id="arrBtn" style="background:var(--blue);color:#fff;" onclick="sendToArr()">📥 Request via Sonarr</button>';
+    } else {
+      actionsHtml += '<button class="action-btn" id="arrBtn" style="background:var(--accent);color:#fff;" onclick="sendToArr()">📥 Request via Radarr</button>';
+    }
+  }
   document.getElementById('actionRow').innerHTML = actionsHtml;
 
   // Ratings
   renderRatings(d);
 
+  // Inline rating selector
+  renderRateSelector(d);
+
+  // Seasons & Episodes (shows only)
+  if (d.media_type === 'show' && d.emby_id) {
+    loadEpisodes(d);
+  }
+
   // Cast & Crew
   renderCast(d);
+
+  // Recommendations
+  renderRecs(d);
 
   // Watch History
   renderHistory(d);
@@ -723,6 +836,220 @@ function renderHistory(d) {
       + '<span class="history-progress ' + progClass + '">' + progLabel + '</span>'
       + '</div>';
   }).join('');
+}
+
+// ── Inline Rating Selector ──
+function renderRateSelector(d) {
+  var section = document.getElementById('rateSection');
+  var row = document.getElementById('rateRow');
+  var status = document.getElementById('rateStatus');
+  section.style.display = '';
+  var current = d.user_rating ? d.user_rating.rating : null;
+  var html = '';
+  for (var i = 1; i <= 10; i++) {
+    var cls = (current === i) ? ' active' : '';
+    html += '<button class="rate-btn' + cls + '" data-val="' + i + '" onclick="submitRating(' + i + ')">' + i + '</button>';
+  }
+  row.innerHTML = html;
+  if (current) status.textContent = 'You rated this ' + current + '/10';
+}
+
+async function submitRating(val) {
+  if (!itemData) return;
+  var status = document.getElementById('rateStatus');
+  status.textContent = 'Saving…';
+  try {
+    var body = {
+      user_id: itemData.user_id || 1,
+      imdb_id: itemData.imdb_id || '',
+      tmdb_id: itemData.tmdb_id || '',
+      rating: val,
+      item_type: itemData.media_type || 'movie',
+      title: itemData.title || '',
+    };
+    var r = await fetch('/api/rate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    status.textContent = 'Rated ' + val + '/10 ✓';
+    // Update buttons
+    document.querySelectorAll('.rate-btn').forEach(function(b) {
+      b.classList.toggle('active', parseInt(b.dataset.val) === val);
+    });
+    // Update user_rating card
+    itemData.user_rating = { rating: val, source: 'user' };
+    renderRatings(itemData);
+    showToast('Rated ' + val + '/10', 'ok');
+  } catch(e) {
+    status.textContent = 'Error: ' + e.message;
+    showToast('Rating failed', 'error');
+  }
+}
+
+// ── Seasons & Episodes ──
+async function loadEpisodes(d) {
+  try {
+    var url = '/api/item/episodes?emby_id=' + encodeURIComponent(d.emby_id || '');
+    if (d.imdb_id) url += '&imdb_id=' + encodeURIComponent(d.imdb_id);
+    var r = await fetch(url);
+    var data = await r.json();
+    var seasons = data.seasons || [];
+    if (!seasons.length) return;
+
+    document.getElementById('episodesSection').style.display = '';
+    var tabsEl = document.getElementById('seasonTabs');
+    var gridEl = document.getElementById('episodeGrid');
+
+    // Build tabs
+    var tabsHtml = '';
+    seasons.forEach(function(s, i) {
+      var pct = s.episode_count > 0 ? Math.round(s.played_count / s.episode_count * 100) : 0;
+      var cls = i === 0 ? ' active' : '';
+      tabsHtml += '<button class="season-tab' + cls + '" data-idx="' + i + '" onclick="showSeason(' + i + ')">'
+        + esc(s.name || ('Season ' + (s.season_number || i)))
+        + '<span class="tab-pct">' + pct + '%</span></button>';
+    });
+    tabsEl.innerHTML = tabsHtml;
+
+    // Store seasons data
+    window._seasonsData = seasons;
+    showSeason(0);
+  } catch(e) { /* silent */ }
+}
+
+function showSeason(idx) {
+  var seasons = window._seasonsData || [];
+  if (!seasons[idx]) return;
+  var s = seasons[idx];
+  // Update active tab
+  document.querySelectorAll('.season-tab').forEach(function(t) {
+    t.classList.toggle('active', parseInt(t.dataset.idx) === idx);
+  });
+  var gridEl = document.getElementById('episodeGrid');
+  var html = '';
+  (s.episodes || []).forEach(function(ep) {
+    var statusIcon = ep.played ? '✅' : '⬜';
+    var runtime = ep.runtime_minutes ? ep.runtime_minutes + ' min' : '';
+    var epNum = ep.episode_number != null ? ep.episode_number : '?';
+    html += '<div class="ep-card">'
+      + '<div class="ep-num">' + epNum + '</div>'
+      + '<div class="ep-info">'
+      + '<div class="ep-title">' + esc(ep.name || ('Episode ' + epNum)) + '</div>'
+      + '<div class="ep-meta">' + runtime + (ep.play_count > 1 ? ' · ' + ep.play_count + '× played' : '') + '</div>'
+      + '</div>'
+      + '<div class="ep-status">' + statusIcon + '</div>'
+      + '</div>';
+  });
+  gridEl.innerHTML = html;
+}
+
+// ── Recommendations ──
+function renderRecs(d) {
+  var recs = d.recommendations || [];
+  if (!recs.length) return;
+  document.getElementById('recsSection').style.display = '';
+  var html = '';
+  recs.forEach(function(rec) {
+    var poster = rec.poster_path
+      ? '<img class="rec-poster" src="' + TMDB_IMG + 'w185' + rec.poster_path + '"'
+        + ' onerror="this.outerHTML=\'<div class=rec-poster-ph>🎬</div>\'">'
+      : '<div class="rec-poster-ph">🎬</div>';
+    var year = (rec.release_date || '').slice(0, 4);
+    var rating = rec.vote_average ? '★ ' + rec.vote_average.toFixed(1) : '';
+    var meta = [year, rating].filter(Boolean).join(' · ');
+    var libBadge = rec.in_library ? '<div class="rec-lib-badge">In Library</div>' : '';
+    var href = rec.imdb_id
+      ? '/item/' + encodeURIComponent(rec.imdb_id) + '?type=' + (rec.media_type || 'movie')
+      : (rec.id ? '/item/_?tmdb_id=' + rec.id + '&type=' + (rec.media_type || 'movie') : '#');
+    html += '<a class="rec-card" href="' + href + '">'
+      + poster
+      + '<div class="rec-title">' + esc(rec.title || '') + '</div>'
+      + '<div class="rec-meta">' + meta + '</div>'
+      + libBadge
+      + '</a>';
+  });
+  document.getElementById('recsScroll').innerHTML = html;
+}
+
+// ── Watchlist Toggle ──
+async function toggleWatchlist() {
+  if (!itemData) return;
+  var btn = document.getElementById('wlBtn');
+  var isOn = btn.classList.contains('on-list');
+  var action = isOn ? 'remove' : 'add';
+  btn.textContent = '…';
+  try {
+    var r = await fetch('/api/watchlist/toggle', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        imdb_id: itemData.imdb_id || '',
+        tmdb_id: itemData.tmdb_id || '',
+        item_type: itemData.media_type || 'movie',
+        action: action,
+      }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (action === 'add') {
+      btn.classList.add('on-list');
+      btn.textContent = '✓ On Watchlist';
+      showToast('Added to watchlist', 'ok');
+    } else {
+      btn.classList.remove('on-list');
+      btn.textContent = '＋ Add to Watchlist';
+      showToast('Removed from watchlist', 'ok');
+    }
+  } catch(e) {
+    btn.textContent = isOn ? '✓ On Watchlist' : '＋ Add to Watchlist';
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+// ── Request via Radarr / Sonarr ──
+async function sendToArr() {
+  if (!itemData) return;
+  var btn = document.getElementById('arrBtn');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = '⏳ Sending…';
+  var isShow = itemData.media_type === 'show';
+  var endpoint = isShow ? '/api/sonarr/add' : '/api/radarr/add';
+  var body = { server_index: 0 };
+  if (isShow) {
+    body.shows = [{
+      tvdb_id: itemData.tvdb_id || undefined,
+      imdb_id: itemData.imdb_id || undefined,
+      title: itemData.title || '',
+      year: itemData.year || undefined,
+    }];
+  } else {
+    body.movies = [{
+      tmdb_id: itemData.tmdb_id || undefined,
+      imdb_id: itemData.imdb_id || undefined,
+      title: itemData.title || '',
+      year: itemData.year || undefined,
+    }];
+  }
+  try {
+    var r = await fetch(endpoint, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    var d = await r.json();
+    if (r.ok && d.added > 0) {
+      btn.textContent = '✓ Sent';
+      btn.style.background = 'var(--green)';
+      showToast('Sent to ' + (isShow ? 'Sonarr' : 'Radarr'), 'ok');
+    } else {
+      var reason = (d.results && d.results[0] && d.results[0].reason) || d.detail || 'Already exists or failed';
+      btn.textContent = '✗ ' + reason;
+      btn.style.background = 'var(--red)';
+      showToast(reason, 'error');
+    }
+  } catch(e) {
+    btn.textContent = '✗ Error';
+    btn.style.background = 'var(--red)';
+    showToast('Error: ' + e.message, 'error');
+  }
 }
 
 // Play on Emby

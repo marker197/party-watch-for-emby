@@ -395,7 +395,7 @@ async def get_full_details(tmdb_id: int, media_type: str = "movie") -> dict | No
 
     import json
 
-    cache_key = f"tmdb_full:{media_type}:{tmdb_id}"
+    cache_key = f"tmdb_full_v3:{media_type}:{tmdb_id}"
     try:
         r = await get_redis()
         cached = await r.get(cache_key)
@@ -410,7 +410,7 @@ async def get_full_details(tmdb_id: int, media_type: str = "movie") -> dict | No
                 f"{TMDB_BASE}/{media_type}/{tmdb_id}",
                 params={
                     "api_key": api_key,
-                    "append_to_response": "credits,keywords",
+                    "append_to_response": "credits,keywords,recommendations",
                 },
             )
             resp.raise_for_status()
@@ -476,6 +476,17 @@ async def get_full_details(tmdb_id: int, media_type: str = "movie") -> dict | No
             "number_of_seasons": data.get("number_of_seasons"),
             "number_of_episodes": data.get("number_of_episodes"),
             "networks": [n.get("name") for n in (data.get("networks") or [])],
+            "recommendations": [
+                {
+                    "id": rec.get("id"),
+                    "title": rec.get("title") or rec.get("name"),
+                    "poster_path": rec.get("poster_path"),
+                    "vote_average": rec.get("vote_average"),
+                    "release_date": rec.get("release_date") or rec.get("first_air_date"),
+                    "media_type": rec.get("media_type", media_type),
+                }
+                for rec in (data.get("recommendations", {}).get("results") or [])[:12]
+            ],
         }
 
         try:

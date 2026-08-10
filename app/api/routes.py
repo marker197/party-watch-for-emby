@@ -7966,6 +7966,30 @@ async def get_watch_history_by_date(
         select(func.count(WatchHistory.id)).where(*total_count_filters)
     )).scalar() or 0
 
+    # Adjust total for rating filter — the actual filter is applied post-dedup
+    # but the count should reflect it for accurate UI display
+    if rated_imdb_set is not None and total_items > 0:
+        if unrated_mode:
+            # Count items whose imdb_id IS in rated set (to subtract)
+            rated_count = (await db.execute(
+                select(func.count(WatchHistory.id)).where(
+                    *total_count_filters,
+                    WatchHistory.imdb_id.in_(rated_imdb_set) if rated_imdb_set else WatchHistory.id < 0,
+                )
+            )).scalar() or 0
+            total_items = max(0, total_items - rated_count)
+        else:
+            # Count only items whose imdb_id IS in rated set
+            if rated_imdb_set:
+                total_items = (await db.execute(
+                    select(func.count(WatchHistory.id)).where(
+                        *total_count_filters,
+                        WatchHistory.imdb_id.in_(rated_imdb_set),
+                    )
+                )).scalar() or 0
+            else:
+                total_items = 0
+
     q = (
         select(WatchHistory)
         .where(*filters)
@@ -10914,6 +10938,11 @@ async def get_item_detail(
     if not imdb_id and not tmdb_id and not emby_id:
         raise HTTPException(400, "At least one of imdb_id, tmdb_id, or emby_id required")
 
+    # Normalize empty strings to None
+    imdb_id = imdb_id or None
+    tmdb_id = tmdb_id or None
+    emby_id = emby_id or None
+
     user_id = current_user.id
     result: dict = {"imdb_id": imdb_id, "tmdb_id": tmdb_id, "emby_id": emby_id, "media_type": media_type}
 
@@ -11139,8 +11168,209 @@ async def get_item_detail(
     # Watch providers
     result["watch_providers"] = providers or []
 
+    # TMDB recommendations — enrich with library status
+    recs_raw = (tmdb_data or {}).get("recommendations", [])
+    log.info("item_detail.recs_debug", recs_count=len(recs_raw),
+             has_tmdb_data=tmdb_data is not None,
+             sample_poster=(recs_raw[0].get("poster_path") if recs_raw else None))
+    recs_out: list[dict] = []
+    for rec in recs_raw:
+        rec_tmdb = rec.get("id")
+        rec_in_lib = False
+        rec_imdb = None
+        if rec_tmdb:
+            cached_rec = await LibraryCache.find_by_provider_id("Tmdb", str(rec_tmdb))
+            if cached_rec:
+                rec_in_lib = True
+                rec_imdb = (cached_rec.get("provider_ids") or {}).get("Imdb")
+        rec["in_library"] = rec_in_lib
+        rec["imdb_id"] = rec_imdb
+        recs_out.append(rec)
+    result["recommendations"] = recs_out
+
+    # Watchlist status — check Simkl plantowatch
+    result["on_watchlist"] = False
+    if imdb_id and current_user.simkl_access_token:
+        try:
+            simkl = SimklClient(
+                access_token=current_user.simkl_access_token,
+                token_expires=current_user.simkl_token_expires,
+            )
+            try:
+                wl_kind = "movies" if media_type == "movie" else "shows"
+                wl = await simkl.get_watchlist(kind=wl_kind)
+                for entry in wl:
+                    inner = entry.get("movie") or entry.get("show") or entry
+                    ids = inner.get("ids", {})
+                    if ids.get("imdb") == imdb_id:
+                        result["on_watchlist"] = True
+                        break
+            finally:
+                await simkl.close()
+        except Exception:
+            pass
+
     # User data
+    result["user_id"] = user_id
     result["user_rating"] = user_rating
     result["watch_history"] = history
 
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Item Detail — Episodes Breakdown
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.get("/api/item/episodes")
+async def get_item_episodes(
+    emby_id: str | None = None,
+    imdb_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+):
+    """Return seasons and episodes for a series with watched status."""
+    import asyncio
+
+    # Resolve emby_id from imdb_id if needed
+    if not emby_id and imdb_id:
+        cached = await LibraryCache.find_by_provider_id("Imdb", imdb_id)
+        if cached:
+            emby_id = cached.get("emby_id") or cached.get("Id")
+    if not emby_id:
+        return {"seasons": [], "error": "Item not in library"}
+
+    emby_user_guid = current_user.emby_user_id
+    emby = EmbyClient()
+    try:
+        # Fetch seasons
+        seasons_resp = await emby.get_items(
+            user_id=emby_user_guid,
+            item_type="Season",
+            parent_id=emby_id,
+            fields="UserData",
+            recursive=False,
+            sort_by="SortName",
+        )
+        seasons_raw = seasons_resp.get("Items", [])
+
+        # Fetch episodes for all seasons in parallel
+        async def _get_eps(season: dict) -> dict:
+            sid = season.get("Id")
+            eps_resp = await emby.get_items(
+                user_id=emby_user_guid,
+                item_type="Episode",
+                parent_id=sid,
+                fields="UserData,RunTimeTicks,Overview",
+                recursive=False,
+                sort_by="SortName",
+            )
+            eps = []
+            for ep in eps_resp.get("Items", []):
+                ud = ep.get("UserData", {})
+                runtime_ticks = ep.get("RunTimeTicks")
+                eps.append({
+                    "emby_id": ep.get("Id"),
+                    "name": ep.get("Name"),
+                    "season_number": ep.get("ParentIndexNumber"),
+                    "episode_number": ep.get("IndexNumber"),
+                    "overview": (ep.get("Overview") or "")[:200],
+                    "runtime_minutes": int(runtime_ticks / 600_000_000) if runtime_ticks else None,
+                    "played": ud.get("Played", False),
+                    "play_count": ud.get("PlayCount", 0),
+                })
+            s_ud = season.get("UserData", {})
+            return {
+                "season_number": season.get("IndexNumber"),
+                "name": season.get("Name", ""),
+                "emby_id": sid,
+                "episode_count": len(eps),
+                "played_count": sum(1 for e in eps if e["played"]),
+                "episodes": eps,
+            }
+
+        results = await asyncio.gather(*[_get_eps(s) for s in seasons_raw])
+        # Sort by season number, filter out Specials (season 0) at the end
+        results = sorted(results, key=lambda s: (s["season_number"] or 999))
+        return {"seasons": results}
+    except Exception as e:
+        log.warning("item_detail.episodes_failed", error=str(e)[:120])
+        return {"seasons": [], "error": str(e)[:120]}
+    finally:
+        await emby.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Item Detail — Watchlist Toggle
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.post("/api/watchlist/toggle")
+async def toggle_watchlist(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Add or remove an item from the user's watchlist on Simkl + MDBList."""
+    imdb_id = payload.get("imdb_id")
+    tmdb_id = payload.get("tmdb_id")
+    item_type = payload.get("item_type", "movie")  # "movie" or "show"
+    action = payload.get("action", "add")  # "add" or "remove"
+
+    if not imdb_id and not tmdb_id:
+        raise HTTPException(400, "imdb_id or tmdb_id required")
+
+    ids_dict = {}
+    if imdb_id:
+        ids_dict["imdb"] = imdb_id
+    if tmdb_id:
+        ids_dict["tmdb"] = tmdb_id
+
+    results: dict = {"action": action, "simkl": None, "mdblist": None}
+
+    # Simkl
+    if current_user.simkl_access_token:
+        try:
+            simkl = SimklClient(
+                access_token=current_user.simkl_access_token,
+                token_expires=current_user.simkl_token_expires,
+            )
+            try:
+                item_payload = [{"ids": ids_dict}]
+                if action == "add":
+                    r = await simkl.add_to_watchlist(items=item_payload)
+                else:
+                    r = await simkl.remove_from_watchlist(item_payload)
+                results["simkl"] = "ok"
+            finally:
+                await simkl.close()
+        except Exception as e:
+            results["simkl"] = str(e)[:100]
+
+    # MDBList
+    try:
+        mdb_key = await _get_mdblist_key(db)
+        if mdb_key:
+            from app.utils.mdblist_client import MDBListClient
+            mdb = MDBListClient(api_key=mdb_key)
+            try:
+                mdb_item = {}
+                if imdb_id:
+                    mdb_item["imdb"] = imdb_id
+                if tmdb_id:
+                    mdb_item["tmdb"] = tmdb_id
+                if action == "add":
+                    if item_type == "show":
+                        await mdb.add_to_watchlist(shows=[mdb_item])
+                    else:
+                        await mdb.add_to_watchlist(movies=[mdb_item])
+                else:
+                    if item_type == "show":
+                        await mdb.remove_from_watchlist(shows=[mdb_item])
+                    else:
+                        await mdb.remove_from_watchlist(movies=[mdb_item])
+                results["mdblist"] = "ok"
+            finally:
+                await mdb.close()
+    except Exception as e:
+        results["mdblist"] = str(e)[:100]
+
+    return results
