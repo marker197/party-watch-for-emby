@@ -45,6 +45,8 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    environment:
+      - TZ=Europe/London
     networks:
       - emby-trakt
     # ✅ SECURITY: Resource limits
