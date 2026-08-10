@@ -234,7 +234,7 @@
 <nav class="sidebar" id="sidebar">
   <div class="sidebar-brand">
     <div class="title">Emby-Simkl Suite</div>
-    <div class="subtitle">User Guide v2.1.1</div>
+    <div class="subtitle">User Guide v2.2.0</div>
     <a href="/" style="display:inline-block;margin-top:10px;font-size:0.78rem;color:var(--accent-light);text-decoration:none;padding:4px 10px;border:1px solid var(--border);border-radius:5px;" onmouseover="this.style.background='var(--surface-hover)'" onmouseout="this.style.background='transparent'">← Back to Dashboard</a>
   </div>
 
@@ -246,6 +246,7 @@
   <a class="page-link" data-page="rewatch"><span class="icon">🔁</span> Rewatch</a>
   <a class="page-link" data-page="stats"><span class="icon">📊</span> Stats</a>
   <a class="page-link" data-page="watch-history"><span class="icon">📜</span> Watch History</a>
+  <a class="page-link" data-page="item-detail"><span class="icon">🎬</span> Item Detail</a>
   <a class="page-link" data-page="settings"><span class="icon">⚙️</span> Settings</a>
   <a class="page-link" data-page="watch-party"><span class="icon">👥</span> Watch Party</a>
   <a class="page-link" data-page="library-health"><span class="icon">🏥</span> Library Health</a>
@@ -803,6 +804,87 @@
 </div>
 
 <!-- ════════════════════════════════════════════════════════════════════ -->
+<!-- PAGE: ITEM DETAIL -->
+<!-- ════════════════════════════════════════════════════════════════════ -->
+
+<div class="page" id="page-item-detail" data-sections="detail-overview,detail-navigate,detail-hero,detail-ratings,detail-actions,detail-cast,detail-history,detail-keywords">
+
+  <h1 class="page-title">🎬 Item Detail</h1>
+  <p class="page-intro">A full-page breakdown of any movie or show — poster, ratings from multiple sources, cast and crew, your personal watch history, and quick actions.</p>
+
+  <div class="section">
+    <span class="section-anchor" id="detail-overview"></span>
+    <h2>Overview</h2>
+    <p>The item detail page aggregates data from Emby, MDBList, TMDB, and the local database into a single view. It loads all sources in parallel, so the page fills in as each source responds. A blurred backdrop image from Emby sets the visual tone behind the content.</p>
+    <p>The page works for both movies and TV shows. The URL format is <code style="background:var(--surface-hover);padding:2px 6px;border-radius:4px;">/item/{imdb_id}</code>, with optional query parameters <code style="background:var(--surface-hover);padding:2px 6px;border-radius:4px;">?type=movie</code> or <code style="background:var(--surface-hover);padding:2px 6px;border-radius:4px;">?type=show</code> and <code style="background:var(--surface-hover);padding:2px 6px;border-radius:4px;">&emby_id=...</code> for faster image loading.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="detail-navigate"></span>
+    <h2>How to Get There</h2>
+    <p>There's no item detail link in the navigation bar — you reach it from other pages:</p>
+    <div class="feature">
+      <p><strong>Watch History</strong> — click any item title underneath a thumbnail card. This is the most common entry point.</p>
+      <p><strong>Library Health</strong> — titles in the Incomplete Series, Watched Not in Library, and Simkl Suggestions tables link to IMDB externally. Items that have an IMDB ID can be opened on the detail page by navigating to <code style="background:var(--surface-hover);padding:2px 6px;border-radius:4px;">/item/{imdb_id}</code> directly.</p>
+      <p><strong>Direct URL</strong> — type <code style="background:var(--surface-hover);padding:2px 6px;border-radius:4px;">/item/tt1234567</code> in your browser with any valid IMDB ID to open that item's detail page.</p>
+    </div>
+    <p>The ← Back link at the top of the page returns you to wherever you came from.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="detail-hero"></span>
+    <h2>Hero Section</h2>
+    <p>The top of the page shows the poster on the left and key information on the right:</p>
+    <div class="feature">
+      <p><strong>Poster</strong> — pulled from your Emby server. Falls back to a placeholder icon if the item isn't in your library.</p>
+      <p><strong>Logo</strong> — if TMDB has a logo image for the title (common for popular franchises), it displays above the title text.</p>
+      <p><strong>Tagline</strong> — the film's tagline from TMDB, shown in italics below the title.</p>
+      <p><strong>Meta pills</strong> — year, content rating (PG-13, R, TV-MA), runtime, and status (Released, Returning Series, Ended). Shows display season and episode counts instead of runtime.</p>
+      <p><strong>Genres</strong> — clickable genre tags from TMDB.</p>
+      <p><strong>Overview</strong> — the plot synopsis. Long overviews are truncated with a "Show more ▾" toggle.</p>
+      <p><strong>Details</strong> — additional metadata rows for directors, writers, studios, networks, budget, and revenue when available.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="detail-ratings"></span>
+    <h2>Ratings</h2>
+    <p>A horizontal row of rating cards from multiple sources, each showing the score out of 10 and the number of votes. Sources include IMDb, Trakt, TMDb, Rotten Tomatoes, Metacritic, and MDBList. Only sources with data are shown.</p>
+    <p>If you've submitted a personal rating (via the floating rating bar on Watch History or directly through Simkl/MDBList), it appears as a highlighted card labelled "Your Rating" alongside the external scores.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="detail-actions"></span>
+    <h2>Action Buttons</h2>
+    <div class="feature">
+      <p><strong>▶ Play on Emby</strong> — starts playback on your active Emby device. Only appears when the item is in your library. If you have multiple active sessions, a device picker appears.</p>
+      <p><strong>▶ Watch Trailer</strong> — opens the TMDB trailer link in a new tab. Only appears when TMDB has a trailer for the item.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="detail-cast"></span>
+    <h2>Cast &amp; Crew</h2>
+    <p>A tabbed section with Cast and Crew tabs, each showing a count badge. Cast members display in a grid of photo cards with the actor's name and character role. Crew members show name and job title (Director, Writer, Producer, etc.).</p>
+    <p>Photos come from TMDB. Members without a photo show a silhouette placeholder. The grid is responsive — more columns on wider screens, fewer on mobile.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="detail-history"></span>
+    <h2>Your Watch History</h2>
+    <p>If you've watched this item before, a timeline appears showing every recorded watch event with the date and completion percentage. Fully completed watches show in green; partial watches show the percentage in amber. Data comes from the local watch history database.</p>
+    <p>This section only appears when there's at least one watch event for the item.</p>
+  </div>
+
+  <div class="section">
+    <span class="section-anchor" id="detail-keywords"></span>
+    <h2>Keywords</h2>
+    <p>A row of keyword chips from TMDB — things like "based on novel", "time travel", "superhero". Limited to 15 keywords with a "+N more" indicator if there are extras. Useful for understanding what themes a film covers.</p>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
 <!-- PAGE: SETTINGS -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
@@ -1143,6 +1225,11 @@
     // Watch History
     'wh-overview':'Overview','wh-filters':'Filters','wh-cards':'Item Cards',
     'wh-progress':'Partial Watches','wh-images':'Thumbnails','wh-paging':'Loading More',
+    // Item Detail
+    'detail-overview':'Overview','detail-navigate':'How to Get There',
+    'detail-hero':'Hero Section','detail-ratings':'Ratings',
+    'detail-actions':'Action Buttons','detail-cast':'Cast & Crew',
+    'detail-history':'Watch History','detail-keywords':'Keywords',
     // Settings
     'set-provider':'Integration Provider','set-mdblist':'MDBList',
     'set-emby':'Emby','set-toggles':'Feature Toggles','set-queue-opts':'Queue Options',
