@@ -393,6 +393,7 @@
   .btn-watchlist.on-list { background: rgba(61,154,86,0.15); border-color: var(--green); color: var(--green); }
 
 </style>
+<script src="/static/js/csrf.js"></script>
 </head>
 <body>
   <div id="backdrop"></div>
@@ -1013,13 +1014,39 @@ async function toggleWatchlist() {
 // ── Request via Radarr / Sonarr ──
 async function sendToArr() {
   if (!itemData) return;
+  var isShow = itemData.media_type === 'show';
+  try {
+    var serverEndpoint = isShow ? '/api/sonarr/servers' : '/api/radarr/servers';
+    var r = await fetch(serverEndpoint);
+    var d = await r.json();
+    var servers = d.servers || [];
+    if (servers.length > 1) {
+      // Show server picker modal
+      var html = '<div class="modal-overlay" onclick="if(event.target===this)this.remove()">';
+      html += '<div class="modal-box"><div class="modal-title">Choose ' + (isShow ? 'Sonarr' : 'Radarr') + ' Server</div>';
+      servers.forEach(function(s, i) {
+        html += '<button class="device-btn" onclick="this.closest(\'.modal-overlay\').remove();doArrSend(' + i + ')">'
+          + esc(s.quality_profile_name || s.name || ('Server ' + (i + 1))) + '</button>';
+      });
+      html += '</div></div>';
+      document.body.insertAdjacentHTML('beforeend', html);
+    } else {
+      doArrSend(0);
+    }
+  } catch(e) {
+    showToast('Error loading servers: ' + e.message, 'error');
+  }
+}
+
+async function doArrSend(serverIdx) {
+  if (!itemData) return;
   var btn = document.getElementById('arrBtn');
   if (!btn) return;
   btn.disabled = true;
   btn.textContent = '⏳ Sending…';
   var isShow = itemData.media_type === 'show';
   var endpoint = isShow ? '/api/sonarr/add' : '/api/radarr/add';
-  var body = { server_index: 0 };
+  var body = { server_index: serverIdx || 0 };
   if (isShow) {
     body.shows = [{
       tvdb_id: itemData.tvdb_id || undefined,
