@@ -7822,6 +7822,31 @@ async def proxy_emby_image(
         raise HTTPException(502, "Could not reach Emby server")
 
 
+@router.get("/api/tmdb/image/{path:path}")
+async def proxy_tmdb_image(path: str):
+    """Proxy TMDB images so they work on networks that block image.tmdb.org."""
+    import httpx
+    # Validate path looks like a TMDB image path (e.g. w185/abc123.jpg)
+    if not re.match(r"^w\d+/[A-Za-z0-9]+\.\w{3,4}$", path):
+        raise HTTPException(400, "Invalid TMDB image path")
+    url = f"https://image.tmdb.org/t/p/{path}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            raise HTTPException(resp.status_code, "TMDB image not found")
+        content_type = resp.headers.get("content-type", "image/jpeg")
+        return Response(
+            content=resp.content,
+            media_type=content_type,
+            headers={"Cache-Control": "public, max-age=604800"},
+        )
+    except httpx.TimeoutException:
+        raise HTTPException(504, "TMDB image request timed out")
+    except httpx.RequestError:
+        raise HTTPException(502, "Could not reach TMDB")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Watch History — persistent local record
 # ═══════════════════════════════════════════════════════════════════════════
@@ -11170,21 +11195,21 @@ async def get_item_detail(
 
     # TMDB recommendations — enrich with library status
     recs_raw = (tmdb_data or {}).get("recommendations", [])
-    log.info("item_detail.recs_debug", recs_count=len(recs_raw),
-             has_tmdb_data=tmdb_data is not None,
-             sample_poster=(recs_raw[0].get("poster_path") if recs_raw else None))
     recs_out: list[dict] = []
     for rec in recs_raw:
         rec_tmdb = rec.get("id")
         rec_in_lib = False
         rec_imdb = None
+        rec_emby = None
         if rec_tmdb:
             cached_rec = await LibraryCache.find_by_provider_id("Tmdb", str(rec_tmdb))
             if cached_rec:
                 rec_in_lib = True
                 rec_imdb = (cached_rec.get("provider_ids") or {}).get("Imdb")
+                rec_emby = cached_rec.get("emby_id") or cached_rec.get("Id")
         rec["in_library"] = rec_in_lib
         rec["imdb_id"] = rec_imdb
+        rec["emby_id"] = rec_emby
         recs_out.append(rec)
     result["recommendations"] = recs_out
 

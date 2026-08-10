@@ -464,7 +464,7 @@
   <div id="toast"></div>
 
 <script>
-const TMDB_IMG = 'https://image.tmdb.org/t/p/';
+const TMDB_IMG = '/api/tmdb/image/';
 const imdbId = '{{ imdb_id }}';
 let itemData = null;
 
@@ -948,9 +948,16 @@ function renderRecs(d) {
   document.getElementById('recsSection').style.display = '';
   var html = '';
   recs.forEach(function(rec) {
-    var poster = rec.poster_path
-      ? '<img class="rec-poster" src="' + TMDB_IMG + 'w185' + rec.poster_path + '"'
-        + ' onerror="this.outerHTML=\'<div class=rec-poster-ph>🎬</div>\'">'
+    var posterSrc = '';
+    if (rec.in_library && rec.emby_id) {
+      posterSrc = imgUrl(rec.emby_id, 'Primary', 185);
+    } else if (rec.poster_path) {
+      posterSrc = '/api/tmdb/image/w185' + rec.poster_path;
+    }
+    var poster = posterSrc
+      ? '<img class="rec-poster" src="' + posterSrc + '" alt="' + esc(rec.title || '') + '"'
+        + ' onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+        + '<div class="rec-poster-ph" style="display:none;">🎬</div>'
       : '<div class="rec-poster-ph">🎬</div>';
     var year = (rec.release_date || '').slice(0, 4);
     var rating = rec.vote_average ? '★ ' + rec.vote_average.toFixed(1) : '';
