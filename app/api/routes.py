@@ -11495,15 +11495,14 @@ async def toggle_watchlist(
 # FILMOGRAPHY TRACKER
 # ═══════════════════════════════════════════════════════════════════════════
 
-@app.get("/filmography")
+@router.get("/filmography")
 async def filmography_page():
     """Serve the filmography tracker page."""
-    path = Path(__file__).resolve().parent.parent.parent / "frontend" / "templates" / "filmography.html"
-    html = path.read_text()
-    return HTMLResponse(html)
+    with open("frontend/templates/filmography.html", "r") as f:
+        return HTMLResponse(f.read())
 
 
-@app.get("/api/filmography/{person_name}")
+@router.get("/api/filmography/{person_name}")
 async def get_filmography(
     person_name: str,
     current_user: User = Depends(get_current_user),
@@ -11558,15 +11557,14 @@ async def get_filmography(
 # DUPLICATE / CONFLICT DETECTOR
 # ═══════════════════════════════════════════════════════════════════════════
 
-@app.get("/duplicates")
+@router.get("/duplicates")
 async def duplicates_page():
     """Serve the duplicate/conflict detector page."""
-    path = Path(__file__).resolve().parent.parent.parent / "frontend" / "templates" / "duplicates.html"
-    html = path.read_text()
-    return HTMLResponse(html)
+    with open("frontend/templates/duplicates.html", "r") as f:
+        return HTMLResponse(f.read())
 
 
-@app.get("/api/duplicates/scan")
+@router.get("/api/duplicates/scan")
 async def scan_duplicates(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -11663,15 +11661,14 @@ async def scan_duplicates(
 # VIEWING GOALS / WATCH PLANS
 # ═══════════════════════════════════════════════════════════════════════════
 
-@app.get("/goals")
+@router.get("/goals")
 async def goals_page():
     """Serve the viewing goals page."""
-    path = Path(__file__).resolve().parent.parent.parent / "frontend" / "templates" / "goals.html"
-    html = path.read_text()
-    return HTMLResponse(html)
+    with open("frontend/templates/goals.html", "r") as f:
+        return HTMLResponse(f.read())
 
 
-@app.get("/api/goals/{user_id}")
+@router.get("/api/goals/{user_id}")
 async def get_goals(
     user_id: int,
     db: AsyncSession = Depends(get_db),
@@ -11752,7 +11749,7 @@ async def get_goals(
     return {"goals": result}
 
 
-@app.post("/api/goals")
+@router.post("/api/goals")
 async def create_goal(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -11779,7 +11776,7 @@ async def create_goal(
     return {"id": goal.id, "status": "created"}
 
 
-@app.delete("/api/goals/{goal_id}")
+@router.delete("/api/goals/{goal_id}")
 async def delete_goal(
     goal_id: int,
     db: AsyncSession = Depends(get_db),
