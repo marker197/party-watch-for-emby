@@ -250,22 +250,6 @@ class SimklClient:
                                   type=item_type, keys=list(data.keys())[:10])
                         items_list = []
 
-                # Log first item shape for debugging
-                if items_list:
-                    sample = items_list[0]
-                    sample_keys = list(sample.keys())[:15]
-                    # Check for rating in various locations
-                    sample_rating = sample.get("rating")
-                    sample_user_rating = sample.get("user_rating")
-                    inner = sample.get("movie") or sample.get("show") or {}
-                    inner_rating = inner.get("rating") if isinstance(inner, dict) else None
-                    log.debug("simkl.ratings_sample_item",
-                              type=item_type,
-                              keys=sample_keys,
-                              rating=sample_rating,
-                              user_rating=sample_user_rating,
-                              inner_rating=inner_rating)
-
                 for item in items_list:
                     item["_type"] = item_type
                     # Try multiple field names for the user's rating
