@@ -497,7 +497,14 @@ async function loadUsers() {
       sel.appendChild(o);
     });
     if (users.length > 0) {
-      currentUser = users[0].id;
+      // Restore last selected user from localStorage, fall back to first
+      const saved = localStorage.getItem('rewatch_last_user');
+      const savedId = saved ? parseInt(saved) : null;
+      if (savedId && users.some(u => u.id === savedId)) {
+        currentUser = savedId;
+      } else {
+        currentUser = users[0].id;
+      }
       sel.value = currentUser;
     }
   } catch (e) {
@@ -507,6 +514,7 @@ async function loadUsers() {
 
 function switchUser() {
   currentUser = parseInt(document.getElementById('userSelect').value);
+  localStorage.setItem('rewatch_last_user', currentUser);
   loadSuggestions();
 }
 

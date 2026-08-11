@@ -1234,11 +1234,15 @@
       cronToUI('MLRetrain', settings.cron_ml_retrain || '0 4 * * 1');
       cronToUI('UniverseScan', settings.cron_universe_scan || '0 3 * * 0');
 
-      // Set feature toggles
+      // Set feature toggles — sync active class to saved state
       Object.entries(settings.features || {}).forEach(([feature, enabled]) => {
         const toggle = document.querySelector(`[data-feature="${feature}"]`);
-        if (toggle && enabled) {
-          toggle.classList.add('active');
+        if (toggle) {
+          if (enabled) {
+            toggle.classList.add('active');
+          } else {
+            toggle.classList.remove('active');
+          }
         }
       });
     }

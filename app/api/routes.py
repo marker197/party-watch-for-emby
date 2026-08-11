@@ -4054,10 +4054,10 @@ async def read_settings(db: AsyncSession = Depends(get_db)):
         "cron_ml_retrain": await _get_setting(db, "cron_ml_retrain", os.getenv("ML_RETRAIN_CRON", "0 4 * * 1")),
         "cron_universe_scan": await _get_setting(db, "cron_universe_scan", os.getenv("UNIVERSE_SCAN_CRON", "0 3 * * 0")),
         "features": {
-            "smart_queue": os.getenv("ENABLE_SMART_QUEUE", "true").lower() == "true",
-            "ml_predictor": os.getenv("ENABLE_ML_PREDICTOR", "true").lower() == "true",
-            "universe_discovery": os.getenv("ENABLE_UNIVERSE_DISCOVERY", "true").lower() == "true",
-            "watch_party": os.getenv("ENABLE_WATCH_PARTY", "true").lower() == "true",
+            "smart_queue": (await _get_setting(db, "feature_smart_queue", os.getenv("ENABLE_SMART_QUEUE", "true"))).lower() == "true",
+            "ml_predictor": (await _get_setting(db, "feature_ml_predictor", os.getenv("ENABLE_ML_PREDICTOR", "true"))).lower() == "true",
+            "universe_discovery": (await _get_setting(db, "feature_universe_discovery", os.getenv("ENABLE_UNIVERSE_DISCOVERY", "true"))).lower() == "true",
+            "watch_party": (await _get_setting(db, "feature_watch_party", os.getenv("ENABLE_WATCH_PARTY", "true"))).lower() == "true",
         }
     }
 
@@ -4082,12 +4082,29 @@ async def update_settings(request: SettingsRequest, db: AsyncSession = Depends(g
             reschedule_job(job_id, cron_val)
             saved.append(db_key)
 
+    # Feature toggles — persist to DB and update in-memory settings
+    if request.features and isinstance(request.features, dict):
+        feature_map = {
+            "smart_queue": "enable_smart_queue",
+            "ml_predictor": "enable_ml_predictor",
+            "universe_discovery": "enable_universe_discovery",
+            "watch_party": "enable_watch_party",
+        }
+        for feature_key, config_attr in feature_map.items():
+            if feature_key in request.features:
+                val = "true" if request.features[feature_key] else "false"
+                await _put_setting(db, f"feature_{feature_key}", val)
+                # Update in-memory settings object so /health etc. reflect changes
+                if hasattr(settings, config_attr):
+                    object.__setattr__(settings, config_attr, request.features[feature_key])
+                saved.append(f"feature_{feature_key}")
+
     await db.commit()
 
     return {
         "status": "ok",
         "saved": saved,
-        "message": f"Saved {len(saved)} setting(s). Schedules updated immediately.",
+        "message": f"Saved {len(saved)} setting(s).",
     }
 
 
@@ -7975,7 +7992,14 @@ async def get_watch_history_by_date(
                 )
                 rated_imdb_set = {r for r in (await db.execute(rated_q)).scalars().all() if r}
 
-    # ── Total items count (all time, with current type filter) ─────
+    # ── Total items count (distinct items, no rewatches) ────────────
+    # Build a dedup expression matching the view's collapse behaviour:
+    #   Movies:   distinct by imdb_id (or title fallback)
+    #   Shows:    distinct series (by series_name or title)
+    #   Episodes: distinct (series+season+episode) combos
+    #   All:      movies + episodes deduplied by their own keys
+    from sqlalchemy import case, cast as sa_cast, String as SAString
+
     total_count_filters = [WatchHistory.user_id == user_id]
     if requested_types and len(requested_types) < 3:
         tc_db_types: set[str] = set()
@@ -7987,27 +8011,56 @@ async def get_watch_history_by_date(
             total_count_filters.append(WatchHistory.item_type == next(iter(tc_db_types)))
         else:
             total_count_filters.append(WatchHistory.item_type.in_(tc_db_types))
+
+    # Choose the right dedup expression for the active filter
+    if requested_types == {"movie"}:
+        # Unique movies by imdb_id (or title fallback)
+        dedup_expr = func.coalesce(WatchHistory.imdb_id, WatchHistory.title)
+    elif requested_types == {"show"}:
+        # Unique series (collapsed view)
+        dedup_expr = func.coalesce(WatchHistory.series_name, WatchHistory.title)
+    elif requested_types == {"episode"}:
+        # Unique episodes by series+season+episode
+        dedup_expr = func.concat(
+            func.coalesce(WatchHistory.imdb_id, WatchHistory.series_name, WatchHistory.title),
+            '|', func.coalesce(sa_cast(WatchHistory.season_number, SAString), '-1'),
+            '|', func.coalesce(sa_cast(WatchHistory.episode_number, SAString), '-1'),
+        )
+    else:
+        # All / mixed — movies dedup by imdb_id, episodes dedup by series+season+ep
+        dedup_expr = case(
+            (WatchHistory.item_type == "movie",
+             func.concat('mov|', func.coalesce(WatchHistory.imdb_id, WatchHistory.title))),
+            else_=func.concat(
+                'ep|', func.coalesce(WatchHistory.imdb_id, WatchHistory.series_name, WatchHistory.title),
+                '|', func.coalesce(sa_cast(WatchHistory.season_number, SAString), '-1'),
+                '|', func.coalesce(sa_cast(WatchHistory.episode_number, SAString), '-1'),
+            ),
+        )
+
     total_items = (await db.execute(
-        select(func.count(WatchHistory.id)).where(*total_count_filters)
+        select(func.count(distinct(dedup_expr))).where(*total_count_filters)
     )).scalar() or 0
 
-    # Adjust total for rating filter — the actual filter is applied post-dedup
-    # but the count should reflect it for accurate UI display
+    # Adjust total for rating filter — use same distinct dedup expression
     if rated_imdb_set is not None and total_items > 0:
         if unrated_mode:
-            # Count items whose imdb_id IS in rated set (to subtract)
-            rated_count = (await db.execute(
-                select(func.count(WatchHistory.id)).where(
-                    *total_count_filters,
-                    WatchHistory.imdb_id.in_(rated_imdb_set) if rated_imdb_set else WatchHistory.id < 0,
-                )
-            )).scalar() or 0
+            # Count distinct items that ARE rated (to subtract)
+            if rated_imdb_set:
+                rated_count = (await db.execute(
+                    select(func.count(distinct(dedup_expr))).where(
+                        *total_count_filters,
+                        WatchHistory.imdb_id.in_(rated_imdb_set),
+                    )
+                )).scalar() or 0
+            else:
+                rated_count = 0
             total_items = max(0, total_items - rated_count)
         else:
-            # Count only items whose imdb_id IS in rated set
+            # Count only distinct items whose imdb_id IS in rated set
             if rated_imdb_set:
                 total_items = (await db.execute(
-                    select(func.count(WatchHistory.id)).where(
+                    select(func.count(distinct(dedup_expr))).where(
                         *total_count_filters,
                         WatchHistory.imdb_id.in_(rated_imdb_set),
                     )

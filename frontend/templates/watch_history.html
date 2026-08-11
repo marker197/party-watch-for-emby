@@ -747,8 +747,15 @@ async function loadHistory() {
 
     nextBefore = data.next_before;
 
-    // Update item count badge
-    document.getElementById('itemCount').textContent = (data.total_items || 0).toLocaleString() + ' items';
+    // Update item count badge with type-aware label
+    var countLabel = ' items';
+    if (activeTypeFilters.size === 1) {
+      var activeType = Array.from(activeTypeFilters)[0];
+      if (activeType === 'movie') countLabel = ' movies';
+      else if (activeType === 'show') countLabel = ' shows';
+      else if (activeType === 'episode') countLabel = ' episodes';
+    }
+    document.getElementById('itemCount').textContent = (data.total_items || 0).toLocaleString() + countLabel;
 
     var timeline = document.getElementById('timeline');
     timeline.innerHTML = '';
@@ -825,7 +832,14 @@ function jumpToMonth(val) {
 
   fetch(url).then(function(r) { return r.json(); }).then(function(data) {
     nextBefore = data.next_before;
-    document.getElementById('itemCount').textContent = (data.total_items || 0).toLocaleString() + ' items';
+    var jmCountLabel = ' items';
+    if (activeTypeFilters.size === 1) {
+      var jmActiveType = Array.from(activeTypeFilters)[0];
+      if (jmActiveType === 'movie') jmCountLabel = ' movies';
+      else if (jmActiveType === 'show') jmCountLabel = ' shows';
+      else if (jmActiveType === 'episode') jmCountLabel = ' episodes';
+    }
+    document.getElementById('itemCount').textContent = (data.total_items || 0).toLocaleString() + jmCountLabel;
     var timeline = document.getElementById('timeline');
     var jmFiltered = applyTypeFilters(data.days);
     for (var i = 0; i < jmFiltered.length; i++) {
