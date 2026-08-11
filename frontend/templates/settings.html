@@ -8,18 +8,18 @@
   <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
   <style>
     :root {
-      --bg: #0D1117;
-      --surface: #161B22;
-      --surface-hover: #1C2333;
-      --border: #1B2332;
+      --bg: #0F0F12;
+      --surface: #18181E;
+      --surface-hover: #22222A;
+      --border: #2A2A35;
       --text: #E6EDF3;
       --text-dim: #7D8590;
-      --accent: #3D9A56;
-      --accent-light: #57B36E;
-      --green: #3D9A56;
-      --orange: #D29922;
-      --red: #F85149;
-      --blue: #58A6FF;
+      --accent: #E8B94A;
+      --accent-light: #F0CA6B;
+      --green: #4AAD6E;
+      --orange: #E07D3A;
+      --red: #E05252;
+      --blue: #7B8CDE;
       --radius: 10px;
       --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
@@ -318,19 +318,19 @@
 </head>
 <body>
 <script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
-<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#0D1117;border-bottom:1px solid #1B2332;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#0F0F12;border-bottom:1px solid #2A2A35;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
     <span style="color:#7D8590;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
-    <a href="/" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">Dashboard</a>
-    <a href="/lists" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">📋 Lists</a>
-    <a href="/predictions" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
-    <a href="/bias" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
-    <a href="/rewatch" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">🔁 Rewatch</a>
-    <a href="/stats" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">📊 Stats</a>
-    <a href="/watch-history" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">📜 History</a>
-    <a href="/library-health" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">🏥 Health</a>
-    <a href="/settings" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#1C2333;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='#1C2333'">⚙️ Settings</a>
-    <a href="/watch-party" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
-    <a href="/guide" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2333'" onmouseout="this.style.background='transparent'">📖 Guide</a>
+    <a href="/" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22222A'" onmouseout="this.style.background='transparent'">Dashboard</a>
+    <a href="/lists" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22222A'" onmouseout="this.style.background='transparent'">📋 Lists</a>
+    <a href="/predictions" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22222A'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
+    <a href="/bias" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22222A'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
+    <a href="/rewatch" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22222A'" onmouseout="this.style.background='transparent'">🔁 Rewatch</a>
+    <a href="/stats" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22222A'" onmouseout="this.style.background='transparent'">📊 Stats</a>
+    <a href="/watch-history" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22222A'" onmouseout="this.style.background='transparent'">📜 History</a>
+    <a href="/library-health" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22222A'" onmouseout="this.style.background='transparent'">🏥 Health</a>
+    <a href="/settings" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#22222A;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#22222A'" onmouseout="this.style.background='#22222A'">⚙️ Settings</a>
+    <a href="/watch-party" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22222A'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
+    <a href="/guide" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#22222A'" onmouseout="this.style.background='transparent'">📖 Guide</a>
 </nav>
 
   <div class="header">
