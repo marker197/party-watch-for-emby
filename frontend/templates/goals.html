@@ -137,7 +137,7 @@ var currentUserId = null;
 
 async function init() {
   try {
-    var r = await fetch('/api/auth/users');
+    var r = await fetch('/auth/users');
     var users = await r.json();
     if (users.length > 0) currentUserId = users[0].id;
     loadGoals();

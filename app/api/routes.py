@@ -11570,6 +11570,7 @@ async def scan_duplicates(
     current_user: User = Depends(get_current_user),
 ):
     """Scan library and watch history for duplicates and conflicts."""
+    from app.models.schema import WatchHistory
     issues = []
 
     # 1. Duplicate library items (same IMDB ID, different Emby ID)
