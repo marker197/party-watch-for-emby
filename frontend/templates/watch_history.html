@@ -587,10 +587,16 @@ function renderItem(item, _idx, _arr, dayDate) {
 
   // Build detail page link
   const detailType = itemType === 'episode' ? 'show' : itemType;
-  const detailImdb = itemImdb || '';
+  // For collapsed show items, use series-level IDs instead of episode IDs
+  const detailImdb = (itemType === 'show' || itemType === 'episode')
+    ? (item.series_imdb_id || itemImdb || '')
+    : (itemImdb || '');
+  const detailEmby = (itemType === 'show')
+    ? (item.series_emby_id || item.emby_id || '')
+    : (item.emby_id || '');
   const detailLink = detailImdb
     ? '/item/' + encodeURIComponent(detailImdb) + '?type=' + detailType
-      + (item.emby_id ? '&emby_id=' + encodeURIComponent(item.emby_id) : '')
+      + (detailEmby ? '&emby_id=' + encodeURIComponent(detailEmby) : '')
     : '';
 
   return '<div class="history-item">'

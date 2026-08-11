@@ -8142,10 +8142,22 @@ async def get_watch_history_by_date(
             if item.get("item_type") == "episode" and item.get("series_name"):
                 try:
                     series_cached = await LibraryCache.find_by_title(
-                        item["series_name"], item_type="series"
+                        item["series_name"]
                     )
                     if series_cached:
                         item["series_emby_id"] = series_cached.get("emby_id") or series_cached.get("Id")
+                except Exception:
+                    pass
+            # Collapsed show items need series-level IDs for the detail page link
+            elif item.get("item_type") == "show" and item.get("series_name"):
+                try:
+                    series_cached = await LibraryCache.find_by_title(
+                        item["series_name"]
+                    )
+                    if series_cached:
+                        item["series_emby_id"] = series_cached.get("emby_id") or series_cached.get("Id")
+                        s_pids = series_cached.get("provider_ids") or {}
+                        item["series_imdb_id"] = s_pids.get("Imdb") or s_pids.get("imdb")
                 except Exception:
                     pass
 

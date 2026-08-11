@@ -35,6 +35,8 @@ services:
       ML_RETRAIN_CRON: ${ML_RETRAIN_CRON:-0 4 * * 1}
       # -- Logging --
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # -- Timezone --
+      TZ: ${TZ:-Europe/London}
     volumes:
       - models:/app/models
       - cache:/app/cache
@@ -44,9 +46,7 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    restart: unless-stopped
-    environment:
-      - TZ=Europe/London
+    restart: unless-stopped   
     networks:
       - emby-trakt
     # ✅ SECURITY: Resource limits
