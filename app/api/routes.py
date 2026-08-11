@@ -8137,29 +8137,54 @@ async def get_watch_history_by_date(
                 item["emby_id"] = resolved.get("emby_id") or resolved.get("Id")
 
     # ── Resolve series emby_id for episode items (poster fallback) ──
+    # ── AND series-level IDs for collapsed show items (detail link) ──
+    # Collect episode emby_ids that need series resolution
+    needs_series: list[dict] = []
     for _date_str, bucket in day_map.items():
         for item in bucket.values():
-            if item.get("item_type") == "episode" and item.get("series_name"):
-                try:
-                    series_cached = await LibraryCache.find_by_title(
-                        item["series_name"]
-                    )
-                    if series_cached:
-                        item["series_emby_id"] = series_cached.get("emby_id") or series_cached.get("Id")
-                except Exception:
-                    pass
-            # Collapsed show items need series-level IDs for the detail page link
-            elif item.get("item_type") == "show" and item.get("series_name"):
-                try:
-                    series_cached = await LibraryCache.find_by_title(
-                        item["series_name"]
-                    )
-                    if series_cached:
-                        item["series_emby_id"] = series_cached.get("emby_id") or series_cached.get("Id")
-                        s_pids = series_cached.get("provider_ids") or {}
-                        item["series_imdb_id"] = s_pids.get("Imdb") or s_pids.get("imdb")
-                except Exception:
-                    pass
+            if item.get("item_type") in ("episode", "show") and item.get("emby_id"):
+                needs_series.append(item)
+
+    if needs_series:
+        try:
+            emby = EmbyClient()
+            try:
+                # Step 1: fetch episode items to get SeriesId
+                ep_ids = list({it["emby_id"] for it in needs_series if it["emby_id"]})
+                ep_items = await emby.get_items_by_ids(ep_ids, user_id=current_user.emby_user_id) if ep_ids else []
+                # Map emby_id → SeriesId
+                ep_to_series: dict[str, str] = {}
+                for ep in ep_items:
+                    eid = ep.get("Id")
+                    sid = ep.get("SeriesId")
+                    if eid and sid:
+                        ep_to_series[eid] = sid
+
+                # Step 2: fetch unique series items to get ProviderIds
+                series_ids = list(set(ep_to_series.values()))
+                series_items = await emby.get_items_by_ids(series_ids, user_id=current_user.emby_user_id) if series_ids else []
+                series_map: dict[str, dict] = {}
+                for s in series_items:
+                    series_map[s.get("Id")] = s
+
+                # Step 3: assign series IDs to items
+                for item in needs_series:
+                    series_id = ep_to_series.get(item["emby_id"])
+                    if not series_id:
+                        continue
+                    series_item = series_map.get(series_id)
+                    if not series_item:
+                        continue
+                    item["series_emby_id"] = series_id
+                    s_pids = series_item.get("ProviderIds") or {}
+                    if item.get("item_type") == "show":
+                        item["series_imdb_id"] = s_pids.get("Imdb")
+                        item["series_tmdb_id"] = s_pids.get("Tmdb")
+                        item["series_tvdb_id"] = s_pids.get("Tvdb")
+            finally:
+                await emby.close()
+        except Exception as e:
+            log.warning("wh.series_resolve_failed", error=str(e)[:120])
 
     # ── All-time rewatch counts ─────────────────────────────────────
     # Collect unique identifiers from visible items to query total watches
