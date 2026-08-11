@@ -13,7 +13,7 @@ def setup_logging():
 
     Logs go to:
       1. stdout (for Docker / Synology Container Manager log viewer)
-      2. Rotating file at LOG_FILE (default /app/logs/emby-trakt-suite.log)
+      2. Rotating file at LOG_FILE (default /app/logs/emby-simkl-suite.log)
          Max LOG_MAX_BYTES per file (default 10 MB), keeps LOG_BACKUP_COUNT backups (default 5).
     """
 
@@ -26,7 +26,7 @@ def setup_logging():
         structlog.processors.add_log_level,
         structlog.processors.StackInfoRenderer(),
         structlog.dev.set_exc_info,
-        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.TimeStamper(fmt="iso", utc=False),
     ]
 
     # -- Build stdlib root logger with two handlers --
