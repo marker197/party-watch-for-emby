@@ -11489,3 +11489,309 @@ async def toggle_watchlist(
         results["mdblist"] = str(e)[:100]
 
     return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FILMOGRAPHY TRACKER
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/filmography")
+async def filmography_page():
+    """Serve the filmography tracker page."""
+    path = Path(__file__).resolve().parent.parent.parent / "frontend" / "templates" / "filmography.html"
+    html = path.read_text()
+    return HTMLResponse(html)
+
+
+@app.get("/api/filmography/{person_name}")
+async def get_filmography(
+    person_name: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Fetch a person's filmography from TMDB, cross-referenced with library & watch history."""
+    from app.utils.tmdb_client import get_person_details
+
+    person = await get_person_details(person_name)
+    if not person:
+        raise HTTPException(404, f"Person '{person_name}' not found on TMDB")
+
+    # Merge cast + crew entries, dedup by id+media_type
+    all_works = {}
+    for item in person.get("cast", []):
+        key = f"{item['media_type']}:{item['id']}"
+        if key not in all_works:
+            all_works[key] = {**item, "roles": []}
+        all_works[key]["roles"].append(f"Actor ({item.get('character', '?')})")
+
+    for item in person.get("crew", []):
+        key = f"{item['media_type']}:{item['id']}"
+        if key not in all_works:
+            all_works[key] = {**item, "roles": []}
+        all_works[key]["roles"].append(item.get("job", "Crew"))
+
+    # Cross-reference with library cache
+    works = []
+    for work in all_works.values():
+        tmdb_id_str = str(work.get("id", ""))
+        found = await LibraryCache.find_by_provider_id("Tmdb", tmdb_id_str) if tmdb_id_str else None
+        work["in_library"] = found is not None
+        work["emby_id"] = found.get("emby_id") if found else None
+        work["imdb_id"] = found.get("imdb_id") if found else None
+        works.append(work)
+
+    # Sort by release date descending
+    works.sort(key=lambda x: x.get("release_date") or "0000", reverse=True)
+
+    return {
+        "person": {
+            "name": person["name"],
+            "profile_path": person.get("profile_path"),
+            "known_for": person.get("known_for_department"),
+        },
+        "works": works,
+        "total": len(works),
+        "in_library": sum(1 for w in works if w["in_library"]),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DUPLICATE / CONFLICT DETECTOR
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/duplicates")
+async def duplicates_page():
+    """Serve the duplicate/conflict detector page."""
+    path = Path(__file__).resolve().parent.parent.parent / "frontend" / "templates" / "duplicates.html"
+    html = path.read_text()
+    return HTMLResponse(html)
+
+
+@app.get("/api/duplicates/scan")
+async def scan_duplicates(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Scan library and watch history for duplicates and conflicts."""
+    issues = []
+
+    # 1. Duplicate library items (same IMDB ID, different Emby ID)
+    all_items = await LibraryCache.get_all_items()
+    imdb_map: dict[str, list] = {}
+    for item in all_items:
+        iid = item.get("imdb_id")
+        if iid:
+            imdb_map.setdefault(iid, []).append(item)
+
+    for imdb_id, items in imdb_map.items():
+        if len(items) > 1:
+            issues.append({
+                "type": "duplicate_library",
+                "severity": "warning",
+                "title": items[0].get("title", "Unknown"),
+                "imdb_id": imdb_id,
+                "details": f"{len(items)} copies in library",
+                "items": [
+                    {"emby_id": i.get("emby_id"), "title": i.get("title"), "year": i.get("year"),
+                     "item_type": i.get("item_type")}
+                    for i in items
+                ],
+            })
+
+    # 2. Orphaned watch history (watched items no longer in library)
+    user_id = current_user.id
+    recent_watches = (await db.execute(
+        select(
+            WatchHistory.imdb_id,
+            WatchHistory.title,
+            WatchHistory.item_type,
+            func.max(WatchHistory.watched_at).label("last_watched"),
+        )
+        .where(WatchHistory.user_id == user_id, WatchHistory.imdb_id.isnot(None))
+        .group_by(WatchHistory.imdb_id, WatchHistory.title, WatchHistory.item_type)
+    )).all()
+
+    for row in recent_watches:
+        found = await LibraryCache.find_by_provider_id("Imdb", row.imdb_id) if row.imdb_id else None
+        if not found:
+            issues.append({
+                "type": "orphaned_history",
+                "severity": "info",
+                "title": row.title or "Unknown",
+                "imdb_id": row.imdb_id,
+                "item_type": row.item_type,
+                "details": f"Watched but no longer in library (last: {row.last_watched.strftime('%Y-%m-%d') if row.last_watched else '?'})",
+            })
+
+    # 3. Watch history entries with no IMDB ID
+    no_imdb = (await db.execute(
+        select(
+            WatchHistory.title,
+            WatchHistory.item_type,
+            func.count(WatchHistory.id).label("count"),
+        )
+        .where(
+            WatchHistory.user_id == user_id,
+            WatchHistory.imdb_id.is_(None),
+            WatchHistory.item_type == "movie",
+        )
+        .group_by(WatchHistory.title, WatchHistory.item_type)
+    )).all()
+
+    for row in no_imdb:
+        issues.append({
+            "type": "missing_metadata",
+            "severity": "warning",
+            "title": row.title or "Unknown",
+            "item_type": row.item_type,
+            "details": f"No IMDB ID — {row.count} watch record(s) may not link properly",
+        })
+
+    # Sort: warnings first, then info
+    severity_order = {"error": 0, "warning": 1, "info": 2}
+    issues.sort(key=lambda x: severity_order.get(x.get("severity", "info"), 9))
+
+    return {
+        "issues": issues,
+        "total": len(issues),
+        "duplicates": sum(1 for i in issues if i["type"] == "duplicate_library"),
+        "orphaned": sum(1 for i in issues if i["type"] == "orphaned_history"),
+        "missing_meta": sum(1 for i in issues if i["type"] == "missing_metadata"),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# VIEWING GOALS / WATCH PLANS
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/goals")
+async def goals_page():
+    """Serve the viewing goals page."""
+    path = Path(__file__).resolve().parent.parent.parent / "frontend" / "templates" / "goals.html"
+    html = path.read_text()
+    return HTMLResponse(html)
+
+
+@app.get("/api/goals/{user_id}")
+async def get_goals(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return all viewing goals for a user, with live progress."""
+    from app.models.schema import ViewingGoal
+
+    goals = (await db.execute(
+        select(ViewingGoal)
+        .where(ViewingGoal.user_id == user_id)
+        .order_by(ViewingGoal.completed.asc(), ViewingGoal.created_at.desc())
+    )).scalars().all()
+
+    result = []
+    for g in goals:
+        # Calculate live progress for count-based goals
+        current = g.current_count
+        if g.goal_type == "count" and not g.completed:
+            type_filter = []
+            item_types = (g.item_types or "movie,episode").split(",")
+            if "movie" in item_types:
+                type_filter.append("movie")
+            if "episode" in item_types:
+                type_filter.append("episode")
+
+            count_q = select(func.count(distinct(
+                func.coalesce(WatchHistory.imdb_id, WatchHistory.title)
+            ))).where(
+                WatchHistory.user_id == user_id,
+                WatchHistory.watched_at >= g.created_at,
+                WatchHistory.item_type.in_(type_filter) if type_filter else True,
+            )
+            current = (await db.execute(count_q)).scalar() or 0
+            # Update stored count
+            if current != g.current_count:
+                g.current_count = current
+                if g.target_count and current >= g.target_count and not g.completed:
+                    g.completed = True
+                    g.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                g = await db.merge(g)
+
+        elif g.goal_type == "finish_series" and not g.completed:
+            # Check if series is finished in Emby
+            from app.utils.emby_client import EmbyClient
+            emby = EmbyClient()
+            try:
+                series_items = await emby.search_items(g.target_series or g.title, item_type="Series")
+                if series_items:
+                    series_data = await emby.get_item(series_items[0].get("Id"), user_id=str(current_user.emby_user_id or ""))
+                    if series_data:
+                        unplayed = series_data.get("UserData", {}).get("UnplayedItemCount", 1)
+                        current = 1 if unplayed == 0 else 0
+                        if unplayed == 0 and not g.completed:
+                            g.completed = True
+                            g.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                            g = await db.merge(g)
+            except Exception:
+                pass
+            finally:
+                await emby.close()
+
+        result.append({
+            "id": g.id,
+            "title": g.title,
+            "goal_type": g.goal_type,
+            "target_count": g.target_count,
+            "target_series": g.target_series,
+            "deadline": g.deadline.isoformat() if g.deadline else None,
+            "item_types": g.item_types,
+            "current_count": current,
+            "completed": g.completed,
+            "completed_at": g.completed_at.isoformat() if g.completed_at else None,
+            "created_at": g.created_at.isoformat() if g.created_at else None,
+        })
+
+    await db.commit()
+    return {"goals": result}
+
+
+@app.post("/api/goals")
+async def create_goal(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a new viewing goal."""
+    from app.models.schema import ViewingGoal
+
+    body = await request.json()
+    goal = ViewingGoal(
+        user_id=body["user_id"],
+        title=body["title"],
+        goal_type=body["goal_type"],
+        target_count=body.get("target_count"),
+        target_imdb_id=body.get("target_imdb_id"),
+        target_series=body.get("target_series"),
+        deadline=datetime.fromisoformat(body["deadline"]) if body.get("deadline") else None,
+        item_types=body.get("item_types", "movie,episode"),
+        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    )
+    db.add(goal)
+    await db.commit()
+    await db.refresh(goal)
+    return {"id": goal.id, "status": "created"}
+
+
+@app.delete("/api/goals/{goal_id}")
+async def delete_goal(
+    goal_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a viewing goal."""
+    from app.models.schema import ViewingGoal
+
+    from sqlalchemy import delete as sa_delete
+
+    await db.execute(
+        sa_delete(ViewingGoal).where(ViewingGoal.id == goal_id)
+    )
+    await db.commit()
+    return {"status": "deleted"}

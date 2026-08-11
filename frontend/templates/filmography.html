@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Filmography Tracker — Emby-Simkl Suite</title>
+<style>
+  :root {
+    --bg: #0D0F14;
+    --surface: #151820;
+    --surface-hover: #1C2030;
+    --border: #222838;
+    --text: #E6EDF3;
+    --text-dim: #7D8590;
+    --accent: #7B68EE;
+    --accent-light: #9585F0;
+    --green: #4AAD6E;
+    --orange: #D29922;
+    --red: #E05252;
+    --blue: #7B8CDE;
+    --radius: 10px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 28px 20px; }
+  h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 20px; }
+  .search-row { display: flex; gap: 10px; margin-bottom: 24px; }
+  .search-row input {
+    flex: 1; padding: 10px 14px; border-radius: var(--radius); border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); font-size: 0.95rem; outline: none;
+  }
+  .search-row input:focus { border-color: var(--accent); }
+  .btn { padding: 10px 20px; border: none; border-radius: var(--radius); cursor: pointer; font-weight: 600; font-size: 0.88rem; }
+  .btn-accent { background: var(--accent); color: #fff; }
+  .btn-accent:hover { opacity: 0.9; }
+  .person-header {
+    display: flex; align-items: center; gap: 16px; padding: 16px; background: var(--surface);
+    border-radius: var(--radius); margin-bottom: 20px; border: 1px solid var(--border);
+  }
+  .person-photo { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; background: var(--surface-hover); }
+  .person-name { font-size: 1.2rem; font-weight: 700; }
+  .person-dept { color: var(--text-dim); font-size: 0.85rem; }
+  .stats-row { display: flex; gap: 12px; margin-bottom: 20px; }
+  .stat-card {
+    padding: 12px 16px; background: var(--surface); border-radius: var(--radius);
+    border: 1px solid var(--border); flex: 1; text-align: center;
+  }
+  .stat-val { font-size: 1.4rem; font-weight: 700; }
+  .stat-val.accent { color: var(--accent); }
+  .stat-val.green { color: var(--green); }
+  .stat-val.blue { color: var(--blue); }
+  .stat-label { font-size: 0.75rem; color: var(--text-dim); margin-top: 2px; }
+  .filter-row { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .filter-btn {
+    padding: 6px 14px; border-radius: 20px; border: 1px solid var(--border);
+    background: transparent; color: var(--text-dim); cursor: pointer; font-size: 0.82rem;
+  }
+  .filter-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .works-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
+  .work-card {
+    background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border);
+    overflow: hidden; cursor: pointer; transition: border-color 0.2s;
+  }
+  .work-card:hover { border-color: var(--accent); }
+  .work-poster { width: 100%; aspect-ratio: 2/3; object-fit: cover; background: var(--surface-hover); display: block; }
+  .work-info { padding: 8px 10px; }
+  .work-title { font-size: 0.82rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .work-year { font-size: 0.72rem; color: var(--text-dim); }
+  .work-role { font-size: 0.7rem; color: var(--accent-light); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .badge-library { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.65rem; font-weight: 600; background: rgba(74,173,110,0.15); color: var(--green); }
+  .badge-missing { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.65rem; font-weight: 600; background: rgba(125,133,144,0.15); color: var(--text-dim); }
+  .loading { text-align: center; color: var(--text-dim); padding: 40px; }
+  .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty { text-align: center; color: var(--text-dim); padding: 40px; font-size: 0.95rem; }
+  .progress-bar { height: 6px; background: var(--surface-hover); border-radius: 3px; overflow: hidden; margin-bottom: 4px; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--blue)); border-radius: 3px; transition: width 0.3s; }
+  a { color: inherit; text-decoration: none; }
+</style>
+</head>
+<body>
+<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#0D0F14;border-bottom:1px solid #222838;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <span style="color:#7D8590;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
+    <a href="/" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">Dashboard</a>
+    <a href="/lists" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📋 Lists</a>
+    <a href="/predictions" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🤖 Predictions</a>
+    <a href="/bias" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
+    <a href="/rewatch" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🔁 Rewatch</a>
+    <a href="/stats" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📊 Stats</a>
+    <a href="/watch-history" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📜 History</a>
+    <a href="/library-health" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🏥 Health</a>
+    <a href="/filmography" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#1C2030;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='#1C2030'">🎬 Filmography</a>
+    <a href="/settings" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
+    <a href="/guide" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📖 Guide</a>
+</nav>
+<div class="container">
+  <h1>🎬 Filmography Tracker</h1>
+  <div class="search-row">
+    <input type="text" id="searchInput" placeholder="Search for an actor or director…" onkeydown="if(event.key==='Enter')doSearch()" />
+    <button class="btn btn-accent" onclick="doSearch()">Search</button>
+  </div>
+  <div id="results"></div>
+</div>
+<script>
+const API = '';
+const TMDB_IMG = '/api/tmdb/image/';
+
+async function doSearch() {
+  var q = document.getElementById('searchInput').value.trim();
+  if (!q) return;
+  var el = document.getElementById('results');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> Searching…</div>';
+  try {
+    var r = await fetch(API + '/api/filmography/' + encodeURIComponent(q));
+    if (!r.ok) { el.innerHTML = '<div class="empty">No results found for "' + q + '"</div>'; return; }
+    var data = await r.json();
+    renderResults(data);
+  } catch(e) {
+    el.innerHTML = '<div class="empty">Error: ' + e.message + '</div>';
+  }
+}
+
+var allWorks = [];
+var activeFilter = 'all';
+
+function renderResults(data) {
+  var p = data.person;
+  allWorks = data.works;
+  var pct = data.total > 0 ? Math.round(data.in_library / data.total * 100) : 0;
+
+  var photoUrl = p.profile_path ? TMDB_IMG + 'w185' + p.profile_path : '';
+  var html = '<div class="person-header">';
+  if (photoUrl) html += '<img class="person-photo" src="' + photoUrl + '" alt="" />';
+  html += '<div><div class="person-name">' + esc(p.name) + '</div>';
+  html += '<div class="person-dept">' + esc(p.known_for || '') + '</div></div></div>';
+
+  html += '<div class="stats-row">';
+  html += '<div class="stat-card"><div class="stat-val accent">' + data.total + '</div><div class="stat-label">Total Works</div></div>';
+  html += '<div class="stat-card"><div class="stat-val green">' + data.in_library + '</div><div class="stat-label">In Library</div></div>';
+  html += '<div class="stat-card"><div class="stat-val blue">' + pct + '%</div><div class="stat-label">Coverage</div></div>';
+  html += '</div>';
+
+  html += '<div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%;"></div></div>';
+
+  html += '<div class="filter-row">';
+  html += '<button class="filter-btn active" onclick="setFilter(this,\'all\')">All</button>';
+  html += '<button class="filter-btn" onclick="setFilter(this,\'movie\')">Movies</button>';
+  html += '<button class="filter-btn" onclick="setFilter(this,\'tv\')">TV Shows</button>';
+  html += '<button class="filter-btn" onclick="setFilter(this,\'in_library\')">In Library</button>';
+  html += '<button class="filter-btn" onclick="setFilter(this,\'missing\')">Not in Library</button>';
+  html += '</div>';
+
+  html += '<div class="works-grid" id="worksGrid"></div>';
+  document.getElementById('results').innerHTML = html;
+  renderGrid();
+}
+
+function setFilter(btn, filter) {
+  activeFilter = filter;
+  document.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  renderGrid();
+}
+
+function renderGrid() {
+  var filtered = allWorks.filter(function(w) {
+    if (activeFilter === 'movie') return w.media_type === 'movie';
+    if (activeFilter === 'tv') return w.media_type === 'tv';
+    if (activeFilter === 'in_library') return w.in_library;
+    if (activeFilter === 'missing') return !w.in_library;
+    return true;
+  });
+
+  var html = '';
+  filtered.forEach(function(w) {
+    var poster = w.poster_path ? TMDB_IMG + 'w300' + w.poster_path : '';
+    var year = (w.release_date || '').substring(0, 4);
+    var roles = (w.roles || []).join(', ');
+    var link = w.imdb_id ? '/item/' + w.imdb_id : (w.id ? '/item/_?tmdb_id=' + w.id : '#');
+
+    html += '<a href="' + link + '" class="work-card">';
+    if (poster) {
+      html += '<img class="work-poster" src="' + poster + '" alt="" loading="lazy" />';
+    } else {
+      html += '<div class="work-poster" style="display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:0.8rem;">No poster</div>';
+    }
+    html += '<div class="work-info">';
+    html += '<div class="work-title" title="' + esc(w.title || '') + '">' + esc(w.title || '') + '</div>';
+    html += '<div class="work-year">' + year;
+    if (w.in_library) html += ' <span class="badge-library">✓ In Library</span>';
+    else html += ' <span class="badge-missing">Missing</span>';
+    html += '</div>';
+    if (roles) html += '<div class="work-role" title="' + esc(roles) + '">' + esc(roles) + '</div>';
+    html += '</div></a>';
+  });
+  if (!html) html = '<div class="empty" style="grid-column:1/-1;">No items match this filter</div>';
+  document.getElementById('worksGrid').innerHTML = html;
+}
+
+function esc(s) { if (!s && s !== 0) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+</script>
+</body>
+</html>

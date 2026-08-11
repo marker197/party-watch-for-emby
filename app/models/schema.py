@@ -445,3 +445,27 @@ class BulkAction(Base):
     completed_at = Column(DateTime)
 
     user = relationship("User", foreign_keys=[user_id])
+
+# ---------------------------------------------------------------------------
+# Viewing Goals  (UI Feature)
+# ---------------------------------------------------------------------------
+
+class ViewingGoal(Base):
+    """User-set viewing targets with progress tracking."""
+    __tablename__ = "viewing_goals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(256), nullable=False)          # e.g. "Watch 5 movies this week"
+    goal_type = Column(String(32), nullable=False)       # count | finish_series | by_date
+    target_count = Column(Integer, nullable=True)        # for count type
+    target_imdb_id = Column(String(32), nullable=True)   # for finish_series type
+    target_series = Column(String(256), nullable=True)   # series name for finish_series
+    deadline = Column(DateTime, nullable=True)            # optional deadline
+    item_types = Column(String(64), default="movie,episode")  # what counts: movie, episode, or both
+    current_count = Column(Integer, default=0)
+    completed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    completed_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", foreign_keys=[user_id])

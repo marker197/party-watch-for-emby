@@ -501,3 +501,104 @@ async def get_full_details(tmdb_id: int, media_type: str = "movie") -> dict | No
         log.debug("tmdb.full_details_failed", tmdb_id=tmdb_id,
                   media_type=media_type, error=str(e)[:120])
         return None
+
+async def get_person_details(person_name: str) -> dict | None:
+    """Search for a person by name then fetch their combined credits."""
+    api_key = await _get_api_key()
+    if not api_key or not person_name:
+        return None
+
+    import json
+
+    cache_key = f"tmdb_person_v1:{person_name.lower().strip()}"
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            # Step 1: search person
+            search_resp = await client.get(
+                f"{TMDB_BASE}/search/person",
+                params={"api_key": api_key, "query": person_name},
+            )
+            search_resp.raise_for_status()
+            results = search_resp.json().get("results", [])
+            if not results:
+                return None
+
+            person = results[0]
+            person_id = person["id"]
+
+            # Step 2: get combined credits
+            credits_resp = await client.get(
+                f"{TMDB_BASE}/person/{person_id}/combined_credits",
+                params={"api_key": api_key},
+            )
+            credits_resp.raise_for_status()
+            credits_data = credits_resp.json()
+
+        cast = []
+        for c in credits_data.get("cast") or []:
+            cast.append({
+                "id": c.get("id"),
+                "title": c.get("title") or c.get("name"),
+                "media_type": c.get("media_type", "movie"),
+                "character": c.get("character"),
+                "release_date": c.get("release_date") or c.get("first_air_date"),
+                "poster_path": c.get("poster_path"),
+                "vote_average": c.get("vote_average"),
+                "vote_count": c.get("vote_count", 0),
+                "popularity": c.get("popularity", 0),
+            })
+        # Sort by popularity descending, filter out very low-vote items
+        cast = sorted(
+            [c for c in cast if (c.get("vote_count") or 0) >= 5],
+            key=lambda x: x.get("popularity", 0),
+            reverse=True,
+        )
+
+        crew = []
+        for c in credits_data.get("crew") or []:
+            if c.get("job") in ("Director", "Writer", "Screenplay", "Creator", "Producer", "Executive Producer"):
+                crew.append({
+                    "id": c.get("id"),
+                    "title": c.get("title") or c.get("name"),
+                    "media_type": c.get("media_type", "movie"),
+                    "job": c.get("job"),
+                    "release_date": c.get("release_date") or c.get("first_air_date"),
+                    "poster_path": c.get("poster_path"),
+                    "vote_average": c.get("vote_average"),
+                    "vote_count": c.get("vote_count", 0),
+                    "popularity": c.get("popularity", 0),
+                })
+        crew = sorted(
+            [c for c in crew if (c.get("vote_count") or 0) >= 5],
+            key=lambda x: x.get("popularity", 0),
+            reverse=True,
+        )
+
+        result = {
+            "person_id": person_id,
+            "name": person.get("name"),
+            "profile_path": person.get("profile_path"),
+            "known_for_department": person.get("known_for_department"),
+            "cast": cast,
+            "crew": crew,
+        }
+
+        try:
+            r = await get_redis()
+            await r.setex(cache_key, 86400, json.dumps(result))
+        except Exception:
+            pass
+
+        return result
+
+    except Exception as e:
+        log.debug("tmdb.person_details_failed", name=person_name, error=str(e)[:120])
+        return None

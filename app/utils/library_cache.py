@@ -173,6 +173,36 @@ class LibraryCache:
             log.warning("library_cache.cache_item_error", error=str(e), item_id=item.get("Id"))
 
     @classmethod
+    async def get_all_items(cls) -> list[dict]:
+        """Return all unique library items from cache, deduped by emby_id."""
+        try:
+            r = await get_redis()
+            seen_ids: set[str] = set()
+            items: list[dict] = []
+            async for key in r.scan_iter(match=f"{CACHE_KEY_PREFIX}Imdb:*", count=200):
+                raw = await r.get(key)
+                if not raw:
+                    continue
+                data = json.loads(raw)
+                eid = data.get("emby_id")
+                if eid and eid not in seen_ids:
+                    seen_ids.add(eid)
+                    pids = data.get("provider_ids", {})
+                    items.append({
+                        "emby_id": eid,
+                        "title": data.get("title"),
+                        "year": data.get("year"),
+                        "item_type": data.get("type"),
+                        "imdb_id": pids.get("Imdb"),
+                        "tmdb_id": pids.get("Tmdb"),
+                        "tvdb_id": pids.get("Tvdb"),
+                    })
+            return items
+        except Exception as e:
+            log.warning("library_cache.get_all_items_error", error=str(e))
+            return []
+
+    @classmethod
     async def clear(cls) -> dict:
         try:
             r = await get_redis()
