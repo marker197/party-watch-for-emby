@@ -602,3 +602,54 @@ async def get_person_details(person_name: str) -> dict | None:
     except Exception as e:
         log.debug("tmdb.person_details_failed", name=person_name, error=str(e)[:120])
         return None
+
+
+async def get_popular_people(limit: int = 20) -> list[dict]:
+    """Return currently popular people from TMDB. Cached 12 hours."""
+    api_key = await _get_api_key()
+    if not api_key:
+        return []
+
+    import json
+
+    cache_key = "tmdb_popular_people_v1"
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{TMDB_BASE}/person/popular",
+                params={"api_key": api_key, "page": 1},
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+
+        people = []
+        for p in results[:limit]:
+            people.append({
+                "name": p.get("name"),
+                "profile_path": p.get("profile_path"),
+                "known_for_department": p.get("known_for_department"),
+                "known_for": [
+                    kf.get("title") or kf.get("name")
+                    for kf in (p.get("known_for") or [])[:2]
+                ],
+            })
+
+        try:
+            r = await get_redis()
+            await r.setex(cache_key, 43200, json.dumps(people))  # 12h
+        except Exception:
+            pass
+
+        return people
+
+    except Exception as e:
+        log.debug("tmdb.popular_people_failed", error=str(e)[:120])
+        return []

@@ -11502,6 +11502,14 @@ async def filmography_page():
         return HTMLResponse(f.read())
 
 
+@router.get("/api/filmography/popular")
+async def get_popular_people(current_user: User = Depends(get_current_user)):
+    """Return popular actors/directors from TMDB for suggestions."""
+    from app.utils.tmdb_client import get_popular_people as _get_popular
+    people = await _get_popular(limit=20)
+    return {"people": people}
+
+
 @router.get("/api/filmography/{person_name}")
 async def get_filmography(
     person_name: str,
@@ -11573,43 +11581,56 @@ async def scan_duplicates(
     from app.models.schema import WatchHistory
     issues = []
 
-    # 1. Duplicate library items (same IMDB ID, different Emby ID)
-    all_items = await LibraryCache.get_all_items()
+    # 1. Duplicate library items — query Emby directly (cache dedupes by
+    #    provider key so two items sharing an IMDB ID overwrite each other).
+    async with EmbyClient() as emby:
+        all_movies = await emby.get_all_movies()
+        all_series = await emby.get_all_series()
+
     imdb_map: dict[str, list] = {}
-    for item in all_items:
-        iid = item.get("imdb_id")
+    for item in all_movies + all_series:
+        iid = (item.get("ProviderIds") or {}).get("Imdb")
         if iid:
             imdb_map.setdefault(iid, []).append(item)
 
     for imdb_id, items in imdb_map.items():
         if len(items) > 1:
+            item_type = "movie" if items[0].get("Type") == "Movie" else "series"
             issues.append({
                 "type": "duplicate_library",
                 "severity": "warning",
-                "title": items[0].get("title", "Unknown"),
+                "title": items[0].get("Name", "Unknown"),
                 "imdb_id": imdb_id,
-                "details": f"{len(items)} copies in library",
+                "details": f"{len(items)} copies in library — " + ", ".join(
+                    i.get("Name", "?") + (" (" + str(i.get("ProductionYear", "")) + ")" if i.get("ProductionYear") else "")
+                    for i in items
+                ),
                 "items": [
-                    {"emby_id": i.get("emby_id"), "title": i.get("title"), "year": i.get("year"),
-                     "item_type": i.get("item_type")}
+                    {"emby_id": i.get("Id"), "title": i.get("Name"), "year": i.get("ProductionYear"),
+                     "item_type": item_type}
                     for i in items
                 ],
             })
 
-    # 2. Orphaned watch history (watched items no longer in library)
+    # 2. Orphaned watch history — group episodes by series for cleaner display
     user_id = current_user.id
-    recent_watches = (await db.execute(
+
+    # 2a. Movies orphaned
+    orphaned_movies = (await db.execute(
         select(
             WatchHistory.imdb_id,
             WatchHistory.title,
-            WatchHistory.item_type,
             func.max(WatchHistory.watched_at).label("last_watched"),
         )
-        .where(WatchHistory.user_id == user_id, WatchHistory.imdb_id.isnot(None))
-        .group_by(WatchHistory.imdb_id, WatchHistory.title, WatchHistory.item_type)
+        .where(
+            WatchHistory.user_id == user_id,
+            WatchHistory.imdb_id.isnot(None),
+            WatchHistory.item_type == "movie",
+        )
+        .group_by(WatchHistory.imdb_id, WatchHistory.title)
     )).all()
 
-    for row in recent_watches:
+    for row in orphaned_movies:
         found = await LibraryCache.find_by_provider_id("Imdb", row.imdb_id) if row.imdb_id else None
         if not found:
             issues.append({
@@ -11617,11 +11638,57 @@ async def scan_duplicates(
                 "severity": "info",
                 "title": row.title or "Unknown",
                 "imdb_id": row.imdb_id,
-                "item_type": row.item_type,
-                "details": f"Watched but no longer in library (last: {row.last_watched.strftime('%Y-%m-%d') if row.last_watched else '?'})",
+                "item_type": "movie",
+                "details": f"Movie watched but no longer in library (last: {row.last_watched.strftime('%Y-%m-%d') if row.last_watched else '?'})",
             })
 
-    # 3. Watch history entries with no IMDB ID
+    # 2b. Episodes orphaned — group by series_name
+    orphaned_eps = (await db.execute(
+        select(
+            func.coalesce(WatchHistory.series_name, WatchHistory.title).label("show_name"),
+            WatchHistory.imdb_id,
+            func.count(WatchHistory.id).label("ep_count"),
+            func.max(WatchHistory.watched_at).label("last_watched"),
+        )
+        .where(
+            WatchHistory.user_id == user_id,
+            WatchHistory.item_type == "episode",
+        )
+        .group_by(func.coalesce(WatchHistory.series_name, WatchHistory.title), WatchHistory.imdb_id)
+    )).all()
+
+    # Collapse to series level: group by show_name, check if series in library
+    series_orphan_map: dict[str, dict] = {}
+    for row in orphaned_eps:
+        show_name = row.show_name or "Unknown"
+        # Check if the series itself is in the library (by title)
+        found = await LibraryCache.find_by_title(show_name)
+        if not found:
+            if show_name not in series_orphan_map:
+                series_orphan_map[show_name] = {
+                    "ep_count": 0,
+                    "last_watched": None,
+                    "imdb_id": row.imdb_id,
+                }
+            entry = series_orphan_map[show_name]
+            entry["ep_count"] += row.ep_count
+            if row.last_watched and (not entry["last_watched"] or row.last_watched > entry["last_watched"]):
+                entry["last_watched"] = row.last_watched
+
+    for show_name, info in series_orphan_map.items():
+        ep_label = f"{info['ep_count']} episode{'s' if info['ep_count'] != 1 else ''}"
+        issues.append({
+            "type": "orphaned_history",
+            "severity": "info",
+            "title": show_name,
+            "imdb_id": info.get("imdb_id"),
+            "item_type": "episode",
+            "details": f"{ep_label} watched but series no longer in library (last: {info['last_watched'].strftime('%Y-%m-%d') if info.get('last_watched') else '?'})",
+        })
+
+    # 3. Watch history entries with no IMDB ID (movies only) —
+    #    cross-check library cache to exclude items where Emby has the IMDB ID
+    #    but the watch history record was just missing it
     no_imdb = (await db.execute(
         select(
             WatchHistory.title,
@@ -11637,13 +11704,32 @@ async def scan_duplicates(
     )).all()
 
     for row in no_imdb:
-        issues.append({
-            "type": "missing_metadata",
-            "severity": "warning",
-            "title": row.title or "Unknown",
-            "item_type": row.item_type,
-            "details": f"No IMDB ID — {row.count} watch record(s) may not link properly",
-        })
+        title = row.title or "Unknown"
+        # Check if library has this item with an IMDB ID
+        cached = await LibraryCache.find_by_title(title)
+        cached_imdb = (cached.get("provider_ids") or {}).get("Imdb") if cached else None
+        if cached_imdb:
+            # Item has IMDB in library — backfill the watch history records
+            await db.execute(
+                WatchHistory.__table__.update()
+                .where(
+                    WatchHistory.user_id == user_id,
+                    WatchHistory.title == title,
+                    WatchHistory.imdb_id.is_(None),
+                    WatchHistory.item_type == "movie",
+                )
+                .values(imdb_id=cached_imdb)
+            )
+            await db.commit()
+            # Don't report as missing metadata — we just fixed it
+        else:
+            issues.append({
+                "type": "missing_metadata",
+                "severity": "warning",
+                "title": title,
+                "item_type": row.item_type,
+                "details": f"No IMDB ID — {row.count} watch record(s) may not link properly",
+            })
 
     # Sort: warnings first, then info
     severity_order = {"error": 0, "warning": 1, "info": 2}

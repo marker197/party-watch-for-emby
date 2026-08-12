@@ -70,6 +70,8 @@
   .work-role { font-size: 0.7rem; color: var(--accent-light); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .badge-library { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.65rem; font-weight: 600; background: rgba(74,173,110,0.15); color: var(--green); }
   .badge-missing { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.65rem; font-weight: 600; background: rgba(125,133,144,0.15); color: var(--text-dim); }
+  .badge-radarr { display: inline-block; padding: 1px 5px; border-radius: 4px; font-size: 0.7rem; cursor: pointer; background: rgba(107,93,199,0.2); margin-left: 4px; transition: background 0.2s; }
+  .badge-radarr:hover { background: rgba(107,93,199,0.4); }
   .loading { text-align: center; color: var(--text-dim); padding: 40px; }
   .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -90,7 +92,11 @@
     <a href="/stats" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📊 Stats</a>
     <a href="/watch-history" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📜 History</a>
     <a href="/library-health" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🏥 Health</a>
+    <a href="/universes" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🌌 Universes</a>
+    <a href="/watch-party" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
     <a href="/filmography" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#1C2030;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='#1C2030'">🎬 Filmography</a>
+    <a href="/duplicates" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🔍 Duplicates</a>
+    <a href="/goals" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🎯 Goals</a>
     <a href="/settings" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
     <a href="/guide" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📖 Guide</a>
 </nav>
@@ -100,19 +106,142 @@
     <input type="text" id="searchInput" placeholder="Search for an actor or director…" onkeydown="if(event.key==='Enter')doSearch()" />
     <button class="btn btn-accent" onclick="doSearch()">Search</button>
   </div>
+  <div id="suggestions"></div>
   <div id="results"></div>
 </div>
-<script>
-const API = '';
-const TMDB_IMG = '/api/tmdb/image/';
 
+<!-- Radarr server picker modal -->
+<div id="radarrModal" style="display:none;position:fixed;inset:0;z-index:100;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:360px;width:90%;">
+    <div style="font-weight:700;margin-bottom:14px;">Send to Radarr</div>
+    <div id="radarrModalBody"></div>
+    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+      <button class="btn" style="background:var(--surface-hover);color:var(--text);" onclick="closeRadarrModal()">Cancel</button>
+      <button class="btn btn-accent" id="radarrConfirmBtn" onclick="confirmRadarrSend()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const TMDB_IMG = '/api/tmdb/image/';
+var allWorks = [];
+var activeFilter = 'all';
+var radarrServers = [];
+var pendingRadarrItem = null;
+
+/* --- Suggestions --- */
+async function loadSuggestions() {
+  try {
+    var r = await fetch('/api/filmography/popular');
+    if (!r.ok) return;
+    var data = await r.json();
+    var people = data.people || [];
+    if (!people.length) return;
+    var html = '<div style="margin-bottom:20px;"><div style="color:var(--text-dim);font-size:0.78rem;font-weight:600;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">Popular right now</div>';
+    html += '<div style="display:flex;gap:10px;flex-wrap:wrap;">';
+    people.forEach(function(p) {
+      var photoUrl = p.profile_path ? TMDB_IMG + 'w185' + p.profile_path : '';
+      var subtitle = (p.known_for || []).join(', ');
+      html += '<div class="suggest-chip" onclick="searchPerson(\'' + esc(p.name).replace(/'/g, "\\'") + '\')" style="display:flex;align-items:center;gap:8px;padding:6px 12px 6px 6px;background:var(--surface);border:1px solid var(--border);border-radius:20px;cursor:pointer;transition:border-color 0.2s;" onmouseover="this.style.borderColor=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border)\'">';
+      if (photoUrl) html += '<img src="' + photoUrl + '" style="width:28px;height:28px;border-radius:50%;object-fit:cover;" />';
+      else html += '<div style="width:28px;height:28px;border-radius:50%;background:var(--surface-hover);"></div>';
+      html += '<div><div style="font-size:0.82rem;font-weight:600;">' + esc(p.name) + '</div>';
+      if (subtitle) html += '<div style="font-size:0.68rem;color:var(--text-dim);max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(subtitle) + '</div>';
+      html += '</div></div>';
+    });
+    html += '</div></div>';
+    document.getElementById('suggestions').innerHTML = html;
+  } catch(e) { /* silent */ }
+}
+
+function searchPerson(name) {
+  document.getElementById('searchInput').value = name;
+  doSearch();
+}
+
+/* --- Radarr --- */
+async function loadRadarrServers() {
+  try {
+    var r = await fetch('/api/radarr/servers');
+    if (r.ok) { var d = await r.json(); radarrServers = d.servers || d || []; }
+  } catch(e) { /* silent */ }
+}
+
+function sendToRadarr(tmdb_id, title, year, evt) {
+  if (evt) { evt.preventDefault(); evt.stopPropagation(); }
+  pendingRadarrItem = { tmdb_id: tmdb_id, title: title, year: year };
+  if (radarrServers.length === 0) {
+    alert('No Radarr servers configured — add one in Settings.');
+    return;
+  }
+  if (radarrServers.length === 1) {
+    doRadarrSend(0);
+    return;
+  }
+  /* Show picker */
+  var html = '<div style="font-size:0.88rem;margin-bottom:10px;">Choose server for <strong>' + esc(title) + '</strong>:</div>';
+  radarrServers.forEach(function(srv, i) {
+    html += '<label style="display:block;padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer;font-size:0.88rem;">';
+    html += '<input type="radio" name="radarr_srv" value="' + i + '"' + (i === 0 ? ' checked' : '') + ' style="margin-right:8px;" />';
+    html += esc(srv.name || ('Server ' + (i + 1)));
+    html += '</label>';
+  });
+  document.getElementById('radarrModalBody').innerHTML = html;
+  document.getElementById('radarrModal').style.display = 'flex';
+}
+
+function closeRadarrModal() { document.getElementById('radarrModal').style.display = 'none'; pendingRadarrItem = null; }
+
+function confirmRadarrSend() {
+  var sel = document.querySelector('input[name="radarr_srv"]:checked');
+  var idx = sel ? parseInt(sel.value) : 0;
+  closeRadarrModal();
+  doRadarrSend(idx);
+}
+
+async function doRadarrSend(serverIndex) {
+  if (!pendingRadarrItem) return;
+  var item = pendingRadarrItem;
+  pendingRadarrItem = null;
+  try {
+    var r = await fetch('/api/radarr/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        server_index: serverIndex,
+        movies: [{ tmdb_id: item.tmdb_id, title: item.title, year: item.year ? parseInt(item.year) : null }],
+      }),
+    });
+    var d = await r.json();
+    if (d.added > 0) {
+      showToast('Added "' + item.title + '" to Radarr', 'green');
+    } else {
+      var msg = (d.results && d.results[0] && d.results[0].message) || 'Already exists or failed';
+      showToast(msg, 'orange');
+    }
+  } catch(e) {
+    showToast('Radarr error: ' + e.message, 'red');
+  }
+}
+
+function showToast(msg, color) {
+  var t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:' + (color === 'green' ? 'var(--green)' : color === 'red' ? 'var(--red)' : 'var(--orange)') + ';color:#fff;padding:10px 20px;border-radius:8px;font-size:0.88rem;z-index:200;opacity:0;transition:opacity 0.3s;';
+  document.body.appendChild(t);
+  requestAnimationFrame(function() { t.style.opacity = '1'; });
+  setTimeout(function() { t.style.opacity = '0'; setTimeout(function() { t.remove(); }, 300); }, 3000);
+}
+
+/* --- Search + render --- */
 async function doSearch() {
   var q = document.getElementById('searchInput').value.trim();
   if (!q) return;
+  document.getElementById('suggestions').innerHTML = '';
   var el = document.getElementById('results');
   el.innerHTML = '<div class="loading"><div class="spinner"></div> Searching…</div>';
   try {
-    var r = await fetch(API + '/api/filmography/' + encodeURIComponent(q));
+    var r = await fetch('/api/filmography/' + encodeURIComponent(q));
     if (!r.ok) { el.innerHTML = '<div class="empty">No results found for "' + q + '"</div>'; return; }
     var data = await r.json();
     renderResults(data);
@@ -120,9 +249,6 @@ async function doSearch() {
     el.innerHTML = '<div class="empty">Error: ' + e.message + '</div>';
   }
 }
-
-var allWorks = [];
-var activeFilter = 'all';
 
 function renderResults(data) {
   var p = data.person;
@@ -188,8 +314,14 @@ function renderGrid() {
     html += '<div class="work-info">';
     html += '<div class="work-title" title="' + esc(w.title || '') + '">' + esc(w.title || '') + '</div>';
     html += '<div class="work-year">' + year;
-    if (w.in_library) html += ' <span class="badge-library">✓ In Library</span>';
-    else html += ' <span class="badge-missing">Missing</span>';
+    if (w.in_library) {
+      html += ' <span class="badge-library">✓ In Library</span>';
+    } else {
+      html += ' <span class="badge-missing">Missing</span>';
+      if (w.media_type === 'movie' && w.id && radarrServers.length > 0) {
+        html += ' <span class="badge-radarr" onclick="sendToRadarr(' + w.id + ',\'' + esc(w.title || '').replace(/'/g, "\\'") + '\',\'' + year + '\',event)" title="Send to Radarr">📥</span>';
+      }
+    }
     html += '</div>';
     if (roles) html += '<div class="work-role" title="' + esc(roles) + '">' + esc(roles) + '</div>';
     html += '</div></a>';
@@ -199,6 +331,10 @@ function renderGrid() {
 }
 
 function esc(s) { if (!s && s !== 0) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+/* Init */
+loadSuggestions();
+loadRadarrServers();
 </script>
 </body>
 </html>
