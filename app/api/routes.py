@@ -11303,27 +11303,17 @@ async def get_item_detail(
         recs_out.append(rec)
     result["recommendations"] = recs_out
 
-    # Watchlist status — check Simkl plantowatch
+    # Watchlist status — local DB lookup (synced from providers)
     result["on_watchlist"] = False
-    if imdb_id and current_user.simkl_access_token:
-        try:
-            simkl = SimklClient(
-                access_token=current_user.simkl_access_token,
-                token_expires=current_user.simkl_token_expires,
-            )
-            try:
-                wl_kind = "movies" if media_type == "movie" else "shows"
-                wl = await simkl.get_watchlist(kind=wl_kind)
-                for entry in wl:
-                    inner = entry.get("movie") or entry.get("show") or entry
-                    ids = inner.get("ids", {})
-                    if ids.get("imdb") == imdb_id:
-                        result["on_watchlist"] = True
-                        break
-            finally:
-                await simkl.close()
-        except Exception:
-            pass
+    if imdb_id:
+        from app.models.schema import WatchlistItem
+        _wl_row = (await db.execute(
+            select(WatchlistItem.id).where(
+                WatchlistItem.user_id == user_id,
+                WatchlistItem.imdb_id == imdb_id,
+            ).limit(1)
+        )).first()
+        result["on_watchlist"] = _wl_row is not None
 
     # User data
     result["user_id"] = user_id
@@ -11488,7 +11478,168 @@ async def toggle_watchlist(
     except Exception as e:
         results["mdblist"] = str(e)[:100]
 
+    # Persist locally
+    from app.models.schema import WatchlistItem
+    _now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if action == "add":
+        existing = (await db.execute(
+            select(WatchlistItem).where(
+                WatchlistItem.user_id == current_user.id,
+                WatchlistItem.imdb_id == imdb_id,
+            )
+        )).scalar_one_or_none()
+        if not existing:
+            db.add(WatchlistItem(
+                user_id=current_user.id,
+                imdb_id=imdb_id,
+                tmdb_id=str(tmdb_id) if tmdb_id else None,
+                title=payload.get("title"),
+                item_type=item_type,
+                source="user",
+                added_at=_now,
+                synced_at=_now,
+            ))
+            await db.commit()
+    else:
+        await db.execute(
+            WatchlistItem.__table__.delete().where(
+                WatchlistItem.user_id == current_user.id,
+                WatchlistItem.imdb_id == imdb_id,
+            )
+        )
+        await db.commit()
+
     return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WATCHLIST LOCAL SYNC
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/api/watchlist/sync/{user_id}")
+async def sync_watchlist_local(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Pull watchlist from Simkl + MDBList and store locally for fast lookups."""
+    from app.models.schema import WatchlistItem
+    _now = datetime.now(timezone.utc).replace(tzinfo=None)
+    imported = 0
+
+    # Collect all items from providers into a dict keyed by imdb_id
+    wl_items: dict[str, dict] = {}  # imdb_id -> {tmdb_id, title, item_type, source}
+
+    # ── Simkl ──
+    if current_user.simkl_access_token:
+        try:
+            simkl = SimklClient(
+                access_token=current_user.simkl_access_token,
+                token_expires=current_user.simkl_token_expires,
+            )
+            try:
+                for kind, itype in [("movies", "movie"), ("shows", "show"), ("anime", "show")]:
+                    entries = await simkl.get_watchlist(kind=kind)
+                    for entry in entries:
+                        ids = entry.get("ids", {})
+                        iid = ids.get("imdb")
+                        if not iid:
+                            continue
+                        wl_items[iid] = {
+                            "tmdb_id": str(ids.get("tmdb")) if ids.get("tmdb") else None,
+                            "title": entry.get("title"),
+                            "item_type": itype,
+                            "source": "simkl",
+                        }
+            finally:
+                await simkl.close()
+        except Exception as e:
+            log.warning("watchlist_sync.simkl_failed", error=str(e)[:120])
+
+    # ── MDBList ──
+    try:
+        mdb_key = await _get_mdblist_key(db)
+        if mdb_key:
+            from app.utils.mdblist_client import MDBListClient
+            mdb = MDBListClient(api_key=mdb_key)
+            try:
+                wl_data = await mdb.get_watchlist()
+                for mtype, itype in [("movies", "movie"), ("shows", "show")]:
+                    for entry in wl_data.get(mtype, []):
+                        iid = entry.get("imdb_id") or entry.get("imdb")
+                        if not iid:
+                            continue
+                        if iid in wl_items:
+                            continue  # already have from Simkl
+                        wl_items[iid] = {
+                            "tmdb_id": str(entry.get("tmdb_id") or entry.get("tmdb") or ""),
+                            "title": entry.get("title"),
+                            "item_type": itype,
+                            "source": "mdblist",
+                        }
+            finally:
+                await mdb.close()
+    except Exception as e:
+        log.warning("watchlist_sync.mdblist_failed", error=str(e)[:120])
+
+    # ── Upsert locally, preserve user-submitted entries ──
+    # Delete provider-synced rows (not user-submitted)
+    await db.execute(
+        WatchlistItem.__table__.delete().where(
+            WatchlistItem.user_id == current_user.id,
+            WatchlistItem.source != "user",
+        )
+    )
+
+    # Re-insert provider items (skip if user already has same imdb_id)
+    existing_user_imdb = {r[0] for r in (await db.execute(
+        select(WatchlistItem.imdb_id).where(
+            WatchlistItem.user_id == current_user.id,
+            WatchlistItem.source == "user",
+        )
+    )).all()}
+
+    for iid, info in wl_items.items():
+        if iid in existing_user_imdb:
+            continue  # user-submitted takes precedence
+        db.add(WatchlistItem(
+            user_id=current_user.id,
+            imdb_id=iid,
+            tmdb_id=info["tmdb_id"] or None,
+            title=info["title"],
+            item_type=info["item_type"],
+            source=info["source"],
+            added_at=_now,
+            synced_at=_now,
+        ))
+        imported += 1
+
+    await db.commit()
+    log.info("watchlist_sync.complete", user_id=current_user.id, imported=imported,
+             user_kept=len(existing_user_imdb), provider_total=len(wl_items))
+
+    return {"synced": imported, "user_kept": len(existing_user_imdb), "total": imported + len(existing_user_imdb)}
+
+
+@router.get("/api/watchlist/check")
+async def check_watchlist(
+    imdb_id: str | None = None,
+    tmdb_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Check if an item is on the local watchlist."""
+    from app.models.schema import WatchlistItem
+    if not imdb_id and not tmdb_id:
+        return {"on_watchlist": False}
+    q = select(WatchlistItem.id).where(WatchlistItem.user_id == current_user.id)
+    if imdb_id:
+        q = q.where(WatchlistItem.imdb_id == imdb_id)
+    elif tmdb_id:
+        q = q.where(WatchlistItem.tmdb_id == str(tmdb_id))
+    row = (await db.execute(q.limit(1))).first()
+    return {"on_watchlist": row is not None}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -11513,10 +11664,12 @@ async def get_popular_people(current_user: User = Depends(get_current_user)):
 @router.get("/api/filmography/{person_name}")
 async def get_filmography(
     person_name: str,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Fetch a person's filmography from TMDB, cross-referenced with library & watch history."""
+    """Fetch a person's filmography from TMDB, cross-referenced with library, watch history & watchlist."""
     from app.utils.tmdb_client import get_person_details
+    from app.models.schema import WatchHistory, WatchlistItem
 
     person = await get_person_details(person_name)
     if not person:
@@ -11536,14 +11689,75 @@ async def get_filmography(
             all_works[key] = {**item, "roles": []}
         all_works[key]["roles"].append(item.get("job", "Crew"))
 
+    # Build watched lookups from watch history
+    user_id = current_user.id
+    _watched_movie_tmdb = set()
+    _watched_movie_imdb = set()
+    _watched_series_names: set[str] = set()
+
+    # Movies: collect distinct tmdb_id and imdb_id
+    _wm_rows = (await db.execute(
+        select(WatchHistory.tmdb_id, WatchHistory.imdb_id)
+        .where(WatchHistory.user_id == user_id, WatchHistory.item_type == "movie")
+        .distinct()
+    )).all()
+    for row in _wm_rows:
+        if row.tmdb_id:
+            _watched_movie_tmdb.add(str(row.tmdb_id))
+        if row.imdb_id:
+            _watched_movie_imdb.add(row.imdb_id)
+
+    # Shows: collect distinct series_name (case-insensitive)
+    _ws_rows = (await db.execute(
+        select(WatchHistory.series_name)
+        .where(
+            WatchHistory.user_id == user_id,
+            WatchHistory.item_type == "episode",
+            WatchHistory.series_name.isnot(None),
+        )
+        .distinct()
+    )).all()
+    for row in _ws_rows:
+        if row.series_name:
+            _watched_series_names.add(row.series_name.lower().strip())
+
+    # Build watchlist lookup set (local DB)
+    _wl_imdb_set: set[str] = set()
+    _wl_rows = (await db.execute(
+        select(WatchlistItem.imdb_id).where(
+            WatchlistItem.user_id == user_id,
+            WatchlistItem.imdb_id.isnot(None),
+        )
+    )).all()
+    for row in _wl_rows:
+        _wl_imdb_set.add(row[0])
+
     # Cross-reference with library cache
     works = []
     for work in all_works.values():
         tmdb_id_str = str(work.get("id", ""))
         found = await LibraryCache.find_by_provider_id("Tmdb", tmdb_id_str) if tmdb_id_str else None
+        _pids = found.get("provider_ids", {}) if found else {}
         work["in_library"] = found is not None
         work["emby_id"] = found.get("emby_id") if found else None
-        work["imdb_id"] = found.get("imdb_id") if found else None
+        work["imdb_id"] = _pids.get("Imdb") if found else None
+        work["tvdb_id"] = _pids.get("Tvdb") if found else None
+
+        # Determine watched status
+        if work.get("media_type") == "movie":
+            work["watched"] = (
+                tmdb_id_str in _watched_movie_tmdb
+                or (work["imdb_id"] and work["imdb_id"] in _watched_movie_imdb)
+            )
+        elif work.get("media_type") == "tv":
+            _wname = (work.get("name") or work.get("title") or "").lower().strip()
+            work["watched"] = _wname in _watched_series_names if _wname else False
+        else:
+            work["watched"] = False
+
+        # Watchlist status (local DB)
+        work["on_watchlist"] = work.get("imdb_id", "") in _wl_imdb_set if work.get("imdb_id") else False
+
         works.append(work)
 
     # Sort by release date descending
@@ -11558,6 +11772,7 @@ async def get_filmography(
         "works": works,
         "total": len(works),
         "in_library": sum(1 for w in works if w["in_library"]),
+        "watched": sum(1 for w in works if w.get("watched")),
     }
 
 
@@ -11583,7 +11798,7 @@ async def scan_duplicates(
 
     # ── Fetch all library items from Emby (not cache — cache dedupes by
     #    provider key so duplicates sharing an IMDB ID overwrite each other).
-    _dup_fields = "ProviderIds,ProductionYear"
+    _dup_fields = "ProviderIds,ProductionYear,MediaSources,SeriesName"
     async with EmbyClient() as emby:
         all_movies = await emby.get_all_movies()
         all_series = await emby.get_all_series()
@@ -11632,27 +11847,78 @@ async def scan_duplicates(
             library_series_titles.add(name.lower().strip())
 
     # Build IMDB map from per-library fetch for duplicate display
+    # Only consider Movie and Series — episodes/seasons are not meaningful duplicates
     dup_imdb_map: dict[str, list] = {}
     for item in _dup_items:
+        if item.get("Type") not in ("Movie", "Series"):
+            continue
         iid = (item.get("ProviderIds") or {}).get("Imdb")
         if iid:
             dup_imdb_map.setdefault(iid, []).append(item)
 
     # ── 1. Duplicate library items (same IMDB ID, different Emby IDs)
+    def _res_tier(item: dict) -> str:
+        """Derive resolution label from MediaSources."""
+        ms = (item.get("MediaSources") or [None])[0]
+        if not ms:
+            return "Unknown"
+        width = 0
+        for stream in ms.get("MediaStreams", []):
+            if stream.get("Type") == "Video":
+                width = stream.get("Width", 0)
+                break
+        if width >= 3800:
+            return "4K"
+        if width >= 1900:
+            return "Full HD"
+        if width >= 1200:
+            return "HD"
+        if width > 0:
+            return "SD"
+        return "Unknown"
+
+    def _file_size_mb(item: dict) -> float | None:
+        ms = (item.get("MediaSources") or [None])[0]
+        if not ms:
+            return None
+        size = ms.get("Size")
+        return round(size / (1024 * 1024), 1) if size else None
+
     for imdb_id, items in dup_imdb_map.items():
         if len(items) > 1:
-            item_type = "movie" if items[0].get("Type") == "Movie" else "series"
+            first_type = items[0].get("Type", "")
+            item_type = "movie" if first_type == "Movie" else "series"
+
+            # Build display title: for Episodes, prepend SeriesName
+            def _display_title(item: dict) -> str:
+                name = item.get("Name", "Unknown")
+                series = item.get("SeriesName")
+                if item.get("Type") == "Episode" and series:
+                    return f"{series} — {name}"
+                return name
+
+            enriched = []
+            for i in items:
+                enriched.append({
+                    "emby_id": i.get("Id"),
+                    "title": _display_title(i),
+                    "year": i.get("ProductionYear"),
+                    "item_type": item_type,
+                    "library": i.get("_library_name", "Unknown"),
+                    "resolution": _res_tier(i),
+                    "size_mb": _file_size_mb(i),
+                })
+            res_tiers = {e["resolution"] for e in enriched}
+            same_resolution = len(res_tiers) == 1 and "Unknown" not in res_tiers
+            group_title = _display_title(items[0])
             issues.append({
                 "type": "duplicate_library",
                 "severity": "warning",
-                "title": items[0].get("Name", "Unknown"),
+                "title": group_title,
                 "imdb_id": imdb_id,
                 "details": f"{len(items)} copies in library",
-                "items": [
-                    {"emby_id": i.get("Id"), "title": i.get("Name"), "year": i.get("ProductionYear"),
-                     "item_type": item_type, "library": i.get("_library_name", "Unknown")}
-                    for i in items
-                ],
+                "items": enriched,
+                "same_resolution": same_resolution,
             })
 
     # ── 2. Orphaned watch history
@@ -11790,3 +12056,26 @@ async def scan_duplicates(
         "orphaned": sum(1 for i in issues if i["type"] == "orphaned_history"),
         "missing_meta": sum(1 for i in issues if i["type"] == "missing_metadata"),
     }
+
+
+@router.delete("/api/duplicates/resolve")
+async def resolve_duplicate(
+    payload: dict,
+    _user: User = Depends(get_current_user),
+):
+    """Delete a duplicate library item by emby_id."""
+    emby_id = payload.get("emby_id")
+    if not emby_id:
+        raise HTTPException(400, "emby_id is required")
+
+    async with EmbyClient() as emby:
+        # Verify item exists before deleting
+        try:
+            item = await emby.get_item(emby_id)
+        except Exception:
+            raise HTTPException(404, "Item not found in Emby")
+        title = item.get("Name", "Unknown")
+        await emby.delete_item(emby_id)
+
+    log.info("duplicates.item_deleted", emby_id=emby_id, title=title)
+    return {"status": "ok", "deleted": emby_id, "title": title}

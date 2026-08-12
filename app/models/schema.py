@@ -419,6 +419,27 @@ class DismissedRewatchItem(Base):
 # Bulk Actions  (UI Feature)
 # ---------------------------------------------------------------------------
 
+class WatchlistItem(Base):
+    """Locally cached watchlist items synced from Simkl / MDBList."""
+    __tablename__ = "watchlist_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    imdb_id = Column(String(32), nullable=True)
+    tmdb_id = Column(String(32), nullable=True)
+    title = Column(String(512), nullable=True)
+    item_type = Column(String(32), nullable=True)   # movie | show
+    source = Column(String(32), nullable=True)       # simkl | mdblist | user
+    added_at = Column(DateTime, nullable=True)
+    synced_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "imdb_id", name="uq_watchlist_user_imdb"),
+    )
+
+    user = relationship("User", foreign_keys=[user_id])
+
+
 class AppSetting(Base):
     """Key/value store for runtime-configurable settings (schedules, toggles).
 

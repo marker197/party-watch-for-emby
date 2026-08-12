@@ -206,7 +206,7 @@ async def lifespan(app: FastAPI):
         async with async_session() as db:
             result = await db.execute(sa_text("SELECT version_num FROM alembic_version LIMIT 1"))
             row = result.first()
-            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres", "005_watch_history_progress", "006_dedup_watch_history", "007_simkl", "008_user_rating", "009_episode_ratings"):
+            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres", "005_watch_history_progress", "006_dedup_watch_history", "007_simkl", "008_user_rating", "009_episode_ratings", "010_watchlist_items"):
                 # Pre-squash revision — jump to current head
                 await db.execute(sa_text("UPDATE alembic_version SET version_num = '007_simkl'"))
                 await db.commit()

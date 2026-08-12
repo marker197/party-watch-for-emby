@@ -81,6 +81,23 @@
     display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600;
     background: rgba(123,104,238,0.12); color: var(--accent-light); border: 1px solid rgba(123,104,238,0.2);
   }
+  .dup-copies { margin-top: 6px; display: flex; flex-direction: column; gap: 5px; }
+  .dup-copy-row {
+    display: flex; align-items: center; gap: 8px; padding: 4px 0;
+    transition: opacity 0.4s;
+  }
+  .dup-res {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600;
+    background: rgba(74,173,110,0.12); color: var(--green); border: 1px solid rgba(74,173,110,0.2);
+  }
+  .dup-size { font-size: 0.75rem; color: var(--text-dim); min-width: 60px; }
+  .dup-remove-btn {
+    margin-left: auto; background: rgba(224,82,82,0.12); border: 1px solid rgba(224,82,82,0.25);
+    color: var(--red); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 0.78rem;
+  }
+  .dup-remove-btn:hover { background: rgba(224,82,82,0.25); }
+  .dup-remove-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .dup-hint { font-size: 0.72rem; color: var(--text-dim); margin-top: 4px; font-style: italic; }
 </style>
 </head>
 <body>
@@ -152,13 +169,19 @@ function filterIssues(btn, type) {
   renderIssues(type);
 }
 
+function fmtSize(mb) {
+  if (mb == null) return '?';
+  if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
+  return mb.toFixed(0) + ' MB';
+}
+
 function renderIssues(type) {
   var filtered = type === 'all' ? allIssues : allIssues.filter(function(i) { return i.type === type; });
   var el = document.getElementById('issueList');
   if (!filtered.length) { el.innerHTML = '<div class="empty">No issues found — your library looks clean!</div>'; return; }
 
   var html = '';
-  filtered.forEach(function(issue) {
+  filtered.forEach(function(issue, idx) {
     var typeLabel = issue.type === 'duplicate_library' ? 'Duplicate' : issue.type === 'orphaned_history' ? 'Orphaned' : 'No Metadata';
     var typeClass = issue.type === 'duplicate_library' ? 'type-duplicate' : issue.type === 'orphaned_history' ? 'type-orphaned' : 'type-metadata';
 
@@ -166,18 +189,30 @@ function renderIssues(type) {
     if (issue.item_type === 'movie') typeBadge = '<span class="item-type-badge badge-movie">Movie</span>';
     else if (issue.item_type === 'episode') typeBadge = '<span class="item-type-badge badge-episode">Series</span>';
 
-    html += '<div class="issue-card">';
+    html += '<div class="issue-card" id="issue-' + idx + '" style="flex-direction:column;align-items:stretch;">';
+    html += '<div style="display:flex;align-items:center;gap:14px;">';
     html += '<div class="severity-dot ' + issue.severity + '"></div>';
     html += '<div class="issue-body">';
     html += '<div class="issue-title">' + esc(issue.title) + typeBadge + '</div>';
 
-    /* For duplicates, show which library each copy is in */
     if (issue.type === 'duplicate_library' && issue.items && issue.items.length > 1) {
-      html += '<div class="dup-sub">';
+      /* Show each copy with library, resolution, size */
+      html += '<div class="dup-copies">';
       issue.items.forEach(function(it) {
-        html += '<span class="dup-lib">' + esc(it.library || 'Unknown library') + '</span>';
+        html += '<div class="dup-copy-row" id="copy-' + it.emby_id + '">';
+        html += '<span class="dup-lib">' + esc(it.library || '?') + '</span>';
+        html += '<span class="dup-res">' + esc(it.resolution || '?') + '</span>';
+        html += '<span class="dup-size">' + fmtSize(it.size_mb) + '</span>';
+        /* Only show remove button when all copies are same resolution */
+        if (issue.same_resolution) {
+          html += '<button class="dup-remove-btn" onclick="confirmRemove(\'' + it.emby_id + '\',\'' + esc(issue.title).replace(/'/g, "\\'") + '\',\'' + esc(it.library || '?').replace(/'/g, "\\'") + '\',event)" title="Remove this copy">🗑</button>';
+        }
+        html += '</div>';
       });
       html += '</div>';
+      if (!issue.same_resolution) {
+        html += '<div class="dup-hint">Different resolutions — likely intentional, no removal offered</div>';
+      }
     } else {
       html += '<div class="issue-detail">' + esc(issue.details) + '</div>';
     }
@@ -186,8 +221,44 @@ function renderIssues(type) {
     html += '</div>';
     html += '<span class="issue-type ' + typeClass + '">' + typeLabel + '</span>';
     html += '</div>';
+    html += '</div>';
   });
   el.innerHTML = html;
+}
+
+async function confirmRemove(embyId, title, library, ev) {
+  ev.stopPropagation(); ev.preventDefault();
+  if (!confirm('Delete "' + title + '" from ' + library + '?\n\nThis permanently removes the item from Emby.')) return;
+  var btn = ev.target;
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    var r = await fetch('/api/duplicates/resolve', {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ emby_id: embyId }),
+    });
+    var d = await r.json();
+    if (r.ok) {
+      var row = document.getElementById('copy-' + embyId);
+      if (row) { row.style.opacity = '0'; setTimeout(function() { row.remove(); }, 400); }
+      showToast('Deleted "' + title + '" from ' + library, 'green');
+    } else {
+      showToast(d.detail || 'Delete failed', 'red');
+      btn.disabled = false; btn.textContent = '🗑';
+    }
+  } catch(e) {
+    showToast('Error: ' + e.message, 'red');
+    btn.disabled = false; btn.textContent = '🗑';
+  }
+}
+
+function showToast(msg, color) {
+  var t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:' + (color === 'green' ? 'var(--green)' : color === 'red' ? 'var(--red)' : 'var(--orange)') + ';color:#fff;padding:10px 20px;border-radius:8px;font-size:0.88rem;z-index:200;opacity:0;transition:opacity 0.3s;';
+  document.body.appendChild(t);
+  requestAnimationFrame(function() { t.style.opacity = '1'; });
+  setTimeout(function() { t.style.opacity = '0'; setTimeout(function() { t.remove(); }, 300); }, 3000);
 }
 
 function esc(s) { if (!s && s !== 0) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }

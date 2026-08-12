@@ -60,7 +60,7 @@ class LibraryCache:
             data = await r.get(key)
             if data:
                 item = json.loads(data)
-                if item_type and item.get("type") != item_type:
+                if item_type and item.get("type", "").lower() != item_type.lower():
                     await cls._record_miss()
                     return None
                 await cls._record_hit()
@@ -96,7 +96,7 @@ class LibraryCache:
                         break
 
                     for item in items:
-                        await cls._cache_item(item, item_type=item_type_label.rstrip("s"))
+                        await cls._cache_item(item, item_type={"movies": "movie", "series": "series"}[item_type_label])
                         cache_entries += 1
 
                     summary[item_type_label] += len(items)

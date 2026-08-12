@@ -70,8 +70,10 @@
   .work-role { font-size: 0.7rem; color: var(--accent-light); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .badge-library { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.65rem; font-weight: 600; background: rgba(74,173,110,0.15); color: var(--green); }
   .badge-missing { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.65rem; font-weight: 600; background: rgba(125,133,144,0.15); color: var(--text-dim); }
-  .badge-radarr { display: inline-block; padding: 1px 5px; border-radius: 4px; font-size: 0.7rem; cursor: pointer; background: rgba(107,93,199,0.2); margin-left: 4px; transition: background 0.2s; }
-  .badge-radarr:hover { background: rgba(107,93,199,0.4); }
+  .badge-watched { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.65rem; font-weight: 600; background: rgba(123,140,222,0.15); color: var(--blue); margin-left: 3px; }
+  .badge-watchlist { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.65rem; font-weight: 600; background: rgba(210,153,34,0.15); color: var(--orange); margin-left: 3px; }
+  .badge-radarr, .badge-sonarr { display: inline-block; padding: 1px 5px; border-radius: 4px; font-size: 0.7rem; cursor: pointer; background: rgba(107,93,199,0.2); margin-left: 4px; transition: background 0.2s; }
+  .badge-radarr:hover, .badge-sonarr:hover { background: rgba(107,93,199,0.4); }
   .loading { text-align: center; color: var(--text-dim); padding: 40px; }
   .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -120,12 +122,26 @@
   </div>
 </div>
 
+<!-- Sonarr server picker modal -->
+<div id="sonarrModal" style="display:none;position:fixed;inset:0;z-index:100;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:360px;width:90%;">
+    <div style="font-weight:700;margin-bottom:14px;">Send to Sonarr</div>
+    <div id="sonarrModalBody"></div>
+    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+      <button class="btn" style="background:var(--surface-hover);color:var(--text);" onclick="closeSonarrModal()">Cancel</button>
+      <button class="btn btn-accent" onclick="confirmSonarrSend()">Send</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const TMDB_IMG = '/api/tmdb/image/';
 var allWorks = [];
 var activeFilter = 'all';
 var radarrServers = [];
+var sonarrServers = [];
 var pendingRadarrItem = null;
+var pendingSonarrItem = null;
 
 /* --- Suggestions --- */
 async function loadSuggestions() {
@@ -222,6 +238,70 @@ async function doRadarrSend(serverIndex) {
   }
 }
 
+/* --- Sonarr --- */
+async function loadSonarrServers() {
+  try {
+    var r = await fetch('/api/sonarr/servers');
+    if (r.ok) { var d = await r.json(); sonarrServers = d.servers || d || []; }
+  } catch(e) { /* silent */ }
+}
+
+function sendToSonarr(tvdb_id, imdb_id, title, year, evt) {
+  if (evt) { evt.preventDefault(); evt.stopPropagation(); }
+  pendingSonarrItem = { tvdb_id: tvdb_id, imdb_id: imdb_id, title: title, year: year };
+  if (sonarrServers.length === 0) {
+    alert('No Sonarr servers configured — add one in Settings.');
+    return;
+  }
+  if (sonarrServers.length === 1) {
+    doSonarrSend(0);
+    return;
+  }
+  var html = '<div style="font-size:0.88rem;margin-bottom:10px;">Choose server for <strong>' + esc(title) + '</strong>:</div>';
+  sonarrServers.forEach(function(srv, i) {
+    html += '<label style="display:block;padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer;font-size:0.88rem;">';
+    html += '<input type="radio" name="sonarr_srv" value="' + i + '"' + (i === 0 ? ' checked' : '') + ' style="margin-right:8px;" />';
+    html += esc(srv.name || ('Server ' + (i + 1)));
+    html += '</label>';
+  });
+  document.getElementById('sonarrModalBody').innerHTML = html;
+  document.getElementById('sonarrModal').style.display = 'flex';
+}
+
+function closeSonarrModal() { document.getElementById('sonarrModal').style.display = 'none'; pendingSonarrItem = null; }
+
+function confirmSonarrSend() {
+  var sel = document.querySelector('input[name="sonarr_srv"]:checked');
+  var idx = sel ? parseInt(sel.value) : 0;
+  closeSonarrModal();
+  doSonarrSend(idx);
+}
+
+async function doSonarrSend(serverIndex) {
+  if (!pendingSonarrItem) return;
+  var item = pendingSonarrItem;
+  pendingSonarrItem = null;
+  try {
+    var r = await fetch('/api/sonarr/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        server_index: serverIndex,
+        shows: [{ tvdb_id: item.tvdb_id ? parseInt(item.tvdb_id) : null, imdb_id: item.imdb_id, title: item.title, year: item.year ? parseInt(item.year) : null }],
+      }),
+    });
+    var d = await r.json();
+    if (d.added > 0) {
+      showToast('Added "' + item.title + '" to Sonarr', 'green');
+    } else {
+      var msg = (d.results && d.results[0] && d.results[0].message) || 'Already exists or failed';
+      showToast(msg, 'orange');
+    }
+  } catch(e) {
+    showToast('Sonarr error: ' + e.message, 'red');
+  }
+}
+
 function showToast(msg, color) {
   var t = document.createElement('div');
   t.textContent = msg;
@@ -259,10 +339,14 @@ function renderResults(data) {
   html += '<div><div class="person-name">' + esc(p.name) + '</div>';
   html += '<div class="person-dept">' + esc(p.known_for || '') + '</div></div></div>';
 
+  var watchedCount = data.watched || 0;
+  var watchlistedCount = (data.works || []).filter(function(w) { return w.on_watchlist; }).length;
   html += '<div class="stats-row">';
   html += '<div class="stat-card"><div class="stat-val accent">' + data.total + '</div><div class="stat-label">Total Works</div></div>';
   html += '<div class="stat-card"><div class="stat-val green">' + data.in_library + '</div><div class="stat-label">In Library</div></div>';
-  html += '<div class="stat-card"><div class="stat-val blue">' + pct + '%</div><div class="stat-label">Coverage</div></div>';
+  html += '<div class="stat-card"><div class="stat-val blue">' + watchedCount + '</div><div class="stat-label">Watched</div></div>';
+  if (watchlistedCount > 0) html += '<div class="stat-card"><div class="stat-val" style="color:var(--orange);">' + watchlistedCount + '</div><div class="stat-label">Watchlisted</div></div>';
+  html += '<div class="stat-card"><div class="stat-val" style="color:var(--accent-light);">' + pct + '%</div><div class="stat-label">Coverage</div></div>';
   html += '</div>';
 
   html += '<div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%;"></div></div>';
@@ -273,6 +357,9 @@ function renderResults(data) {
   html += '<button class="filter-btn" onclick="setFilter(this,\'tv\')">TV Shows</button>';
   html += '<button class="filter-btn" onclick="setFilter(this,\'in_library\')">In Library</button>';
   html += '<button class="filter-btn" onclick="setFilter(this,\'missing\')">Not in Library</button>';
+  html += '<button class="filter-btn" onclick="setFilter(this,\'watched\')">Watched</button>';
+  html += '<button class="filter-btn" onclick="setFilter(this,\'unwatched\')">Unwatched</button>';
+  html += '<button class="filter-btn" onclick="setFilter(this,\'on_watchlist\')">Watchlisted</button>';
   html += '</div>';
 
   html += '<div class="works-grid" id="worksGrid"></div>';
@@ -293,6 +380,9 @@ function renderGrid() {
     if (activeFilter === 'tv') return w.media_type === 'tv';
     if (activeFilter === 'in_library') return w.in_library;
     if (activeFilter === 'missing') return !w.in_library;
+    if (activeFilter === 'watched') return w.watched;
+    if (activeFilter === 'unwatched') return !w.watched;
+    if (activeFilter === 'on_watchlist') return w.on_watchlist;
     return true;
   });
 
@@ -301,7 +391,8 @@ function renderGrid() {
     var poster = w.poster_path ? TMDB_IMG + 'w300' + w.poster_path : '';
     var year = (w.release_date || '').substring(0, 4);
     var roles = (w.roles || []).join(', ');
-    var link = w.imdb_id ? '/item/' + w.imdb_id : (w.id ? '/item/_?tmdb_id=' + w.id : '#');
+    var mtype = w.media_type === 'tv' ? 'show' : 'movie';
+    var link = w.imdb_id ? '/item/' + w.imdb_id + '?type=' + mtype : (w.id ? '/item/_?tmdb_id=' + w.id + '&type=' + mtype : '#');
 
     html += '<a href="' + link + '" class="work-card">';
     if (poster) {
@@ -310,7 +401,7 @@ function renderGrid() {
       html += '<div class="work-poster" style="display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:0.8rem;">No poster</div>';
     }
     html += '<div class="work-info">';
-    html += '<div class="work-title" title="' + esc(w.title || '') + '">' + esc(w.title || '') + '</div>';
+    html += '<div class="work-title" title="' + esc(w.title || w.name || '') + '">' + esc(w.title || w.name || '') + '</div>';
     html += '<div class="work-year">' + year;
     if (w.in_library) {
       html += ' <span class="badge-library">✓ In Library</span>';
@@ -319,6 +410,15 @@ function renderGrid() {
       if (w.media_type === 'movie' && w.id && radarrServers.length > 0) {
         html += ' <span class="badge-radarr" onclick="sendToRadarr(' + w.id + ',\'' + esc(w.title || '').replace(/'/g, "\\'") + '\',\'' + year + '\',event)" title="Send to Radarr">📥</span>';
       }
+      if (w.media_type === 'tv' && sonarrServers.length > 0) {
+        html += ' <span class="badge-sonarr" onclick="sendToSonarr(\'' + esc(w.tvdb_id || '') + '\',\'' + esc(w.imdb_id || '') + '\',\'' + esc(w.name || w.title || '').replace(/'/g, "\\'") + '\',\'' + year + '\',event)" title="Send to Sonarr">📥</span>';
+      }
+    }
+    if (w.watched) {
+      html += ' <span class="badge-watched">✓ Watched</span>';
+    }
+    if (w.on_watchlist && !w.watched) {
+      html += ' <span class="badge-watchlist">📋 Watchlisted</span>';
     }
     html += '</div>';
     if (roles) html += '<div class="work-role" title="' + esc(roles) + '">' + esc(roles) + '</div>';
@@ -330,9 +430,25 @@ function renderGrid() {
 
 function esc(s) { if (!s && s !== 0) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+/* Watchlist sync — once per page load, throttled to 30 min */
+var _wlSynced = false;
+async function syncWatchlistOnce() {
+  if (_wlSynced) return;
+  _wlSynced = true;
+  var key = 'filmography_wl_sync_ts';
+  var last = parseInt(localStorage.getItem(key) || '0');
+  if (Date.now() - last < 30 * 60 * 1000) return;  /* 30 min throttle */
+  try {
+    await fetch('/api/watchlist/sync/0', { method: 'POST' });
+    localStorage.setItem(key, String(Date.now()));
+  } catch(e) { /* ignore */ }
+}
+
 /* Init */
 loadSuggestions();
 loadRadarrServers();
+loadSonarrServers();
+syncWatchlistOnce();
 </script>
 </body>
 </html>
