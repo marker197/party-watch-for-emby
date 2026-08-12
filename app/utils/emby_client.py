@@ -103,7 +103,7 @@ class EmbyClient:
     # -- Libraries (virtual folders) ------------------------------------------
 
     async def get_virtual_folders(self) -> list[dict]:
-        """Return Emby library folders (name, type, item count)."""
+        """Return Emby library folders (name, type, paths, item count)."""
         raw = await self._get("/Library/VirtualFolders")
         results = []
         for f in raw:
@@ -111,6 +111,7 @@ class EmbyClient:
                 "name": f.get("Name", ""),
                 "collection_type": f.get("CollectionType", ""),
                 "item_id": f.get("ItemId", ""),
+                "locations": f.get("Locations", []),
             })
         return results
 

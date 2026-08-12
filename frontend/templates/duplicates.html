@@ -76,8 +76,11 @@
   .imdb-link { color: var(--accent-light); text-decoration: none; font-size: 0.78rem; }
   .imdb-link:hover { text-decoration: underline; }
   a { color: inherit; text-decoration: none; }
-  .dup-sub { font-size: 0.75rem; color: var(--text-dim); margin-top: 4px; }
-  .dup-sub span { display: inline-block; margin-right: 12px; }
+  .dup-sub { font-size: 0.78rem; color: var(--text-dim); margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .dup-lib {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600;
+    background: rgba(123,104,238,0.12); color: var(--accent-light); border: 1px solid rgba(123,104,238,0.2);
+  }
 </style>
 </head>
 <body>
@@ -91,7 +94,6 @@
     <a href="/stats" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📊 Stats</a>
     <a href="/watch-history" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📜 History</a>
     <a href="/library-health" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🏥 Health</a>
-    <a href="/universes" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🌌 Universes</a>
     <a href="/watch-party" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
     <a href="/filmography" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🎬 Filmography</a>
     <a href="/duplicates" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#1C2030;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='#1C2030'">🔍 Duplicates</a>
@@ -168,17 +170,16 @@ function renderIssues(type) {
     html += '<div class="severity-dot ' + issue.severity + '"></div>';
     html += '<div class="issue-body">';
     html += '<div class="issue-title">' + esc(issue.title) + typeBadge + '</div>';
-    html += '<div class="issue-detail">' + esc(issue.details) + '</div>';
 
-    /* For duplicates, show individual copies */
+    /* For duplicates, show which library each copy is in */
     if (issue.type === 'duplicate_library' && issue.items && issue.items.length > 1) {
       html += '<div class="dup-sub">';
-      issue.items.forEach(function(it, idx) {
-        html += '<span>Copy ' + (idx+1) + ': ' + esc(it.title || '?');
-        if (it.year) html += ' (' + it.year + ')';
-        html += '</span>';
+      issue.items.forEach(function(it) {
+        html += '<span class="dup-lib">' + esc(it.library || 'Unknown library') + '</span>';
       });
       html += '</div>';
+    } else {
+      html += '<div class="issue-detail">' + esc(issue.details) + '</div>';
     }
 
     if (issue.imdb_id) html += '<a class="imdb-link" href="/item/' + issue.imdb_id + '">View details →</a>';
