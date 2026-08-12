@@ -11583,54 +11583,35 @@ async def scan_duplicates(
 
     # ── Fetch all library items from Emby (not cache — cache dedupes by
     #    provider key so duplicates sharing an IMDB ID overwrite each other).
-    #    Include Path so we can map each copy to its Emby library name.
-    _dup_fields = "ProviderIds,Genres,Overview,People,Studios,DateCreated,RunTimeTicks,CommunityRating,OfficialRating,ProductionYear,UserData,Path"
+    _dup_fields = "ProviderIds,ProductionYear"
     async with EmbyClient() as emby:
         all_movies = await emby.get_all_movies()
         all_series = await emby.get_all_series()
-        # Fetch virtual folders to map file paths → library names
+        # Fetch virtual folders then query each library individually so every
+        # item is tagged with its Emby library name (path matching fails on
+        # SMB shares where the mount path differs from the Locations array).
         vfolders = await emby.get_virtual_folders()
-        # Re-fetch movies+series with Path for duplicate detection
-        _dup_movies: list[dict] = []
-        _s = 0
-        while True:
-            _resp = await emby.get_items(item_type="Movie", fields=_dup_fields, limit=500, start_index=_s)
-            _dup_movies.extend(_resp.get("Items", []))
-            if _s + 500 >= _resp.get("TotalRecordCount", 0):
-                break
-            _s += 500
-        _dup_series: list[dict] = []
-        _s = 0
-        while True:
-            _resp = await emby.get_items(item_type="Series", fields=_dup_fields, limit=500, start_index=_s)
-            _dup_series.extend(_resp.get("Items", []))
-            if _s + 500 >= _resp.get("TotalRecordCount", 0):
-                break
-            _s += 500
+        _dup_items: list[dict] = []  # items enriched with _library_name
+        for vf in vfolders:
+            lib_name = vf.get("name", "Unknown")
+            lib_id = vf.get("item_id")
+            if not lib_id:
+                continue
+            _s = 0
+            while True:
+                _resp = await emby.get_items(
+                    parent_id=lib_id, fields=_dup_fields,
+                    limit=500, start_index=_s,
+                )
+                batch = _resp.get("Items", [])
+                for it in batch:
+                    it["_library_name"] = lib_name
+                _dup_items.extend(batch)
+                if _s + 500 >= _resp.get("TotalRecordCount", 0):
+                    break
+                _s += 500
 
-    # Build path → library name mapping from virtual folders
-    # Each library has one or more Locations (filesystem paths).
-    # Normalise to forward slashes for consistent matching.
-    _path_to_lib: list[tuple[str, str]] = []  # (normalised_location, library_name)
-    for vf in vfolders:
-        lib_name = vf.get("name", "Unknown")
-        for loc in vf.get("locations", []):
-            _path_to_lib.append((loc.replace("\\", "/").rstrip("/"), lib_name))
-    # Sort longest paths first so more specific mounts match before generic ones
-    _path_to_lib.sort(key=lambda x: len(x[0]), reverse=True)
-
-    def _resolve_library(item_path: str) -> str:
-        """Match an item's file path to its Emby library name."""
-        if not item_path:
-            return "Unknown"
-        normalised = item_path.replace("\\", "/")
-        for loc, name in _path_to_lib:
-            if normalised.startswith(loc + "/") or normalised.startswith(loc + "\\") or normalised == loc:
-                return name
-        return "Unknown"
-
-    # Build lookup maps from the Emby data (use the original fetches for
-    # orphan/metadata checks — those don't need Path)
+    # Build lookup maps from the global fetches (for orphan/metadata checks)
     library_imdb_map: dict[str, list] = {}       # imdb_id -> [items]
     library_emby_ids: set[str] = set()            # all emby IDs in library
     library_series_titles: set[str] = set()       # lowercase series titles
@@ -11650,9 +11631,9 @@ async def scan_duplicates(
         if item.get("Type") == "Series" and name:
             library_series_titles.add(name.lower().strip())
 
-    # Build a separate IMDB map from the Path-enriched fetch for duplicate display
+    # Build IMDB map from per-library fetch for duplicate display
     dup_imdb_map: dict[str, list] = {}
-    for item in _dup_movies + _dup_series:
+    for item in _dup_items:
         iid = (item.get("ProviderIds") or {}).get("Imdb")
         if iid:
             dup_imdb_map.setdefault(iid, []).append(item)
@@ -11669,7 +11650,7 @@ async def scan_duplicates(
                 "details": f"{len(items)} copies in library",
                 "items": [
                     {"emby_id": i.get("Id"), "title": i.get("Name"), "year": i.get("ProductionYear"),
-                     "item_type": item_type, "library": _resolve_library(i.get("Path", ""))}
+                     "item_type": item_type, "library": i.get("_library_name", "Unknown")}
                     for i in items
                 ],
             })
