@@ -604,52 +604,67 @@ async def get_person_details(person_name: str) -> dict | None:
         return None
 
 
-async def get_popular_people(limit: int = 20) -> list[dict]:
-    """Return currently popular people from TMDB. Cached 12 hours."""
+async def get_popular_people(limit: int = 12) -> list[dict]:
+    """Return a shuffled selection of popular people from TMDB.
+
+    Fetches 3 pages (~60 people) and caches the full pool for 6 hours.
+    Each call shuffles and picks ``limit`` from the pool so the
+    suggestions feel fresh on every page load.
+    """
+    import json
+    import random
+
     api_key = await _get_api_key()
     if not api_key:
         return []
 
-    import json
-
-    cache_key = "tmdb_popular_people_v1"
+    cache_key = "tmdb_popular_people_v2"
+    pool: list[dict] | None = None
     try:
-        r = await get_redis()
-        cached = await r.get(cache_key)
+        _r = await get_redis()
+        cached = await _r.get(cache_key)
         if cached:
-            return json.loads(cached)
+            pool = json.loads(cached)
     except Exception:
         pass
 
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{TMDB_BASE}/person/popular",
-                params={"api_key": api_key, "page": 1},
-            )
-            resp.raise_for_status()
-            results = resp.json().get("results", [])
-
-        people = []
-        for p in results[:limit]:
-            people.append({
-                "name": p.get("name"),
-                "profile_path": p.get("profile_path"),
-                "known_for_department": p.get("known_for_department"),
-                "known_for": [
-                    kf.get("title") or kf.get("name")
-                    for kf in (p.get("known_for") or [])[:2]
-                ],
-            })
-
+    if pool is None:
         try:
-            r = await get_redis()
-            await r.setex(cache_key, 43200, json.dumps(people))  # 12h
-        except Exception:
-            pass
+            all_results: list[dict] = []
+            async with httpx.AsyncClient(timeout=15) as client:
+                for page in range(1, 4):
+                    resp = await client.get(
+                        f"{TMDB_BASE}/person/popular",
+                        params={"api_key": api_key, "page": page},
+                    )
+                    resp.raise_for_status()
+                    all_results.extend(resp.json().get("results", []))
 
-        return people
+            pool = []
+            seen: set[str] = set()
+            for p in all_results:
+                name = p.get("name")
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                pool.append({
+                    "name": name,
+                    "profile_path": p.get("profile_path"),
+                    "known_for_department": p.get("known_for_department"),
+                    "known_for": [
+                        kf.get("title") or kf.get("name")
+                        for kf in (p.get("known_for") or [])[:2]
+                    ],
+                })
 
-    except Exception as e:
-        log.debug("tmdb.popular_people_failed", error=str(e)[:120])
-        return []
+            try:
+                _r = await get_redis()
+                await _r.setex(cache_key, 21600, json.dumps(pool))  # 6h
+            except Exception:
+                pass
+        except Exception as e:
+            log.debug("tmdb.popular_people_failed", error=str(e)[:120])
+            return []
+
+    random.shuffle(pool)
+    return pool[:limit]

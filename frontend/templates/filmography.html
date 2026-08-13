@@ -324,6 +324,8 @@ async function doSearch() {
     if (!r.ok) { el.innerHTML = '<div class="empty">No results found for "' + q + '"</div>'; return; }
     var data = await r.json();
     renderResults(data);
+    // Push state so browser back returns to the suggestions view
+    history.pushState({ person: q }, '', '/filmography?q=' + encodeURIComponent(q));
   } catch(e) {
     el.innerHTML = '<div class="empty">Error: ' + e.message + '</div>';
   }
@@ -446,7 +448,32 @@ async function syncWatchlistOnce() {
 }
 
 /* Init */
-loadSuggestions();
+// Replace current state so back from a person search lands here (not previous page)
+history.replaceState({ home: true }, '', '/filmography');
+
+window.addEventListener('popstate', function(e) {
+  if (!e.state || e.state.home) {
+    // Returned to filmography home — restore suggestions view
+    document.getElementById('searchInput').value = '';
+    document.getElementById('results').innerHTML = '';
+    allWorks = [];
+    activeFilter = 'all';
+    loadSuggestions();
+  } else if (e.state.person) {
+    // Navigated back to a specific person search
+    document.getElementById('searchInput').value = e.state.person;
+    doSearch();
+  }
+});
+
+// Check URL for ?q= param (direct link or forward/back)
+var _initQ = new URLSearchParams(window.location.search).get('q');
+if (_initQ) {
+  document.getElementById('searchInput').value = _initQ;
+  doSearch();
+} else {
+  loadSuggestions();
+}
 loadRadarrServers();
 loadSonarrServers();
 syncWatchlistOnce();
