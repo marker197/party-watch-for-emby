@@ -11305,12 +11305,18 @@ async def get_item_detail(
 
     # Watchlist status — local DB lookup (synced from providers)
     result["on_watchlist"] = False
-    if imdb_id:
+    if imdb_id or tmdb_id:
         from app.models.schema import WatchlistItem
+        from sqlalchemy import or_ as _or
+        _wl_conds = []
+        if imdb_id:
+            _wl_conds.append(WatchlistItem.imdb_id == imdb_id)
+        if tmdb_id:
+            _wl_conds.append(WatchlistItem.tmdb_id == str(tmdb_id))
         _wl_row = (await db.execute(
             select(WatchlistItem.id).where(
                 WatchlistItem.user_id == user_id,
-                WatchlistItem.imdb_id == imdb_id,
+                _or(*_wl_conds),
             ).limit(1)
         )).first()
         result["on_watchlist"] = _wl_row is not None
@@ -11414,7 +11420,7 @@ async def toggle_watchlist(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Add or remove an item from the user's watchlist on Simkl + MDBList."""
+    """Add or remove an item from the user's watchlist on active providers."""
     imdb_id = payload.get("imdb_id")
     tmdb_id = payload.get("tmdb_id")
     item_type = payload.get("item_type", "movie")  # "movie" or "show"
@@ -11430,9 +11436,10 @@ async def toggle_watchlist(
         ids_dict["tmdb"] = tmdb_id
 
     results: dict = {"action": action, "simkl": None, "mdblist": None}
+    providers = await _get_active_providers(db)
 
     # Simkl
-    if current_user.simkl_access_token:
+    if "simkl" in providers and current_user.simkl_access_token:
         try:
             simkl = SimklClient(
                 access_token=current_user.simkl_access_token,
@@ -11451,32 +11458,33 @@ async def toggle_watchlist(
             results["simkl"] = str(e)[:100]
 
     # MDBList
-    try:
-        mdb_key = await _get_mdblist_key(db)
-        if mdb_key:
-            from app.utils.mdblist_client import MDBListClient
-            mdb = MDBListClient(api_key=mdb_key)
-            try:
-                mdb_item = {}
-                if imdb_id:
-                    mdb_item["imdb"] = imdb_id
-                if tmdb_id:
-                    mdb_item["tmdb"] = tmdb_id
-                if action == "add":
-                    if item_type == "show":
-                        await mdb.add_to_watchlist(shows=[mdb_item])
+    if "mdblist" in providers:
+        try:
+            mdb_key = await _get_mdblist_key(db)
+            if mdb_key:
+                from app.utils.mdblist_client import MDBListClient
+                mdb = MDBListClient(api_key=mdb_key)
+                try:
+                    mdb_item = {}
+                    if imdb_id:
+                        mdb_item["imdb"] = imdb_id
+                    if tmdb_id:
+                        mdb_item["tmdb"] = tmdb_id
+                    if action == "add":
+                        if item_type == "show":
+                            await mdb.add_to_watchlist(shows=[mdb_item])
+                        else:
+                            await mdb.add_to_watchlist(movies=[mdb_item])
                     else:
-                        await mdb.add_to_watchlist(movies=[mdb_item])
-                else:
-                    if item_type == "show":
-                        await mdb.remove_from_watchlist(shows=[mdb_item])
-                    else:
-                        await mdb.remove_from_watchlist(movies=[mdb_item])
-                results["mdblist"] = "ok"
-            finally:
-                await mdb.close()
-    except Exception as e:
-        results["mdblist"] = str(e)[:100]
+                        if item_type == "show":
+                            await mdb.remove_from_watchlist(shows=[mdb_item])
+                        else:
+                            await mdb.remove_from_watchlist(movies=[mdb_item])
+                    results["mdblist"] = "ok"
+                finally:
+                    await mdb.close()
+        except Exception as e:
+            results["mdblist"] = str(e)[:100]
 
     # Persist locally
     from app.models.schema import WatchlistItem
@@ -11523,16 +11531,17 @@ async def sync_watchlist_local(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Pull watchlist from Simkl + MDBList and store locally for fast lookups."""
+    """Pull watchlist from active providers and store locally for fast lookups."""
     from app.models.schema import WatchlistItem
     _now = datetime.now(timezone.utc).replace(tzinfo=None)
     imported = 0
 
-    # Collect all items from providers into a dict keyed by imdb_id
-    wl_items: dict[str, dict] = {}  # imdb_id -> {tmdb_id, title, item_type, source}
+    # Collect all items keyed by tmdb_id (primary) — Simkl items often lack IMDB
+    wl_items: dict[str, dict] = {}  # tmdb_id -> {imdb_id, title, item_type, source}
+    providers = await _get_active_providers(db)
 
     # ── Simkl ──
-    if current_user.simkl_access_token:
+    if "simkl" in providers and current_user.simkl_access_token:
         try:
             simkl = SimklClient(
                 access_token=current_user.simkl_access_token,
@@ -11542,46 +11551,61 @@ async def sync_watchlist_local(
                 for kind, itype in [("movies", "movie"), ("shows", "show"), ("anime", "show")]:
                     entries = await simkl.get_watchlist(kind=kind)
                     for entry in entries:
-                        ids = entry.get("ids", {})
-                        iid = ids.get("imdb")
-                        if not iid:
+                        # Simkl wraps plantowatch items: {"movie": {"title": ..., "ids": {...}}}
+                        inner = entry.get("movie") or entry.get("show") or entry
+                        ids = inner.get("ids", {})
+                        tmdb = str(ids.get("tmdb")) if ids.get("tmdb") else None
+                        imdb = ids.get("imdb")
+                        # Need at least one ID to store
+                        if not tmdb and not imdb:
                             continue
-                        wl_items[iid] = {
-                            "tmdb_id": str(ids.get("tmdb")) if ids.get("tmdb") else None,
-                            "title": entry.get("title"),
-                            "item_type": itype,
-                            "source": "simkl",
-                        }
+                        key = tmdb or imdb  # prefer tmdb as dedup key
+                        if key not in wl_items:
+                            wl_items[key] = {
+                                "imdb_id": imdb,
+                                "tmdb_id": tmdb,
+                                "title": inner.get("title"),
+                                "item_type": itype,
+                                "source": "simkl",
+                            }
+                log.info("watchlist_local_sync.simkl_collected",
+                         count=len(wl_items), user_id=current_user.id)
             finally:
                 await simkl.close()
         except Exception as e:
-            log.warning("watchlist_sync.simkl_failed", error=str(e)[:120])
+            log.warning("watchlist_local_sync.simkl_failed", error=str(e)[:120])
 
     # ── MDBList ──
-    try:
-        mdb_key = await _get_mdblist_key(db)
-        if mdb_key:
-            from app.utils.mdblist_client import MDBListClient
-            mdb = MDBListClient(api_key=mdb_key)
-            try:
-                wl_data = await mdb.get_watchlist()
-                for mtype, itype in [("movies", "movie"), ("shows", "show")]:
-                    for entry in wl_data.get(mtype, []):
-                        iid = entry.get("imdb_id") or entry.get("imdb")
-                        if not iid:
-                            continue
-                        if iid in wl_items:
-                            continue  # already have from Simkl
-                        wl_items[iid] = {
-                            "tmdb_id": str(entry.get("tmdb_id") or entry.get("tmdb") or ""),
-                            "title": entry.get("title"),
-                            "item_type": itype,
-                            "source": "mdblist",
-                        }
-            finally:
-                await mdb.close()
-    except Exception as e:
-        log.warning("watchlist_sync.mdblist_failed", error=str(e)[:120])
+    if "mdblist" in providers:
+        _pre = len(wl_items)
+        try:
+            mdb_key = await _get_mdblist_key(db)
+            if mdb_key:
+                from app.utils.mdblist_client import MDBListClient
+                mdb = MDBListClient(api_key=mdb_key)
+                try:
+                    wl_data = await mdb.get_watchlist()
+                    for mtype, itype in [("movies", "movie"), ("shows", "show")]:
+                        for entry in wl_data.get(mtype, []):
+                            tmdb = str(entry.get("tmdb_id") or entry.get("tmdb") or "") or None
+                            imdb = entry.get("imdb_id") or entry.get("imdb")
+                            if not tmdb and not imdb:
+                                continue
+                            key = tmdb or imdb
+                            if key not in wl_items:
+                                wl_items[key] = {
+                                    "imdb_id": imdb,
+                                    "tmdb_id": tmdb,
+                                    "title": entry.get("title"),
+                                    "item_type": itype,
+                                    "source": "mdblist",
+                                }
+                finally:
+                    await mdb.close()
+        except Exception as e:
+            log.warning("watchlist_local_sync.mdblist_failed", error=str(e)[:120])
+        log.info("watchlist_local_sync.mdblist_collected",
+                 added=len(wl_items) - _pre, user_id=current_user.id)
 
     # ── Upsert locally, preserve user-submitted entries ──
     # Delete provider-synced rows (not user-submitted)
@@ -11592,21 +11616,38 @@ async def sync_watchlist_local(
         )
     )
 
-    # Re-insert provider items (skip if user already has same imdb_id)
-    existing_user_imdb = {r[0] for r in (await db.execute(
-        select(WatchlistItem.imdb_id).where(
+    # Collect existing user-submitted keys for dedup
+    _user_rows = (await db.execute(
+        select(WatchlistItem.imdb_id, WatchlistItem.tmdb_id).where(
             WatchlistItem.user_id == current_user.id,
             WatchlistItem.source == "user",
         )
-    )).all()}
+    )).all()
+    existing_user_keys: set[str] = set()
+    for row in _user_rows:
+        if row[0]:
+            existing_user_keys.add(row[0])
+        if row[1]:
+            existing_user_keys.add(row[1])
 
-    for iid, info in wl_items.items():
-        if iid in existing_user_imdb:
-            continue  # user-submitted takes precedence
+    _seen_imdb: set[str] = set(existing_user_keys)
+    _seen_tmdb: set[str] = set(existing_user_keys)
+    for key, info in wl_items.items():
+        imdb = info["imdb_id"]
+        tmdb = info["tmdb_id"]
+        # Skip if user already has, or if we'd violate a unique constraint
+        if imdb and imdb in _seen_imdb:
+            continue
+        if tmdb and tmdb in _seen_tmdb:
+            continue
+        if imdb:
+            _seen_imdb.add(imdb)
+        if tmdb:
+            _seen_tmdb.add(tmdb)
         db.add(WatchlistItem(
             user_id=current_user.id,
-            imdb_id=iid,
-            tmdb_id=info["tmdb_id"] or None,
+            imdb_id=imdb,
+            tmdb_id=tmdb,
             title=info["title"],
             item_type=info["item_type"],
             source=info["source"],
@@ -11616,10 +11657,10 @@ async def sync_watchlist_local(
         imported += 1
 
     await db.commit()
-    log.info("watchlist_sync.complete", user_id=current_user.id, imported=imported,
-             user_kept=len(existing_user_imdb), provider_total=len(wl_items))
+    log.info("watchlist_local_sync.complete", user_id=current_user.id, imported=imported,
+             user_kept=len(_user_rows), provider_total=len(wl_items))
 
-    return {"synced": imported, "user_kept": len(existing_user_imdb), "total": imported + len(existing_user_imdb)}
+    return {"synced": imported, "user_kept": len(_user_rows), "total": imported + len(_user_rows)}
 
 
 @router.get("/api/watchlist/check")
@@ -11631,13 +11672,18 @@ async def check_watchlist(
 ):
     """Check if an item is on the local watchlist."""
     from app.models.schema import WatchlistItem
+    from sqlalchemy import or_
     if not imdb_id and not tmdb_id:
         return {"on_watchlist": False}
-    q = select(WatchlistItem.id).where(WatchlistItem.user_id == current_user.id)
+    conditions = []
     if imdb_id:
-        q = q.where(WatchlistItem.imdb_id == imdb_id)
-    elif tmdb_id:
-        q = q.where(WatchlistItem.tmdb_id == str(tmdb_id))
+        conditions.append(WatchlistItem.imdb_id == imdb_id)
+    if tmdb_id:
+        conditions.append(WatchlistItem.tmdb_id == str(tmdb_id))
+    q = select(WatchlistItem.id).where(
+        WatchlistItem.user_id == current_user.id,
+        or_(*conditions),
+    )
     row = (await db.execute(q.limit(1))).first()
     return {"on_watchlist": row is not None}
 
@@ -11721,16 +11767,19 @@ async def get_filmography(
         if row.series_name:
             _watched_series_names.add(row.series_name.lower().strip())
 
-    # Build watchlist lookup set (local DB)
+    # Build watchlist lookup sets (local DB) — both IMDB and TMDB
     _wl_imdb_set: set[str] = set()
+    _wl_tmdb_set: set[str] = set()
     _wl_rows = (await db.execute(
-        select(WatchlistItem.imdb_id).where(
+        select(WatchlistItem.imdb_id, WatchlistItem.tmdb_id).where(
             WatchlistItem.user_id == user_id,
-            WatchlistItem.imdb_id.isnot(None),
         )
     )).all()
     for row in _wl_rows:
-        _wl_imdb_set.add(row[0])
+        if row[0]:
+            _wl_imdb_set.add(row[0])
+        if row[1]:
+            _wl_tmdb_set.add(str(row[1]))
 
     # Cross-reference with library cache
     works = []
@@ -11755,8 +11804,13 @@ async def get_filmography(
         else:
             work["watched"] = False
 
-        # Watchlist status (local DB)
-        work["on_watchlist"] = work.get("imdb_id", "") in _wl_imdb_set if work.get("imdb_id") else False
+        # Watchlist status (local DB — match by IMDB or TMDB)
+        _on_wl = False
+        if work.get("imdb_id") and work["imdb_id"] in _wl_imdb_set:
+            _on_wl = True
+        elif tmdb_id_str and tmdb_id_str in _wl_tmdb_set:
+            _on_wl = True
+        work["on_watchlist"] = _on_wl
 
         works.append(work)
 

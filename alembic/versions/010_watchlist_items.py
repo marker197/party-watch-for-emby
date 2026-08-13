@@ -32,6 +32,7 @@ def upgrade() -> None:
             sa.Column("added_at", sa.DateTime, nullable=True),
             sa.Column("synced_at", sa.DateTime, nullable=True),
             sa.UniqueConstraint("user_id", "imdb_id", name="uq_watchlist_user_imdb"),
+            sa.UniqueConstraint("user_id", "tmdb_id", name="uq_watchlist_user_tmdb"),
         )
 
 

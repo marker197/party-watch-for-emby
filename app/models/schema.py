@@ -435,6 +435,7 @@ class WatchlistItem(Base):
 
     __table_args__ = (
         UniqueConstraint("user_id", "imdb_id", name="uq_watchlist_user_imdb"),
+        UniqueConstraint("user_id", "tmdb_id", name="uq_watchlist_user_tmdb"),
     )
 
     user = relationship("User", foreign_keys=[user_id])
