@@ -28,7 +28,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text as sa_text
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse as _HTMLResponse
 
 from app.config import settings
 from app.utils.logging import setup_logging, security_log
@@ -206,7 +206,7 @@ async def lifespan(app: FastAPI):
         async with async_session() as db:
             result = await db.execute(sa_text("SELECT version_num FROM alembic_version LIMIT 1"))
             row = result.first()
-            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres", "005_watch_history_progress", "006_dedup_watch_history", "007_simkl", "008_user_rating", "009_episode_ratings", "010_watchlist_items", "011_dismissed_issues"):
+            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres", "005_watch_history_progress", "006_dedup_watch_history", "007_simkl", "008_user_rating", "009_episode_ratings", "010_watchlist_items", "011_dismissed_issues", "012_watch_history_null_dedup"):
                 # Pre-squash revision — jump to current head
                 await db.execute(sa_text("UPDATE alembic_version SET version_num = '007_simkl'"))
                 await db.commit()
@@ -366,8 +366,6 @@ app.include_router(phase5_router)
 # Dashboard (served at /)
 # ---------------------------------------------------------------------------
 
-templates = Jinja2Templates(directory="frontend/templates")
-
 # Static assets (provider icons, etc.)
 app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 
@@ -378,7 +376,7 @@ async def dashboard(request: Request):
     from app.utils.redis_cache import get_redis
     from fastapi.responses import RedirectResponse
     try:
-        r = await _get_redis()
+        r = await get_redis()
         provider = await r.get("integration_provider")
         if not provider:
             # Check DB as fallback
@@ -392,15 +390,24 @@ async def dashboard(request: Request):
     except Exception:
         pass  # If check fails, show dashboard normally
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
-        "features": {
-            "smart_queue": settings.enable_smart_queue,
-            "ml_predictor": settings.enable_ml_predictor,
-            "universe_discovery": settings.enable_universe_discovery,
-            "watch_party": settings.enable_watch_party,
-        },
-    })
+    try:
+        with open("frontend/templates/dashboard.html", "r") as f:
+            html = f.read()
+
+        # Inject feature toggle states (replaces Jinja2 placeholders)
+        toggles = {
+            "SMART_QUEUE": settings.enable_smart_queue,
+            "ML_PREDICTOR": settings.enable_ml_predictor,
+            "UNIVERSE_DISCOVERY": settings.enable_universe_discovery,
+        }
+        for key, enabled in toggles.items():
+            html = html.replace(f"__BADGE_{key}__", "badge-on" if enabled else "badge-off")
+            html = html.replace(f"__STATUS_{key}__", "ON" if enabled else "OFF")
+        html = html.replace("__WATCH_PARTY_BOOL__", "true" if settings.enable_watch_party else "false")
+
+        return _HTMLResponse(html)
+    except FileNotFoundError:
+        return _HTMLResponse("<h1>Dashboard not found</h1>", status_code=500)
 
 
 # ---------------------------------------------------------------------------
@@ -730,16 +737,6 @@ async def run_heartbeat():
             await client.close()
 
 
-async def check_simkl_tokens():
-    """Check Simkl token validity.
-
-    Simkl tokens last ~5 years so this is a lightweight check, not a refresh.
-    If a token is expired or invalid, logs a warning so the user knows to
-    re-link.  Not scheduled by default — called only from heartbeat if needed.
-    """
-    pass  # Simkl tokens are ~5yr, no proactive refresh needed
-
-
 def _register_jobs():
     if settings.enable_smart_queue:
         from app.services.smart_queue.service import SmartQueueService
@@ -1001,7 +998,7 @@ def _register_jobs():
             from app.api.routes import _check_ssl_cert
             from app.utils.redis_cache import get_redis
             result = await _check_ssl_cert(settings.ssl_domain)
-            r = await _get_redis()
+            r = await get_redis()
             await r.set("ssl:cert_status", _json.dumps(result))
             if result.get("status") in ("critical", "expired"):
                 log.warning("ssl.cert_expiring", domain=settings.ssl_domain,

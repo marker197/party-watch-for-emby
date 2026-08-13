@@ -1013,35 +1013,6 @@ async def update_universe_settings(universe_id: int, payload: dict, _user: User 
         "custom_name": universe.custom_name,
         "description": universe.description,
     }
-async def export_universes():
-    """Export all universes and their items as JSON for backup/transfer."""
-    async with async_session_ctx() as db:
-        universes = (await db.execute(select(Universe))).scalars().all()
-        result = []
-        for u in universes:
-            items = (await db.execute(
-                select(UniverseItem).where(UniverseItem.universe_id == u.id)
-                .order_by(UniverseItem.release_order)
-            )).scalars().all()
-            result.append({
-                "name": u.name,
-                "slug": u.slug,
-                "description": u.description,
-                "items": [
-                    {
-                        "title": i.title,
-                        "year": i.year,
-                        "item_type": i.item_type,
-                        "release_order": i.release_order,
-                        "chronological_order": i.chronological_order,
-                        "simkl_id": i.simkl_id,
-                        "imdb_id": i.imdb_id,
-                        "tmdb_id": i.tmdb_id,
-                    }
-                    for i in items
-                ],
-            })
-    return {"universes": result, "count": len(result)}
 
 
 @router.get("/api/universes/export")
@@ -3361,9 +3332,11 @@ async def get_watch_party_page(code: str = None):
     try:
         with open("frontend/templates/watch_party.html", "r") as f:
             html = f.read()
-        # Inject party code if provided
+        # Inject party code if provided (sanitised: alphanumeric only)
         if code:
-            html = html.replace("const partyCode = null;", f"const partyCode = '{code}';")
+            safe_code = re.sub(r"[^A-Za-z0-9]", "", code)[:12]
+            if safe_code:
+                html = html.replace("const partyCode = null;", f"const partyCode = '{safe_code}';")
         return html
     except FileNotFoundError:
         return "<h1>Page not found</h1>"
@@ -11055,10 +11028,13 @@ async def trakt_import_push(
 @router.get("/item/{imdb_id}")
 async def item_detail_page(imdb_id: str):
     """Render the item detail HTML page."""
+    # Allow '_' as a placeholder when the real lookup is by tmdb_id/emby_id query param.
+    # For actual IMDB IDs, validate the tt+digits pattern to prevent XSS.
+    if imdb_id != "_" and not re.fullmatch(r"tt\d{7,10}", imdb_id):
+        return HTMLResponse("<h1>Invalid item ID</h1>", status_code=400)
     try:
         with open("frontend/templates/item_detail.html", "r") as f:
             html = f.read()
-        # Inject the imdb_id into the template (replaces {{ imdb_id }})
         html = html.replace("{{ imdb_id }}", imdb_id)
         return HTMLResponse(html)
     except FileNotFoundError:

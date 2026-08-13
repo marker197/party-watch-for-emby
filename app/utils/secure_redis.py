@@ -27,6 +27,7 @@ SECRET_KEYS: frozenset[str] = frozenset({
     "sabnzbd_servers",
     "tmdb_api_key",
     "mdblist_api_key",
+    "notifications_config",
 })
 
 # Prefix so we can tell encrypted values from legacy plaintext.

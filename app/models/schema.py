@@ -298,32 +298,10 @@ class RatingBias(Base):
     analyzed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
-# ---------------------------------------------------------------------------
-# Social Watching (deprecated)  (#6)
-# ---------------------------------------------------------------------------
-
-class SocialWatching(Base):
-    """Track what friends are watching and influence scoring."""
-    __tablename__ = "social_watching"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    friend_simkl_username = Column(String(128), nullable=False)
-    friend_profile_url = Column(String(256))
-    is_watching = Column(Boolean, default=False)
-    current_item_title = Column(String(512))
-    current_item_simkl_id = Column(String(64))
-    item_type = Column(String(32))  # 'movie' | 'episode'
-    started_at = Column(DateTime)
-    last_seen_at = Column(DateTime)
-    in_library = Column(Boolean, default=False)
-    friend_rating = Column(Float)
-    influence_score = Column(Float, default=0.0)  # 0-100, % of overlap
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
-
-    user = relationship("User", foreign_keys=[user_id])
-
+# NOTE: The social_watching DB table still exists but the model has been
+# removed.  Simkl has no friends/social API so this feature is permanently
+# unavailable.  The table is harmless and can be dropped in a future
+# migration if desired.
 
 # ---------------------------------------------------------------------------
 # Library Health Monitor  (#9)

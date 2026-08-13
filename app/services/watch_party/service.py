@@ -33,8 +33,8 @@ log = structlog.get_logger()
 # CORS: Always allow all origins for Socket.IO connections.
 # Party codes + auth provide the real access control layer, and
 # restricting origins here causes 403 on WebSocket upgrades when
-# the browser's Origin header doesn't exactly match the allowed
-# list (common with LAN IPs, proxies, and mixed http/https).
+# the browser's Origin header doesn't match the allowed list
+# (common with LAN IPs, reverse proxies, and mixed http/https).
 
 sio = socketio.AsyncServer(
     async_mode="asgi",

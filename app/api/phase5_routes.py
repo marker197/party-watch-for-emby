@@ -1,15 +1,24 @@
 """
-API Routes — Social Watching Graph, Library Health Monitor, Bulk Actions.
+API Routes — Library Health Monitor (legacy v2 endpoints) & Bulk Actions.
 
-Total: 14 endpoints
-- Social Watching: 5 endpoints
+Social Watching endpoints removed (Simkl has no friends API — permanently
+unavailable).
+
+Library Health v2 endpoints now delegate to the main LibraryHealthService
+(the same service used by /api/library-health/* in routes.py and the
+weekly scheduler job).  The old LibraryHealthMonitor class has been removed.
+
+Total: 9 endpoints
 - Library Health: 6 endpoints
 - Bulk Actions: 3 endpoints
 """
 
-import logging
+from __future__ import annotations
+
 from datetime import datetime, timezone
-from typing import List, Dict, Optional
+from typing import Optional
+
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,102 +26,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.schema import (
     LibraryGap, LibraryHealthReport, BulkAction, User
 )
-from app.services.library_health import LibraryHealthMonitor
+from app.services.library_health_service import LibraryHealthService
 from app.utils.database import get_db
-from app.utils.simkl_client import SimklClient
-from app.utils.library_cache import LibraryCache
-from app.utils.emby_client import EmbyClient
 
-# ✅ SECURITY: Import auth module
 from app.security.auth import get_current_user, require_user_ownership
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 # Create router
 router = APIRouter(prefix="/api/v2", tags=["Extended Features"])
 
-# Stateless singletons (no per-user auth needed)
-cache = LibraryCache()
-
-
-def _get_emby_client() -> EmbyClient:
-    """Create a fresh EmbyClient per-request — avoids stale connections."""
-    return EmbyClient()
-
-
-async def _get_user_simkl(user_id: int, db: AsyncSession) -> SimklClient:
-    """Build an authenticated SimklClient for the given user."""
-    user = await db.get(User, user_id)
-    if not user or not user.simkl_access_token:
-        raise HTTPException(status_code=401, detail="User has no linked Simkl account")
-
-    return SimklClient(
-        access_token=user.simkl_access_token,
-        token_expires=user.simkl_token_expires,
-    )
-
-
-# ============================================================================
-# SOCIAL WATCHING GRAPH (#6) - Disabled (Simkl has no social/friends API)
-# ============================================================================
-
-_SOCIAL_UNAVAILABLE = {
-    "success": False,
-    "detail": "Social watching is not available with Simkl (no friends API)"
-}
-
-
-@router.get("/social/friends-watching/{user_id}")
-async def get_friends_watching_now(
-    user_id: int,
-    limit: int = Query(20, ge=1, le=100),
-    _user: User = Depends(get_current_user),
-):
-    """Social watching — disabled (Simkl has no friends API)."""
-    return _SOCIAL_UNAVAILABLE
-
-
-@router.get("/social/influence-leaderboard/{user_id}")
-async def get_influence_leaderboard(
-    user_id: int,
-    limit: int = Query(20, ge=1, le=100),
-    _user: User = Depends(get_current_user),
-):
-    """Influence leaderboard — disabled (Simkl has no friends API)."""
-    return _SOCIAL_UNAVAILABLE
-
-
-@router.get("/social/overlap/{user_id}/{friend_username}")
-async def get_library_overlap(
-    user_id: int,
-    friend_username: str,
-    _user: User = Depends(get_current_user),
-):
-    """Library overlap — disabled (Simkl has no friends API)."""
-    return _SOCIAL_UNAVAILABLE
-
-
-@router.post("/social/sync-mode/{user_id}/{friend_username}")
-async def enable_social_sync_mode(
-    user_id: int,
-    friend_username: str,
-    _user: User = Depends(get_current_user),
-):
-    """Social sync mode — disabled (Simkl has no friends API)."""
-    return _SOCIAL_UNAVAILABLE
-
-
-@router.post("/social/refresh/{user_id}")
-async def refresh_social_graph(
-    user_id: int,
-    _user: User = Depends(get_current_user),
-):
-    """Refresh social graph — disabled (Simkl has no friends API)."""
-    return _SOCIAL_UNAVAILABLE
+# Shared service instance (stateless — safe to share)
+_health_svc = LibraryHealthService()
 
 
 # ============================================================================
 # LIBRARY HEALTH MONITOR (#9) - 6 Endpoints
+#
+# These v2 endpoints provide the same data as the main /api/library-health
+# endpoints in routes.py but under the /api/v2 prefix.  They delegate to
+# the same LibraryHealthService.
 # ============================================================================
 
 @router.get("/health/report/{user_id}")
@@ -121,22 +54,8 @@ async def get_health_report(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Get most recent library health report.
-    
-    Returns:
-        {
-            'total_items': int,
-            'unwatched_items': int,
-            'incomplete_series': int,
-            'orphaned_episodes': int,
-            'related_missing': int,
-            'series_completion_pct': float,
-            'health_score': float,
-            'generated_at': datetime,
-            'recommendations': [str]
-        }
-    """
+    """Get most recent library health report."""
+    require_user_ownership(_user.id, user_id, "health_report")
     try:
         result = await db.execute(
             select(LibraryHealthReport).filter(
@@ -150,12 +69,11 @@ async def get_health_report(
 
         report_data = latest_report.report_json or {}
         return {"success": True, "data": report_data}
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in get_health_report: {e}")
+        log.error("phase5.get_health_report_failed", error=str(e)[:200])
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
 
 
 @router.get("/health/gaps/{user_id}")
@@ -167,24 +85,8 @@ async def get_library_gaps(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Get detected gaps in library (incomplete series, orphaned episodes, etc.).
-    
-    Query params:
-        - gap_type: Filter by type (incomplete_series, orphaned_episode, missing_sequel, director_gap)
-        - priority: Filter by priority (critical, high, medium, low)
-        - limit: Number of results (1-500)
-    
-    Returns:
-        [{
-            'gap_type': str,
-            'title': str,
-            'description': str,
-            'priority': str,
-            'user_rating': float,
-            'status': str
-        }, ...]
-    """
+    """Get detected gaps in library (incomplete series, orphaned episodes, etc.)."""
+    require_user_ownership(_user.id, user_id, "library_gaps")
     try:
         stmt = select(LibraryGap).filter(LibraryGap.user_id == user_id)
 
@@ -213,12 +115,11 @@ async def get_library_gaps(
                 for g in gaps
             ]
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in get_library_gaps: {e}")
+        log.error("phase5.get_library_gaps_failed", error=str(e)[:200])
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
 
 
 @router.get("/health/incomplete-series/{user_id}")
@@ -229,43 +130,23 @@ async def get_incomplete_series(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Get list of incomplete series (shows where you've watched some but not all episodes).
-    
-    Query params:
-        - min_completion: Minimum completion % to include
-        - limit: Number of results
-    
-    Returns:
-        [{
-            'title': str,
-            'total_episodes': int,
-            'watched_episodes': int,
-            'completion_pct': float,
-            'missing_seasons': [int],
-            'your_rating': float
-        }, ...]
-    """
+    """Get list of incomplete series from the most recent scan."""
+    require_user_ownership(_user.id, user_id, "incomplete_series")
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
     try:
-        _emby = _get_emby_client()
-        simkl_client = await _get_user_simkl(user_id, db)
-        monitor = LibraryHealthMonitor(db, simkl_client, _emby, cache)
-        series = await monitor.detect_incomplete_series(user_id)
-
-        # Filter by completion
-        filtered = [s for s in series if s.get('completion_pct', 0) >= min_completion]
-
+        report = await _health_svc.get_report(user)
+        series = report.get("incomplete_series", [])
+        filtered = [s for s in series if s.get("completion_pct", 0) >= min_completion]
         return {
             "success": True,
             "total": len(filtered),
-            "series": filtered[:limit]
+            "series": filtered[:limit],
         }
     except Exception as e:
-        logger.error(f"Error in get_incomplete_series: {e}")
+        log.error("phase5.incomplete_series_failed", error=str(e)[:200])
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
 
 
 @router.get("/health/orphaned-episodes/{user_id}")
@@ -275,37 +156,25 @@ async def get_orphaned_episodes(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Get orphaned episodes (watched episodes without watching season/series premiere).
-    
-    Returns:
-        [{
-            'title': str,
-            'show_title': str,
-            'episode_number': str,  # S02E05
-            'your_rating': float,
-            'status': str,
-            'missing_premiere': bool,
-            'missing_season_premiere': bool
-        }, ...]
-    """
+    """Get watched-not-in-library items from the most recent scan."""
+    require_user_ownership(_user.id, user_id, "orphaned_episodes")
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
     try:
-        _emby = _get_emby_client()
-        simkl_client = await _get_user_simkl(user_id, db)
-        monitor = LibraryHealthMonitor(db, simkl_client, _emby, cache)
-        orphaned = await monitor.find_orphaned_episodes(user_id)
-
+        report = await _health_svc.get_report(user)
+        wnil = report.get("watched_not_in_library", {})
+        movies = wnil.get("movies", [])
+        shows = wnil.get("shows", [])
+        combined = movies + shows
         return {
             "success": True,
-            "total": len(orphaned),
-            "orphaned_episodes": orphaned[:limit]
+            "total": len(combined),
+            "orphaned_episodes": combined[:limit],
         }
     except Exception as e:
-        logger.error(f"Error in get_orphaned_episodes: {e}")
+        log.error("phase5.orphaned_episodes_failed", error=str(e)[:200])
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
 
 
 @router.get("/health/acquisitions/{user_id}")
@@ -316,39 +185,24 @@ async def get_acquisition_recommendations(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Get recommendations for what to acquire to fill gaps in library.
-    
-    Returns:
-        [{
-            'title': str,
-            'type': str,  # 'sequel' | 'complete_series' | 'related_work'
-            'reason': str,
-            'priority': str,
-            'estimated_cost': float,
-            'why_you_should_get_it': str
-        }, ...]
-    """
+    """Get recommendations for what to acquire to fill library gaps."""
+    require_user_ownership(_user.id, user_id, "acquisitions")
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
     try:
-        _emby = _get_emby_client()
-        simkl_client = await _get_user_simkl(user_id, db)
-        monitor = LibraryHealthMonitor(db, simkl_client, _emby, cache)
-        recommendations = await monitor.acquisition_recommendations(user_id, limit)
-
+        report = await _health_svc.get_report(user)
+        recs = report.get("missing_sequels", [])
         if priority:
-            recommendations = [r for r in recommendations if r.get('priority') == priority]
-
+            recs = [r for r in recs if r.get("priority") == priority]
         return {
             "success": True,
-            "total": len(recommendations),
-            "recommendations": recommendations[:limit]
+            "total": len(recs),
+            "recommendations": recs[:limit],
         }
     except Exception as e:
-        logger.error(f"Error in get_acquisition_recommendations: {e}")
+        log.error("phase5.acquisitions_failed", error=str(e)[:200])
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
 
 
 @router.post("/health/analyze/{user_id}")
@@ -357,77 +211,54 @@ async def analyze_library_health(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Run full library health analysis (generate report, detect gaps, etc.).
-    This is an async operation - status can be checked via /health/report endpoint.
-    
-    Returns:
-        {
-            'analysis_started': bool,
-            'estimated_time': str,
-            'job_id': str
-        }
-    """
+    """Run full library health analysis."""
+    require_user_ownership(_user.id, user_id, "health_analysis")
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
     try:
-        _emby = _get_emby_client()
-        simkl_client = await _get_user_simkl(user_id, db)
-        monitor = LibraryHealthMonitor(db, simkl_client, _emby, cache)
-        report = await monitor.generate_health_report(user_id)
-
+        report = await _health_svc.scan(user)
         return {
             "success": True,
             "analysis_complete": True,
-            "report": report
+            "report": report,
         }
     except Exception as e:
-        logger.error(f"Error in analyze_library_health: {e}")
+        log.error("phase5.health_analysis_failed", error=str(e)[:200])
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
 
 
 # ============================================================================
 # BULK ACTIONS UI - 3 Endpoints
+#
+# NOTE: Bulk action execution is not yet implemented.  create_bulk_action
+# records the request; a future background worker will process pending
+# actions.  Until then, status remains 'pending'.
 # ============================================================================
 
 @router.post("/bulk/action")
 async def create_bulk_action(
     user_id: int,
-    action_type: str,  # 'delete' | 'rate_batch' | 'export' | 'add_collection'
-    item_ids: List[str],
-    metadata: Dict = None,
+    action_type: str,
+    item_ids: list[str],
+    metadata: dict = None,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
+    """Create bulk action record.
+
+    NOTE: Execution is not yet implemented — the action is recorded with
+    status='pending' for a future background processor.
     """
-    Create bulk action (delete multiple, batch rate, export, add to collection).
-    
-    Body:
-        {
-            'user_id': int,
-            'action_type': str,
-            'item_ids': [str],  # Emby item IDs
-            'metadata': {
-                'rating': int,  # for rate_batch
-                'collection_name': str,  # for add_collection
-                'format': str  # 'json' | 'csv' for export
-            }
-        }
-    
-    Returns:
-        {'action_id': int, 'status': 'pending', 'estimated_time': str}
-    """
+    require_user_ownership(_user.id, user_id, "bulk_action")
     try:
         if not item_ids or len(item_ids) > 1000:
             raise HTTPException(status_code=400, detail="Invalid item count (1-1000)")
 
-        # Validate action type
         valid_types = ['delete', 'rate_batch', 'export', 'add_collection']
         if action_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Invalid action type: {action_type}")
 
-        # Create bulk action record
         action = BulkAction(
             user_id=user_id,
             action_type=action_type,
@@ -445,12 +276,12 @@ async def create_bulk_action(
             "action_id": action.id,
             "status": "pending",
             "item_count": len(item_ids),
-            "estimated_time_seconds": len(item_ids) * 0.5  # Rough estimate
+            "note": "Bulk execution is not yet implemented — action recorded for future processing.",
         }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in create_bulk_action: {e}")
+        log.error("phase5.bulk_action_create_failed", error=str(e)[:200])
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -461,23 +292,15 @@ async def get_bulk_action_status(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Get status of a bulk action.
-    
-    Returns:
-        {
-            'action_id': int,
-            'status': str,  # 'pending' | 'in_progress' | 'completed' | 'failed'
-            'progress_pct': float,
-            'result': {...}
-        }
-    """
+    """Get status of a bulk action."""
     try:
         result = await db.execute(select(BulkAction).filter(BulkAction.id == action_id))
         action = result.scalars().first()
 
         if not action:
             raise HTTPException(status_code=404, detail="Action not found")
+
+        require_user_ownership(_user.id, action.user_id, "bulk_action_status")
 
         return {
             "success": True,
@@ -492,11 +315,8 @@ async def get_bulk_action_status(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in get_bulk_action_status: {e}")
+        log.error("phase5.bulk_status_failed", error=str(e)[:200])
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
 
 
 @router.get("/bulk/history/{user_id}")
@@ -507,23 +327,8 @@ async def get_bulk_action_history(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """
-    Get history of bulk actions for a user.
-    
-    Query params:
-        - status: Filter by status (pending, in_progress, completed, failed)
-        - limit: Number of results
-    
-    Returns:
-        [{
-            'action_id': int,
-            'action_type': str,
-            'status': str,
-            'item_count': int,
-            'created_at': datetime,
-            'completed_at': datetime
-        }, ...]
-    """
+    """Get history of bulk actions for a user."""
+    require_user_ownership(_user.id, user_id, "bulk_history")
     try:
         stmt = select(BulkAction).filter(BulkAction.user_id == user_id)
 
@@ -548,12 +353,11 @@ async def get_bulk_action_history(
                 for a in actions
             ]
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in get_bulk_action_history: {e}")
+        log.error("phase5.bulk_history_failed", error=str(e)[:200])
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if "_emby" in dir():
-            await _emby.close()
 
 
 # ============================================================================
