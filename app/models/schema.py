@@ -121,6 +121,30 @@ class DismissedRatingItem(Base):
     )
 
 
+class DismissedIssue(Base):
+    """Scan issues the user has chosen to permanently hide.
+
+    Used by the duplicate/conflict detector.  Orphaned history rows for
+    media deliberately removed from the library are expected findings,
+    not problems — without this they reappear on every scan forever.
+    """
+    __tablename__ = "dismissed_issues"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    issue_type = Column(String(64), nullable=False)   # orphaned_history | missing_metadata | duplicate_library
+    issue_key = Column(String(512), nullable=False)   # 'orphaned:movie:tt0111161'
+    title = Column(String(512), nullable=True)
+    note = Column(String(512), nullable=True)
+    dismissed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    user = relationship("User", foreign_keys=[user_id])
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "issue_type", "issue_key", name="uq_dismissed_issue_user_type_key"),
+    )
+
+
 class Prediction(Base):
     __tablename__ = "predictions"
 

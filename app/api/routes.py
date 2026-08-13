@@ -10,7 +10,7 @@ import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func, distinct
+from sqlalchemy import select, func, distinct, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -11872,11 +11872,18 @@ async def duplicates_page():
 
 @router.get("/api/duplicates/scan")
 async def scan_duplicates(
+    include_dismissed: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Scan library and watch history for duplicates and conflicts."""
-    from app.models.schema import WatchHistory
+    """Scan library and watch history for duplicates and conflicts.
+
+    Issues the user has dismissed are filtered out unless
+    ``include_dismissed=true``.  Dismissal exists because orphaned
+    history for deliberately-removed media is an expected finding, not
+    a problem — otherwise it reappears on every scan indefinitely.
+    """
+    from app.models.schema import WatchHistory, DismissedIssue
     issues = []
 
     # ── Fetch all library items from Emby (not cache — cache dedupes by
@@ -12002,6 +12009,8 @@ async def scan_duplicates(
             issues.append({
                 "type": "duplicate_library",
                 "severity": "warning",
+                # Stable identity for dismissal — survives Emby ID changes
+                "issue_key": f"dup:{imdb_id}",
                 "title": group_title,
                 "imdb_id": imdb_id,
                 "details": f"{len(items)} copies in library",
@@ -12043,8 +12052,10 @@ async def scan_duplicates(
             issues.append({
                 "type": "orphaned_history",
                 "severity": "info",
+                "issue_key": f"orphan:movie:{row.imdb_id or title.lower()}",
                 "title": title,
                 "imdb_id": row.imdb_id,
+                "emby_id": row.emby_id,
                 "item_type": "movie",
                 "details": f"Movie watched but no longer in library (last: {row.last_watched.strftime('%Y-%m-%d') if row.last_watched else '?'})",
             })
@@ -12075,9 +12086,11 @@ async def scan_duplicates(
         issues.append({
             "type": "orphaned_history",
             "severity": "info",
+            "issue_key": f"orphan:series:{show_name.lower()}",
             "title": show_name,
             "imdb_id": None,
             "item_type": "episode",
+            "episode_count": row.ep_count,
             "details": f"{ep_label} watched but series no longer in library (last: {row.last_watched.strftime('%Y-%m-%d') if row.last_watched else '?'})",
         })
 
@@ -12128,10 +12141,34 @@ async def scan_duplicates(
                 issues.append({
                     "type": "missing_metadata",
                     "severity": "warning",
+                    "issue_key": f"meta:{row.emby_id or title.lower()}",
                     "title": title,
+                    "emby_id": row.emby_id,
                     "item_type": row.item_type,
                     "details": f"No IMDB ID — {row.count} watch record(s) may not link properly",
                 })
+
+    # ── Filter out dismissed issues ────────────────────────────────────
+    # Done at the end rather than inline so each detection block stays
+    # independent of the dismissal mechanism.
+    dismissed_rows = (await db.execute(
+        select(DismissedIssue.issue_type, DismissedIssue.issue_key)
+        .where(DismissedIssue.user_id == current_user.id)
+    )).all()
+    dismissed_set = {(r[0], r[1]) for r in dismissed_rows}
+
+    hidden = 0
+    if dismissed_set and not include_dismissed:
+        kept = []
+        for i in issues:
+            if (i.get("type"), i.get("issue_key")) in dismissed_set:
+                hidden += 1
+                continue
+            kept.append(i)
+        issues = kept
+    elif include_dismissed:
+        for i in issues:
+            i["dismissed"] = (i.get("type"), i.get("issue_key")) in dismissed_set
 
     # Sort: warnings first, then info
     severity_order = {"error": 0, "warning": 1, "info": 2}
@@ -12143,6 +12180,8 @@ async def scan_duplicates(
         "duplicates": sum(1 for i in issues if i["type"] == "duplicate_library"),
         "orphaned": sum(1 for i in issues if i["type"] == "orphaned_history"),
         "missing_meta": sum(1 for i in issues if i["type"] == "missing_metadata"),
+        "hidden": hidden,
+        "dismissed_total": len(dismissed_set),
     }
 
 
@@ -12271,3 +12310,296 @@ async def relink_duplicate(
         "after": applied,
         "refreshed": bool(do_refresh),
     }
+
+
+# ── Issue dismissal ─────────────────────────────────────────────────────
+
+@router.post("/api/duplicates/dismiss")
+async def dismiss_issue(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Permanently hide a scan issue from future scans.
+
+    Payload: {issue_type, issue_key, title?, note?}
+
+    Orphaned history for media deliberately removed from the library is
+    an expected finding rather than a fault, so it needs a way to be
+    acknowledged once instead of resurfacing on every scan.
+    """
+    from app.models.schema import DismissedIssue
+
+    issue_type = (payload.get("issue_type") or "").strip()
+    issue_key = (payload.get("issue_key") or "").strip()
+    if not issue_type or not issue_key:
+        raise HTTPException(400, "issue_type and issue_key are required")
+
+    valid = {"orphaned_history", "missing_metadata", "duplicate_library"}
+    if issue_type not in valid:
+        raise HTTPException(400, f"Unknown issue_type: {issue_type}")
+
+    existing = (await db.execute(
+        select(DismissedIssue).where(
+            DismissedIssue.user_id == current_user.id,
+            DismissedIssue.issue_type == issue_type,
+            DismissedIssue.issue_key == issue_key,
+        )
+    )).scalar_one_or_none()
+
+    if existing:
+        return {"status": "ok", "already_dismissed": True, "issue_key": issue_key}
+
+    row = DismissedIssue(
+        user_id=current_user.id,
+        issue_type=issue_type,
+        issue_key=issue_key[:512],
+        title=(payload.get("title") or None),
+        note=(payload.get("note") or None),
+        dismissed_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    )
+    db.add(row)
+    try:
+        await db.commit()
+    except Exception:
+        # Unique constraint race — another tab dismissed the same issue
+        await db.rollback()
+        return {"status": "ok", "already_dismissed": True, "issue_key": issue_key}
+
+    log.info("duplicates.issue_dismissed", user_id=current_user.id,
+             issue_type=issue_type, issue_key=issue_key)
+    return {"status": "ok", "issue_key": issue_key, "title": row.title}
+
+
+@router.get("/api/duplicates/dismissed")
+async def list_dismissed_issues(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List every dismissed issue so the user can undo one."""
+    from app.models.schema import DismissedIssue
+
+    rows = (await db.execute(
+        select(DismissedIssue)
+        .where(DismissedIssue.user_id == current_user.id)
+        .order_by(DismissedIssue.dismissed_at.desc())
+    )).scalars().all()
+
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "issue_type": r.issue_type,
+                "issue_key": r.issue_key,
+                "title": r.title,
+                "note": r.note,
+                "dismissed_at": r.dismissed_at.isoformat() if r.dismissed_at else None,
+            }
+            for r in rows
+        ],
+        "total": len(rows),
+    }
+
+
+@router.delete("/api/duplicates/dismiss")
+async def undismiss_issue(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Un-hide a dismissed issue so it reappears on the next scan.
+
+    Accepts either {id} or {issue_type, issue_key}.
+    """
+    from app.models.schema import DismissedIssue
+
+    stmt = select(DismissedIssue).where(DismissedIssue.user_id == current_user.id)
+    if payload.get("id"):
+        stmt = stmt.where(DismissedIssue.id == int(payload["id"]))
+    elif payload.get("issue_type") and payload.get("issue_key"):
+        stmt = stmt.where(
+            DismissedIssue.issue_type == payload["issue_type"],
+            DismissedIssue.issue_key == payload["issue_key"],
+        )
+    else:
+        raise HTTPException(400, "Supply id, or issue_type + issue_key")
+
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "Dismissed issue not found")
+
+    title = row.title
+    await db.delete(row)
+    await db.commit()
+
+    log.info("duplicates.issue_undismissed", user_id=current_user.id,
+             issue_key=row.issue_key)
+    return {"status": "ok", "title": title}
+
+
+# ── History re-link (orphaned / missing metadata) ───────────────────────
+
+@router.post("/api/duplicates/relink-history")
+async def relink_history(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Repoint watch history rows at correct provider IDs.
+
+    Orphaned and missing-metadata issues are the opposite case to a
+    duplicate: the *Emby item* is fine (or gone), and it's the watch
+    history rows that carry the wrong or missing IDs.  So this edits
+    the DB rather than Emby.
+
+    Payload: {
+      scope: "movie" | "series"     — which history rows to target
+      match_title: str              — required for series scope
+      match_emby_id: str            — preferred selector for movie scope
+      match_imdb_id: str            — fallback selector for movie scope
+      imdb_id / tmdb_id             — new values to write
+      new_series_name               — series scope only, for renames
+    }
+    """
+    from app.models.schema import WatchHistory
+
+    scope = (payload.get("scope") or "movie").strip()
+    if scope not in ("movie", "series"):
+        raise HTTPException(400, "scope must be 'movie' or 'series'")
+
+    new_imdb = (payload.get("imdb_id") or "").strip() or None
+    new_tmdb = (payload.get("tmdb_id") or "").strip() or None
+    new_emby = (payload.get("new_emby_id") or "").strip() or None
+    new_series_name = (payload.get("new_series_name") or "").strip() or None
+
+    if new_imdb and not re.fullmatch(r"tt\d{7,10}", new_imdb):
+        raise HTTPException(400, f"Invalid IMDB ID format: {new_imdb}")
+    if new_tmdb and not new_tmdb.isdigit():
+        raise HTTPException(400, f"Invalid TMDB ID: {new_tmdb}")
+    if not (new_imdb or new_tmdb or new_emby or new_series_name):
+        raise HTTPException(400, "Nothing to apply — supply an ID or a new series name")
+
+    stmt = WatchHistory.__table__.update().where(
+        WatchHistory.user_id == current_user.id,
+    )
+
+    if scope == "movie":
+        stmt = stmt.where(WatchHistory.item_type == "movie")
+        emby_id = (payload.get("match_emby_id") or "").strip()
+        imdb_match = (payload.get("match_imdb_id") or "").strip()
+        title_match = (payload.get("match_title") or "").strip()
+
+        # The scan groups orphaned movies by (emby_id, imdb_id, title) but
+        # then dedups the *display* down to one card per title.  Matching
+        # on emby_id alone therefore updates only one of several row
+        # groups, and the untouched siblings resurface on the next scan
+        # looking like the re-link never saved.  OR the selectors together
+        # so every row behind the card is updated in one go.
+        selectors = []
+        if emby_id:
+            selectors.append(WatchHistory.emby_id == emby_id)
+        if imdb_match:
+            selectors.append(WatchHistory.imdb_id == imdb_match)
+        if title_match:
+            selectors.append(func.lower(WatchHistory.title) == title_match.lower())
+        if not selectors:
+            raise HTTPException(
+                400, "Supply match_emby_id, match_imdb_id or match_title"
+            )
+        stmt = stmt.where(or_(*selectors))
+    else:
+        title_match = (payload.get("match_title") or "").strip()
+        if not title_match:
+            raise HTTPException(400, "match_title is required for series scope")
+        stmt = stmt.where(
+            WatchHistory.item_type == "episode",
+            func.lower(WatchHistory.series_name) == title_match.lower(),
+        )
+
+    values: dict = {}
+    if new_imdb:
+        values["imdb_id"] = new_imdb
+    if new_tmdb:
+        values["tmdb_id"] = new_tmdb
+    if new_emby:
+        values["emby_id"] = new_emby
+    if scope == "series" and new_series_name:
+        values["series_name"] = new_series_name
+
+    result = await db.execute(stmt.values(**values))
+    await db.commit()
+    updated = result.rowcount or 0
+
+    # ── Verify: will this actually clear the orphan? ────────────────────
+    # Orphan status is decided by library membership, not by the IDs on
+    # the history row.  Re-linking IDs for something genuinely deleted
+    # from the library changes nothing about the finding, so say so
+    # rather than letting the user re-link repeatedly in confusion.
+    in_library = False
+    try:
+        if new_imdb:
+            in_library = bool(await LibraryCache.find_by_provider_id("Imdb", new_imdb))
+        if not in_library and new_tmdb:
+            in_library = bool(await LibraryCache.find_by_provider_id("Tmdb", new_tmdb))
+        if not in_library and new_emby:
+            async with EmbyClient() as _emby:
+                in_library = bool(await _emby.get_item_safe(new_emby))
+        if not in_library and scope == "series":
+            _t = (payload.get("new_series_name") or payload.get("match_title") or "")
+            if _t:
+                in_library = bool(await LibraryCache.find_by_title(_t))
+    except Exception as e:
+        log.warning("duplicates.relink_verify_failed", error=str(e)[:200])
+
+    log.info("duplicates.history_relinked", user_id=current_user.id,
+             scope=scope, updated=updated, values=values,
+             in_library=in_library)
+
+    return {
+        "status": "ok",
+        "scope": scope,
+        "updated": updated,
+        "applied": values,
+        "in_library": in_library,
+        # True when the rows were updated but the media still isn't in
+        # the library — the issue will reappear, and dismissing is the
+        # appropriate action
+        "still_orphaned": bool(updated and not in_library),
+    }
+
+
+@router.get("/api/duplicates/library-search")
+async def duplicates_library_search(
+    q: str,
+    item_type: str = "Movie",
+    _user: User = Depends(get_current_user),
+):
+    """Search the Emby library so a history row can be pointed at a real item.
+
+    The genuine fix for an orphan is usually that the media is still
+    present but under a different Emby ID (re-added, re-imported, moved
+    library).  Typing IDs by hand can't discover that — this can.
+    """
+    q = (q or "").strip()
+    if len(q) < 2:
+        raise HTTPException(400, "Search term must be at least 2 characters")
+
+    if item_type not in ("Movie", "Series"):
+        item_type = "Movie"
+
+    async with EmbyClient() as emby:
+        items = await emby.search_items(q, item_type=item_type)
+
+    results = []
+    for i in items[:15]:
+        pids = i.get("ProviderIds") or {}
+        results.append({
+            "emby_id": i.get("Id"),
+            "title": i.get("Name"),
+            "year": i.get("ProductionYear"),
+            "type": i.get("Type"),
+            "imdb_id": pids.get("Imdb"),
+            "tmdb_id": pids.get("Tmdb"),
+        })
+
+    return {"results": results, "total": len(results)}

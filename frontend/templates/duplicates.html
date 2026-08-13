@@ -106,6 +106,13 @@
   .dup-relink-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .dup-relink-btn.first { margin-left: auto; }
   .dup-ids { font-size: 0.7rem; color: var(--text-dim); font-family: ui-monospace, Menlo, monospace; }
+  .issue-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .dup-dismiss-btn, .dup-restore-btn {
+    background: rgba(125,133,144,0.12); border: 1px solid rgba(125,133,144,0.28);
+    color: var(--text-dim); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 0.78rem;
+  }
+  .dup-dismiss-btn:hover, .dup-restore-btn:hover { background: rgba(125,133,144,0.25); color: #E6EDF3; }
+  .dup-dismiss-btn:disabled, .dup-restore-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>
 <script src="/static/js/csrf.js"></script>
 </head>
@@ -134,6 +141,9 @@
 </div>
 <script>
 var allIssues = [];
+var showDismissed = false;
+var lastFilter = 'all';
+var currentFiltered = [];
 
 async function runScan() {
   var btn = document.getElementById('scanBtn');
@@ -141,11 +151,11 @@ async function runScan() {
   var el = document.getElementById('results');
   el.innerHTML = '<div class="loading"><div class="spinner"></div> Scanning library and watch history…</div>';
   try {
-    var r = await fetch('/api/duplicates/scan');
+    var r = await fetch('/api/duplicates/scan?include_dismissed=' + (showDismissed ? 'true' : 'false'));
     var data = await r.json();
     allIssues = data.issues || [];
     renderStats(data);
-    renderIssues('all');
+    renderIssues(lastFilter);
   } catch(e) {
     el.innerHTML = '<div class="empty">Error: ' + e.message + '</div>';
   } finally {
@@ -167,14 +177,31 @@ function renderStats(data) {
   if (data.duplicates) html += '<button class="filter-btn" onclick="filterIssues(this,\'duplicate_library\')">Duplicates (' + data.duplicates + ')</button>';
   if (data.orphaned) html += '<button class="filter-btn" onclick="filterIssues(this,\'orphaned_history\')">Orphaned (' + data.orphaned + ')</button>';
   if (data.missing_meta) html += '<button class="filter-btn" onclick="filterIssues(this,\'missing_metadata\')">Missing Meta (' + data.missing_meta + ')</button>';
+  /* Dismissed issues are hidden by default — surface the count so they
+     aren't silently forgotten about */
+  var dismissedTotal = data.dismissed_total || 0;
+  if (dismissedTotal) {
+    html += '<button class="filter-btn' + (showDismissed ? ' active' : '') + '" onclick="toggleDismissed()" title="Show or hide issues you have dismissed">';
+    html += (showDismissed ? '👁 Hiding dismissed' : '🙈 Dismissed (' + dismissedTotal + ')');
+    html += '</button>';
+  }
   html += '</div>';
+  if (data.hidden) {
+    html += '<div class="dup-hint" style="margin:-6px 0 12px;">' + data.hidden + ' dismissed issue' + (data.hidden === 1 ? '' : 's') + ' hidden from this scan.</div>';
+  }
   html += '<div id="issueList" class="issue-list"></div>';
   el.innerHTML = html;
+}
+
+function toggleDismissed() {
+  showDismissed = !showDismissed;
+  runScan();
 }
 
 function filterIssues(btn, type) {
   document.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
   btn.classList.add('active');
+  lastFilter = type;  /* survives the rescan after a dismiss */
   renderIssues(type);
 }
 
@@ -186,6 +213,7 @@ function fmtSize(mb) {
 
 function renderIssues(type) {
   var filtered = type === 'all' ? allIssues : allIssues.filter(function(i) { return i.type === type; });
+  currentFiltered = filtered;  /* action handlers index into this, not allIssues */
   var el = document.getElementById('issueList');
   if (!filtered.length) { el.innerHTML = '<div class="empty">No issues found — your library looks clean!</div>'; return; }
 
@@ -230,10 +258,28 @@ function renderIssues(type) {
       if (!issue.same_resolution) {
         html += '<div class="dup-hint">Different resolutions — likely intentional, no removal offered. Use 🔗 if a copy is matched to the wrong entry.</div>';
       }
+      html += '<div class="issue-actions">';
+      if (issue.dismissed) {
+        html += '<button class="dup-restore-btn" onclick="undismissIssue(' + idx + ',event)" title="Show this issue again in future scans">↩ Restore</button>';
+      } else {
+        html += '<button class="dup-dismiss-btn" onclick="dismissIssue(' + idx + ',event)" title="Hide this duplicate group from all future scans">🙈 Dismiss</button>';
+      }
+      html += '</div>';
     } else {
       html += '<div class="issue-detail">' + esc(issue.details) + '</div>';
+      /* Orphaned + missing-metadata issues concern the watch history
+         rows, not an Emby item — so the re-link here edits the DB */
+      html += '<div class="issue-actions">';
+      html += '<button class="dup-relink-btn" onclick="openHistoryRelink(' + idx + ',event)" title="Repoint watch history at the correct IDs">🔗 Re-link history</button>';
+      if (issue.dismissed) {
+        html += '<button class="dup-restore-btn" onclick="undismissIssue(' + idx + ',event)" title="Show this issue again in future scans">↩ Restore</button>';
+      } else {
+        html += '<button class="dup-dismiss-btn" onclick="dismissIssue(' + idx + ',event)" title="Hide this issue from all future scans">🙈 Dismiss</button>';
+      }
+      html += '</div>';
     }
 
+    if (issue.dismissed) html += '<div class="dup-hint">Dismissed — hidden from normal scans.</div>';
     if (issue.imdb_id) html += '<a class="imdb-link" href="/item/' + issue.imdb_id + '">View details →</a>';
     html += '</div>';
     html += '<span class="issue-type ' + typeClass + '">' + typeLabel + '</span>';
@@ -266,6 +312,241 @@ async function confirmRemove(embyId, title, library, ev) {
   } catch(e) {
     showToast('Error: ' + e.message, 'red');
     btn.disabled = false; btn.textContent = '🗑';
+  }
+}
+
+/* ── Dismiss / restore issues ───────────────────────────────────────── */
+async function dismissIssue(idx, ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  var issue = currentFiltered[idx];
+  if (!issue) return;
+  if (!issue.issue_key) { showToast('This issue cannot be dismissed — rescan and retry', 'red'); return; }
+  if (!confirm('Hide "' + issue.title + '" from all future scans?\n\nYou can restore it later from the Dismissed filter.')) return;
+
+  var btn = ev.target;
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    var r = await fetch('/api/duplicates/dismiss', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        issue_type: issue.type,
+        issue_key: issue.issue_key,
+        title: issue.title,
+      }),
+    });
+    var d = await r.json();
+    if (r.ok) {
+      showToast('Dismissed "' + issue.title + '"', 'green');
+      var card = document.getElementById('issue-' + idx);
+      if (card) { card.style.transition = 'opacity 0.3s'; card.style.opacity = '0'; }
+      setTimeout(runScan, 400);
+    } else {
+      showToast(d.detail || 'Dismiss failed', 'red');
+      btn.disabled = false; btn.textContent = '🙈 Dismiss';
+    }
+  } catch(e) {
+    showToast('Error: ' + e.message, 'red');
+    btn.disabled = false; btn.textContent = '🙈 Dismiss';
+  }
+}
+
+async function undismissIssue(idx, ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  var issue = currentFiltered[idx];
+  if (!issue) return;
+  var btn = ev.target;
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    var r = await fetch('/api/duplicates/dismiss', {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ issue_type: issue.type, issue_key: issue.issue_key }),
+    });
+    var d = await r.json();
+    if (r.ok) {
+      showToast('Restored "' + issue.title + '"', 'green');
+      setTimeout(runScan, 400);
+    } else {
+      showToast(d.detail || 'Restore failed', 'red');
+      btn.disabled = false; btn.textContent = '↩ Restore';
+    }
+  } catch(e) {
+    showToast('Error: ' + e.message, 'red');
+    btn.disabled = false; btn.textContent = '↩ Restore';
+  }
+}
+
+/* ── Re-link history rows (orphaned / missing metadata) ─────────────── */
+function openHistoryRelink(idx, ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  var issue = currentFiltered[idx];
+  if (!issue) return;
+
+  /* Episodes group by series name; everything else is movie-scoped */
+  var isSeries = issue.item_type === 'episode';
+
+  closeRelink();
+  var ov = document.createElement('div');
+  ov.id = 'relinkOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;z-index:300;';
+  ov.onclick = function(e) { if (e.target === ov) closeRelink(); };
+
+  var h = '';
+  h += '<div style="background:#151922;border:1px solid #2A3040;border-radius:12px;padding:22px;width:min(460px,92vw);font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">';
+  h += '<div style="font-size:1.02rem;font-weight:600;color:#E6EDF3;margin-bottom:4px;">Re-link watch history</div>';
+  h += '<div style="font-size:0.8rem;color:#7D8590;margin-bottom:14px;">' + esc(issue.title) + '</div>';
+  h += '<div style="font-size:0.74rem;color:#7D8590;background:#0D0F14;border:1px solid #2A3040;border-radius:6px;padding:9px 11px;margin-bottom:16px;line-height:1.5;">';
+  h += 'This updates the watch history rows in the database — it does not change anything in Emby. ';
+  h += isSeries ? 'All episodes recorded under this series name will be updated.' : 'All watch records for this movie will be updated.';
+  if (issue.type === 'orphaned_history') {
+    h += '<br><br><strong style="color:#E6EDF3;">Orphaned status is decided by whether the media is in your library, not by these IDs.</strong> ';
+    h += 'Search below and pick the library entry to fix a re-added or moved item. If it genuinely is not there any more, dismiss the issue instead.';
+  }
+  h += '</div>';
+
+  /* Typing IDs by hand can't discover that the media is still present
+     under a different Emby ID — which is the usual cause of an orphan */
+  h += '<label style="display:block;font-size:0.76rem;color:#7D8590;margin-bottom:4px;">Find it in your library</label>';
+  h += '<div style="display:flex;gap:6px;margin-bottom:6px;">';
+  h += '<input id="hrSearch" value="' + esc(issue.title) + '" placeholder="Search library…" style="flex:1;box-sizing:border-box;background:#0D0F14;border:1px solid #2A3040;color:#E6EDF3;border-radius:6px;padding:8px 10px;font-size:0.85rem;">';
+  h += '<button onclick="searchLibrary(' + (isSeries ? 'true' : 'false') + ')" style="background:#1C2030;border:1px solid #2A3040;color:#E6EDF3;border-radius:6px;padding:7px 12px;cursor:pointer;font-size:0.82rem;">Search</button>';
+  h += '</div>';
+  h += '<div id="hrSearchResults" style="margin-bottom:14px;"></div>';
+  h += '<input type="hidden" id="hrEmbyId" value="">';
+
+  h += '<label style="display:block;font-size:0.76rem;color:#7D8590;margin-bottom:4px;">IMDB ID</label>';
+  h += '<input id="hrImdb" value="' + esc(issue.imdb_id || '') + '" placeholder="tt0111161" style="width:100%;box-sizing:border-box;background:#0D0F14;border:1px solid #2A3040;color:#E6EDF3;border-radius:6px;padding:8px 10px;font-size:0.85rem;margin-bottom:12px;font-family:ui-monospace,Menlo,monospace;">';
+  h += '<label style="display:block;font-size:0.76rem;color:#7D8590;margin-bottom:4px;">TMDB ID</label>';
+  h += '<input id="hrTmdb" value="" placeholder="278" style="width:100%;box-sizing:border-box;background:#0D0F14;border:1px solid #2A3040;color:#E6EDF3;border-radius:6px;padding:8px 10px;font-size:0.85rem;margin-bottom:12px;font-family:ui-monospace,Menlo,monospace;">';
+
+  if (isSeries) {
+    h += '<label style="display:block;font-size:0.76rem;color:#7D8590;margin-bottom:4px;">Rename series to (optional)</label>';
+    h += '<input id="hrSeries" value="" placeholder="' + esc(issue.title) + '" style="width:100%;box-sizing:border-box;background:#0D0F14;border:1px solid #2A3040;color:#E6EDF3;border-radius:6px;padding:8px 10px;font-size:0.85rem;margin-bottom:12px;">';
+    h += '<div style="font-size:0.72rem;color:#7D8590;margin-bottom:16px;font-style:italic;">Use this when the series was renamed in Emby — matching it to the new name stops it being reported as orphaned.</div>';
+  } else {
+    h += '<div style="font-size:0.72rem;color:#7D8590;margin-bottom:16px;font-style:italic;">Leave a field blank to leave that ID unchanged.</div>';
+  }
+
+  h += '<div style="display:flex;gap:8px;justify-content:flex-end;">';
+  h += '<button onclick="closeRelink()" style="background:transparent;border:1px solid #2A3040;color:#E6EDF3;border-radius:6px;padding:7px 14px;cursor:pointer;font-size:0.82rem;">Cancel</button>';
+  h += '<button id="hrSave" onclick="submitHistoryRelink(' + idx + ')" style="background:#7B68EE;border:none;color:#fff;border-radius:6px;padding:7px 16px;cursor:pointer;font-size:0.82rem;font-weight:600;">Apply</button>';
+  h += '</div></div>';
+
+  ov.innerHTML = h;
+  document.body.appendChild(ov);
+  var first = document.getElementById('hrImdb');
+  if (first) first.focus();
+}
+
+async function searchLibrary(isSeries) {
+  var q = (document.getElementById('hrSearch').value || '').trim();
+  var box = document.getElementById('hrSearchResults');
+  if (q.length < 2) { box.innerHTML = '<div style="font-size:0.74rem;color:#7D8590;">Type at least 2 characters.</div>'; return; }
+  box.innerHTML = '<div style="font-size:0.74rem;color:#7D8590;">Searching…</div>';
+  try {
+    var r = await fetch('/api/duplicates/library-search?item_type=' + (isSeries ? 'Series' : 'Movie') + '&q=' + encodeURIComponent(q));
+    var d = await r.json();
+    if (!r.ok) { box.innerHTML = '<div style="font-size:0.74rem;color:var(--red);">' + esc(d.detail || 'Search failed') + '</div>'; return; }
+    var res = d.results || [];
+    if (!res.length) {
+      box.innerHTML = '<div style="font-size:0.74rem;color:#7D8590;">Not found in your library — it has probably been deleted. Dismissing the issue is the right action.</div>';
+      return;
+    }
+    var h = '';
+    res.forEach(function(it, i) {
+      h += '<div onclick="pickLibraryItem(' + i + ')" id="hrRes-' + i + '" style="padding:7px 9px;border:1px solid #2A3040;border-radius:6px;margin-bottom:5px;cursor:pointer;font-size:0.8rem;color:#E6EDF3;">';
+      h += esc(it.title || '?') + (it.year ? ' <span style="color:#7D8590;">(' + it.year + ')</span>' : '');
+      var ids = [];
+      if (it.imdb_id) ids.push(it.imdb_id);
+      if (it.tmdb_id) ids.push('tmdb:' + it.tmdb_id);
+      if (ids.length) h += '<div style="font-size:0.7rem;color:#7D8590;font-family:ui-monospace,Menlo,monospace;">' + esc(ids.join('  ')) + '</div>';
+      h += '</div>';
+    });
+    box.innerHTML = h;
+    window._hrResults = res;
+  } catch(e) {
+    box.innerHTML = '<div style="font-size:0.74rem;color:var(--red);">Error: ' + esc(e.message) + '</div>';
+  }
+}
+
+function pickLibraryItem(i) {
+  var it = (window._hrResults || [])[i];
+  if (!it) return;
+  document.getElementById('hrEmbyId').value = it.emby_id || '';
+  if (it.imdb_id) document.getElementById('hrImdb').value = it.imdb_id;
+  if (it.tmdb_id) document.getElementById('hrTmdb').value = it.tmdb_id;
+  var seriesEl = document.getElementById('hrSeries');
+  if (seriesEl && it.title) seriesEl.value = it.title;
+  (window._hrResults || []).forEach(function(_, j) {
+    var el = document.getElementById('hrRes-' + j);
+    if (el) { el.style.borderColor = (j === i) ? '#7B68EE' : '#2A3040'; el.style.background = (j === i) ? 'rgba(123,104,238,0.12)' : 'transparent'; }
+  });
+}
+
+async function submitHistoryRelink(idx) {
+  var issue = currentFiltered[idx];
+  if (!issue) return;
+  var isSeries = issue.item_type === 'episode';
+
+  var imdb = (document.getElementById('hrImdb').value || '').trim();
+  var tmdb = (document.getElementById('hrTmdb').value || '').trim();
+  var seriesEl = document.getElementById('hrSeries');
+  var newSeries = seriesEl ? (seriesEl.value || '').trim() : '';
+
+  var embyIdEl = document.getElementById('hrEmbyId');
+  var newEmbyId = embyIdEl ? (embyIdEl.value || '').trim() : '';
+
+  if (imdb && !/^tt\d{7,10}$/.test(imdb)) { showToast('IMDB ID must look like tt0111161', 'red'); return; }
+  if (tmdb && !/^\d+$/.test(tmdb)) { showToast('TMDB ID must be numeric', 'red'); return; }
+  if (!imdb && !tmdb && !newSeries && !newEmbyId) { showToast('Nothing to apply', 'orange'); return; }
+
+  var body = {
+    scope: isSeries ? 'series' : 'movie',
+    match_title: issue.title,
+    imdb_id: imdb,
+    tmdb_id: tmdb,
+    new_emby_id: newEmbyId,
+  };
+  if (isSeries) {
+    body.new_series_name = newSeries;
+  } else {
+    /* emby_id is the precise selector; the backend falls back to
+       IMDB then title when it's absent */
+    body.match_emby_id = issue.emby_id || '';
+    body.match_imdb_id = issue.imdb_id || '';
+  }
+
+  var btn = document.getElementById('hrSave');
+  btn.disabled = true; btn.textContent = 'Applying…';
+  try {
+    var r = await fetch('/api/duplicates/relink-history', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    var d = await r.json();
+    if (r.ok) {
+      closeRelink();
+      if (d.updated === 0) {
+        showToast('No watch history rows matched — nothing changed', 'orange');
+      } else if (d.still_orphaned) {
+        /* The IDs saved fine, but orphan status is decided by library
+           membership — so the issue will come back until the media is
+           re-added or the issue is dismissed */
+        showToast('Updated ' + d.updated + ' record' + (d.updated === 1 ? '' : 's') + ', but "' + issue.title + '" still is not in your library — it will keep reappearing. Dismiss it instead.', 'orange');
+        setTimeout(runScan, 900);
+      } else {
+        showToast('Updated ' + d.updated + ' watch record' + (d.updated === 1 ? '' : 's'), 'green');
+        setTimeout(runScan, 600);
+      }
+    } else {
+      showToast(d.detail || 'Re-link failed', 'red');
+      btn.disabled = false; btn.textContent = 'Apply';
+    }
+  } catch(e) {
+    showToast('Error: ' + e.message, 'red');
+    btn.disabled = false; btn.textContent = 'Apply';
   }
 }
 
@@ -375,13 +656,15 @@ async function submitRelink(embyId) {
   }
 }
 
-function showToast(msg, color) {
+function showToast(msg, color, ms) {
   var t = document.createElement('div');
   t.textContent = msg;
-  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:' + (color === 'green' ? 'var(--green)' : color === 'red' ? 'var(--red)' : 'var(--orange)') + ';color:#fff;padding:10px 20px;border-radius:8px;font-size:0.88rem;z-index:200;opacity:0;transition:opacity 0.3s;';
+  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:' + (color === 'green' ? 'var(--green)' : color === 'red' ? 'var(--red)' : 'var(--orange)') + ';color:#fff;padding:10px 20px;border-radius:8px;font-size:0.88rem;z-index:200;opacity:0;transition:opacity 0.3s;max-width:min(560px,92vw);line-height:1.45;text-align:center;';
   document.body.appendChild(t);
   requestAnimationFrame(function() { t.style.opacity = '1'; });
-  setTimeout(function() { t.style.opacity = '0'; setTimeout(function() { t.remove(); }, 300); }, 3000);
+  /* Longer messages need longer on screen to be readable */
+  var dwell = ms || (msg.length > 90 ? 8000 : 3000);
+  setTimeout(function() { t.style.opacity = '0'; setTimeout(function() { t.remove(); }, 300); }, dwell);
 }
 
 function esc(s) { if (!s && s !== 0) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
