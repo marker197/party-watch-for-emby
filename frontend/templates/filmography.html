@@ -247,9 +247,11 @@ async function loadSonarrServers() {
   } catch(e) { /* silent */ }
 }
 
-function sendToSonarr(tvdb_id, imdb_id, title, year, evt) {
+function sendToSonarr(tvdb_id, imdb_id, title, year, tmdb_id, evt) {
   if (evt) { evt.preventDefault(); evt.stopPropagation(); }
-  pendingSonarrItem = { tvdb_id: tvdb_id, imdb_id: imdb_id, title: title, year: year };
+  /* tmdb_id is the fallback: shows not in the library have no tvdb_id,
+     so the backend resolves TMDB -> TVDB before hitting Sonarr */
+  pendingSonarrItem = { tvdb_id: tvdb_id, imdb_id: imdb_id, title: title, year: year, tmdb_id: tmdb_id };
   if (sonarrServers.length === 0) {
     alert('No Sonarr servers configured — add one in Settings.');
     return;
@@ -288,14 +290,27 @@ async function doSonarrSend(serverIndex) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         server_index: serverIndex,
-        shows: [{ tvdb_id: item.tvdb_id ? parseInt(item.tvdb_id) : null, imdb_id: item.imdb_id, title: item.title, year: item.year ? parseInt(item.year) : null }],
+        shows: [{
+          tvdb_id: item.tvdb_id ? parseInt(item.tvdb_id) : null,
+          tmdb_id: item.tmdb_id ? parseInt(item.tmdb_id) : null,
+          imdb_id: item.imdb_id || null,
+          title: item.title,
+          year: item.year ? parseInt(item.year) : null,
+        }],
       }),
     });
     var d = await r.json();
+    var res = (d.results && d.results[0]) || {};
     if (d.added > 0) {
-      showToast('Added "' + item.title + '" to Sonarr', 'green');
+      /* Warn when Sonarr matched on title alone — no TVDB ID was
+         available, so the series it picked may not be the right one */
+      if (res.matched_by === 'title') {
+        showToast('Added "' + (res.title || item.title) + '" — matched by title, please verify in Sonarr', 'orange');
+      } else {
+        showToast('Added "' + (res.title || item.title) + '" to Sonarr', 'green');
+      }
     } else {
-      var msg = (d.results && d.results[0] && d.results[0].message) || 'Already exists or failed';
+      var msg = res.reason || res.message || 'Already exists or failed';
       showToast(msg, 'orange');
     }
   } catch(e) {
@@ -414,7 +429,7 @@ function renderGrid() {
         html += ' <span class="badge-radarr" onclick="sendToRadarr(' + w.id + ',\'' + esc(w.title || '').replace(/'/g, "\\'") + '\',\'' + year + '\',event)" title="Send to Radarr">📥</span>';
       }
       if (w.media_type === 'tv' && sonarrServers.length > 0) {
-        html += ' <span class="badge-sonarr" onclick="sendToSonarr(\'' + esc(w.tvdb_id || '') + '\',\'' + esc(w.imdb_id || '') + '\',\'' + esc(w.name || w.title || '').replace(/'/g, "\\'") + '\',\'' + year + '\',event)" title="Send to Sonarr">📥</span>';
+        html += ' <span class="badge-sonarr" onclick="sendToSonarr(\'' + esc(w.tvdb_id || '') + '\',\'' + esc(w.imdb_id || '') + '\',\'' + esc(w.name || w.title || '').replace(/'/g, "\\'") + '\',\'' + year + '\',\'' + esc(w.id || '') + '\',event)" title="Send to Sonarr">📥</span>';
       }
     }
     if (w.watched) {
@@ -442,9 +457,15 @@ async function syncWatchlistOnce() {
   var last = parseInt(localStorage.getItem(key) || '0');
   if (Date.now() - last < 30 * 60 * 1000) return;  /* 30 min throttle */
   try {
-    await fetch('/api/watchlist/sync/0', { method: 'POST' });
-    localStorage.setItem(key, String(Date.now()));
-  } catch(e) { /* ignore */ }
+    var r = await fetch('/api/watchlist/sync/0', { method: 'POST' });
+    if (r.ok) {
+      localStorage.setItem(key, String(Date.now()));
+    } else {
+      _wlSynced = false;  /* allow retry within this page session */
+    }
+  } catch(e) {
+    _wlSynced = false;  /* network failure — don't throttle, allow retry */
+  }
 }
 
 /* Init */

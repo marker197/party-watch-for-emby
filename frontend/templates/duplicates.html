@@ -92,12 +92,20 @@
   }
   .dup-size { font-size: 0.75rem; color: var(--text-dim); min-width: 60px; }
   .dup-remove-btn {
-    margin-left: auto; background: rgba(224,82,82,0.12); border: 1px solid rgba(224,82,82,0.25);
+    background: rgba(224,82,82,0.12); border: 1px solid rgba(224,82,82,0.25);
     color: var(--red); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 0.78rem;
   }
   .dup-remove-btn:hover { background: rgba(224,82,82,0.25); }
   .dup-remove-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .dup-hint { font-size: 0.72rem; color: var(--text-dim); margin-top: 4px; font-style: italic; }
+  .dup-relink-btn {
+    background: rgba(123,104,238,0.12); border: 1px solid rgba(123,104,238,0.28);
+    color: #7B68EE; border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 0.78rem;
+  }
+  .dup-relink-btn:hover { background: rgba(123,104,238,0.25); }
+  .dup-relink-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .dup-relink-btn.first { margin-left: auto; }
+  .dup-ids { font-size: 0.7rem; color: var(--text-dim); font-family: ui-monospace, Menlo, monospace; }
 </style>
 <script src="/static/js/csrf.js"></script>
 </head>
@@ -204,6 +212,14 @@ function renderIssues(type) {
         html += '<span class="dup-lib">' + esc(it.library || '?') + '</span>';
         html += '<span class="dup-res">' + esc(it.resolution || '?') + '</span>';
         html += '<span class="dup-size">' + fmtSize(it.size_mb) + '</span>';
+        var idBits = [];
+        if (it.imdb_id) idBits.push(it.imdb_id);
+        if (it.tmdb_id) idBits.push('tmdb:' + it.tmdb_id);
+        if (it.tvdb_id) idBits.push('tvdb:' + it.tvdb_id);
+        html += '<span class="dup-ids">' + esc(idBits.join('  ')) + '</span>';
+        /* Re-link is always available — non-destructive, and useful
+           precisely when resolutions differ but the match is wrong */
+        html += '<button class="dup-relink-btn first" onclick="openRelink(\'' + it.emby_id + '\',event)" title="Reassign provider IDs on this copy">🔗</button>';
         /* Only show remove button when all copies are same resolution */
         if (issue.same_resolution) {
           html += '<button class="dup-remove-btn" onclick="confirmRemove(\'' + it.emby_id + '\',\'' + esc(issue.title).replace(/'/g, "\\'") + '\',\'' + esc(it.library || '?').replace(/'/g, "\\'") + '\',event)" title="Remove this copy">🗑</button>';
@@ -212,7 +228,7 @@ function renderIssues(type) {
       });
       html += '</div>';
       if (!issue.same_resolution) {
-        html += '<div class="dup-hint">Different resolutions — likely intentional, no removal offered</div>';
+        html += '<div class="dup-hint">Different resolutions — likely intentional, no removal offered. Use 🔗 if a copy is matched to the wrong entry.</div>';
       }
     } else {
       html += '<div class="issue-detail">' + esc(issue.details) + '</div>';
@@ -250,6 +266,112 @@ async function confirmRemove(embyId, title, library, ev) {
   } catch(e) {
     showToast('Error: ' + e.message, 'red');
     btn.disabled = false; btn.textContent = '🗑';
+  }
+}
+
+/* ── Re-link: reassign provider IDs instead of deleting ─────────────── */
+function _findCopy(embyId) {
+  for (var i = 0; i < allIssues.length; i++) {
+    var items = allIssues[i].items || [];
+    for (var j = 0; j < items.length; j++) {
+      if (items[j].emby_id === embyId) return items[j];
+    }
+  }
+  return null;
+}
+
+function openRelink(embyId, ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  var copy = _findCopy(embyId);
+  if (!copy) { showToast('Could not find that copy — rescan and retry', 'red'); return; }
+
+  closeRelink();
+  var ov = document.createElement('div');
+  ov.id = 'relinkOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;z-index:300;';
+  ov.onclick = function(e) { if (e.target === ov) closeRelink(); };
+
+  var h = '';
+  h += '<div style="background:#151922;border:1px solid #2A3040;border-radius:12px;padding:22px;width:min(440px,92vw);font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">';
+  h += '<div style="font-size:1.02rem;font-weight:600;color:#E6EDF3;margin-bottom:4px;">Re-link provider IDs</div>';
+  h += '<div style="font-size:0.8rem;color:#7D8590;margin-bottom:16px;">' + esc(copy.title) + ' — ' + esc(copy.library || '?') + '</div>';
+
+  var fields = [
+    ['relinkImdb', 'IMDB ID', copy.imdb_id || '', 'tt0111161'],
+    ['relinkTmdb', 'TMDB ID', copy.tmdb_id || '', '278'],
+    ['relinkTvdb', 'TVDB ID', copy.tvdb_id || '', '81189'],
+  ];
+  fields.forEach(function(f) {
+    h += '<label style="display:block;font-size:0.76rem;color:#7D8590;margin-bottom:4px;">' + f[1] + '</label>';
+    h += '<input id="' + f[0] + '" value="' + esc(f[2]) + '" placeholder="' + f[3] + '" ';
+    h += 'style="width:100%;box-sizing:border-box;background:#0D0F14;border:1px solid #2A3040;color:#E6EDF3;border-radius:6px;padding:8px 10px;font-size:0.85rem;margin-bottom:12px;font-family:ui-monospace,Menlo,monospace;">';
+  });
+
+  h += '<label style="display:flex;align-items:center;gap:8px;font-size:0.78rem;color:#7D8590;margin-bottom:16px;cursor:pointer;">';
+  h += '<input type="checkbox" id="relinkRefresh" checked style="accent-color:#7B68EE;"> Refresh metadata from the new IDs afterwards</label>';
+  h += '<div style="font-size:0.72rem;color:#7D8590;margin-bottom:16px;font-style:italic;">Clear a field to remove that ID. Emby will lock these so the next library scan won\'t revert them.</div>';
+
+  h += '<div style="display:flex;gap:8px;justify-content:flex-end;">';
+  h += '<button onclick="closeRelink()" style="background:transparent;border:1px solid #2A3040;color:#E6EDF3;border-radius:6px;padding:7px 14px;cursor:pointer;font-size:0.82rem;">Cancel</button>';
+  h += '<button id="relinkSave" onclick="submitRelink(\'' + embyId + '\')" style="background:#7B68EE;border:none;color:#fff;border-radius:6px;padding:7px 16px;cursor:pointer;font-size:0.82rem;font-weight:600;">Apply</button>';
+  h += '</div></div>';
+
+  ov.innerHTML = h;
+  document.body.appendChild(ov);
+  var first = document.getElementById('relinkImdb');
+  if (first) first.focus();
+}
+
+function closeRelink() {
+  var ov = document.getElementById('relinkOverlay');
+  if (ov) ov.remove();
+}
+
+async function submitRelink(embyId) {
+  var imdb = (document.getElementById('relinkImdb').value || '').trim();
+  var tmdb = (document.getElementById('relinkTmdb').value || '').trim();
+  var tvdb = (document.getElementById('relinkTvdb').value || '').trim();
+  var refresh = document.getElementById('relinkRefresh').checked;
+
+  if (imdb && !/^tt\d{7,10}$/.test(imdb)) {
+    showToast('IMDB ID must look like tt0111161', 'red'); return;
+  }
+  if ((tmdb && !/^\d+$/.test(tmdb)) || (tvdb && !/^\d+$/.test(tvdb))) {
+    showToast('TMDB / TVDB IDs must be numeric', 'red'); return;
+  }
+  if (!imdb && !tmdb && !tvdb) {
+    if (!confirm('All fields are empty — this will strip every provider ID from the copy. Continue?')) return;
+  }
+
+  var btn = document.getElementById('relinkSave');
+  btn.disabled = true; btn.textContent = 'Applying…';
+  try {
+    var r = await fetch('/api/duplicates/relink', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      /* All three keys always sent — an empty value clears that ID */
+      body: JSON.stringify({
+        emby_id: embyId,
+        imdb_id: imdb,
+        tmdb_id: tmdb,
+        tvdb_id: tvdb,
+        clear: !imdb && !tmdb && !tvdb,
+        refresh: refresh,
+      }),
+    });
+    var d = await r.json();
+    if (r.ok) {
+      closeRelink();
+      showToast('Re-linked "' + (d.title || 'item') + '"' + (refresh ? ' — metadata refresh queued' : ''), 'green');
+      /* Provider IDs changed, so the duplicate grouping is stale */
+      setTimeout(runScan, 1200);
+    } else {
+      showToast(d.detail || 'Re-link failed', 'red');
+      btn.disabled = false; btn.textContent = 'Apply';
+    }
+  } catch(e) {
+    showToast('Error: ' + e.message, 'red');
+    btn.disabled = false; btn.textContent = 'Apply';
   }
 }
 

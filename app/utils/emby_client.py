@@ -529,6 +529,99 @@ class EmbyClient:
                         error=str(e)[:200])
             return False
 
+    async def set_provider_ids(
+        self, item_id: str, provider_ids: dict,
+        user_id: str | None = None,
+        replace: bool = False,
+    ) -> bool:
+        """Reassign an item's ProviderIds (Imdb / Tmdb / Tvdb).
+
+        Used by the duplicate re-link action: rather than deleting a
+        mis-matched copy, point it at the correct provider entry so the
+        duplicate group resolves itself on the next metadata refresh.
+
+        provider_ids: dict like {"Imdb": "tt1234567", "Tmdb": "603"}.
+        A value of None or "" removes that key.
+
+        replace=True discards existing ProviderIds entirely; the default
+        merges the supplied keys over whatever is already there.
+
+        Emby requires the full item object on POST /Items/{id}, so this
+        GETs first and merges.  ProviderIds is added to LockedFields so
+        the next library scan doesn't revert the change.
+        """
+        try:
+            item = await self.get_item_safe(item_id, user_id=user_id)
+            if not item:
+                log.warning("emby.relink_item_not_found", item_id=item_id)
+                return False
+
+            existing = {} if replace else dict(item.get("ProviderIds") or {})
+            for key, val in (provider_ids or {}).items():
+                if val:
+                    existing[key] = str(val)
+                else:
+                    existing.pop(key, None)
+
+            item["ProviderIds"] = existing
+            item["LockData"] = True
+            locked = set(item.get("LockedFields") or [])
+            locked.add("ProviderIds")
+            item["LockedFields"] = list(locked)
+
+            resp = await self._client.post(
+                self._url(f"/Items/{item_id}"),
+                json=item,
+                params=self._params(),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-MediaBrowser-Token": self._key,
+                },
+            )
+            log.info("emby.provider_ids_set", item_id=item_id,
+                     provider_ids=existing,
+                     status_code=resp.status_code)
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            log.warning("emby.set_provider_ids_failed", item_id=item_id,
+                        error=str(e)[:200])
+            return False
+
+    async def refresh_item(
+        self, item_id: str,
+        replace_all_metadata: bool = False,
+        replace_all_images: bool = False,
+    ) -> bool:
+        """Trigger a metadata refresh on a single item.
+
+        Called after a re-link so Emby re-pulls metadata against the
+        newly assigned provider ID.  Fire-and-forget — Emby returns 204
+        immediately and processes the refresh in the background.
+        """
+        try:
+            resp = await self._client.post(
+                self._url(f"/Items/{item_id}/Refresh"),
+                params={
+                    **self._params(),
+                    "Recursive": "false",
+                    "MetadataRefreshMode": "FullRefresh",
+                    "ImageRefreshMode": (
+                        "FullRefresh" if replace_all_images else "Default"
+                    ),
+                    "ReplaceAllMetadata": str(replace_all_metadata).lower(),
+                    "ReplaceAllImages": str(replace_all_images).lower(),
+                },
+            )
+            log.info("emby.item_refresh_queued", item_id=item_id,
+                     status_code=resp.status_code)
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            log.warning("emby.item_refresh_failed", item_id=item_id,
+                        error=str(e)[:200])
+            return False
+
     async def update_item(
         self, item_id: str, updates: dict,
         current_item: dict | None = None,

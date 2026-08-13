@@ -3865,14 +3865,43 @@ async def add_to_sonarr(payload: dict, _user: User = Depends(get_current_user)):
     client = SonarrClient(srv["url"], srv["api_key"], name=srv["name"])
     profile_id = srv.get("quality_profile_id")
 
+    from app.utils.tmdb_client import get_tv_external_ids
+
     results = []
     for show in shows:
+        tvdb_id = show.get("tvdb_id")
+        imdb_id = show.get("imdb_id")
+
+        # Filmography sends carry only a TMDB ID for shows that aren't in
+        # the library.  Sonarr keys on TVDB, and without one add_series
+        # falls back to a title search that blind-picks the first result.
+        # Resolve TMDB -> TVDB first so the match is exact.
+        if not tvdb_id and show.get("tmdb_id"):
+            ext = await get_tv_external_ids(int(show["tmdb_id"]))
+            if ext:
+                if ext.get("tvdb_id"):
+                    tvdb_id = ext["tvdb_id"]
+                    log.info("sonarr.tvdb_resolved_from_tmdb",
+                             tmdb_id=show["tmdb_id"], tvdb_id=tvdb_id,
+                             title=show.get("title"))
+                if not imdb_id and ext.get("imdb_id"):
+                    imdb_id = ext["imdb_id"]
+
+        if not tvdb_id:
+            log.info("sonarr.no_tvdb_using_title_lookup",
+                     title=show.get("title"), year=show.get("year"))
+
         result = await client.add_series(
-            tvdb_id=show.get("tvdb_id"),
-            imdb_id=show.get("imdb_id"),
+            tvdb_id=tvdb_id,
+            imdb_id=imdb_id,
             title=show.get("title", ""),
             year=show.get("year"),
             quality_profile_id=profile_id,
+        )
+        # Surface how the series was matched so the UI can warn on a
+        # title-only match, which is the fallible path
+        result["matched_by"] = (
+            "tvdb" if tvdb_id else ("title" if result.get("status") == "ok" else "none")
         )
         results.append(result)
 
@@ -11953,6 +11982,7 @@ async def scan_duplicates(
 
             enriched = []
             for i in items:
+                _pids = i.get("ProviderIds") or {}
                 enriched.append({
                     "emby_id": i.get("Id"),
                     "title": _display_title(i),
@@ -11961,6 +11991,10 @@ async def scan_duplicates(
                     "library": i.get("_library_name", "Unknown"),
                     "resolution": _res_tier(i),
                     "size_mb": _file_size_mb(i),
+                    # Exposed so the re-link dialog can prefill current values
+                    "imdb_id": _pids.get("Imdb"),
+                    "tmdb_id": _pids.get("Tmdb"),
+                    "tvdb_id": _pids.get("Tvdb"),
                 })
             res_tiers = {e["resolution"] for e in enriched}
             same_resolution = len(res_tiers) == 1 and "Unknown" not in res_tiers
@@ -12133,3 +12167,107 @@ async def resolve_duplicate(
 
     log.info("duplicates.item_deleted", emby_id=emby_id, title=title)
     return {"status": "ok", "deleted": emby_id, "title": title}
+
+
+@router.post("/api/duplicates/relink")
+async def relink_duplicate(
+    payload: dict,
+    _user: User = Depends(get_current_user),
+):
+    """Reassign provider IDs on a duplicate library item.
+
+    Non-destructive alternative to /api/duplicates/resolve.  Where two
+    copies collide because one has been matched to the wrong provider
+    entry, this points the mis-matched copy at the correct IDs (or
+    clears them) instead of deleting the file.
+
+    Payload:
+      emby_id  (required) — the copy to re-link
+      imdb_id  — new IMDB ID, or "" / null to clear
+      tmdb_id  — new TMDB ID, or "" / null to clear
+      tvdb_id  — new TVDB ID, or "" / null to clear
+      clear    — bool, drop all existing provider IDs first
+      refresh  — bool (default true), queue a metadata refresh after
+
+    At least one ID must be supplied unless clear=true.
+    """
+    emby_id = payload.get("emby_id")
+    if not emby_id:
+        raise HTTPException(400, "emby_id is required")
+
+    clear = bool(payload.get("clear"))
+    do_refresh = payload.get("refresh", True)
+
+    # Only include keys the caller actually sent — an absent key is left
+    # untouched, whereas an explicit empty value removes it.
+    provider_ids: dict = {}
+    for field, emby_key in (("imdb_id", "Imdb"),
+                            ("tmdb_id", "Tmdb"),
+                            ("tvdb_id", "Tvdb")):
+        if field in payload:
+            val = payload.get(field)
+            provider_ids[emby_key] = str(val).strip() if val else None
+
+    if not clear and not any(v for v in provider_ids.values()):
+        raise HTTPException(
+            400, "Supply at least one provider ID, or set clear=true"
+        )
+
+    # Basic shape validation — a malformed IMDB ID silently orphans the item
+    imdb_new = provider_ids.get("Imdb")
+    if imdb_new and not re.fullmatch(r"tt\d{7,10}", imdb_new):
+        raise HTTPException(
+            400, f"Invalid IMDB ID format: {imdb_new} (expected ttNNNNNNN)"
+        )
+    for key in ("Tmdb", "Tvdb"):
+        val = provider_ids.get(key)
+        if val and not val.isdigit():
+            raise HTTPException(400, f"Invalid {key} ID: {val} (expected digits)")
+
+    async with EmbyClient() as emby:
+        item = await emby.get_item_safe(emby_id)
+        if not item:
+            raise HTTPException(404, "Item not found in Emby")
+
+        title = item.get("Name", "Unknown")
+        before = dict(item.get("ProviderIds") or {})
+
+        ok = await emby.set_provider_ids(
+            emby_id, provider_ids, replace=clear,
+        )
+        if not ok:
+            raise HTTPException(502, "Emby rejected the provider ID update")
+
+        if do_refresh:
+            await emby.refresh_item(emby_id)
+
+        after = await emby.get_item_safe(emby_id)
+        applied = dict((after or {}).get("ProviderIds") or {})
+
+    # Library cache maps provider ID -> item.  Drop the entries for both
+    # the old and new IDs so lookups don't resolve to the stale pairing.
+    # Targeted deletes only — a full clear() would force a rebuild.
+    try:
+        from app.utils.redis_cache import cache_delete
+        stale_keys = set()
+        for pid_type, pid in list(before.items()) + list(applied.items()):
+            if pid:
+                stale_keys.add(LibraryCache._item_cache_key(pid_type, str(pid)))
+        for key in stale_keys:
+            await cache_delete(key)
+        log.debug("duplicates.cache_keys_dropped", count=len(stale_keys))
+    except Exception as e:
+        log.warning("duplicates.cache_invalidate_failed", error=str(e)[:200])
+
+    log.info("duplicates.item_relinked", emby_id=emby_id, title=title,
+             before=before, after=applied, cleared=clear,
+             refreshed=bool(do_refresh))
+
+    return {
+        "status": "ok",
+        "emby_id": emby_id,
+        "title": title,
+        "before": before,
+        "after": applied,
+        "refreshed": bool(do_refresh),
+    }

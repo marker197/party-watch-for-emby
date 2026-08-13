@@ -110,12 +110,43 @@ class SonarrClient:
         import urllib.parse
         query = f"{title} {year}" if year else title
         results = await self._get(f"/series/lookup?term={urllib.parse.quote(query)}")
-        if isinstance(results, list) and results:
-            if year:
-                for r in results:
-                    if r.get("year") == year and r.get("title", "").lower() == title.lower():
+        if not isinstance(results, list) or not results:
+            return None
+
+        want = (title or "").lower().strip()
+
+        # Tier 1: exact title + exact year
+        if year:
+            for r in results:
+                if r.get("year") == year and (r.get("title") or "").lower().strip() == want:
+                    return r
+
+        # Tier 2: exact title, year within 1 (TMDB/TVDB premiere dates
+        # disagree across year boundaries for late-December premieres)
+        if year:
+            for r in results:
+                if (r.get("title") or "").lower().strip() == want:
+                    ry = r.get("year")
+                    if isinstance(ry, int) and abs(ry - year) <= 1:
                         return r
-            return results[0]
+
+        # Tier 3: exact title, any year
+        for r in results:
+            if (r.get("title") or "").lower().strip() == want:
+                return r
+
+        # Tier 4: alternate/alias titles
+        for r in results:
+            for alt in (r.get("alternateTitles") or []):
+                if (alt.get("title") or "").lower().strip() == want:
+                    return r
+
+        # No confident match.  Deliberately do NOT return results[0] —
+        # a wrong series added to Sonarr starts downloading the wrong
+        # show and is tedious to unpick.
+        log.info("sonarr.lookup_no_confident_match",
+                 title=title, year=year,
+                 candidates=[r.get("title") for r in results[:5]])
         return None
 
     # -- Add series -----------------------------------------------------------

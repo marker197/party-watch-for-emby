@@ -668,3 +668,58 @@ async def get_popular_people(limit: int = 12) -> list[dict]:
 
     random.shuffle(pool)
     return pool[:limit]
+
+
+async def get_tv_external_ids(tmdb_id: int) -> dict | None:
+    """Return a TV show's external IDs from TMDB.
+
+    Returns ``{tvdb_id, imdb_id, tmdb_id}`` or None on failure.
+    Cached 7 days — external IDs effectively never change.
+
+    Used by the filmography Sonarr send: TMDB is the only ID available
+    for shows that aren't in the Emby library, but Sonarr keys on TVDB.
+    Resolving here avoids Sonarr falling back to a title search, which
+    silently picks the first lookup result and can add the wrong series.
+    """
+    api_key = await _get_api_key()
+    if not api_key or not tmdb_id:
+        return None
+
+    import json
+
+    cache_key = f"tmdb_tv_extids:{tmdb_id}"
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{TMDB_BASE}/tv/{tmdb_id}/external_ids",
+                params={"api_key": api_key},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        result = {
+            "tmdb_id": tmdb_id,
+            "tvdb_id": data.get("tvdb_id"),
+            "imdb_id": data.get("imdb_id"),
+        }
+
+        try:
+            r = await get_redis()
+            await r.setex(cache_key, 604800, json.dumps(result))  # 7 days
+        except Exception:
+            pass
+
+        return result
+
+    except Exception as e:
+        log.debug("tmdb.tv_external_ids_failed", tmdb_id=tmdb_id,
+                  error=str(e)[:120])
+        return None
