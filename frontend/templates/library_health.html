@@ -324,8 +324,8 @@ function renderSequels(items) {
     const isShow = it.item_type === 'show';
     const itemType = isShow ? 'show' : 'movie';
     const typeBadge = isShow
-      ? '<span class="badge" style="background:rgba(77,184,122,0.15);color:#4AAD6E;font-size:0.65rem;">📺 Show</span>'
-      : '<span class="badge" style="background:rgba(123,140,222,0.2);color:#7B8CDE;font-size:0.65rem;">🎬 Movie</span>';
+      ? '<span class="badge" style="background:rgba(77,184,122,0.15);color:#4AAD6E;font-size:0.65rem;white-space:nowrap;">Show</span>'
+      : '<span class="badge" style="background:rgba(123,140,222,0.2);color:#7B8CDE;font-size:0.65rem;white-space:nowrap;">Movie</span>';
     const itemId = it.imdb_id || it.tmdb_id || it.tvdb_id || it.simkl_id || '';
     html += '<tr><td>' + link + '</td><td>' + (it.year || '') + '</td>';
     html += '<td>' + typeBadge + '</td>';
