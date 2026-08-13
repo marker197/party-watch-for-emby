@@ -236,6 +236,8 @@ async def lifespan(app: FastAPI):
     # corrected totals (without duplicate runtime inflation) show immediately.
     try:
         _r = await get_redis()
+        # Flush stale job_completions so old cron toasts don't burst on first load
+        await _r.delete("job_completions")
         if not await _r.get("dedup_stats_invalidated"):
             keys = await _r.keys("watch_stats_v5:*")
             if keys:
@@ -564,11 +566,10 @@ async def _tracked_job(job_id: str, func):
             "error": error_msg,
         }
         await r.set(f"scheduler:status:{job_id}", _json.dumps(run_data))
-        # Push completion event for dashboard toast notifications
-        await r.lpush("job_completions", _json.dumps({
-            "job": job_id, **run_data,
-        }))
-        await r.ltrim("job_completions", 0, 19)  # keep max 20
+        # Note: no longer pushing to job_completions Redis list.
+        # Cron job toasts were stacking overnight and flooding the
+        # dashboard on first morning load.  The scheduler status grid
+        # already surfaces last-run / error info per job.
     except Exception:
         pass
 
