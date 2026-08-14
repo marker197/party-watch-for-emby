@@ -199,6 +199,16 @@
       </button>
       <div class="status-msg" id="embyStatus"></div>
 
+      <!-- User picker — shown after Emby test passes -->
+      <div class="form-group" id="userPickerGroup" style="display:none; margin-top:16px;">
+        <label class="form-label" for="embyUserSelect">Primary user</label>
+        <select class="form-input" id="embyUserSelect" style="cursor:pointer;"></select>
+        <div class="form-hint">
+          Select the Emby account whose watch history, ratings, and library will be used for the suite.
+          This is usually the admin account.
+        </div>
+      </div>
+
       <div class="btn-row">
         <button class="btn btn-primary" id="btn0next" onclick="goStep(1)" disabled>
           Next
@@ -349,6 +359,7 @@ async function testEmby() {
   const key = document.getElementById('embyKey').value.trim();
   const status = document.getElementById('embyStatus');
   const btn = document.getElementById('testEmbyBtn');
+  const pickerGroup = document.getElementById('userPickerGroup');
 
   if (!url || !key) {
     status.className = 'status-msg status-err';
@@ -360,6 +371,7 @@ async function testEmby() {
   btn.textContent = 'Testing…';
   status.className = 'status-msg';
   status.style.display = 'none';
+  pickerGroup.style.display = 'none';
 
   try {
     const r = await fetch('/api/setup/test-emby', {
@@ -373,6 +385,8 @@ async function testEmby() {
       status.textContent = 'Connected — ' + (data.server_name || 'Emby Server') +
         ' (v' + (data.version || '?') + ')';
       embyTested = true;
+      // Fetch Emby users for the picker
+      await fetchEmbyUsers(url, key);
       document.getElementById('btn0next').disabled = false;
     } else {
       status.className = 'status-msg status-err';
@@ -386,6 +400,32 @@ async function testEmby() {
   btn.textContent = 'Test connection';
 }
 
+async function fetchEmbyUsers(url, key) {
+  const sel = document.getElementById('embyUserSelect');
+  const group = document.getElementById('userPickerGroup');
+  try {
+    const r = await fetch('/api/setup/emby-users', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({emby_url: url, emby_api_key: key}),
+    });
+    const data = await r.json();
+    if (r.ok && data.users && data.users.length > 0) {
+      sel.innerHTML = '';
+      data.users.forEach(u => {
+        const opt = document.createElement('option');
+        opt.value = u.id;
+        opt.textContent = u.name + (u.is_admin ? ' (Admin)' : '');
+        opt.dataset.name = u.name;
+        sel.appendChild(opt);
+      });
+      group.style.display = 'block';
+    }
+  } catch (e) {
+    console.warn('Failed to fetch Emby users:', e);
+  }
+}
+
 function getProvider() {
   const el = document.querySelector('input[name="provider"]:checked');
   return el ? el.value : 'simkl';
@@ -397,9 +437,13 @@ function buildSummary() {
   const providerLabel = {simkl:'Simkl', mdblist:'MDBList', both:'Simkl + MDBList', none:'None'}[provider];
   const simklId = document.getElementById('simklClientId').value.trim();
   const mdbId = document.getElementById('mdbClientId').value.trim();
+  const userSel = document.getElementById('embyUserSelect');
+  const userName = userSel.selectedOptions.length ? userSel.selectedOptions[0].dataset.name : '';
 
   let rows = '';
   rows += '<div class="done-row"><span class="done-label">Emby server</span><span class="done-value">' + esc(url) + '</span></div>';
+  if (userName)
+    rows += '<div class="done-row"><span class="done-label">Primary user</span><span class="done-value">' + esc(userName) + '</span></div>';
   rows += '<div class="done-row"><span class="done-label">Integration</span><span class="done-value">' + esc(providerLabel) + '</span></div>';
   if ((provider === 'simkl' || provider === 'both') && simklId)
     rows += '<div class="done-row"><span class="done-label">Simkl Client ID</span><span class="done-value">' + esc(simklId.slice(0,8)) + '…</span></div>';
@@ -418,10 +462,13 @@ async function saveAll() {
 
   const provider = getProvider();
 
+  const userSel = document.getElementById('embyUserSelect');
   const payload = {
     emby_url: document.getElementById('embyUrl').value.trim(),
     emby_api_key: document.getElementById('embyKey').value.trim(),
     provider: provider,
+    emby_user_id: userSel.value || '',
+    emby_username: userSel.selectedOptions.length ? (userSel.selectedOptions[0].dataset.name || '') : '',
   };
 
   if (provider === 'simkl' || provider === 'both')

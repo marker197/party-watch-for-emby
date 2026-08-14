@@ -218,6 +218,49 @@ async def setup_test_emby(payload: dict):
         raise HTTPException(502, f"Connection failed: {str(e)[:200]}")
 
 
+@router.post("/api/setup/emby-users")
+async def setup_emby_users(payload: dict):
+    """Fetch the list of Emby users so the wizard can offer a picker.
+
+    No auth required — this is part of the first-run setup flow.
+    """
+    import httpx
+
+    url = (payload.get("emby_url") or "").strip().rstrip("/")
+    key = (payload.get("emby_api_key") or "").strip()
+
+    if not url or not key:
+        raise HTTPException(400, "emby_url and emby_api_key are required.")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{url}/Users",
+                params={"api_key": key},
+            )
+            resp.raise_for_status()
+            emby_users = resp.json()
+
+        users = []
+        for u in emby_users:
+            is_admin = False
+            policy = u.get("Policy") or {}
+            if isinstance(policy, dict):
+                is_admin = policy.get("IsAdministrator", False)
+            users.append({
+                "id": u["Id"],
+                "name": u.get("Name", "Unknown"),
+                "is_admin": is_admin,
+            })
+        # Admins first, then alphabetical
+        users.sort(key=lambda x: (not x["is_admin"], x["name"].lower()))
+        return {"users": users}
+    except httpx.ConnectError:
+        raise HTTPException(502, f"Cannot reach {url}.")
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch users: {str(e)[:200]}")
+
+
 @router.post("/api/setup/save")
 async def setup_save_all(payload: dict, db: AsyncSession = Depends(get_db)):
     """Save all first-run wizard settings: Emby creds, provider, integration keys.
@@ -235,6 +278,10 @@ async def setup_save_all(payload: dict, db: AsyncSession = Depends(get_db)):
     simkl_client_id = (payload.get("simkl_client_id") or "").strip()
     mdblist_client_id = (payload.get("mdblist_client_id") or "").strip()
     mdblist_client_secret = (payload.get("mdblist_client_secret") or "").strip()
+
+    # User selected in wizard — emby_user_id + emby_username
+    selected_user_id = (payload.get("emby_user_id") or "").strip()
+    selected_username = (payload.get("emby_username") or "").strip()
 
     if not emby_url or not emby_api_key:
         raise HTTPException(400, "Emby URL and API key are required.")
@@ -287,28 +334,45 @@ async def setup_save_all(payload: dict, db: AsyncSession = Depends(get_db)):
 
     await db.commit()
 
-    # 5. Create a default local user from Emby so auth fallback works
-    #    (get_current_user falls back to first User row on LAN installs)
+    # 5. Create the selected user (or fall back to first admin from Emby)
+    #    get_current_user falls back to User.id=1 on LAN installs
     try:
         existing = (await db.execute(select(User).limit(1))).scalar_one_or_none()
         if not existing:
-            import httpx
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    f"{emby_url}/Users",
-                    params={"api_key": emby_api_key},
-                )
-                resp.raise_for_status()
-                emby_users = resp.json()
-                if emby_users:
-                    first = emby_users[0]
-                    db.add(User(
-                        emby_user_id=first["Id"],
-                        emby_username=first.get("Name", "Admin"),
-                    ))
-                    await db.commit()
-                    log.info("setup.default_user_created",
-                             emby_user=first.get("Name"))
+            if selected_user_id:
+                # Wizard sent the user's choice
+                db.add(User(
+                    emby_user_id=selected_user_id,
+                    emby_username=selected_username or "Admin",
+                ))
+                await db.commit()
+                log.info("setup.default_user_created",
+                         emby_user=selected_username)
+            else:
+                # Fallback: fetch users and pick the first admin
+                import httpx
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        f"{emby_url}/Users",
+                        params={"api_key": emby_api_key},
+                    )
+                    resp.raise_for_status()
+                    emby_users = resp.json()
+                    if emby_users:
+                        # Prefer admin user
+                        pick = emby_users[0]
+                        for u in emby_users:
+                            policy = u.get("Policy") or {}
+                            if isinstance(policy, dict) and policy.get("IsAdministrator"):
+                                pick = u
+                                break
+                        db.add(User(
+                            emby_user_id=pick["Id"],
+                            emby_username=pick.get("Name", "Admin"),
+                        ))
+                        await db.commit()
+                        log.info("setup.default_user_created",
+                                 emby_user=pick.get("Name"))
     except Exception as e:
         log.warning("setup.default_user_skipped", error=str(e)[:200])
 

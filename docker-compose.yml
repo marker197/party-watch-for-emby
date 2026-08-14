@@ -5,6 +5,8 @@ services:
     build: .
     container_name: emby-simkl-suite
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     environment:
