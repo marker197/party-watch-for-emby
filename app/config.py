@@ -124,6 +124,14 @@ class Settings(BaseSettings):
 
     # -- Validators ---------------------------------------------------------
 
+    @field_validator("jwt_secret_key")
+    @classmethod
+    def ensure_jwt_secret(cls, v: str) -> str:
+        """Auto-generate JWT secret if env var is empty or unset."""
+        if not v or v.strip() == "":
+            return _get_or_create_jwt_secret()
+        return v
+
     @field_validator("db_password")
     @classmethod
     def validate_db_password(cls, v: str, info) -> str:

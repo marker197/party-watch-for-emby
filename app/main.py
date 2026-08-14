@@ -237,6 +237,20 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             log.warning("suite.emby_creds_load_skipped", error=str(e)[:200])
 
+    # Load wizard-saved Simkl client ID from DB if not in env
+    if not settings.simkl_client_id:
+        try:
+            from app.models.schema import AppSetting as _AppSetting2
+            async with async_session() as db:
+                row = (await db.execute(
+                    select(_AppSetting2).where(_AppSetting2.key == "simkl_client_id")
+                )).scalar_one_or_none()
+                if row and row.value:
+                    settings.simkl_client_id = row.value
+                    log.info("suite.loaded_from_db", key="simkl_client_id")
+        except Exception as e:
+            log.warning("suite.simkl_creds_load_skipped", error=str(e)[:200])
+
     # Encrypt any plaintext secrets already in Redis (one-time migration)
     try:
         migrated = await migrate_plaintext_secrets()
