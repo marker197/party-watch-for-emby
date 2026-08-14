@@ -8971,6 +8971,12 @@ async def backfill_watch_history(
             await r.delete(lock_key)
             raise HTTPException(404, "User not found")
 
+        # Eagerly capture user fields — a rollback will expire the ORM object
+        user_db_id = user.id
+        user_emby_user_id = user.emby_user_id
+        user_simkl_token = user.simkl_access_token
+        user_simkl_expires = user.simkl_token_expires
+
         # ── Clean up duplicates from prior buggy runs ─────────────────
         # NULL emby_id made the unique constraint ineffective.
         # Keep the oldest row per (user_id, item_type, title, watched_at).
@@ -8995,12 +9001,12 @@ async def backfill_watch_history(
         skipped = {"simkl": 0, "mdblist": 0, "emby": 0}
 
         # ── 1. Simkl (richest — individual timestamps) ────────────────
-        if user.simkl_access_token:
+        if user_simkl_token:
             try:
                 from app.utils.simkl_client import SimklClient
                 simkl = SimklClient(
-                    access_token=user.simkl_access_token,
-                    token_expires=user.simkl_token_expires,
+                    access_token=user_simkl_token,
+                    token_expires=user_simkl_expires,
                 )
                 try:
                     # Pre-load existing keys into a set for fast dedup
@@ -9049,7 +9055,7 @@ async def backfill_watch_history(
                                         continue
                                     existing_keys.add(key)
                                     batch.append(WatchHistory(
-                                        user_id=user.id,
+                                        user_id=user_db_id,
                                         item_type="movie",
                                         title=title,
                                         imdb_id=ids.get("imdb") or None,
@@ -9072,7 +9078,7 @@ async def backfill_watch_history(
                                         continue
                                     existing_keys.add(key)
                                     batch.append(WatchHistory(
-                                        user_id=user.id,
+                                        user_id=user_db_id,
                                         item_type="episode",
                                         title=title,
                                         series_name=show.get("title"),
@@ -9145,7 +9151,7 @@ async def backfill_watch_history(
 
                             ids = entry.get("ids", {})
                             batch.append(WatchHistory(
-                                user_id=user.id,
+                                user_id=user_db_id,
                                 item_type=it,
                                 title=title,
                                 imdb_id=ids.get("imdb") or None,
@@ -9166,7 +9172,7 @@ async def backfill_watch_history(
             await db.rollback()
 
         # ── 3. Emby (LastPlayedDate only, one date per item) ──────────
-        if user.emby_user_id:
+        if user_emby_user_id:
             try:
                 emby = EmbyClient()
                 try:
@@ -9175,7 +9181,7 @@ async def backfill_watch_history(
                         page_size = 500
                         while True:
                             resp = await emby.get_items(
-                                user_id=user.emby_user_id,
+                                user_id=user_emby_user_id,
                                 item_type=emby_type,
                                 filters="IsPlayed",
                                 fields="ProviderIds,UserData,UserDataLastPlayedDate,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber",
@@ -9211,7 +9217,7 @@ async def backfill_watch_history(
                                 runtime_min = int(runtime_ticks / 600_000_000) if runtime_ticks else None
 
                                 batch.append(WatchHistory(
-                                    user_id=user.id,
+                                    user_id=user_db_id,
                                     emby_id=item.get("Id"),
                                     item_type=it,
                                     title=title,
@@ -9298,7 +9304,7 @@ async def backfill_watch_history_genres(
         missing_ids = [r for r in (await db.execute(missing_q)).scalars().all() if r]
 
         if not missing_ids:
-            return {"status": "ok", "updated": 0, "message": "All rows already have genres"}
+            return {"status": "ok", "updated": 0, "total_updated": 0, "message": "All rows already have genres"}
 
         log.info("genre_backfill.start", user_id=user_id, missing_items=len(missing_ids))
 
