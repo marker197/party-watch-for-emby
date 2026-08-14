@@ -92,7 +92,7 @@
   <div class="sidebar-section">
     <div class="sidebar-label">Main</div>
     <a class="sidebar-nav-item" href="/"><span class="nav-icon">⊞</span> Dashboard</a>
-    <a class="sidebar-nav-item" href="/lists"><span class="nav-icon">☰</span> Lists</a>
+    <a class="sidebar-nav-item" href="/lists"><span class="nav-icon">☰</span> Playlists</a>
     <a class="sidebar-nav-item" href="/stats"><span class="nav-icon">◩</span> Stats</a>
     <a class="sidebar-nav-item" href="/watch-history"><span class="nav-icon">↻</span> History</a>
   </div>
@@ -102,7 +102,6 @@
     <a class="sidebar-nav-item" href="/bias"><span class="nav-icon">◎</span> Taste profile</a>
     <a class="sidebar-nav-item" href="/rewatch"><span class="nav-icon">⟳</span> Rewatch</a>
     <a class="sidebar-nav-item" href="/filmography"><span class="nav-icon">▣</span> Filmography</a>
-    <a class="sidebar-nav-item" href="/universes"><span class="nav-icon">◉</span> Universes</a>
   </div>
   <div class="sidebar-section">
     <div class="sidebar-label">Tools</div>
@@ -267,7 +266,7 @@ function renderReport(data) {
   html += statBox(s.incomplete_series || 0, 'Incomplete Series');
   html += statBox(s.movies_not_in_library || 0, 'Watched Movies Missing');
   html += statBox(s.shows_not_in_library || 0, 'Watched Shows Missing');
-  html += statBox(s.missing_sequels || 0, 'Missing Related');
+  html += statBox(s.missing_sequels || 0, 'Related Suggestions');
   html += '</div>';
 
   // Sections
