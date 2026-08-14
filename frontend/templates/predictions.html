@@ -334,27 +334,46 @@
     }
   </style>
 <script src="/static/js/csrf.js"></script>
+<link rel="stylesheet" href="/static/css/sidebar.css">
 </head>
 <body>
 <script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
-<nav class="suite-nav" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#0D0F14;border-bottom:1px solid #222838;padding:10px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-    <span style="color:#7D8590;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;margin-right:10px;">EMBY-SIMKL SUITE</span>
-    <a href="/" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">Dashboard</a>
-    <a href="/lists" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📋 Lists</a>
-    <a href="/predictions" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:#1C2030;color:#ffffff;font-weight:600;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='#1C2030'">🤖 Predictions</a>
-    <a href="/bias" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🎓 Taste Profile</a>
-    <a href="/rewatch" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🔁 Rewatch</a>
-    <a href="/stats" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📊 Stats</a>
-    <a href="/watch-history" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📜 History</a>
-    <a href="/library-health" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🏥 Health</a>
-    <a href="/watch-party" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">👥 Watch Party</a>
-    <a href="/filmography" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🎬 Filmography</a>
-    <a href="/duplicates" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">🔍 Duplicates</a>
-    <a href="/settings" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">⚙️ Settings</a>
-    <a href="/guide" style="color:#E6EDF3;text-decoration:none;font-size:0.9rem;padding:7px 12px;border-radius:6px;background:transparent;" onmouseover="this.style.background='#1C2030'" onmouseout="this.style.background='transparent'">📖 Guide</a>
-</nav>
-
-  <div class="header">
+<div class="suite-shell">
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+<button class="mobile-menu-btn" id="mobileMenuBtn" onclick="toggleSidebar()">☰</button>
+<aside class="suite-sidebar" id="suiteSidebar">
+  <div class="sidebar-brand">
+    <div class="sidebar-brand-name">Emby-Simkl Suite</div>
+    <div class="sidebar-brand-ver">v2.1</div>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-label">Main</div>
+    <a class="sidebar-nav-item" href="/"><span class="nav-icon">⊞</span> Dashboard</a>
+    <a class="sidebar-nav-item" href="/lists"><span class="nav-icon">☰</span> Lists</a>
+    <a class="sidebar-nav-item" href="/stats"><span class="nav-icon">◩</span> Stats</a>
+    <a class="sidebar-nav-item" href="/watch-history"><span class="nav-icon">↻</span> History</a>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-label">Discover</div>
+    <a class="sidebar-nav-item active" href="/predictions"><span class="nav-icon">◈</span> Predictions</a>
+    <a class="sidebar-nav-item" href="/bias"><span class="nav-icon">◎</span> Taste profile</a>
+    <a class="sidebar-nav-item" href="/rewatch"><span class="nav-icon">⟳</span> Rewatch</a>
+    <a class="sidebar-nav-item" href="/filmography"><span class="nav-icon">▣</span> Filmography</a>
+    <a class="sidebar-nav-item" href="/universes"><span class="nav-icon">◉</span> Universes</a>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-label">Tools</div>
+    <a class="sidebar-nav-item" href="/library-health"><span class="nav-icon">⊕</span> Library health</a>
+    <a class="sidebar-nav-item" href="/duplicates"><span class="nav-icon">⊜</span> Duplicates</a>
+    <a class="sidebar-nav-item" href="/watch-party"><span class="nav-icon">⊡</span> Watch party</a>
+    <a class="sidebar-nav-item" href="/guide"><span class="nav-icon">⊞</span> Guide</a>
+  </div>
+  <div class="sidebar-bottom">
+    <a class="sidebar-nav-item" href="/settings"><span class="nav-icon">⚙</span> Settings</a>
+  </div>
+</aside>
+<div class="suite-main">
+<div class="header">
     <h1>🤖 ML Rating Predictions</h1>
     <button class="btn btn-blue" id="retrainBtn">🔄 Retrain Model</button>
   </div>
@@ -770,5 +789,13 @@
 
     init();
   </script>
+</div>
+</div>
+<script>
+function toggleSidebar(){
+  document.getElementById('suiteSidebar').classList.toggle('open');
+  document.getElementById('sidebarOverlay').classList.toggle('open');
+}
+</script>
 </body>
 </html>
