@@ -10,9 +10,6 @@ services:
       - "${SUITE_PORT:-8000}:8000"       # Main API + Dashboard
       - "${WS_PORT:-8001}:8001"          # WebSocket (Watch Party)
     environment:
-      # -- Trakt --
-      TRAKT_CLIENT_ID: ${TRAKT_CLIENT_ID}
-      TRAKT_CLIENT_SECRET: ${TRAKT_CLIENT_SECRET}
       # -- Emby --
       EMBY_URL: ${EMBY_URL:-http://emby:8096}
       EMBY_API_KEY: ${EMBY_API_KEY}
