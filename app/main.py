@@ -221,6 +221,22 @@ async def lifespan(app: FastAPI):
     # Seed Redis with durable settings from DB (survives Redis restarts)
     await _seed_redis_from_db()
 
+    # Load wizard-saved Emby credentials from DB into in-memory settings
+    # (covers the case where .env has no EMBY_URL but the wizard saved one)
+    if not settings.emby_url or not settings.emby_api_key:
+        try:
+            from app.models.schema import AppSetting as _AppSetting
+            async with async_session() as db:
+                for key in ("emby_url", "emby_api_key"):
+                    row = (await db.execute(
+                        select(_AppSetting).where(_AppSetting.key == key)
+                    )).scalar_one_or_none()
+                    if row and row.value:
+                        setattr(settings, key, row.value)
+                        log.info("suite.loaded_from_db", key=key)
+        except Exception as e:
+            log.warning("suite.emby_creds_load_skipped", error=str(e)[:200])
+
     # Encrypt any plaintext secrets already in Redis (one-time migration)
     try:
         migrated = await migrate_plaintext_secrets()
@@ -372,10 +388,13 @@ app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 
 @app.get("/")
 async def dashboard(request: Request):
-    # Check if first-run setup is needed
+    # Check if first-run setup is needed (no Emby creds or no provider chosen)
     from app.utils.redis_cache import get_redis
     from fastapi.responses import RedirectResponse
     try:
+        if not settings.emby_url or not settings.emby_api_key:
+            return RedirectResponse(url="/setup", status_code=302)
+
         r = await get_redis()
         provider = await r.get("integration_provider")
         if not provider:
@@ -473,7 +492,8 @@ async def _seed_redis_from_db():
     from app.models.schema import AppSetting
     from app.utils.redis_cache import get_redis
     from app.utils.secure_redis import SECRET_KEYS
-    _KEYS = ("radarr_servers", "sonarr_servers", "sabnzbd_servers", "auto_send_settings")
+    _KEYS = ("radarr_servers", "sonarr_servers", "sabnzbd_servers", "auto_send_settings",
+             "emby_url", "emby_api_key")
     try:
         r = await get_redis()
         async with async_session() as db:

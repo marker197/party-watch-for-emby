@@ -178,6 +178,151 @@ async def check_setup_required(db: AsyncSession = Depends(get_db)):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Setup Wizard — zero-config first-run endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/api/setup/test-emby")
+async def setup_test_emby(payload: dict):
+    """Test Emby connection with user-provided URL + API key (no auth required)."""
+    import httpx
+
+    url = (payload.get("emby_url") or "").strip().rstrip("/")
+    key = (payload.get("emby_api_key") or "").strip()
+
+    if not url or not key:
+        raise HTTPException(400, "Both emby_url and emby_api_key are required.")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                f"{url}/System/Info/Public",
+                params={"api_key": key},
+            )
+            r.raise_for_status()
+            info = r.json()
+            return {
+                "status": "ok",
+                "server_name": info.get("ServerName", ""),
+                "version": info.get("Version", ""),
+            }
+    except httpx.ConnectError:
+        raise HTTPException(502, f"Cannot reach {url} — check the URL and port.")
+    except httpx.TimeoutException:
+        raise HTTPException(504, f"Connection to {url} timed out.")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            raise HTTPException(401, "API key rejected by Emby — check the key.")
+        raise HTTPException(502, f"Emby returned HTTP {e.response.status_code}.")
+    except Exception as e:
+        raise HTTPException(502, f"Connection failed: {str(e)[:200]}")
+
+
+@router.post("/api/setup/save")
+async def setup_save_all(payload: dict, db: AsyncSession = Depends(get_db)):
+    """Save all first-run wizard settings: Emby creds, provider, integration keys.
+
+    Persists to both Redis and the DB (AppSetting table) so values survive
+    container and Redis restarts. Also updates the in-memory settings object
+    so EmbyClient picks up the new URL/key without a restart.
+    """
+    from app.config import settings
+    from app.utils.secure_redis import secure_set
+
+    emby_url = (payload.get("emby_url") or "").strip().rstrip("/")
+    emby_api_key = (payload.get("emby_api_key") or "").strip()
+    provider = (payload.get("provider") or "simkl").strip().lower()
+    simkl_client_id = (payload.get("simkl_client_id") or "").strip()
+    mdblist_client_id = (payload.get("mdblist_client_id") or "").strip()
+    mdblist_client_secret = (payload.get("mdblist_client_secret") or "").strip()
+
+    if not emby_url or not emby_api_key:
+        raise HTTPException(400, "Emby URL and API key are required.")
+
+    if provider not in VALID_PROVIDERS:
+        raise HTTPException(400, f"Invalid provider: {provider}")
+
+    r = await get_redis()
+
+    # Helper to upsert an AppSetting row
+    async def _upsert(key: str, value: str):
+        row = (await db.execute(
+            select(AppSetting).where(AppSetting.key == key)
+        )).scalar_one_or_none()
+        if row:
+            row.value = value
+            row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        else:
+            db.add(AppSetting(
+                key=key, value=value,
+                updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            ))
+
+    # 1. Emby credentials — save to Redis + DB + update in-memory
+    await r.set("emby_url", emby_url)
+    await r.set("emby_api_key", emby_api_key)
+    await _upsert("emby_url", emby_url)
+    await _upsert("emby_api_key", emby_api_key)
+
+    settings.emby_url = emby_url
+    settings.emby_api_key = emby_api_key
+
+    # 2. Integration provider
+    await r.set("integration_provider", provider)
+    await _upsert("integration_provider", provider)
+
+    # 3. Simkl client ID (if provided)
+    if simkl_client_id:
+        await secure_set("simkl_client_id", simkl_client_id)
+        await _upsert("simkl_client_id", simkl_client_id)
+        settings.simkl_client_id = simkl_client_id
+
+    # 4. MDBList credentials (if provided)
+    if mdblist_client_id:
+        await secure_set("mdblist_api_key", mdblist_client_id)
+        await _upsert("mdblist_api_key", mdblist_client_id)
+    if mdblist_client_secret:
+        await secure_set("mdblist_client_secret", mdblist_client_secret)
+        await _upsert("mdblist_client_secret", mdblist_client_secret)
+
+    await db.commit()
+
+    # 5. Create a default local user from Emby so auth fallback works
+    #    (get_current_user falls back to first User row on LAN installs)
+    try:
+        existing = (await db.execute(select(User).limit(1))).scalar_one_or_none()
+        if not existing:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{emby_url}/Users",
+                    params={"api_key": emby_api_key},
+                )
+                resp.raise_for_status()
+                emby_users = resp.json()
+                if emby_users:
+                    first = emby_users[0]
+                    db.add(User(
+                        emby_user_id=first["Id"],
+                        emby_username=first.get("Name", "Admin"),
+                    ))
+                    await db.commit()
+                    log.info("setup.default_user_created",
+                             emby_user=first.get("Name"))
+    except Exception as e:
+        log.warning("setup.default_user_skipped", error=str(e)[:200])
+
+    log.info("setup.wizard_complete",
+             provider=provider,
+             emby_url=emby_url,
+             simkl=bool(simkl_client_id),
+             mdblist=bool(mdblist_client_id))
+
+    return {"status": "ok", "provider": provider}
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Auth — Simkl device-code OAuth
 # ═══════════════════════════════════════════════════════════════════════════
 

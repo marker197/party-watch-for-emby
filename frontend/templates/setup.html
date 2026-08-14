@@ -11,16 +11,21 @@
     --surface: #151820;
     --surface-hover: #1C2030;
     --border: #222838;
+    --border-strong: #2E3548;
     --text: #E6EDF3;
     --text-dim: #7D8590;
+    --text-muted: #545D68;
     --accent: #7B68EE;
     --accent-light: #9585F0;
     --green: #4AAD6E;
+    --green-bg: rgba(74,173,110,0.12);
     --orange: #D29922;
+    --orange-bg: rgba(210,153,34,0.12);
     --red: #E05252;
+    --red-bg: rgba(224,82,82,0.12);
     --blue: #7B8CDE;
     --radius: 10px;
-    --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -36,11 +41,7 @@
     justify-content: center;
   }
 
-  .setup-container {
-    max-width: 540px;
-    width: 100%;
-    padding: 24px;
-  }
+  .setup-container { max-width: 560px; width: 100%; padding: 24px; }
 
   .setup-card {
     background: var(--surface);
@@ -49,213 +50,425 @@
     padding: 36px 32px;
   }
 
-  h1 {
-    font-size: 1.5rem;
-    font-weight: 700;
-    margin-bottom: 8px;
-    text-align: center;
-  }
+  h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 6px; text-align: center; }
+  .subtitle { color: var(--text-dim); font-size: 0.85rem; text-align: center; margin-bottom: 28px; }
 
-  .subtitle {
-    color: var(--text-dim);
-    font-size: 0.88rem;
-    text-align: center;
-    margin-bottom: 28px;
+  /* Steps indicator */
+  .steps { display: flex; gap: 8px; justify-content: center; margin-bottom: 28px; }
+  .step-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--border); transition: background 0.3s;
   }
+  .step-dot.active { background: var(--accent); }
+  .step-dot.done { background: var(--green); }
 
+  /* Panels */
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* Form elements */
+  .form-group { margin-bottom: 16px; }
+  .form-label {
+    display: block; font-size: 0.82rem; font-weight: 600;
+    color: var(--text-dim); margin-bottom: 6px;
+  }
+  .form-input {
+    width: 100%; padding: 10px 14px; border-radius: var(--radius);
+    border: 1px solid var(--border); background: var(--bg);
+    color: var(--text); font-size: 0.88rem; outline: none;
+    font-family: var(--font); transition: border-color 0.15s;
+  }
+  .form-input:focus { border-color: var(--accent); }
+  .form-input::placeholder { color: var(--text-muted); }
+  .form-hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+
+  /* Options (provider picker) */
   .option {
-    background: var(--bg);
-    border: 2px solid var(--border);
-    border-radius: var(--radius);
-    padding: 16px 20px;
-    margin-bottom: 12px;
-    cursor: pointer;
+    background: var(--bg); border: 2px solid var(--border);
+    border-radius: var(--radius); padding: 14px 18px;
+    margin-bottom: 10px; cursor: pointer;
     transition: border-color 0.15s, background 0.15s;
-    display: flex;
-    align-items: flex-start;
-    gap: 14px;
+    display: flex; align-items: flex-start; gap: 12px;
   }
-
-  .option:hover {
-    border-color: var(--accent);
-    background: var(--surface-hover);
-  }
-
-  .option.selected {
-    border-color: var(--accent);
-    background: rgba(88, 166, 255, 0.08);
-  }
-
+  .option:hover { border-color: var(--accent); background: var(--surface-hover); }
+  .option.selected { border-color: var(--accent); background: rgba(123,104,238,0.06); }
   .option input[type="radio"] {
-    margin-top: 3px;
-    accent-color: var(--accent);
-    width: 18px;
-    height: 18px;
-    flex-shrink: 0;
+    margin-top: 3px; accent-color: var(--accent);
+    width: 16px; height: 16px; flex-shrink: 0;
   }
-
-  .option-content {
-    flex: 1;
-  }
-
-  .option-title {
-    font-weight: 600;
-    font-size: 0.95rem;
-    margin-bottom: 4px;
-  }
-
-  .option-desc {
-    color: var(--text-dim);
-    font-size: 0.82rem;
-    line-height: 1.5;
-  }
+  .option-title { font-weight: 600; font-size: 0.92rem; margin-bottom: 2px; }
+  .option-desc { color: var(--text-dim); font-size: 0.8rem; line-height: 1.5; }
 
   .badge {
-    display: inline-block;
-    font-size: 0.7rem;
-    font-weight: 600;
-    padding: 1px 7px;
-    border-radius: 4px;
-    margin-left: 6px;
-    vertical-align: middle;
+    display: inline-block; font-size: 0.68rem; font-weight: 600;
+    padding: 1px 7px; border-radius: 4px; margin-left: 6px; vertical-align: middle;
   }
+  .badge-rec { background: var(--green-bg); color: var(--green); }
+  .badge-beta { background: var(--orange-bg); color: var(--orange); }
 
-  .badge-rec { background: rgba(0, 184, 148, 0.15); color: var(--green); }
-  .badge-beta { background: rgba(210, 153, 34, 0.15); color: var(--orange); }
-
+  /* Buttons */
+  .btn-row { display: flex; gap: 8px; margin-top: 22px; }
   .btn {
-    display: block;
-    width: 100%;
-    padding: 12px;
-    border: none;
-    border-radius: var(--radius);
-    font-size: 0.92rem;
-    font-weight: 600;
-    cursor: pointer;
-    margin-top: 20px;
-    transition: opacity 0.15s;
+    flex: 1; padding: 11px 16px; border: none; border-radius: var(--radius);
+    font-size: 0.88rem; font-weight: 600; cursor: pointer;
+    transition: opacity 0.15s; font-family: var(--font);
   }
-
   .btn:hover { opacity: 0.9; }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-secondary { background: var(--surface-hover); color: var(--text-dim); border: 1px solid var(--border); }
+  .btn-test {
+    padding: 8px 16px; background: var(--surface-hover);
+    border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius); font-size: 0.82rem; font-weight: 600;
+    cursor: pointer; transition: all 0.15s; margin-top: 8px;
+  }
+  .btn-test:hover { border-color: var(--accent); }
 
-  .btn-primary {
-    background: var(--accent);
-    color: #fff;
+  /* Status messages */
+  .status-msg {
+    font-size: 0.82rem; margin-top: 10px; padding: 8px 12px;
+    border-radius: 6px; display: none; line-height: 1.4;
+  }
+  .status-ok { display: block; background: var(--green-bg); color: var(--green); }
+  .status-err { display: block; background: var(--red-bg); color: var(--red); }
+
+  /* Section divider */
+  .section-label {
+    font-size: 0.78rem; font-weight: 600; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.05em;
+    margin: 20px 0 12px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
   }
 
-  .btn-skip {
-    background: transparent;
-    color: var(--text-dim);
-    border: 1px solid var(--border);
-    margin-top: 10px;
-    font-weight: 500;
-    font-size: 0.85rem;
+  /* Done panel */
+  .done-icon { text-align: center; font-size: 3rem; margin-bottom: 12px; }
+  .done-summary {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 18px;
+    margin: 16px 0; font-size: 0.85rem;
   }
-
-  .error-msg {
-    color: var(--red);
-    font-size: 0.82rem;
-    margin-top: 8px;
-    text-align: center;
-    display: none;
-  }
-
-  .note {
-    color: var(--text-dim);
-    font-size: 0.78rem;
-    text-align: center;
-    margin-top: 16px;
-  }
-
-  .note a {
-    color: var(--blue);
-    text-decoration: none;
-  }
+  .done-row { display: flex; justify-content: space-between; padding: 4px 0; }
+  .done-label { color: var(--text-dim); }
+  .done-value { font-weight: 600; }
 </style>
 <script src="/static/js/csrf.js"></script>
-<link rel="stylesheet" href="/static/css/sidebar.css">
 </head>
 <body>
 
 <div class="setup-container">
   <div class="setup-card">
     <h1>Welcome to Emby-Simkl Suite</h1>
-    <p class="subtitle">Choose which services to integrate with for scrobbling, watchlist sync, and watch history.</p>
+    <p class="subtitle">Let's connect to your services. Takes about a minute.</p>
 
-    <div class="option selected" data-value="simkl" onclick="selectOption(this)">
-      <input type="radio" name="provider" value="simkl" checked>
-      <div class="option-content">
-        <div class="option-title">Simkl Only <span class="badge badge-rec">Recommended</span></div>
-        <div class="option-desc">Full integration with Simkl.tv — scrobbling, watchlist sync, ratings, watch history, and all suite features. Requires a Simkl account and OAuth setup.</div>
+    <div class="steps">
+      <div class="step-dot active" id="dot0"></div>
+      <div class="step-dot" id="dot1"></div>
+      <div class="step-dot" id="dot2"></div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════ -->
+    <!-- STEP 1: Emby connection                        -->
+    <!-- ═══════════════════════════════════════════════ -->
+    <div class="panel active" id="panel0">
+      <div class="section-label">Emby server</div>
+
+      <div class="form-group">
+        <label class="form-label" for="embyUrl">Emby URL</label>
+        <input class="form-input" id="embyUrl" type="url"
+               placeholder="http://192.168.1.100:8096"
+               autocomplete="url">
+        <div class="form-hint">
+          The address of your Emby server, including the port.
+          Use your LAN IP — not localhost — so Docker can reach it.
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="embyKey">API key</label>
+        <input class="form-input" id="embyKey" type="text"
+               placeholder="Paste your Emby API key"
+               autocomplete="off">
+        <div class="form-hint">
+          Emby → Settings → Advanced → API Keys → Generate.
+        </div>
+      </div>
+
+      <button class="btn-test" id="testEmbyBtn" onclick="testEmby()">
+        Test connection
+      </button>
+      <div class="status-msg" id="embyStatus"></div>
+
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn0next" onclick="goStep(1)" disabled>
+          Next
+        </button>
       </div>
     </div>
 
-    <div class="option" data-value="mdblist" onclick="selectOption(this)">
-      <input type="radio" name="provider" value="mdblist">
-      <div class="option-content">
-        <div class="option-title">MDBList Only <span class="badge badge-beta">Beta</span></div>
-        <div class="option-desc">Full integration with MDBList — scrobbling, watchlist sync, watched history, ratings, and list management. Requires an MDBList API key.</div>
+    <!-- ═══════════════════════════════════════════════ -->
+    <!-- STEP 2: Integration provider                   -->
+    <!-- ═══════════════════════════════════════════════ -->
+    <div class="panel" id="panel1">
+      <div class="section-label">Scrobbling & watch tracking</div>
+
+      <div class="option selected" data-value="simkl" onclick="selectProvider(this)">
+        <input type="radio" name="provider" value="simkl" checked>
+        <div>
+          <div class="option-title">Simkl <span class="badge badge-rec">Recommended</span></div>
+          <div class="option-desc">Scrobbling, watchlist sync, ratings, and full suite features.</div>
+        </div>
+      </div>
+
+      <div class="option" data-value="mdblist" onclick="selectProvider(this)">
+        <input type="radio" name="provider" value="mdblist">
+        <div>
+          <div class="option-title">MDBList <span class="badge badge-beta">Beta</span></div>
+          <div class="option-desc">Scrobbling, watchlist sync, watched history, and ratings.</div>
+        </div>
+      </div>
+
+      <div class="option" data-value="both" onclick="selectProvider(this)">
+        <input type="radio" name="provider" value="both">
+        <div>
+          <div class="option-title">Both</div>
+          <div class="option-desc">Dual integration — scrobble to both services simultaneously.</div>
+        </div>
+      </div>
+
+      <div class="option" data-value="none" onclick="selectProvider(this)">
+        <input type="radio" name="provider" value="none">
+        <div>
+          <div class="option-title">None (Emby only)</div>
+          <div class="option-desc">Smart queue and predictions using Emby data only. No external scrobbling.</div>
+        </div>
+      </div>
+
+      <!-- Simkl credentials (shown if simkl or both selected) -->
+      <div id="simklFields" style="margin-top:16px;">
+        <div class="section-label">Simkl credentials</div>
+        <div class="form-group">
+          <label class="form-label" for="simklClientId">Client ID</label>
+          <input class="form-input" id="simklClientId" type="text"
+                 placeholder="Your Simkl Client ID" autocomplete="off">
+          <div class="form-hint">
+            <a href="https://simkl.com/settings/developer/" target="_blank" rel="noopener"
+               style="color:var(--blue);text-decoration:none;">simkl.com/settings/developer</a>
+            → Create new app → copy Client ID.
+          </div>
+        </div>
+      </div>
+
+      <!-- MDBList credentials (shown if mdblist or both selected) -->
+      <div id="mdblistFields" style="display:none;margin-top:16px;">
+        <div class="section-label">MDBList credentials</div>
+        <div class="form-group">
+          <label class="form-label" for="mdbClientId">Client ID</label>
+          <input class="form-input" id="mdbClientId" type="text"
+                 placeholder="MDBList Client ID" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="mdbClientSecret">Client Secret</label>
+          <input class="form-input" id="mdbClientSecret" type="text"
+                 placeholder="MDBList Client Secret" autocomplete="off">
+          <div class="form-hint">
+            <a href="https://mdblist.com/preferences/" target="_blank" rel="noopener"
+               style="color:var(--blue);text-decoration:none;">mdblist.com/preferences</a>
+            → API section.
+          </div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" onclick="goStep(0)">Back</button>
+        <button class="btn btn-primary" onclick="goStep(2)">Next</button>
       </div>
     </div>
 
-    <div class="option" data-value="both" onclick="selectOption(this)">
-      <input type="radio" name="provider" value="both">
-      <div class="option-content">
-        <div class="option-title">Both</div>
-        <div class="option-desc">Dual integration — scrobble to both services simultaneously. Watch history, ratings, and watchlists synced to both Simkl and MDBList.</div>
-      </div>
-    </div>
+    <!-- ═══════════════════════════════════════════════ -->
+    <!-- STEP 3: Confirm & go                           -->
+    <!-- ═══════════════════════════════════════════════ -->
+    <div class="panel" id="panel2">
+      <div class="done-icon">✓</div>
+      <h1 style="margin-bottom:4px;">Ready to go</h1>
+      <p class="subtitle">Here's what will be configured:</p>
 
-    <div class="option" data-value="none" onclick="selectOption(this)">
-      <input type="radio" name="provider" value="none">
-      <div class="option-content">
-        <div class="option-title">None</div>
-        <div class="option-desc">Skip external integrations. The suite will still manage your Emby library, smart queue, and predictions using Emby data only.</div>
-      </div>
-    </div>
+      <div class="done-summary" id="summary"></div>
 
-    <button class="btn btn-primary" id="continueBtn" onclick="saveAndContinue()">Continue to Dashboard</button>
-    <div class="error-msg" id="errorMsg"></div>
-    <p class="note">You can change this anytime in <a href="/settings">Settings</a>.</p>
+      <div class="status-msg" id="saveStatus"></div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" onclick="goStep(1)">Back</button>
+        <button class="btn btn-primary" id="launchBtn" onclick="saveAll()">
+          Save & launch
+        </button>
+      </div>
+
+      <p style="color:var(--text-muted);font-size:0.78rem;text-align:center;margin-top:14px;">
+        You can change all of this later in Settings.
+      </p>
+    </div>
   </div>
 </div>
 
 <script>
-  function selectOption(el) {
-    document.querySelectorAll('.option').forEach(o => o.classList.remove('selected'));
-    el.classList.add('selected');
-    el.querySelector('input[type="radio"]').checked = true;
+let currentStep = 0;
+let embyTested = false;
+
+function goStep(n) {
+  // Validate before advancing
+  if (n === 1 && !embyTested) return;
+  if (n === 2) buildSummary();
+
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel' + n).classList.add('active');
+
+  for (let i = 0; i < 3; i++) {
+    const dot = document.getElementById('dot' + i);
+    dot.classList.remove('active', 'done');
+    if (i < n) dot.classList.add('done');
+    else if (i === n) dot.classList.add('active');
+  }
+  currentStep = n;
+}
+
+function selectProvider(el) {
+  document.querySelectorAll('.option').forEach(o => o.classList.remove('selected'));
+  el.classList.add('selected');
+  el.querySelector('input[type="radio"]').checked = true;
+
+  const val = el.dataset.value;
+  document.getElementById('simklFields').style.display =
+    (val === 'simkl' || val === 'both') ? 'block' : 'none';
+  document.getElementById('mdblistFields').style.display =
+    (val === 'mdblist' || val === 'both') ? 'block' : 'none';
+}
+
+async function testEmby() {
+  const url = document.getElementById('embyUrl').value.trim();
+  const key = document.getElementById('embyKey').value.trim();
+  const status = document.getElementById('embyStatus');
+  const btn = document.getElementById('testEmbyBtn');
+
+  if (!url || !key) {
+    status.className = 'status-msg status-err';
+    status.textContent = 'Both fields are required.';
+    return;
   }
 
-  async function saveAndContinue() {
-    const selected = document.querySelector('input[name="provider"]:checked');
-    if (!selected) return;
+  btn.disabled = true;
+  btn.textContent = 'Testing…';
+  status.className = 'status-msg';
+  status.style.display = 'none';
 
-    const btn = document.getElementById('continueBtn');
-    const err = document.getElementById('errorMsg');
-    btn.disabled = true;
-    btn.textContent = 'Saving…';
-    err.style.display = 'none';
-
-    try {
-      const r = await fetch('/api/integration-provider', {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({provider: selected.value}),
-      });
-      if (!r.ok) {
-        const data = await r.json();
-        throw new Error(data.detail || 'Failed to save');
-      }
-      window.location.href = '/';
-    } catch (e) {
-      err.textContent = e.message;
-      err.style.display = 'block';
-      btn.disabled = false;
-      btn.textContent = 'Continue to Dashboard';
+  try {
+    const r = await fetch('/api/setup/test-emby', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({emby_url: url, emby_api_key: key}),
+    });
+    const data = await r.json();
+    if (r.ok && data.status === 'ok') {
+      status.className = 'status-msg status-ok';
+      status.textContent = 'Connected — ' + (data.server_name || 'Emby Server') +
+        ' (v' + (data.version || '?') + ')';
+      embyTested = true;
+      document.getElementById('btn0next').disabled = false;
+    } else {
+      status.className = 'status-msg status-err';
+      status.textContent = data.detail || data.message || 'Connection failed.';
     }
+  } catch (e) {
+    status.className = 'status-msg status-err';
+    status.textContent = 'Network error: ' + e.message;
   }
+  btn.disabled = false;
+  btn.textContent = 'Test connection';
+}
+
+function getProvider() {
+  const el = document.querySelector('input[name="provider"]:checked');
+  return el ? el.value : 'simkl';
+}
+
+function buildSummary() {
+  const url = document.getElementById('embyUrl').value.trim();
+  const provider = getProvider();
+  const providerLabel = {simkl:'Simkl', mdblist:'MDBList', both:'Simkl + MDBList', none:'None'}[provider];
+  const simklId = document.getElementById('simklClientId').value.trim();
+  const mdbId = document.getElementById('mdbClientId').value.trim();
+
+  let rows = '';
+  rows += '<div class="done-row"><span class="done-label">Emby server</span><span class="done-value">' + esc(url) + '</span></div>';
+  rows += '<div class="done-row"><span class="done-label">Integration</span><span class="done-value">' + esc(providerLabel) + '</span></div>';
+  if ((provider === 'simkl' || provider === 'both') && simklId)
+    rows += '<div class="done-row"><span class="done-label">Simkl Client ID</span><span class="done-value">' + esc(simklId.slice(0,8)) + '…</span></div>';
+  if ((provider === 'mdblist' || provider === 'both') && mdbId)
+    rows += '<div class="done-row"><span class="done-label">MDBList Client ID</span><span class="done-value">' + esc(mdbId.slice(0,8)) + '…</span></div>';
+
+  document.getElementById('summary').innerHTML = rows;
+}
+
+async function saveAll() {
+  const btn = document.getElementById('launchBtn');
+  const status = document.getElementById('saveStatus');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  status.style.display = 'none';
+
+  const provider = getProvider();
+
+  const payload = {
+    emby_url: document.getElementById('embyUrl').value.trim(),
+    emby_api_key: document.getElementById('embyKey').value.trim(),
+    provider: provider,
+  };
+
+  if (provider === 'simkl' || provider === 'both')
+    payload.simkl_client_id = document.getElementById('simklClientId').value.trim();
+  if (provider === 'mdblist' || provider === 'both') {
+    payload.mdblist_client_id = document.getElementById('mdbClientId').value.trim();
+    payload.mdblist_client_secret = document.getElementById('mdbClientSecret').value.trim();
+  }
+
+  try {
+    const r = await fetch('/api/setup/save', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json();
+    if (r.ok && data.status === 'ok') {
+      btn.textContent = 'Launching…';
+      setTimeout(() => { window.location.href = '/'; }, 800);
+    } else {
+      status.className = 'status-msg status-err';
+      status.textContent = data.detail || 'Save failed.';
+      btn.disabled = false;
+      btn.textContent = 'Save & launch';
+    }
+  } catch (e) {
+    status.className = 'status-msg status-err';
+    status.textContent = 'Network error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'Save & launch';
+  }
+}
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Re-enable next button if user changes Emby fields after a successful test
+['embyUrl','embyKey'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => {
+    embyTested = false;
+    document.getElementById('btn0next').disabled = true;
+    document.getElementById('embyStatus').style.display = 'none';
+  });
+});
 </script>
 
 </body>
