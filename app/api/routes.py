@@ -9021,24 +9021,23 @@ async def backfill_watch_history(
                     log.debug("backfill.existing_loaded", count=len(existing_keys))
 
                     for kind in ("movies", "episodes"):
-                        page = 1
-                        per_page = 250  # Simkl caps at 250 per page
+                        # get_history returns all items at once (no server-side pagination)
+                        history = await simkl.get_history(kind)
+                        if not history:
+                            log.debug("backfill.simkl_empty", kind=kind)
+                            continue
+
+                        log.debug("backfill.simkl_page", kind=kind, page=1,
+                                  items=len(history))
+
                         kind_added = 0
                         kind_skipped = 0
-                        while page <= 50:
-                            history = await simkl.get_history(kind, limit=per_page, page=page)
-                            if not history:
-                                log.debug("backfill.simkl_page_empty", kind=kind, page=page)
-                                break
-
-                            log.debug("backfill.simkl_page", kind=kind, page=page,
-                                      items=len(history))
-
-                            batch = []
-                            for entry in history:
-                                watched_at = entry.get("watched_at", "")
-                                if not watched_at:
-                                    continue
+                        batch = []
+                        for entry in history:
+                            # Simkl uses last_watched_at (not watched_at)
+                            watched_at = entry.get("last_watched_at") or entry.get("watched_at") or ""
+                            if not watched_at:
+                                continue
                                 try:
                                     dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
                                     dt_naive = dt.replace(tzinfo=None)
@@ -9093,19 +9092,15 @@ async def backfill_watch_history(
                                         source="backfill_simkl",
                                     ))
 
-                            if batch:
-                                db.add_all(batch)
-                                await db.commit()
-                                kind_added += len(batch)
-
-                            if len(history) < per_page:
-                                break
-                            page += 1
+                        if batch:
+                            db.add_all(batch)
+                            await db.commit()
+                            kind_added += len(batch)
 
                         added["simkl"] += kind_added
                         skipped["simkl"] += kind_skipped
                         log.info("backfill.simkl_kind_done", kind=kind,
-                                 added=kind_added, skipped=kind_skipped, pages=page)
+                                 added=kind_added, skipped=kind_skipped)
                 finally:
                     await simkl.close()
             except Exception as e:
@@ -9162,9 +9157,17 @@ async def backfill_watch_history(
                                 source="backfill_mdblist",
                             ))
                     if batch:
-                        db.add_all(batch)
-                        await db.commit()
-                    added["mdblist"] = len(batch)
+                        mdb_added = 0
+                        for item in batch:
+                            try:
+                                db.add(item)
+                                await db.flush()
+                                mdb_added += 1
+                            except Exception:
+                                await db.rollback()
+                        if mdb_added:
+                            await db.commit()
+                        added["mdblist"] = mdb_added
                 finally:
                     await mdb.close()
         except Exception as e:
