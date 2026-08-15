@@ -361,6 +361,32 @@
     .playlist-toggle-row label { color: var(--text-dim); cursor: pointer; }
     .playlist-toggle-row label.active { color: var(--green); }
 
+    .quality-btn {
+      font-size: 0.68rem;
+      font-weight: 700;
+      padding: 2px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--surface-hover);
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .quality-btn:hover { border-color: var(--accent); color: var(--text); }
+    .quality-btn.quality-active[data-q="hd"] { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .quality-btn.quality-active[data-q="4k"] { background: var(--orange); color: #fff; border-color: var(--orange); }
+
+    .quality-badge {
+      font-size: 0.6rem;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 3px;
+      margin-left: 4px;
+      vertical-align: middle;
+    }
+    .quality-badge-hd { background: rgba(56,132,244,0.15); color: var(--blue); }
+    .quality-badge-4k { background: rgba(210,153,34,0.15); color: var(--orange); }
+
     .rename-row {
       display: flex;
       align-items: center;
@@ -710,7 +736,7 @@
 
     <div id="universeCardsSection" style="display:none;">
     <div class="filter-group">
-      <button class="filter-badge active" data-filter="all">All (21)</button>
+      <button class="filter-badge active" data-filter="all">All</button>
       <button class="filter-badge" data-filter="complete">Complete</button>
       <button class="filter-badge" data-filter="incomplete">Incomplete</button>
       <button class="filter-badge" data-filter="high">High Progress (80%+)</button>
@@ -781,8 +807,7 @@
         const response = await fetch('/api/universes');
         if (!response.ok) throw new Error('Failed to load universes');
         allUniverses = await response.json();
-        renderUniverses();
-        updateUniverseCardsCount();
+        filterAndRenderUniverses();
       } catch (error) {
         console.error('Error loading universes:', error);
         document.getElementById('universesList').innerHTML = 
@@ -829,16 +854,32 @@
     }
 
     function filterAndRenderUniverses(searchQuery = '') {
-      let filtered = allUniverses;
+      let base = allUniverses;
 
       // Apply search filter
       if (searchQuery) {
-        filtered = filtered.filter(u => 
+        base = base.filter(u => 
           u.name.toLowerCase().includes(searchQuery)
         );
       }
 
+      // Calculate counts for each filter
+      const counts = {
+        all: base.length,
+        complete: base.filter(u => (u.completion_pct ?? 0) === 100).length,
+        incomplete: base.filter(u => (u.completion_pct ?? 0) < 100).length,
+        high: base.filter(u => (u.completion_pct ?? 0) >= 80).length,
+      };
+
+      // Update filter badge labels
+      document.querySelectorAll('.filter-badge').forEach(b => {
+        const f = b.dataset.filter;
+        const labels = { all: 'All', complete: 'Complete', incomplete: 'Incomplete', high: 'High Progress (80%+)' };
+        b.textContent = `${labels[f] || f} (${counts[f] ?? 0})`;
+      });
+
       // Apply status filter
+      let filtered = base;
       if (currentFilter === 'complete') {
         filtered = filtered.filter(u => (u.completion_pct ?? 0) === 100);
       } else if (currentFilter === 'incomplete') {
@@ -846,6 +887,10 @@
       } else if (currentFilter === 'high') {
         filtered = filtered.filter(u => (u.completion_pct ?? 0) >= 80);
       }
+
+      // Update header count to reflect filtered view
+      const el = document.getElementById('universeCardsCount');
+      if (el) el.textContent = `(${filtered.length})`;
 
       renderUniverses(filtered);
     }
@@ -901,6 +946,12 @@
               <input type="checkbox" id="plToggle-${universe.id}" ${universe.playlist_enabled ? 'checked' : ''}
                 onchange="updateUniverseSettings(${universe.id}, {playlist_enabled: this.checked})" />
               <label for="plToggle-${universe.id}" class="${universe.playlist_enabled ? 'active' : ''}">Sync to Emby Playlist</label>
+            </div>
+
+            <div class="quality-toggle-row" style="display:flex;align-items:center;gap:8px;padding:4px 0;">
+              <span style="font-size:0.75rem;color:var(--text-dim);">Quality:</span>
+              <button class="quality-btn ${(universe.quality_pref || '') === 'hd' ? 'quality-active' : ''}" data-uid="${universe.id}" data-q="hd" onclick="setQualityPref(${universe.id}, this.classList.contains('quality-active') ? null : 'hd')">HD</button>
+              <button class="quality-btn ${(universe.quality_pref || '') === '4k' ? 'quality-active' : ''}" data-uid="${universe.id}" data-q="4k" onclick="setQualityPref(${universe.id}, this.classList.contains('quality-active') ? null : '4k')">4K</button>
             </div>
 
             <div class="desc-row">
@@ -964,7 +1015,7 @@
             <span class="drag-handle">☰</span>
             ${radarrCheck}
             <div class="item-check" title="${statusText}">${statusIcon}</div>
-            <div class="item-title">${escapeHtml(item.title)}</div>
+            <div class="item-title">${escapeHtml(item.title)}${item.quality ? `<span class="quality-badge quality-badge-${item.quality.toLowerCase()}">${escapeHtml(item.quality)}</span>` : ''}</div>
             <div class="item-year">${item.year ?? ""}</div>
             <button onclick="removeItem(${universeId}, ${item.id}, '${escapeHtml(item.title).replace(/'/g, "\\'")}')" title="Remove from universe" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:0.75rem;padding:2px 4px;opacity:0.4;transition:opacity 0.15s;" onmouseover="this.style.opacity='1';this.style.color='var(--red)'" onmouseout="this.style.opacity='0.4';this.style.color='var(--text-dim)'">✕</button>
           </div>
@@ -1433,6 +1484,30 @@
           if (label) label.className = data.playlist_enabled ? 'active' : '';
           const action = data.playlist_enabled ? 'enabled' : 'disabled';
           showToast(`✓ Playlist ${action}`);
+        }
+      } catch (err) {
+        showToast('Error: ' + err.message);
+      }
+    }
+
+    async function setQualityPref(universeId, pref) {
+      // Update button states immediately
+      document.querySelectorAll(`.quality-btn[data-uid="${universeId}"]`).forEach(b => {
+        b.classList.toggle('quality-active', b.dataset.q === pref);
+      });
+
+      try {
+        const resp = await fetch(`/api/universes/${universeId}/settings`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ quality_pref: pref }),
+        });
+        const data = await resp.json();
+        if (data.status === 'ok') {
+          showToast(pref ? `✓ Quality set to ${pref.toUpperCase()} — run Scan to re-match` : '✓ Quality preference cleared');
+          // Update in-memory data
+          const uni = allUniverses.find(u => u.id === universeId);
+          if (uni) uni.quality_pref = pref;
         }
       } catch (err) {
         showToast('Error: ' + err.message);

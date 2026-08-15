@@ -157,16 +157,17 @@ class EmbyClient:
         path = f"/Users/{user_id}/Items" if user_id else "/Items"
         return await self._get(path, params)
 
-    async def get_all_movies(self, user_id: str | None = None) -> list[dict]:
+    async def get_all_movies(self, user_id: str | None = None, fields: str | None = None) -> list[dict]:
         """Page through every movie in the library."""
         items: list[dict] = []
         start = 0
         batch = 500
+        kwargs: dict = {"user_id": user_id, "item_type": "Movie", "limit": batch}
+        if fields:
+            kwargs["fields"] = fields
         while True:
-            resp = await self.get_items(
-                user_id=user_id, item_type="Movie",
-                limit=batch, start_index=start,
-            )
+            kwargs["start_index"] = start
+            resp = await self.get_items(**kwargs)
             items.extend(resp.get("Items", []))
             if start + batch >= resp.get("TotalRecordCount", 0):
                 break

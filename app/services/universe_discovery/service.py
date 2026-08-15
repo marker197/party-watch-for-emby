@@ -354,6 +354,13 @@ class UniverseDiscoveryService:
 
     async def get_universes(self) -> list[dict]:
         """Return all universes with item counts + library match stats."""
+        # Load quality preferences from Redis
+        from app.utils.redis_cache import get_redis
+        try:
+            r = await get_redis()
+        except Exception:
+            r = None
+
         async with async_session() as db:
             universes = (await db.execute(select(Universe))).scalars().all()
             result = []
@@ -365,6 +372,16 @@ class UniverseDiscoveryService:
 
                 in_library = sum(1 for i in items if i.in_library)
                 watched = sum(1 for i in items if i.watched)
+
+                # Quality preference
+                quality_pref = None
+                if r:
+                    try:
+                        qp = await r.get(f"universe:{u.id}:quality_pref")
+                        if qp:
+                            quality_pref = qp
+                    except Exception:
+                        pass
 
                 # Next recommended = first unwatched item (in release order) that's
                 # actually in the library. If the next item in order isn't in the
@@ -395,6 +412,18 @@ class UniverseDiscoveryService:
                 if next_recommended is None:
                     next_recommended = first_unwatched_missing  # may still be None if fully watched
 
+                # Build item quality labels from cached emby data
+                item_qualities = {}
+                if r and quality_pref:
+                    for i in items:
+                        if i.emby_item_id:
+                            try:
+                                q = await r.get(f"universe_item_quality:{i.emby_item_id}")
+                                if q:
+                                    item_qualities[i.id] = q
+                            except Exception:
+                                pass
+
                 result.append({
                     "id": u.id,
                     "name": u.name,
@@ -402,6 +431,7 @@ class UniverseDiscoveryService:
                     "description": u.description,
                     "playlist_enabled": bool(u.playlist_enabled),
                     "custom_name": u.custom_name,
+                    "quality_pref": quality_pref,
                     "total_items": len(items),
                     "in_library": in_library,
                     "watched": watched,
@@ -419,6 +449,7 @@ class UniverseDiscoveryService:
                             "emby_item_id": i.emby_item_id,
                             "imdb_id": i.imdb_id,
                             "tmdb_id": i.tmdb_id,
+                            "quality": item_qualities.get(i.id),
                         }
                         for i in items
                     ],
@@ -818,15 +849,18 @@ class UniverseDiscoveryService:
             )).scalars().first()
         emby_user_id = first_user.emby_user_id if first_user else None
 
-        movies = await self.emby.get_all_movies(user_id=emby_user_id)
+        movies = await self.emby.get_all_movies(
+            user_id=emby_user_id,
+            fields="ProviderIds,Genres,Overview,People,Studios,DateCreated,RunTimeTicks,CommunityRating,OfficialRating,ProductionYear,UserData,Path",
+        )
         series = await self.emby.get_all_series(user_id=emby_user_id)
         all_items = movies + series
 
-        # Build multiple indexes for matching
-        imdb_index: dict[str, dict] = {}   # "tt0371746" → emby item
-        tmdb_index: dict[str, dict] = {}   # "1726" → emby item
-        title_year_index: dict[str, dict] = {}  # "iron man:2008" → emby item
-        title_index: dict[str, dict] = {}       # "iron man" → emby item
+        # Build indexes: store ALL matching items per key (supports HD + 4K dupes)
+        imdb_index: dict[str, list[dict]] = {}   # "tt0371746" → [emby item, ...]
+        tmdb_index: dict[str, list[dict]] = {}   # "1726" → [emby item, ...]
+        title_year_index: dict[str, list[dict]] = {}  # "iron man:2008" → [emby item, ...]
+        title_index: dict[str, list[dict]] = {}       # "iron man" → [emby item, ...]
 
         for item in all_items:
             provider_ids = item.get("ProviderIds", {})
@@ -834,19 +868,66 @@ class UniverseDiscoveryService:
             # Index by IMDB
             imdb = provider_ids.get("Imdb") or provider_ids.get("imdb")
             if imdb:
-                imdb_index[imdb.lower()] = item
+                imdb_index.setdefault(imdb.lower(), []).append(item)
 
             # Index by TMDB
             tmdb = provider_ids.get("Tmdb") or provider_ids.get("tmdb")
             if tmdb:
-                tmdb_index[str(tmdb)] = item
+                tmdb_index.setdefault(str(tmdb), []).append(item)
 
             # Index by title+year and title-only (fallback)
             name = item.get("Name", "").lower()
             year = item.get("ProductionYear", "")
             if name:
-                title_year_index[f"{name}:{year}"] = item
-                title_index[name] = item
+                title_year_index.setdefault(f"{name}:{year}", []).append(item)
+                title_index.setdefault(name, []).append(item)
+
+        # Load per-universe quality preferences from Redis
+        from app.utils.redis_cache import get_redis
+        try:
+            r = await get_redis()
+        except Exception:
+            r = None
+
+        universe_quality: dict[int, str] = {}  # universe_id → "hd"|"4k"
+        if r:
+            async with async_session() as db:
+                all_uids = (await db.execute(select(Universe.id))).scalars().all()
+            for uid in all_uids:
+                try:
+                    qp = await r.get(f"universe:{uid}:quality_pref")
+                    if qp:
+                        universe_quality[uid] = qp
+                except Exception:
+                    pass
+
+        def _is_4k(emby_item: dict) -> bool:
+            """Heuristic: check Path or Name for 4K/UHD/2160p indicators."""
+            path = (emby_item.get("Path") or "").lower()
+            name = (emby_item.get("Name") or "").lower()
+            for marker in ("4k", "uhd", "2160p", "2160"):
+                if marker in path or marker in name:
+                    return True
+            return False
+
+        def _pick_version(candidates: list[dict], pref: str | None) -> tuple[dict, str]:
+            """Pick best version from candidates. Returns (item, quality_label)."""
+            if len(candidates) == 1:
+                label = "4K" if _is_4k(candidates[0]) else "HD"
+                return candidates[0], label
+            # Multiple versions available — split into 4K and non-4K
+            v4k = [c for c in candidates if _is_4k(c)]
+            vhd = [c for c in candidates if not _is_4k(c)]
+            if pref == "4k" and v4k:
+                return v4k[0], "4K"
+            if pref == "hd" and vhd:
+                return vhd[0], "HD"
+            # Default: prefer HD if no preference, or fallback to whatever exists
+            if vhd:
+                return vhd[0], "HD"
+            if v4k:
+                return v4k[0], "4K"
+            return candidates[0], ""
 
         async with async_session() as db:
             universe_items = (await db.execute(select(UniverseItem))).scalars().all()
@@ -855,41 +936,52 @@ class UniverseDiscoveryService:
             match_methods = {"imdb": 0, "tmdb": 0, "title_year": 0, "title": 0}
 
             for ui in universe_items:
-                emby_item = None
+                candidates = None
                 method = None
+                pref = universe_quality.get(ui.universe_id)
 
                 # 1. Match by IMDB ID (most reliable)
                 if ui.imdb_id:
-                    emby_item = imdb_index.get(ui.imdb_id.lower())
-                    if emby_item:
+                    candidates = imdb_index.get(ui.imdb_id.lower())
+                    if candidates:
                         method = "imdb"
 
                 # 2. Match by TMDB ID
-                if not emby_item and ui.tmdb_id:
-                    emby_item = tmdb_index.get(str(ui.tmdb_id))
-                    if emby_item:
+                if not candidates and ui.tmdb_id:
+                    candidates = tmdb_index.get(str(ui.tmdb_id))
+                    if candidates:
                         method = "tmdb"
 
                 # 3. Fallback: title + year
-                if not emby_item:
+                if not candidates:
                     key_exact = f"{ui.title.lower()}:{ui.year}"
-                    emby_item = title_year_index.get(key_exact)
-                    if emby_item:
+                    candidates = title_year_index.get(key_exact)
+                    if candidates:
                         method = "title_year"
 
                 # 4. Last resort: title only
-                if not emby_item:
-                    emby_item = title_index.get(ui.title.lower())
-                    if emby_item:
+                if not candidates:
+                    candidates = title_index.get(ui.title.lower())
+                    if candidates:
                         method = "title"
 
-                if emby_item:
+                if candidates:
+                    emby_item, quality_label = _pick_version(candidates, pref)
                     ui.in_library = True
                     ui.emby_item_id = emby_item["Id"]
                     ui.watched = emby_item.get("UserData", {}).get("Played", False)
                     matched += 1
                     if method:
                         match_methods[method] += 1
+                    # Cache quality label for display
+                    if r and quality_label:
+                        try:
+                            await r.setex(
+                                f"universe_item_quality:{emby_item['Id']}",
+                                86400, quality_label,
+                            )
+                        except Exception:
+                            pass
                 else:
                     ui.in_library = False
                     ui.emby_item_id = None

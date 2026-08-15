@@ -1197,7 +1197,7 @@ async def delete_universe(universe_id: int, _user: User = Depends(get_current_us
 async def update_universe_settings(universe_id: int, payload: dict, _user: User = Depends(get_current_user)):
     """Update universe display settings (playlist toggle, custom name, description).
 
-    Payload: {"playlist_enabled": bool, "custom_name": str|null, "description": str|null}
+    Payload: {"playlist_enabled": bool, "custom_name": str|null, "description": str|null, "quality_pref": "hd"|"4k"|null}
     """
     async with async_session_ctx() as db:
         universe = (await db.execute(
@@ -1216,11 +1216,27 @@ async def update_universe_settings(universe_id: int, payload: dict, _user: User 
 
         await db.commit()
 
+    # Quality preference stored in Redis (no migration needed)
+    if "quality_pref" in payload:
+        from app.utils.redis_cache import get_redis
+        r = await get_redis()
+        qp = payload["quality_pref"]
+        if qp in ("hd", "4k"):
+            await r.set(f"universe:{universe_id}:quality_pref", qp)
+        else:
+            await r.delete(f"universe:{universe_id}:quality_pref")
+
+    # Read back quality_pref
+    from app.utils.redis_cache import get_redis
+    r = await get_redis()
+    qp_val = await r.get(f"universe:{universe_id}:quality_pref")
+
     return {
         "status": "ok",
         "playlist_enabled": bool(universe.playlist_enabled),
         "custom_name": universe.custom_name,
         "description": universe.description,
+        "quality_pref": qp_val or None,
     }
 
 
