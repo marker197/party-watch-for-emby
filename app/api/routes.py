@@ -9020,75 +9020,117 @@ async def backfill_watch_history(
                     }
                     log.debug("backfill.existing_loaded", count=len(existing_keys))
 
-                    for kind in ("movies", "episodes"):
+                    for kind in ("movies", "shows"):
                         # get_history returns all items at once (no server-side pagination)
                         history = await simkl.get_history(kind)
                         if not history:
                             log.debug("backfill.simkl_empty", kind=kind)
                             continue
 
-                        log.debug("backfill.simkl_page", kind=kind, page=1,
+                        log.debug("backfill.simkl_fetched", kind=kind,
                                   items=len(history))
 
                         kind_added = 0
                         kind_skipped = 0
                         batch = []
-                        for entry in history:
-                            # Simkl uses last_watched_at (not watched_at)
-                            watched_at = entry.get("last_watched_at") or entry.get("watched_at") or ""
-                            if not watched_at:
-                                continue
+
+                        if kind == "movies":
+                            for entry in history:
+                                watched_at = entry.get("last_watched_at") or entry.get("watched_at") or ""
+                                if not watched_at:
+                                    continue
                                 try:
                                     dt = datetime.fromisoformat(watched_at.replace("Z", "+00:00"))
                                     dt_naive = dt.replace(tzinfo=None)
                                 except (ValueError, TypeError):
                                     continue
 
-                                if kind == "movies":
-                                    item = entry.get("movie", {})
-                                    ids = item.get("ids", {})
-                                    title = item.get("title", "")
-                                    key = ("movie", title, dt_naive)
+                                item = entry.get("movie") or entry
+                                ids = item.get("ids", {})
+                                title = item.get("title", "")
+                                key = ("movie", title, dt_naive)
+                                if key in existing_keys:
+                                    kind_skipped += 1
+                                    continue
+                                existing_keys.add(key)
+                                batch.append(WatchHistory(
+                                    user_id=user_db_id,
+                                    item_type="movie",
+                                    title=title,
+                                    imdb_id=ids.get("imdb") or None,
+                                    tmdb_id=str(ids.get("tmdb")) if ids.get("tmdb") else None,
+                                    simkl_id=str(ids.get("simkl")) if ids.get("simkl") else None,
+                                    tvdb_id=None,
+                                    watched_at=dt_naive,
+                                    runtime_minutes=item.get("runtime"),
+                                    source="backfill_simkl",
+                                ))
+                        else:
+                            # Shows — extract individual episodes from seasons
+                            for entry in history:
+                                show = entry.get("show") or entry
+                                show_ids = show.get("ids", {})
+                                show_title = show.get("title", "")
+                                show_watched = entry.get("last_watched_at") or ""
+
+                                seasons = entry.get("seasons", [])
+                                if seasons:
+                                    # Per-episode timestamps
+                                    for season in seasons:
+                                        s_num = season.get("number")
+                                        for ep in season.get("episodes", []):
+                                            ep_watched = ep.get("watched_at") or ep.get("last_watched_at") or show_watched
+                                            if not ep_watched:
+                                                continue
+                                            try:
+                                                dt = datetime.fromisoformat(ep_watched.replace("Z", "+00:00"))
+                                                dt_naive = dt.replace(tzinfo=None)
+                                            except (ValueError, TypeError):
+                                                continue
+
+                                            ep_title = ep.get("title") or f"S{s_num or 0:02d}E{ep.get('number', 0):02d}"
+                                            ep_ids = ep.get("ids", {})
+                                            key = ("episode", ep_title, dt_naive)
+                                            if key in existing_keys:
+                                                kind_skipped += 1
+                                                continue
+                                            existing_keys.add(key)
+                                            batch.append(WatchHistory(
+                                                user_id=user_db_id,
+                                                item_type="episode",
+                                                title=ep_title,
+                                                series_name=show_title,
+                                                season_number=s_num,
+                                                episode_number=ep.get("number"),
+                                                imdb_id=show_ids.get("imdb") or None,
+                                                tmdb_id=str(show_ids.get("tmdb")) if show_ids.get("tmdb") else None,
+                                                simkl_id=str(ep_ids.get("simkl")) if ep_ids.get("simkl") else None,
+                                                tvdb_id=str(show_ids.get("tvdb")) if show_ids.get("tvdb") else None,
+                                                watched_at=dt_naive,
+                                                runtime_minutes=ep.get("runtime") or show.get("runtime"),
+                                                source="backfill_simkl",
+                                            ))
+                                elif show_watched:
+                                    # No season data — single entry for the show
+                                    try:
+                                        dt = datetime.fromisoformat(show_watched.replace("Z", "+00:00"))
+                                        dt_naive = dt.replace(tzinfo=None)
+                                    except (ValueError, TypeError):
+                                        continue
+                                    key = ("show", show_title, dt_naive)
                                     if key in existing_keys:
                                         kind_skipped += 1
                                         continue
                                     existing_keys.add(key)
                                     batch.append(WatchHistory(
                                         user_id=user_db_id,
-                                        item_type="movie",
-                                        title=title,
-                                        imdb_id=ids.get("imdb") or None,
-                                        tmdb_id=str(ids.get("tmdb")) if ids.get("tmdb") else None,
-                                        simkl_id=str(ids.get("simkl")) if ids.get("simkl") else None,
-                                        tvdb_id=None,
-                                        watched_at=dt_naive,
-                                        runtime_minutes=item.get("runtime"),
-                                        source="backfill_simkl",
-                                    ))
-                                else:
-                                    ep = entry.get("episode", {})
-                                    show = entry.get("show", {})
-                                    show_ids = show.get("ids", {})
-                                    ep_ids = ep.get("ids", {})
-                                    title = ep.get("title", "")
-                                    key = ("episode", title, dt_naive)
-                                    if key in existing_keys:
-                                        kind_skipped += 1
-                                        continue
-                                    existing_keys.add(key)
-                                    batch.append(WatchHistory(
-                                        user_id=user_db_id,
-                                        item_type="episode",
-                                        title=title,
-                                        series_name=show.get("title"),
-                                        season_number=ep.get("season"),
-                                        episode_number=ep.get("number"),
+                                        item_type="show",
+                                        title=show_title,
                                         imdb_id=show_ids.get("imdb") or None,
                                         tmdb_id=str(show_ids.get("tmdb")) if show_ids.get("tmdb") else None,
-                                        simkl_id=str(ep_ids.get("simkl")) if ep_ids.get("simkl") else None,
+                                        simkl_id=str(show_ids.get("simkl")) if show_ids.get("simkl") else None,
                                         tvdb_id=str(show_ids.get("tvdb")) if show_ids.get("tvdb") else None,
                                         watched_at=dt_naive,
-                                        runtime_minutes=ep.get("runtime") or show.get("runtime"),
                                         source="backfill_simkl",
                                     ))
 
