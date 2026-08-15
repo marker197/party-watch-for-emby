@@ -177,6 +177,7 @@ class ScrobbleAuditService:
         simkl = await self._make_simkl(user)
         try:
             payload = []
+            show_groups = {}  # keyed by sorted ids tuple
             for item in items:
                 ids = {}
                 if item.get("imdb_id"):
@@ -189,22 +190,18 @@ class ScrobbleAuditService:
                     continue
 
                 if item.get("type") == "show" and item.get("episodes"):
-                    # Episode-level backfill: one Simkl entry per episode
+                    # Group episodes by show → season for Simkl
+                    # Simkl needs ONE entry per show with all seasons/episodes
+                    ids_key = tuple(sorted(ids.items()))
+                    if ids_key not in show_groups:
+                        show_groups[ids_key] = {"ids": ids, "seasons": {}}
+                    sg = show_groups[ids_key]
                     for ep in item["episodes"]:
-                        watched_at = ep.get("last_played")
-                        if not watched_at:
-                            watched_at = datetime.now(timezone.utc).isoformat()
-                        payload.append({
-                            "ids": ids,
-                            "seasons": [{
-                                "number": ep.get("season", 0),
-                                "episodes": [{
-                                    "number": ep.get("episode", 0),
-                                    "watched_at": watched_at,
-                                }],
-                            }],
-                            "_type": "show",
-                        })
+                        s_num = ep.get("season", 0)
+                        e_num = ep.get("episode", 0)
+                        if s_num not in sg["seasons"]:
+                            sg["seasons"][s_num] = []
+                        sg["seasons"][s_num].append({"number": e_num})
                 else:
                     # Movie (or legacy show entry without episodes)
                     watched_at = item.get("last_played")
@@ -218,6 +215,18 @@ class ScrobbleAuditService:
                         entry["_type"] = "show"
                     payload.append(entry)
 
+            # Convert grouped shows into Simkl payload format
+            for ids_key, sg in show_groups.items():
+                show_entry = {
+                    "ids": sg["ids"],
+                    "seasons": [
+                        {"number": s_num, "episodes": eps}
+                        for s_num, eps in sorted(sg["seasons"].items())
+                    ],
+                    "_type": "show",
+                }
+                payload.append(show_entry)
+
             if not payload:
                 return {"added": 0}
 
@@ -225,16 +234,35 @@ class ScrobbleAuditService:
             added_movies = result.get("added", {}).get("movies", 0)
             added_episodes = result.get("added", {}).get("episodes", 0)
             added_shows = result.get("added", {}).get("shows", 0)
+            not_found = result.get("not_found", {})
             total = added_movies + added_episodes + added_shows
 
             log.info("scrobble_audit.backfill_done", user=user.emby_username,
-                     requested=len(items), payload_entries=len(payload), added=total)
+                     requested=len(items), payload_entries=len(payload), added=total,
+                     simkl_response_added=result.get("added"),
+                     simkl_response_existing=result.get("existing"),
+                     simkl_response_not_found=not_found if not_found else None)
 
             # Also backfill to MDBList if enabled
             mdblist_result = await self._backfill_mdblist(items)
 
             # Invalidate audit cache so next view reflects the backfill
             await self.invalidate_cache(user.id)
+
+            # Also flush the Simkl activity-gate cache so the next audit
+            # re-fetches from Simkl instead of using stale cached data
+            try:
+                r = await get_redis()
+                prefix = simkl._cache_prefix()
+                for cache_key_pattern in (
+                    f"simkl_sync_data:{prefix}:*",
+                    f"simkl_sync_ts:{prefix}:*",
+                    f"simkl_activities_cache:{prefix}",
+                ):
+                    async for key in r.scan_iter(cache_key_pattern):
+                        await r.delete(key)
+            except Exception:
+                pass
 
             return {
                 "added": total,
@@ -301,41 +329,77 @@ class ScrobbleAuditService:
                 log.warning("scrobble_audit.simkl_movies_failed")
 
         # Simkl shows: build show-level completed set + episode-level set
-        # Simkl /sync/all-items/shows/completed returns flat show objects
-        # WITHOUT seasons/episodes breakdown — so we must treat any show
-        # in the "completed" list as fully watched at show level.
-        simkl_completed_shows: set[str] = set()  # "imdb:ttXXX", "tvdb:123", etc.
+        # 1. /sync/all-items/shows/completed → fully watched, skip entire show
+        # 2. /sync/all-items/shows/watching  → partially watched, check episodes
+        simkl_completed_shows: set[str] = set()  # "imdb:ttXXX", "tvdb:123", "title:lowername"
         simkl_watched_eps: set[str] = set()  # "{imdb_or_tvdb}:S{s}E{e}"
+        simkl_watching_shows: set[str] = set()  # shows in "watching" status (fallback)
+
+        def _extract_show_keys(entry: dict) -> list[str]:
+            """Build provider + title keys for a show entry."""
+            show_obj = entry.get("show", {}) if "show" in entry else entry
+            show_ids = show_obj.get("ids", {})
+            keys: list[str] = []
+            for key in ("imdb", "tvdb", "tmdb"):
+                val = show_ids.get(key)
+                if val:
+                    keys.append(f"{key}:{val}")
+            title = show_obj.get("title", "")
+            if title:
+                keys.append(f"title:{title.lower().strip()}")
+            return keys
+
+        def _extract_episodes(entry: dict, show_keys: list[str]):
+            """Walk seasons→episodes and add to simkl_watched_eps."""
+            for season in entry.get("seasons", []):
+                s_num = season.get("number", 0)
+                for ep in season.get("episodes", []):
+                    e_num = ep.get("number", 0)
+                    ep_tag = f"S{s_num}E{e_num}"
+                    for sk in show_keys:
+                        simkl_watched_eps.add(f"{sk}:{ep_tag}")
+
         if simkl:
+            # Phase 1: completed shows — all episodes considered watched
             try:
                 simkl_shows = await simkl.get_watched(kind="shows")
                 for entry in simkl_shows:
-                    show_obj = entry.get("show", {}) if "show" in entry else entry
-                    show_ids = show_obj.get("ids", {})
-                    # Build all provider keys for this show
-                    show_keys: list[str] = []
-                    for key in ("imdb", "tvdb", "tmdb"):
-                        val = show_ids.get(key)
-                        if val:
-                            show_keys.append(f"{key}:{val}")
-                    # Add to completed set — Simkl "completed" means all watched
-                    for sk in show_keys:
+                    keys = _extract_show_keys(entry)
+                    for sk in keys:
                         simkl_completed_shows.add(sk)
-                    # Walk seasons → episodes (Simkl rarely provides this,
-                    # but keep as secondary match for partial data)
-                    for season in entry.get("seasons", []):
-                        s_num = season.get("number", 0)
-                        for ep in season.get("episodes", []):
-                            e_num = ep.get("number", 0)
-                            ep_tag = f"S{s_num}E{e_num}"
-                            for sk in show_keys:
-                                simkl_watched_eps.add(f"{sk}:{ep_tag}")
+                    _extract_episodes(entry, keys)
                 log.info("scrobble_audit.simkl_shows_parsed",
                          completed_shows=len(simkl_shows),
                          completed_show_keys=len(simkl_completed_shows),
                          episode_keys=len(simkl_watched_eps))
             except Exception:
                 log.warning("scrobble_audit.simkl_shows_failed")
+
+            # Phase 2: watching shows — per-episode matching
+            try:
+                watching_data = await simkl._activity_gated_get(
+                    "/sync/all-items/shows/watching",
+                    "tv_shows.watching",
+                    params={"extended": "full"},
+                )
+                watching_shows = simkl._unwrap_sync_response(watching_data, "shows")
+                eps_before = len(simkl_watched_eps)
+                for entry in watching_shows:
+                    keys = _extract_show_keys(entry)
+                    _extract_episodes(entry, keys)
+                    # Fallback: if Simkl doesn't provide episode data for
+                    # this show, add it to the watching set so we can skip
+                    # it rather than report false positives
+                    if not entry.get("seasons"):
+                        for sk in keys:
+                            simkl_watching_shows.add(sk)
+                log.info("scrobble_audit.simkl_watching_parsed",
+                         watching_shows=len(watching_shows),
+                         new_episode_keys=len(simkl_watched_eps) - eps_before,
+                         no_episode_data=len(simkl_watching_shows))
+            except Exception as e:
+                log.warning("scrobble_audit.simkl_watching_failed",
+                            error=str(e)[:120])
 
         # Episode-level provider IDs from Simkl history — catches numbering
         # mismatches between Emby and Simkl (e.g. The Pitt S2E24 vs S2E14)
@@ -480,12 +544,22 @@ class ScrobbleAuditService:
                 val = series_providers.get(prov)
                 if val:
                     show_keys.append(f"{simkl_key}:{val}")
+            # Title-based fallback for when Emby bulk endpoint doesn't
+            # return ProviderIds for Series items
+            if series_name:
+                show_keys.append(f"title:{series_name.lower().strip()}")
             if not show_keys:
                 continue
 
             # Check 0: if the entire show is "completed" on Simkl,
             # all episodes are watched — skip episode-level comparison
             if any(sk in simkl_completed_shows for sk in show_keys):
+                continue
+
+            # Check 0b: if the show is "watching" on Simkl but Simkl
+            # didn't provide per-episode data, we can't verify individual
+            # episodes — skip to avoid false positives
+            if any(sk in simkl_watching_shows for sk in show_keys):
                 continue
 
             # Fetch played episodes for this series from Emby

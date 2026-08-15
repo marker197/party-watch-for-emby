@@ -835,22 +835,24 @@ class SimklClient:
         shows = []
         anime = []
         for item in items:
+            # Strip internal routing keys before building payload
+            clean = {k: v for k, v in item.items() if not k.startswith("_")}
+
             if "movie" in item:
-                movies.append(item["movie"] if isinstance(item["movie"], dict) else item)
+                movies.append(clean["movie"] if isinstance(clean.get("movie"), dict) else clean)
             elif "show" in item:
-                show_entry = dict(item)
-                shows.append(show_entry)
+                shows.append(clean)
             elif "anime" in item:
-                anime.append(item)
+                anime.append(clean)
             elif item.get("_type") in ("movie", "movies") or item.get("type") == "movie":
-                movies.append(item)
+                movies.append(clean)
             elif item.get("_type") in ("show", "shows"):
-                shows.append(item)
+                shows.append(clean)
             elif item.get("_type") == "anime":
-                anime.append(item)
+                anime.append(clean)
             else:
                 # Default to movie
-                movies.append(item)
+                movies.append(clean)
         payload = {}
         if movies:
             payload["movies"] = movies

@@ -268,6 +268,13 @@ class MDBListClient:
                     continue
                 raise
             except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    try:
+                        err_body = e.response.text[:500]
+                    except Exception:
+                        err_body = "(unreadable)"
+                    log.warning("mdblist.post_400_detail",
+                                path=path, response_body=err_body)
                 if 500 <= e.response.status_code < 600 and attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
