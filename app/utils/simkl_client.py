@@ -440,7 +440,19 @@ class SimklClient:
 
     async def add_to_history(self, items: list[dict]) -> dict:
         """Mark items as watched. POST /sync/history."""
+        import json as _json
         payload = self._build_sync_payload(items)
+        # Log the exact payload for debugging
+        try:
+            shows_sample = payload.get("shows", [])[:2]
+            movies_sample = payload.get("movies", [])[:2]
+            log.info("simkl.add_to_history_payload",
+                     shows_count=len(payload.get("shows", [])),
+                     movies_count=len(payload.get("movies", [])),
+                     shows_sample=_json.dumps(shows_sample, default=str)[:500],
+                     movies_sample=_json.dumps(movies_sample, default=str)[:200])
+        except Exception:
+            pass
         return await self._post("/sync/history", payload)
 
     async def remove_from_history(self, items: list[dict]) -> dict:

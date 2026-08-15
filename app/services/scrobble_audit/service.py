@@ -199,9 +199,13 @@ class ScrobbleAuditService:
                     for ep in item["episodes"]:
                         s_num = ep.get("season", 0)
                         e_num = ep.get("episode", 0)
+                        ep_at = ep.get("last_played") or datetime.now(timezone.utc).isoformat()
                         if s_num not in sg["seasons"]:
                             sg["seasons"][s_num] = []
-                        sg["seasons"][s_num].append({"number": e_num})
+                        sg["seasons"][s_num].append({
+                            "number": e_num,
+                            "watched_at": ep_at,
+                        })
                 else:
                     # Movie (or legacy show entry without episodes)
                     watched_at = item.get("last_played")
@@ -229,6 +233,26 @@ class ScrobbleAuditService:
 
             if not payload:
                 return {"added": 0}
+
+            # Pre-step: move any plantowatch shows to "watching" status.
+            # Simkl won't process episode history for plantowatch shows —
+            # it just echoes the status and adds 0 episodes.
+            show_entries = [p for p in payload if p.get("_type") == "show"]
+            if show_entries:
+                status_payload = {
+                    "shows": [
+                        {"ids": s["ids"], "to": "watching"}
+                        for s in show_entries
+                    ]
+                }
+                try:
+                    status_result = await simkl._post("/sync/add-to-list", status_payload)
+                    log.info("scrobble_audit.backfill_status_change",
+                             shows=len(show_entries),
+                             result=str(status_result)[:300])
+                except Exception as e:
+                    log.warning("scrobble_audit.backfill_status_change_failed",
+                                error=str(e)[:200])
 
             result = await simkl.add_to_history(payload)
             added_movies = result.get("added", {}).get("movies", 0)
