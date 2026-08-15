@@ -412,9 +412,10 @@ class UniverseDiscoveryService:
                 if next_recommended is None:
                     next_recommended = first_unwatched_missing  # may still be None if fully watched
 
-                # Build item quality labels from cached emby data
+                # Build item quality labels and duplicate flags from cached data
                 item_qualities = {}
-                if r and quality_pref:
+                item_dups = set()
+                if r:
                     for i in items:
                         if i.emby_item_id:
                             try:
@@ -423,6 +424,12 @@ class UniverseDiscoveryService:
                                     item_qualities[i.id] = q
                             except Exception:
                                 pass
+                        try:
+                            d = await r.get(f"universe_item_dup:{i.id}")
+                            if d:
+                                item_dups.add(i.id)
+                        except Exception:
+                            pass
 
                 result.append({
                     "id": u.id,
@@ -450,6 +457,7 @@ class UniverseDiscoveryService:
                             "imdb_id": i.imdb_id,
                             "tmdb_id": i.tmdb_id,
                             "quality": item_qualities.get(i.id),
+                            "has_duplicate": i.id in item_dups,
                         }
                         for i in items
                     ],
@@ -851,7 +859,7 @@ class UniverseDiscoveryService:
 
         movies = await self.emby.get_all_movies(
             user_id=emby_user_id,
-            fields="ProviderIds,Genres,Overview,People,Studios,DateCreated,RunTimeTicks,CommunityRating,OfficialRating,ProductionYear,UserData,Path",
+            fields="ProviderIds,Genres,Overview,People,Studios,DateCreated,RunTimeTicks,CommunityRating,OfficialRating,ProductionYear,UserData,Path,MediaSources",
         )
         series = await self.emby.get_all_series(user_id=emby_user_id)
         all_items = movies + series
@@ -902,7 +910,15 @@ class UniverseDiscoveryService:
                     pass
 
         def _is_4k(emby_item: dict) -> bool:
-            """Heuristic: check Path or Name for 4K/UHD/2160p indicators."""
+            """Detect 4K content via video stream resolution, path, or name."""
+            # Primary: check MediaSources for video stream width >= 3840
+            for ms in emby_item.get("MediaSources", []):
+                for stream in ms.get("MediaStreams", []):
+                    if stream.get("Type") == "Video":
+                        width = stream.get("Width", 0)
+                        if width and width >= 3840:
+                            return True
+            # Fallback: check Path and Name for markers
             path = (emby_item.get("Path") or "").lower()
             name = (emby_item.get("Name") or "").lower()
             for marker in ("4k", "uhd", "2160p", "2160"):
@@ -910,24 +926,24 @@ class UniverseDiscoveryService:
                     return True
             return False
 
-        def _pick_version(candidates: list[dict], pref: str | None) -> tuple[dict, str]:
-            """Pick best version from candidates. Returns (item, quality_label)."""
+        def _pick_version(candidates: list[dict], pref: str | None) -> tuple[dict, str, bool]:
+            """Pick best version from candidates. Returns (item, quality_label, has_duplicate)."""
             if len(candidates) == 1:
                 label = "4K" if _is_4k(candidates[0]) else "HD"
-                return candidates[0], label
+                return candidates[0], label, False
             # Multiple versions available — split into 4K and non-4K
             v4k = [c for c in candidates if _is_4k(c)]
             vhd = [c for c in candidates if not _is_4k(c)]
             if pref == "4k" and v4k:
-                return v4k[0], "4K"
+                return v4k[0], "4K", True
             if pref == "hd" and vhd:
-                return vhd[0], "HD"
-            # Default: prefer HD if no preference, or fallback to whatever exists
-            if vhd:
-                return vhd[0], "HD"
+                return vhd[0], "HD", True
+            # No preference — default to highest resolution
             if v4k:
-                return v4k[0], "4K"
-            return candidates[0], ""
+                return v4k[0], "4K", True
+            if vhd:
+                return vhd[0], "HD", True
+            return candidates[0], "", True
 
         async with async_session() as db:
             universe_items = (await db.execute(select(UniverseItem))).scalars().all()
@@ -966,20 +982,28 @@ class UniverseDiscoveryService:
                         method = "title"
 
                 if candidates:
-                    emby_item, quality_label = _pick_version(candidates, pref)
+                    emby_item, quality_label, has_dup = _pick_version(candidates, pref)
                     ui.in_library = True
                     ui.emby_item_id = emby_item["Id"]
                     ui.watched = emby_item.get("UserData", {}).get("Played", False)
                     matched += 1
                     if method:
                         match_methods[method] += 1
-                    # Cache quality label for display
-                    if r and quality_label:
+                    # Cache quality label and duplicate flag for display
+                    if r:
                         try:
-                            await r.setex(
-                                f"universe_item_quality:{emby_item['Id']}",
-                                86400, quality_label,
-                            )
+                            if quality_label:
+                                await r.setex(
+                                    f"universe_item_quality:{emby_item['Id']}",
+                                    86400, quality_label,
+                                )
+                            if has_dup:
+                                await r.setex(
+                                    f"universe_item_dup:{ui.id}",
+                                    86400, "1",
+                                )
+                            else:
+                                await r.delete(f"universe_item_dup:{ui.id}")
                         except Exception:
                             pass
                 else:

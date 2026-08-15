@@ -386,6 +386,7 @@
     }
     .quality-badge-hd { background: rgba(56,132,244,0.15); color: var(--blue); }
     .quality-badge-4k { background: rgba(210,153,34,0.15); color: var(--orange); }
+    .quality-badge-dup { background: rgba(163,113,247,0.15); color: var(--accent); }
 
     .rename-row {
       display: flex;
@@ -1015,7 +1016,7 @@
             <span class="drag-handle">☰</span>
             ${radarrCheck}
             <div class="item-check" title="${statusText}">${statusIcon}</div>
-            <div class="item-title">${escapeHtml(item.title)}${item.quality ? `<span class="quality-badge quality-badge-${item.quality.toLowerCase()}">${escapeHtml(item.quality)}</span>` : ''}</div>
+            <div class="item-title">${escapeHtml(item.title)}${item.quality ? `<span class="quality-badge quality-badge-${item.quality.toLowerCase()}">${escapeHtml(item.quality)}</span>` : ''}${item.has_duplicate ? `<span class="quality-badge quality-badge-dup">DUP</span>` : ''}</div>
             <div class="item-year">${item.year ?? ""}</div>
             <button onclick="removeItem(${universeId}, ${item.id}, '${escapeHtml(item.title).replace(/'/g, "\\'")}')" title="Remove from universe" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:0.75rem;padding:2px 4px;opacity:0.4;transition:opacity 0.15s;" onmouseover="this.style.opacity='1';this.style.color='var(--red)'" onmouseout="this.style.opacity='0.4';this.style.color='var(--text-dim)'">✕</button>
           </div>
