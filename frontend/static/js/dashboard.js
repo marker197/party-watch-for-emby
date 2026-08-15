@@ -2233,12 +2233,6 @@ async function refreshDownloadsCard() {
     badge.textContent = items.length;
     badge.className = 'badge badge-on';
 
-    // Ensure the feature cards grid expands to fit new content
-    const _grid = document.getElementById('featureCardsGrid');
-    if (_grid && _grid.style.maxHeight !== '0px') {
-      requestAnimationFrame(() => { _grid.style.maxHeight = _grid.scrollHeight + 'px'; });
-    }
-
     // Group by title (Sonarr can have multiple episodes per show)
     const grouped = {};
     for (const dl of items) {
@@ -2297,6 +2291,12 @@ async function refreshDownloadsCard() {
         </div>`;
       }
     }).join('') + (entries.length > 5 ? `<div style="font-size:0.7rem;color:var(--text-dim);padding:4px 0;">+${entries.length - 5} more</div>` : '');
+
+    // Resize grid AFTER innerHTML updated so scrollHeight reflects new content
+    const _grid = document.getElementById('featureCardsGrid');
+    if (_grid && _grid.style.maxHeight !== '0px') {
+      requestAnimationFrame(() => { _grid.style.maxHeight = _grid.scrollHeight + 'px'; });
+    }
   } catch(e) {
     // silent — card just shows stale data
   }
