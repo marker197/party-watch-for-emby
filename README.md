@@ -1,4 +1,4 @@
-# Emby-Trakt Suite
+# Emby-Simkl / MDblist Suite
 
 A self-hosted app that connects your Emby media server to your Trakt.tv account. It helps you decide what to watch next, predicts what you'll enjoy, organises movie universes, and lets you watch with friends.
 
@@ -8,7 +8,7 @@ A self-hosted app that connects your Emby media server to your Trakt.tv account.
 
 ### Smart Watch Queue
 
-Looks at your Trakt watchlist, trending shows, and what's popular, then builds a "what to watch next" playlist inside Emby. It updates itself every night so there's always something ready.
+Looks at your Simkl/MDBList watchlists, trending shows, and what's popular, then builds a "what to watch next" playlist inside Emby. It updates itself every night so there's always something ready.
 
 If a show or movie on your queue isn't in your Emby library yet, you can send it straight to Radarr (for movies) or Sonarr (for TV shows) to be downloaded — one button press from the dashboard.
 
