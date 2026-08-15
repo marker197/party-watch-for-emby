@@ -7329,11 +7329,45 @@ async def db_app_settings(prefix: str = "", db: AsyncSession = Depends(get_db)):
         result.append({
             "key": r.key,
             "value": val,
-            "value_length": len(r.value) if r.value else 0,
             "updated_at": r.updated_at.isoformat() if r.updated_at else None,
         })
-    result.sort(key=lambda x: x["key"])
-    return {"count": len(result), "rows": result}
+    return {"settings": result}
+
+
+@router.get("/api/debug-mode")
+async def get_debug_mode():
+    """Return current log level / debug state."""
+    import logging as _logging
+    current = _logging.getLogger().level
+    return {"debug": current <= _logging.DEBUG, "level": _logging.getLevelName(current)}
+
+
+@router.put("/api/debug-mode")
+async def set_debug_mode(payload: dict, _user: User = Depends(get_current_user)):
+    """Toggle debug logging at runtime. No restart needed."""
+    import logging as _logging
+    import structlog as _sl
+
+    enabled = payload.get("enabled", False)
+    new_level = _logging.DEBUG if enabled else _logging.INFO
+
+    root = _logging.getLogger()
+    root.setLevel(new_level)
+    for h in root.handlers:
+        h.setLevel(new_level)
+
+    # Also reconfigure structlog's filtering threshold
+    _sl.configure(
+        wrapper_class=_sl.make_filtering_bound_logger(new_level),
+    )
+
+    # Persist preference so it survives page reload (not container restart)
+    r = await get_redis()
+    await r.set("debug_mode", "1" if enabled else "0")
+
+    level_name = "DEBUG" if enabled else "INFO"
+    log.info("settings.debug_mode_changed", level=level_name)
+    return {"debug": enabled, "level": level_name}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

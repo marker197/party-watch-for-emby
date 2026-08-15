@@ -962,6 +962,25 @@
       </div>
     </div>
 
+    <!-- Debug Mode Toggle -->
+    <div class="section" style="margin-bottom:20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <h2 style="margin:0 0 4px 0;">🐛 Debug Logging</h2>
+          <div style="font-size:0.8rem;color:var(--text-dim);">
+            Verbose logging for troubleshooting. Shows API calls, cache hits, and internal state.
+          </div>
+        </div>
+        <label style="position:relative;display:inline-block;width:48px;height:26px;flex-shrink:0;cursor:pointer;">
+          <input type="checkbox" id="debugToggle" onchange="toggleDebug(this.checked)"
+            style="opacity:0;width:0;height:0;">
+          <span id="debugTrack" style="position:absolute;top:0;left:0;right:0;bottom:0;background:var(--card-border);border-radius:13px;transition:.3s;"></span>
+          <span id="debugDot" style="position:absolute;top:3px;left:3px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.3s;"></span>
+        </label>
+      </div>
+      <div id="debugStatus" style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;"></div>
+    </div>
+
     <!-- Danger Zone -->
     <div class="section danger-zone">
       <h2>⚠️ Danger Zone</h2>
@@ -1240,6 +1259,49 @@
         }
       } catch (error) {
         console.error('Error loading settings:', error);
+      }
+      // Load debug mode state
+      loadDebugState();
+    }
+
+    async function loadDebugState() {
+      try {
+        const r = await fetch('/api/debug-mode');
+        if (r.ok) {
+          const data = await r.json();
+          const toggle = document.getElementById('debugToggle');
+          const track = document.getElementById('debugTrack');
+          const dot = document.getElementById('debugDot');
+          const status = document.getElementById('debugStatus');
+          toggle.checked = data.debug;
+          track.style.background = data.debug ? 'var(--accent)' : 'var(--card-border)';
+          dot.style.transform = data.debug ? 'translateX(22px)' : 'translateX(0)';
+          status.textContent = 'Current level: ' + data.level;
+        }
+      } catch (e) { console.warn('Debug state load failed', e); }
+    }
+
+    async function toggleDebug(enabled) {
+      const track = document.getElementById('debugTrack');
+      const dot = document.getElementById('debugDot');
+      const status = document.getElementById('debugStatus');
+      track.style.background = enabled ? 'var(--accent)' : 'var(--card-border)';
+      dot.style.transform = enabled ? 'translateX(22px)' : 'translateX(0)';
+      status.textContent = 'Switching…';
+      try {
+        const r = await fetch('/api/debug-mode', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({enabled}),
+        });
+        if (r.ok) {
+          const data = await r.json();
+          status.textContent = 'Current level: ' + data.level;
+        } else {
+          status.textContent = 'Failed to change';
+        }
+      } catch (e) {
+        status.textContent = 'Error: ' + e.message;
       }
     }
 
