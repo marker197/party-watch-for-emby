@@ -58,6 +58,7 @@ Container Manager will download the required images and start everything up. Thi
 
 1. Open your browser and go to `http://your-synology-ip:8000`
 2. The setup wizard will appear automatically on first run
+3. No need to enter any info on the .env file
 
 **Step 1 of 3 — Emby Connection**
 - Enter your Emby server URL (e.g., `http://192.168.1.100:8096`) — make sure to include `http://`
