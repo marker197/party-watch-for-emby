@@ -1,4 +1,4 @@
-# Emby-Trakt Suite
+# Emby-Simkl / MDblist Suite
 
 A self-hosted app that connects your Emby media server to your Trakt.tv account. It helps you decide what to watch next, predicts what you'll enjoy, organises movie universes, and lets you watch with friends.
 
