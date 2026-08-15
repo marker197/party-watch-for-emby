@@ -236,6 +236,25 @@
     .btn-send:hover { opacity: 0.85; }
     .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
 
+    .btn-save-order {
+      background: var(--accent);
+      color: #fff;
+      padding: 6px 14px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+      animation: saveOrderPulse 1.5s ease-in-out 2;
+    }
+    .btn-save-order:hover { opacity: 0.85; }
+    .btn-save-order:disabled { opacity: 0.4; cursor: not-allowed; }
+    @keyframes saveOrderPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+
     .reorder-hint {
       font-size: 0.75rem;
       color: var(--text-dim);
@@ -955,9 +974,11 @@
       // Actions row
       html += '<div class="universe-actions">';
 
+      html += `<button class="btn-save-order" id="btnSaveOrder-${universeId}" onclick="saveOrder(${universeId})" style="display:none;">💾 Save Order</button>`;
+
       if (hasLibraryItems) {
         html += `<button class="btn-send" onclick="sendToEmby(${universeId})">📤 Send to Emby</button>`;
-        html += `<span class="reorder-hint">Drag items to reorder, then send to Emby as a playlist</span>`;
+        html += `<span class="reorder-hint">Drag items to reorder</span>`;
       }
 
       if (missingItems.length > 0) {
@@ -1025,7 +1046,55 @@
       }
 
       target.classList.remove('drag-over');
+
+      // Show save button for this universe
+      const uid = dragItem.dataset.universeId;
+      const saveBtn = document.getElementById(`btnSaveOrder-${uid}`);
+      if (saveBtn) saveBtn.style.display = '';
     });
+
+    // --- Save order (DB only, no Emby playlist) ---
+    async function saveOrder(universeId) {
+      const container = document.getElementById(`items-${universeId}`);
+      if (!container) return;
+
+      const items = [...container.querySelectorAll('.item[draggable]')];
+      const itemIds = items
+        .map(el => parseInt(el.dataset.itemId))
+        .filter(id => !isNaN(id));
+
+      if (!itemIds.length) return;
+
+      const btn = document.getElementById(`btnSaveOrder-${universeId}`);
+      if (btn) { btn.disabled = true; btn.textContent = '💾 Saving...'; }
+
+      try {
+        const resp = await fetch(`/api/universes/${universeId}/save-order`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ item_ids: itemIds }),
+        });
+        const data = await resp.json();
+        if (data.status === 'ok') {
+          showToast('✓ Order saved');
+          if (btn) btn.style.display = 'none';
+          // Update in-memory data so collapse/expand stays correct
+          const uni = allUniverses.find(u => u.id === universeId);
+          if (uni && uni.items) {
+            const idOrder = {};
+            itemIds.forEach((id, i) => { idOrder[id] = i + 1; });
+            uni.items.sort((a, b) => (idOrder[a.id] || 999) - (idOrder[b.id] || 999));
+            uni.items.forEach((it, i) => { it.release_order = i + 1; });
+          }
+        } else {
+          showToast('Error: ' + (data.reason || 'unknown'));
+        }
+      } catch (err) {
+        showToast('Error: ' + err.message);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '💾 Save Order'; }
+      }
+    }
 
     // --- Send to Emby ---
     async function sendToEmby(universeId) {

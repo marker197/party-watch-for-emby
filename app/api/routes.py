@@ -1339,6 +1339,40 @@ async def import_universes(request: Request, _user: User = Depends(get_current_u
     return {"status": "ok", "created": created, "skipped": skipped}
 
 
+@router.post("/api/universes/{universe_id}/save-order")
+async def save_universe_order(universe_id: int, payload: dict, _user: User = Depends(get_current_user)):
+    """Persist item order to DB without creating an Emby playlist.
+
+    Payload: {"item_ids": [db_item_id_1, db_item_id_2, ...]}
+    """
+    item_ids = payload.get("item_ids", [])
+    if not item_ids:
+        return {"status": "error", "reason": "no_item_ids"}
+
+    async with async_session_ctx() as db:
+        universe = (await db.execute(
+            select(Universe).where(Universe.id == universe_id)
+        )).scalar_one_or_none()
+        if not universe:
+            return {"status": "error", "reason": "universe_not_found"}
+
+        items = (await db.execute(
+            select(UniverseItem).where(UniverseItem.universe_id == universe_id)
+        )).scalars().all()
+        id_to_item = {i.id: i for i in items}
+        updated = 0
+        for pos, item_id in enumerate(item_ids):
+            item_id_int = int(item_id) if not isinstance(item_id, int) else item_id
+            if item_id_int in id_to_item:
+                id_to_item[item_id_int].release_order = pos + 1
+                updated += 1
+
+        await db.commit()
+
+    log.info("universe.order_saved", universe_id=universe_id, items=updated)
+    return {"status": "ok", "items": updated}
+
+
 @router.post("/api/universes/{universe_id}/reorder")
 async def reorder_universe(universe_id: int, payload: dict, _user: User = Depends(get_current_user)):
     """Reorder items within a universe, persist to DB, and recreate Emby playlist.
