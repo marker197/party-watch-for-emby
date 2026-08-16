@@ -2009,6 +2009,8 @@ async def sonarr_webhook(request: Request):
     On 'SeriesAdd':
       - Logs the new series event
     """
+    import json as _json
+
     try:
         payload = await request.json()
     except Exception:

@@ -112,13 +112,33 @@
     border-color: var(--orange); color: var(--orange); font-weight: 700;
   }
 
+  .genre-ratings-row {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px;
+  }
   .genre-tags {
-    display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px;
+    display: flex; flex-wrap: wrap; gap: 6px;
   }
   .genre-tag {
     background: var(--accent); color: #fff; border-radius: 4px;
     padding: 2px 10px; font-size: 0.75rem; font-weight: 600;
   }
+  .inline-ratings {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  }
+  .inline-ratings:empty { display: none; }
+  .inline-ratings::before {
+    content: ''; display: block; width: 1px; height: 18px;
+    background: var(--border, rgba(255,255,255,0.15)); flex-shrink: 0;
+  }
+  .inline-ratings:empty::before { display: none; }
+  .inline-rating {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 0.75rem; font-weight: 600; color: var(--text);
+    background: var(--card-bg, rgba(255,255,255,0.06)); border-radius: 4px;
+    padding: 2px 8px; white-space: nowrap;
+  }
+  .inline-rating .ir-icon { font-size: 0.8rem; }
+  .inline-rating .ir-val { font-weight: 700; }
 
   .overview-text {
     font-size: 0.92rem; color: var(--text); line-height: 1.7;
@@ -447,7 +467,10 @@
           <div class="item-title" id="itemTitle"></div>
           <div class="item-tagline" id="itemTagline" style="display:none;"></div>
           <div class="meta-pills" id="metaPills"></div>
-          <div class="genre-tags" id="genreTags"></div>
+          <div class="genre-ratings-row">
+            <div class="genre-tags" id="genreTags"></div>
+            <div class="inline-ratings" id="inlineRatings"></div>
+          </div>
           <div class="overview-text" id="overview"></div>
           <button class="overview-toggle" id="overviewToggle" onclick="toggleOverview()">Show more ▾</button>
           <div id="detailRows"></div>
@@ -639,6 +662,23 @@ function render(d) {
     genresHtml += '<span class="genre-tag">' + esc(g) + '</span>';
   });
   document.getElementById('genreTags').innerHTML = genresHtml;
+
+  // Inline ratings (IMDb, TMDb, Rotten Tomatoes) next to genres
+  var irHtml = '';
+  var ratings = d.ratings || {};
+  if (ratings.imdb && ratings.imdb.value != null) {
+    irHtml += '<span class="inline-rating"><span class="ir-icon">⭐</span> <span class="ir-val">' + ratings.imdb.value + '</span></span>';
+  }
+  if (ratings.tmdb && ratings.tmdb.value != null) {
+    irHtml += '<span class="inline-rating"><span class="ir-icon">🎬</span> <span class="ir-val">' + ratings.tmdb.value + '</span></span>';
+  }
+  if (ratings.tomatoes && ratings.tomatoes.value != null) {
+    irHtml += '<span class="inline-rating"><span class="ir-icon">🍅</span> <span class="ir-val">' + ratings.tomatoes.value + '%</span></span>';
+  }
+  if (ratings.popcorn && ratings.popcorn.value != null) {
+    irHtml += '<span class="inline-rating"><span class="ir-icon">🍿</span> <span class="ir-val">' + ratings.popcorn.value + '%</span></span>';
+  }
+  document.getElementById('inlineRatings').innerHTML = irHtml;
 
   // Overview
   // Overview with clamp + "Show more" toggle
