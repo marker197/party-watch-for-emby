@@ -21,6 +21,7 @@ import structlog
 import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -858,24 +859,23 @@ def _register_jobs():
         )
         log.info("scheduler.job_added", job="bias_analysis", cron=cron)
 
-    # Watchlist Sync — daily at 2:30 AM (after smart queue at 2 AM)
+    # Watchlist Sync — every 30 minutes
     # Scans Radarr/Sonarr for missing items, adds to Simkl watchlist,
     # refreshes Airing Soon so new watchlisted premieres appear.
     from app.services.watchlist_sync.service import WatchlistSyncService
     _wls_svc = WatchlistSyncService()
-    wls_cron = "30 2 * * *"
-    _job_crons["watchlist_sync"] = wls_cron
+    _job_crons["watchlist_sync"] = "*/30 * * * *"
 
     async def _run_watchlist_sync(_fn=_wls_svc.run_for_all_users):
         await _tracked_job("watchlist_sync", _fn)
 
     scheduler.add_job(
         _run_watchlist_sync,
-        CronTrigger(**_parse_cron(wls_cron)),
+        IntervalTrigger(minutes=30),
         id="watchlist_sync",
         replace_existing=True,
     )
-    log.info("scheduler.job_added", job="watchlist_sync", cron=wls_cron)
+    log.info("scheduler.job_added", job="watchlist_sync", interval="30m")
 
     # MDBList Sync — daily at 3:15 AM (after watchlist sync at 2:30 AM)
     # Re-imports all auto-synced MDBList lists into Emby playlists.
