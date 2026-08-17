@@ -10200,6 +10200,51 @@ async def rate_item(
         except (ValueError, TypeError):
             ids_obj["tmdb"] = tmdb_id
 
+    # For episodes, resolve the SERIES IDs (Simkl needs show-level IDs,
+    # not episode IMDB, in the top-level ids object)
+    series_ids_obj = {}
+    if item_type == "episode" and series_name:
+        cached_series = await LibraryCache.find_by_title(series_name)
+        if cached_series:
+            s_pids = cached_series.get("provider_ids") or cached_series.get("ProviderIds") or {}
+            s_imdb = s_pids.get("Imdb") or s_pids.get("imdb")
+            s_tmdb = s_pids.get("Tmdb") or s_pids.get("tmdb")
+            if s_imdb:
+                series_ids_obj["imdb"] = s_imdb
+            if s_tmdb:
+                try:
+                    series_ids_obj["tmdb"] = int(s_tmdb)
+                except (ValueError, TypeError):
+                    series_ids_obj["tmdb"] = s_tmdb
+        if not series_ids_obj:
+            # Fallback: search Emby for the series
+            try:
+                from app.utils.emby_client import EmbyClient
+                _emby_sr = EmbyClient()
+                sr_results = await _emby_sr.search_items(series_name, item_type="Series")
+                for sr in (sr_results if isinstance(sr_results, list) else (sr_results or {}).get("Items", sr_results or [])):
+                    sr_pids = sr.get("ProviderIds", {})
+                    sr_title = (sr.get("Name") or "").strip().lower()
+                    if sr_title == series_name.strip().lower():
+                        s_imdb = sr_pids.get("Imdb") or sr_pids.get("imdb")
+                        s_tmdb = sr_pids.get("Tmdb") or sr_pids.get("tmdb")
+                        if s_imdb:
+                            series_ids_obj["imdb"] = s_imdb
+                        if s_tmdb:
+                            try:
+                                series_ids_obj["tmdb"] = int(s_tmdb)
+                            except (ValueError, TypeError):
+                                series_ids_obj["tmdb"] = s_tmdb
+                        if series_ids_obj:
+                            break
+                await _emby_sr.close()
+            except Exception as e:
+                log.debug("rate.series_id_emby_fallback_failed", error=str(e)[:120])
+        log.debug("rate.series_ids_resolved",
+                   series_name=series_name,
+                   series_ids=series_ids_obj,
+                   episode_ids=ids_obj)
+
     # ── Push to providers ──────────────────────────────────────────────
     providers = await _get_active_providers(db)
 
@@ -10216,24 +10261,29 @@ async def rate_item(
                 "_type": "movies" if item_type == "movie" else "shows",
             }
             if item_type == "episode" and season_number is not None and episode_number is not None:
-                # Episode ratings: rating goes on the episode object, show is the container
+                # Episode ratings: show-level ids must be the SERIES ids,
+                # episode IMDB goes in the episode object's ids
+                ep_obj: dict = {
+                    "number": episode_number,
+                    "rating": rating,
+                    "rated_at": now_str,
+                }
+                if imdb_id:
+                    ep_obj["ids"] = {"imdb": imdb_id}
                 simkl_item = {
-                    "ids": ids_obj,
+                    "ids": series_ids_obj or ids_obj,
                     "_type": "shows",
                     "seasons": [{
                         "number": season_number,
-                        "episodes": [{
-                            "number": episode_number,
-                            "rating": rating,
-                            "rated_at": now_str,
-                        }],
+                        "episodes": [ep_obj],
                     }],
                 }
             if title:
                 simkl_item["title"] = series_name or title
             resp = await simkl.add_ratings([simkl_item])
             results["simkl"] = {"ok": True, "response": resp}
-            log.info("rating.simkl_pushed", user_id=user_id, imdb=imdb_id, rating=rating)
+            log.info("rating.simkl_pushed", user_id=user_id, imdb=imdb_id,
+                     rating=rating, series_ids=series_ids_obj or None)
             await simkl.close()
         except Exception as e:
             results["simkl"] = {"ok": False, "error": str(e)[:200]}
