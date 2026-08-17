@@ -2351,12 +2351,13 @@ function init() {
     _dashSocket.on('activity_entry', function(e) {
       if (!e || !e.msg) return;
       if (e.msg.startsWith('Webhook received')) return;
+      if (e.msg.includes('_UNPACK_') || e.msg.toLowerCase().includes('unpack')) return;
       if (activeCategory && e.cat !== activeCategory) return;
       const el = document.getElementById('globalLog');
       if (!el) return;
       if (el.textContent === 'No activity yet') el.innerHTML = '';
       let icon = '•';
-      const m = e.msg;
+      const m = e.msg.replace(/ — not in smart queue$/, '').replace(/ — no provider IDs to match$/, '');
       if (m.startsWith('Started Watching:')) icon = '▶️';
       else if (m.startsWith('Stopped Watching:')) icon = m.includes('Synced') ? '✅' : '⏹️';
       else if (m.includes(': Paused')) icon = '⏸️';

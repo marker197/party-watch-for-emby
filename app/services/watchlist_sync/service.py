@@ -18,6 +18,7 @@ integration_provider setting (simkl, mdblist, both, or none).
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 
 import structlog
@@ -95,6 +96,8 @@ class WatchlistSyncService:
                 if settings.get("arr_to_watchlist"):
                     await self._arr_to_simkl_watchlist(user, simkl_client)
                 if settings.get("watchlist_to_arr"):
+                    if settings.get("arr_to_watchlist"):
+                        await asyncio.sleep(1.1)  # Gap between Simkl method chains
                     await self._simkl_watchlist_to_arr(user, simkl_client)
             except Exception as e:
                 log.warning("watchlist_sync.simkl_failed", error=str(e)[:200])
@@ -115,6 +118,7 @@ class WatchlistSyncService:
         if simkl_client and mdb_client:
             try:
                 await self._mdblist_watchlist_to_simkl(user, mdb_client, simkl_client)
+                await asyncio.sleep(1.1)  # Gap between cross-sync Simkl calls
                 await self._simkl_watchlist_to_mdblist(user, simkl_client, mdb_client)
             except Exception as e:
                 log.warning("watchlist_sync.cross_sync_failed", error=str(e)[:200])
@@ -163,6 +167,7 @@ class WatchlistSyncService:
 
         # Fetch current Simkl watchlist for dupe check
         wl_movies = await simkl.get_watchlist(kind="movies")
+        await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
         wl_shows = await simkl.get_watchlist(kind="shows")
 
         wl_tmdb_ids: set[int] = set()
@@ -203,6 +208,7 @@ class WatchlistSyncService:
                  movies=len(movies_to_add),
                  shows=len(shows_to_add))
 
+        await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
         result = await simkl.add_to_watchlist(
             movies=movies_to_add or None,
             shows=shows_to_add or None,
@@ -320,6 +326,7 @@ class WatchlistSyncService:
 
         # Get Simkl watchlist for dupe check
         simkl_movies = await simkl.get_watchlist(kind="movies")
+        await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
         simkl_shows = await simkl.get_watchlist(kind="shows")
 
         simkl_imdb: set[str] = set()
@@ -374,6 +381,7 @@ class WatchlistSyncService:
         if not movies_to_add and not shows_to_add:
             return
 
+        await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
         result = await simkl.add_to_watchlist(
             movies=movies_to_add or None,
             shows=shows_to_add or None,
@@ -389,6 +397,7 @@ class WatchlistSyncService:
     async def _simkl_watchlist_to_mdblist(self, user: User, simkl: SimklClient, mdb):
         """Items on Simkl watchlist but not on MDBList → add to MDBList watchlist."""
         simkl_movies = await simkl.get_watchlist(kind="movies")
+        await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
         simkl_shows = await simkl.get_watchlist(kind="shows")
 
         if not simkl_movies and not simkl_shows:
@@ -471,6 +480,7 @@ class WatchlistSyncService:
     async def _simkl_watchlist_to_arr(self, user: User, simkl: SimklClient):
         """Add Simkl watchlist items to Radarr/Sonarr if not already there."""
         wl_movies = await simkl.get_watchlist(kind="movies")
+        await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
         wl_shows = await simkl.get_watchlist(kind="shows")
 
         log.info("watchlist_sync.simkl_to_arr.raw_counts",
