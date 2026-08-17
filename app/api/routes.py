@@ -10197,14 +10197,10 @@ async def rate_item(
         except (ValueError, TypeError):
             ids_obj["tmdb"] = tmdb_id
 
-    # ── Push to providers (skip episodes — neither Simkl nor MDBList support episode-level ratings) ──
+    # ── Push to providers ──────────────────────────────────────────────
     providers = await _get_active_providers(db)
-    if item_type == "episode":
-        log.info("rating.episode_local_only", user_id=user_id, title=title,
-                 season=season_number, episode=episode_number)
-        results["note"] = "Episode ratings stored locally only (providers do not support episode-level ratings)"
 
-    if item_type != "episode" and "simkl" in providers and user.simkl_access_token:
+    if "simkl" in providers and user.simkl_access_token:
         try:
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
@@ -10241,7 +10237,7 @@ async def rate_item(
             log.warning("rating.simkl_failed", error=str(e)[:200])
 
     # ── Push to MDBList ──────────────────────────────────────────────
-    if item_type != "episode" and "mdblist" in providers:
+    if "mdblist" in providers:
         try:
             key = await _get_mdblist_key(db)
             if key:

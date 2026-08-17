@@ -226,9 +226,12 @@ class SimklClient:
         """Fetch user's rated items with extended metadata (genres, runtime).
         kind: 'movies', 'shows', 'anime', or 'all'.
         Calls GET /sync/ratings/{type} — rating value is in each item."""
+        import asyncio
         results = []
         types = ["movies", "shows", "anime"] if kind == "all" else [kind]
-        for item_type in types:
+        for i, item_type in enumerate(types):
+            if i > 0:
+                await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
             try:
                 data = await self._get(
                     f"/sync/ratings/{item_type}/1,2,3,4,5,6,7,8,9,10",
@@ -283,9 +286,12 @@ class SimklClient:
 
     async def get_watchlist(self, kind: str = "all") -> list[dict]:
         """Fetch user's watchlist (plantowatch status) with extended metadata."""
+        import asyncio
         results = []
         types = ["movies", "shows", "anime"] if kind == "all" else [kind]
-        for item_type in types:
+        for i, item_type in enumerate(types):
+            if i > 0:
+                await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
             try:
                 endpoint = f"/sync/all-items/{item_type}/plantowatch"
                 activity_key = self._ACTIVITY_KEYS.get(f"{item_type}/plantowatch", "all")
@@ -345,9 +351,12 @@ class SimklClient:
 
     async def get_history(self, kind: str = "all", limit: int = 100, page: int = 1) -> list[dict]:
         """Fetch watched history (completed items) with extended metadata."""
+        import asyncio
         results = []
         types = ["movies", "shows", "anime"] if kind == "all" else [kind]
-        for item_type in types:
+        for i, item_type in enumerate(types):
+            if i > 0:
+                await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
             try:
                 endpoint = f"/sync/all-items/{item_type}/completed"
                 activity_key = self._ACTIVITY_KEYS.get(f"{item_type}/completed", "all")
