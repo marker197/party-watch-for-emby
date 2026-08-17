@@ -3105,6 +3105,9 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
     # ── library.deleted / item.removed → remove from Simkl watchlist ─────
     if is_library_removed and item_type_raw in ("Movie", "Series"):
+        _is_unpack_rm = "unpack" in item_name.lower() or "unpack" in display_name.lower() or "unpack" in (item_data.get("Path") or "").lower()
+        if _is_unpack_rm:
+            return {"status": "ignored", "event": event_type, "note": "unpack stub removal"}
         try:
             provider_ids = item_data.get("ProviderIds", {})
             tmdb_id = provider_ids.get("Tmdb")
