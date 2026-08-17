@@ -2872,7 +2872,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             tvdb_id = provider_ids.get("Tvdb")
 
             # Skip cache updates for unpack/extraction events (no real item yet)
-            _is_unpack = "unpack" in item_name.lower() or "unpack" in (item_data.get("Path") or "").lower()
+            _is_unpack = "unpack" in item_name.lower() or "unpack" in display_name.lower() or "unpack" in (item_data.get("Path") or "").lower()
 
             # Immediately update library cache for Movies and Series
             # so all features (Library Health, Universe Discovery, etc.)

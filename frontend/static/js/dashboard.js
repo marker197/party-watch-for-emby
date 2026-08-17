@@ -1604,7 +1604,7 @@ async function dashboardPoll() {
     }
 
     // --- Activity ---
-    const entries = (d.activity || []).filter(e => !e.msg.startsWith('Webhook received'));
+    const entries = (d.activity || []).filter(e => !e.msg.startsWith('Webhook received') && !e.msg.includes('_UNPACK_') && !e.msg.toLowerCase().includes('unpack'));
     const el = document.getElementById('globalLog');
     if (el) {
       const clientEntries = el.querySelectorAll('.entry.client-event');
@@ -1614,7 +1614,7 @@ async function dashboardPoll() {
       } else {
         const apiHtml = entries.map(e => {
           let icon = '•';
-          const m = e.msg;
+          const m = e.msg.replace(/ — not in smart queue$/, '').replace(/ — no provider IDs to match$/, '');
           if (m.startsWith('Started Watching:')) icon = '▶️';
           else if (m.startsWith('Stopped Watching:')) icon = m.includes('Synced') ? '✅' : '⏹️';
           else if (m.includes(': Paused')) icon = '⏸️';
