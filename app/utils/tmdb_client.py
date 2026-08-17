@@ -450,8 +450,12 @@ async def get_full_details(tmdb_id: int, media_type: str = "movie") -> dict | No
         # Languages
         languages = [l.get("english_name") for l in (data.get("spoken_languages") or [])]
 
+        # IMDB ID: movies have it at top level; TV needs external_ids endpoint
+        result_imdb_id = data.get("imdb_id")
+
         result = {
             "id": data.get("id"),
+            "imdb_id": result_imdb_id,
             "title": data.get("title") or data.get("name"),
             "overview": data.get("overview"),
             "tagline": data.get("tagline"),

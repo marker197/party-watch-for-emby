@@ -266,6 +266,7 @@
       justify-content: center; transition: all 0.1s; padding: 0;
     }
     .hover-rate-btn:hover { background: var(--accent); border-color: var(--accent); transform: scale(1.15); }
+    .hover-rate-btn.current-rating { background: var(--green); border-color: var(--green); opacity: 0.9; }
     .hover-rate-btn.rated-ok { background: var(--green); border-color: var(--green); pointer-events: none; }
     .hover-rated-msg {
       position: absolute; bottom: 6px; left: 0; right: 0;
@@ -787,7 +788,7 @@ async function loadHistory() {
     }
 
     observeNewImages();
-    if (ratedKeys.size > 0) applyRatingBadges();
+    applyRatingBadges();
 
     loadingEl.style.display = 'none';
 
@@ -867,7 +868,7 @@ function jumpToMonth(val) {
       if (html) timeline.insertAdjacentHTML('beforeend', html);
     }
     observeNewImages();
-    if (ratedKeys.size > 0) applyRatingBadges();
+    applyRatingBadges();
     loadingEl.style.display = 'none';
     // Hide pagination when jumping to month — show load-more style
     document.getElementById('pagination').innerHTML =
@@ -900,7 +901,7 @@ function loadMoreFromCursor() {
       if (html) timeline.insertAdjacentHTML('beforeend', html);
     }
     observeNewImages();
-    if (ratedKeys.size > 0) applyRatingBadges();
+    applyRatingBadges();
     document.getElementById('pagination').innerHTML =
       nextBefore ? '<button class="page-btn" onclick="loadMoreFromCursor()" style="padding:8px 24px;">Load more</button>' : '';
     isLoading = false;
@@ -983,7 +984,6 @@ async function loadRatedKeys() {
 }
 
 function applyRatingBadges() {
-  if (ratedKeys.size === 0) return;
   document.querySelectorAll('.thumb-wrap[data-badgekey]').forEach(function(wrap) {
     var old = wrap.querySelector('.rated-badge');
     if (old) old.remove();
@@ -999,16 +999,33 @@ function applyRatingBadges() {
     var episode = wrap.getAttribute('data-episode');
     var seriesName = wrap.getAttribute('data-seriesname');
 
+    // Look up rating: episode-specific key first, then series-level keys
     var rating = ratedKeys.get(badgeKey);
     if (rating === undefined && imdb) rating = ratedKeys.get('imdb:' + imdb);
     if (rating === undefined && title) rating = ratedKeys.get('title:' + title);
+    // Episode inherits series rating if no episode-specific rating exists
+    if (rating === undefined && itemType === 'episode' && seriesName) {
+      var seriesTitleKey = 'title:' + seriesName.trim().toLowerCase();
+      rating = ratedKeys.get(seriesTitleKey);
+      // Also check imdb key of the series (may differ from episode imdb)
+      if (rating === undefined) {
+        ratedKeys.forEach(function(v, k) {
+          if (rating !== undefined) return;
+          if (k.startsWith('imdb:') && k === 'imdb:' + imdb) rating = v;
+        });
+      }
+    }
 
+    // Show badge if rated
     if (rating !== undefined) {
       var badge = document.createElement('div');
       badge.className = 'rated-badge';
       badge.textContent = rating;
       wrap.appendChild(badge);
-    } else if (imdb || title) {
+    }
+
+    // Always show hover overlay (for rating or re-rating)
+    if (imdb || title) {
       var itemJson = JSON.stringify({
         imdb_id: imdb || null,
         tmdb_id: tmdb || null,
@@ -1022,7 +1039,9 @@ function applyRatingBadges() {
       overlay.className = 'hover-rate-overlay';
       var btns = '';
       for (var n = 1; n <= 10; n++) {
-        btns += '<button class="hover-rate-btn" onclick="event.stopPropagation();hoverRate(this,' + n + ')" data-item=\'' + itemJson.replace(/'/g, '&#39;') + '\'>' + n + '</button>';
+        var cls = 'hover-rate-btn';
+        if (rating !== undefined && n === rating) cls += ' current-rating';
+        btns += '<button class="' + cls + '" onclick="event.stopPropagation();hoverRate(this,' + n + ')" data-item=\'' + itemJson.replace(/'/g, '&#39;') + '\'>' + n + '</button>';
       }
       overlay.innerHTML = btns;
       wrap.appendChild(overlay);
@@ -1069,7 +1088,70 @@ async function hoverRate(btnEl, value) {
       key = 'title:' + (itemData.title || '').trim().toLowerCase();
     }
     ratedKeys.set(key, value);
+
+    // When rating a series/show, also store by title key so episodes inherit
+    if (itemData.item_type === 'show' && itemData.title) {
+      ratedKeys.set('title:' + itemData.title.trim().toLowerCase(), value);
+    }
+
+    // Update the badge and overlay on this card
+    var wrap = overlay.closest('.thumb-wrap');
+    if (wrap) {
+      var existingBadge = wrap.querySelector('.rated-badge');
+      if (existingBadge) {
+        existingBadge.textContent = value;
+      } else {
+        var badge = document.createElement('div');
+        badge.className = 'rated-badge';
+        badge.textContent = value;
+        wrap.appendChild(badge);
+      }
+    }
+    // Reset overlay: show confirmed message briefly, then rebuild buttons with new current
     overlay.innerHTML = '<div class="hover-rated-msg">\u2713 ' + value + '/10</div>';
+    setTimeout(function() {
+      if (!wrap) return;
+      // Rebuild overlay with updated current-rating highlight
+      var newOverlay = document.createElement('div');
+      newOverlay.className = 'hover-rate-overlay';
+      var btns = '';
+      var itemJsonStr = JSON.stringify(itemData).replace(/'/g, '&#39;');
+      for (var n = 1; n <= 10; n++) {
+        var cls = 'hover-rate-btn';
+        if (n === value) cls += ' current-rating';
+        btns += '<button class="' + cls + '" onclick="event.stopPropagation();hoverRate(this,' + n + ')" data-item=\'' + itemJsonStr + '\'>' + n + '</button>';
+      }
+      newOverlay.innerHTML = btns;
+      var oldOv = wrap.querySelector('.hover-rate-overlay');
+      if (oldOv) oldOv.remove();
+      wrap.appendChild(newOverlay);
+    }, 1200);
+
+    // Cascade: if this was a series rating, update all visible episode cards for this series
+    if ((itemData.item_type === 'show' || itemData.item_type === 'movie') && itemData.title) {
+      var seriesKey = itemData.title.trim().toLowerCase();
+      document.querySelectorAll('.thumb-wrap[data-seriesname]').forEach(function(epWrap) {
+        var epSeries = (epWrap.getAttribute('data-seriesname') || '').trim().toLowerCase();
+        if (epSeries === seriesKey && epWrap !== wrap) {
+          // Update badge
+          var epBadge = epWrap.querySelector('.rated-badge');
+          if (epBadge) {
+            epBadge.textContent = value;
+          } else {
+            var nb = document.createElement('div');
+            nb.className = 'rated-badge';
+            nb.textContent = value;
+            epWrap.appendChild(nb);
+          }
+          // Update current-rating highlight on overlay buttons
+          epWrap.querySelectorAll('.hover-rate-btn').forEach(function(b) {
+            b.classList.remove('current-rating');
+            if (parseInt(b.textContent) === value) b.classList.add('current-rating');
+          });
+        }
+      });
+    }
+
   } catch (e) {
     console.error('hoverRate error:', e);
     overlay.querySelectorAll('.hover-rate-btn').forEach(function(b) { b.style.opacity = ''; });

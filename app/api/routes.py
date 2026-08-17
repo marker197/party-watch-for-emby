@@ -11530,6 +11530,23 @@ async def get_item_detail(
         fetch_tmdb_providers(), fetch_user_rating(), fetch_watch_history(),
     )
 
+    # ── Second pass: resolve imdb_id from TMDB when MDBList missed ──
+    if not mdb_data and not imdb_id and tmdb_data:
+        resolved_imdb = tmdb_data.get("imdb_id")
+        if not resolved_imdb and media_type != "movie" and tmdb_id:
+            # TV shows: use external_ids endpoint
+            from app.utils.tmdb_client import get_tv_external_ids
+            ext = await get_tv_external_ids(int(tmdb_id))
+            if ext:
+                resolved_imdb = ext.get("imdb_id")
+        if resolved_imdb:
+            imdb_id = resolved_imdb
+            result["imdb_id"] = imdb_id
+            # Re-fetch MDBList + user rating now that we have imdb_id
+            mdb_data, user_rating = await asyncio.gather(
+                fetch_mdblist(), fetch_user_rating(),
+            )
+
     # ── Merge into unified response ──
 
     # Emby data

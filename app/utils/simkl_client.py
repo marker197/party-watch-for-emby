@@ -664,6 +664,7 @@ class SimklClient:
 
     async def get_tv_premieres(self, param: str = "new") -> list[dict]:
         """TV premieres — 'new' or 'soon'. No auth. Paginated (default 60, max 20 pages)."""
+        import asyncio
         all_items: list[dict] = []
         page = 1
         max_pages = 20
@@ -684,6 +685,8 @@ class SimklClient:
                 if page >= total_pages:
                     break
                 page += 1
+                # Respect Simkl 1 req/sec rate limit between pages
+                await asyncio.sleep(1.1)
         except Exception:
             pass
         return all_items
