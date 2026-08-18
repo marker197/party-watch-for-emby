@@ -3977,6 +3977,17 @@ async def add_to_radarr(payload: dict, _user: User = Depends(get_current_user)):
     await client.close()
 
     added = sum(1 for r in results if r.get("status") == "ok")
+
+    # Track manually-sent items so watchlist sync excludes them
+    if added:
+        exclude_ids = []
+        for movie, res in zip(movies, results):
+            if res.get("status") == "ok" and movie.get("tmdb_id"):
+                exclude_ids.append(str(movie["tmdb_id"]))
+        if exclude_ids:
+            r = await get_redis()
+            await r.sadd("manual_arr_exclude:tmdb", *exclude_ids)
+
     return {
         "status": "ok",
         "server": srv["name"],
@@ -4145,6 +4156,23 @@ async def add_to_sonarr(payload: dict, _user: User = Depends(get_current_user)):
     await client.close()
 
     added = sum(1 for r in results if r.get("status") == "ok")
+
+    # Track manually-sent items so watchlist sync excludes them
+    if added:
+        exclude_tmdb = []
+        exclude_tvdb = []
+        for show, res in zip(shows, results):
+            if res.get("status") == "ok":
+                if show.get("tmdb_id"):
+                    exclude_tmdb.append(str(show["tmdb_id"]))
+                if show.get("tvdb_id"):
+                    exclude_tvdb.append(str(show["tvdb_id"]))
+        r = await get_redis()
+        if exclude_tmdb:
+            await r.sadd("manual_arr_exclude:tmdb", *exclude_tmdb)
+        if exclude_tvdb:
+            await r.sadd("manual_arr_exclude:tvdb", *exclude_tvdb)
+
     return {
         "status": "ok",
         "server": srv["name"],

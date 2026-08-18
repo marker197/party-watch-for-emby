@@ -161,6 +161,10 @@ class WatchlistSyncService:
         """Send missing Radarr/Sonarr items to Simkl watchlist (with dupe check)."""
         missing_tmdb, missing_tvdb = await self._get_arr_missing_ids()
 
+        # Exclude items manually sent to Radarr/Sonarr (not from watchlist)
+        missing_tmdb, missing_tvdb = await self._filter_manual_excludes(
+            missing_tmdb, missing_tvdb)
+
         if not missing_tmdb and not missing_tvdb:
             log.info("watchlist_sync.arr_to_simkl.nothing_missing", user_id=user.id)
             return
@@ -230,6 +234,10 @@ class WatchlistSyncService:
     async def _arr_to_mdblist_watchlist(self, user: User, mdb):
         """Send missing Radarr/Sonarr items to MDBList watchlist (with dupe check)."""
         missing_tmdb, missing_tvdb = await self._get_arr_missing_ids()
+
+        # Exclude items manually sent to Radarr/Sonarr (not from watchlist)
+        missing_tmdb, missing_tvdb = await self._filter_manual_excludes(
+            missing_tmdb, missing_tvdb)
 
         if not missing_tmdb and not missing_tvdb:
             log.info("watchlist_sync.arr_to_mdblist.nothing_missing", user_id=user.id)
@@ -882,6 +890,49 @@ class WatchlistSyncService:
                  movies=len(missing_tmdb), shows=len(missing_tvdb))
 
         return missing_tmdb, missing_tvdb
+
+    @staticmethod
+    async def _filter_manual_excludes(
+        tmdb_ids: list[int], tvdb_ids: list[int],
+    ) -> tuple[list[int], list[int]]:
+        """Remove IDs manually sent to Radarr/Sonarr via the UI.
+
+        Items added through the 'Send to Radarr/Sonarr' buttons should
+        not be pushed onto the Simkl/MDBList watchlist — they were
+        intentionally sent to arr without a watchlist entry.
+        """
+        r = await get_redis()
+        exclude_tmdb: set[int] = set()
+        exclude_tvdb: set[int] = set()
+
+        raw_tmdb = await r.smembers("manual_arr_exclude:tmdb")
+        for v in raw_tmdb:
+            try:
+                exclude_tmdb.add(int(v))
+            except (ValueError, TypeError):
+                pass
+
+        raw_tvdb = await r.smembers("manual_arr_exclude:tvdb")
+        for v in raw_tvdb:
+            try:
+                exclude_tvdb.add(int(v))
+            except (ValueError, TypeError):
+                pass
+
+        if not exclude_tmdb and not exclude_tvdb:
+            return tmdb_ids, tvdb_ids
+
+        before_tmdb = len(tmdb_ids)
+        before_tvdb = len(tvdb_ids)
+        tmdb_ids = [t for t in tmdb_ids if t not in exclude_tmdb]
+        tvdb_ids = [t for t in tvdb_ids if t not in exclude_tvdb]
+        excluded = (before_tmdb - len(tmdb_ids)) + (before_tvdb - len(tvdb_ids))
+        if excluded:
+            log.info("watchlist_sync.manual_arr_excluded",
+                     movies=before_tmdb - len(tmdb_ids),
+                     shows=before_tvdb - len(tvdb_ids))
+
+        return tmdb_ids, tvdb_ids
 
     @staticmethod
     async def _get_arr_all_ids() -> tuple[set[int], set[int]]:
