@@ -10242,8 +10242,9 @@ async def rate_item(
                     series_ids_obj["tmdb"] = int(s_tmdb)
                 except (ValueError, TypeError):
                     series_ids_obj["tmdb"] = s_tmdb
-        if not series_ids_obj:
-            # Fallback: search Emby for the series
+        if not series_ids_obj.get("imdb"):
+            # Fallback: search Emby for the series to get IMDB
+            # (bulk endpoint often omits ProviderIds for Series items)
             try:
                 from app.utils.emby_client import EmbyClient
                 _emby_sr = EmbyClient()
@@ -10251,7 +10252,13 @@ async def rate_item(
                 for sr in (sr_results if isinstance(sr_results, list) else (sr_results or {}).get("Items", sr_results or [])):
                     sr_pids = sr.get("ProviderIds", {})
                     sr_title = (sr.get("Name") or "").strip().lower()
-                    if sr_title == series_name.strip().lower():
+                    _sn_lower = series_name.strip().lower()
+                    # Match exact, or contains (e.g. "Lioness" in
+                    # "Special Ops: Lioness"), or by TMDB ID if known
+                    sr_tmdb = sr_pids.get("Tmdb") or sr_pids.get("tmdb")
+                    _tmdb_match = (sr_tmdb and series_ids_obj.get("tmdb")
+                                   and str(sr_tmdb) == str(series_ids_obj["tmdb"]))
+                    if sr_title == _sn_lower or _sn_lower in sr_title or _tmdb_match:
                         s_imdb = sr_pids.get("Imdb") or sr_pids.get("imdb")
                         s_tmdb = sr_pids.get("Tmdb") or sr_pids.get("tmdb")
                         if s_imdb:
@@ -10261,7 +10268,7 @@ async def rate_item(
                                 series_ids_obj["tmdb"] = int(s_tmdb)
                             except (ValueError, TypeError):
                                 series_ids_obj["tmdb"] = s_tmdb
-                        if series_ids_obj:
+                        if series_ids_obj.get("imdb"):
                             break
                 await _emby_sr.close()
             except Exception as e:
