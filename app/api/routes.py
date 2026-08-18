@@ -10310,11 +10310,6 @@ async def rate_item(
     providers = await _get_active_providers(db)
 
     # --- Helper: build Simkl remove payload (IDs only, no rating) ---
-    # NOTE: Only used for movies and shows.  For episodes, Simkl's
-    # /sync/ratings/remove with a show-nested payload removes the SHOW's
-    # rating and history status — not the episode's.  Episode re-rates
-    # skip the remove step entirely (add_ratings overwrites at episode
-    # level even when the episode already has a rating).
     def _simkl_remove_payload() -> list[dict]:
         return [{"ids": ids_obj, "_type": "movies" if item_type == "movie" else "shows"}]
 
@@ -10325,51 +10320,57 @@ async def rate_item(
                 token_expires=user.simkl_token_expires,
             )
 
-            # Re-rate: remove old rating first (Simkl add_ratings ignores
-            # items that already have a rating — must remove then re-add).
-            # SKIP for episodes — Simkl's remove endpoint with a show-nested
-            # payload destroys the show-level rating and watchlist status.
-            if is_rerate and item_type != "episode":
+            # Re-rate for movies/shows: remove old rating first (add_ratings
+            # is add-only for movies/shows — must remove then re-add).
+            # Episodes: Simkl add_ratings overwrites existing episode ratings
+            # directly — no remove step needed (and remove_ratings with a
+            # show-nested payload destroys the show-level rating).
+            if is_rerate and item_type not in ("episode",):
                 rm_resp = await simkl.remove_ratings(_simkl_remove_payload())
                 log.info("rating.simkl_removed_for_rerate", user_id=user_id,
                          imdb=imdb_id, old_rating=old_rating,
                          response=str(rm_resp)[:200])
                 await asyncio.sleep(1.1)  # Simkl 1 req/sec POST rate limit
-            elif is_rerate and item_type == "episode":
-                log.info("rating.simkl_episode_rerate_skip_remove",
-                         user_id=user_id, imdb=imdb_id,
-                         old_rating=old_rating, new_rating=rating,
-                         reason="remove_ratings destroys show-level rating")
 
-            simkl_item = {
-                "ids": ids_obj,
-                "rating": rating,
-                "rated_at": now_str,
-                "_type": "movies" if item_type == "movie" else "shows",
-            }
+            # Build the add payload
             if item_type == "episode" and season_number is not None and episode_number is not None:
-                ep_obj: dict = {
-                    "number": episode_number,
-                    "rating": rating,
-                    "rated_at": now_str,
-                }
-                if imdb_id:
-                    ep_obj["ids"] = {"imdb": imdb_id}
+                # Episode: clean show-nested payload matching Simkl's
+                # documented format — show IDs + season/episode + rating only
                 simkl_item = {
                     "ids": series_ids_obj or ids_obj,
                     "_type": "shows",
                     "seasons": [{
                         "number": season_number,
-                        "episodes": [ep_obj],
+                        "episodes": [{
+                            "number": episode_number,
+                            "rating": rating,
+                        }],
                     }],
+                }
+            else:
+                simkl_item = {
+                    "ids": ids_obj,
+                    "rating": rating,
+                    "rated_at": now_str,
+                    "_type": "movies" if item_type == "movie" else "shows",
                 }
             if title:
                 simkl_item["title"] = series_name or title
+
+            # Log exact payload for debugging
+            import json as _json_rate
+            _clean_log = {k: v for k, v in simkl_item.items()
+                          if not k.startswith("_")}
+            log.info("rating.simkl_payload",
+                     payload=_json_rate.dumps(_clean_log, default=str)[:500])
+
             resp = await simkl.add_ratings([simkl_item])
             results["simkl"] = {"ok": True, "response": resp}
             log.info("rating.simkl_pushed", user_id=user_id, imdb=imdb_id,
                      rating=rating, rerate=is_rerate,
+                     response=str(resp)[:300],
                      series_ids=series_ids_obj or None)
+
             await simkl.close()
         except Exception as e:
             results["simkl"] = {"ok": False, "error": str(e)[:200]}
