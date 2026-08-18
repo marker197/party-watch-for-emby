@@ -10336,17 +10336,49 @@ async def rate_item(
                 if item_type == "movie":
                     resp = await mdb.add_ratings(movies=[mdb_item])
                 elif item_type == "episode":
-                    # MDBList expects episode nested under show wrapper
-                    ep_item = dict(mdb_item)
-                    if season_number is not None:
-                        ep_item["season"] = season_number
+                    # MDBList follows Trakt API pattern: episodes must be
+                    # nested inside a show object with the SERIES IDs so
+                    # MDBList can locate the show, then use season/episode
+                    # numbers.  The flat episodes=[] format only works when
+                    # MDBList can resolve the episode IMDB ID, which fails
+                    # for many episodes (they silently return 200 + not_found).
+                    show_ids = {}
+                    if series_ids_obj:
+                        show_ids = dict(series_ids_obj)
+                    else:
+                        # Fallback: use the episode's own IDs (old behaviour)
+                        show_ids = dict(mdb_item["ids"])
+
+                    ep_obj: dict = {
+                        "rating": rating,
+                        "rated_at": now_str,
+                    }
                     if episode_number is not None:
-                        ep_item["number"] = episode_number
-                    resp = await mdb.add_ratings(episodes=[ep_item])
+                        ep_obj["number"] = episode_number
+                    # Include episode-level IDs so MDBList can cross-ref
+                    if imdb_id:
+                        ep_obj["ids"] = {"imdb": imdb_id}
+
+                    show_wrapper = {
+                        "ids": show_ids,
+                        "seasons": [{
+                            "number": season_number if season_number is not None else 1,
+                            "episodes": [ep_obj],
+                        }],
+                    }
+                    resp = await mdb.add_ratings(shows=[show_wrapper])
+                    log.debug("rating.mdblist_episode_payload",
+                              show_ids=show_ids,
+                              season=season_number,
+                              episode=episode_number,
+                              ep_imdb=imdb_id,
+                              response=str(resp)[:300])
                 else:
                     resp = await mdb.add_ratings(shows=[mdb_item])
                 results["mdblist"] = {"ok": True, "response": resp}
-                log.info("rating.mdblist_pushed", user_id=user_id, imdb=imdb_id, rating=rating)
+                log.info("rating.mdblist_pushed", user_id=user_id, imdb=imdb_id,
+                         rating=rating, item_type=item_type,
+                         response=str(resp)[:200])
                 await mdb.close()
         except Exception as e:
             results["mdblist"] = {"ok": False, "error": str(e)[:200]}
