@@ -10310,16 +10310,12 @@ async def rate_item(
     providers = await _get_active_providers(db)
 
     # --- Helper: build Simkl remove payload (IDs only, no rating) ---
+    # NOTE: Only used for movies and shows.  For episodes, Simkl's
+    # /sync/ratings/remove with a show-nested payload removes the SHOW's
+    # rating and history status — not the episode's.  Episode re-rates
+    # skip the remove step entirely (add_ratings overwrites at episode
+    # level even when the episode already has a rating).
     def _simkl_remove_payload() -> list[dict]:
-        if item_type == "episode" and season_number is not None and episode_number is not None:
-            ep_rm: dict = {"number": episode_number}
-            if imdb_id:
-                ep_rm["ids"] = {"imdb": imdb_id}
-            return [{
-                "ids": series_ids_obj or ids_obj,
-                "_type": "shows",
-                "seasons": [{"number": season_number, "episodes": [ep_rm]}],
-            }]
         return [{"ids": ids_obj, "_type": "movies" if item_type == "movie" else "shows"}]
 
     if "simkl" in providers and user.simkl_access_token:
@@ -10330,13 +10326,20 @@ async def rate_item(
             )
 
             # Re-rate: remove old rating first (Simkl add_ratings ignores
-            # items that already have a rating — must remove then re-add)
-            if is_rerate:
+            # items that already have a rating — must remove then re-add).
+            # SKIP for episodes — Simkl's remove endpoint with a show-nested
+            # payload destroys the show-level rating and watchlist status.
+            if is_rerate and item_type != "episode":
                 rm_resp = await simkl.remove_ratings(_simkl_remove_payload())
                 log.info("rating.simkl_removed_for_rerate", user_id=user_id,
                          imdb=imdb_id, old_rating=old_rating,
                          response=str(rm_resp)[:200])
                 await asyncio.sleep(1.1)  # Simkl 1 req/sec POST rate limit
+            elif is_rerate and item_type == "episode":
+                log.info("rating.simkl_episode_rerate_skip_remove",
+                         user_id=user_id, imdb=imdb_id,
+                         old_rating=old_rating, new_rating=rating,
+                         reason="remove_ratings destroys show-level rating")
 
             simkl_item = {
                 "ids": ids_obj,
