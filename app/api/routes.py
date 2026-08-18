@@ -10158,8 +10158,6 @@ async def rate_item(
 
     Payload: {user_id, imdb_id, tmdb_id?, rating (1-10), item_type (movie|show), title?}
     """
-    from app.models.schema import UserRating
-
     user_id = payload.get("user_id")
     imdb_id = payload.get("imdb_id")
     tmdb_id = payload.get("tmdb_id")
@@ -10273,8 +10271,56 @@ async def rate_item(
                    series_ids=series_ids_obj,
                    episode_ids=ids_obj)
 
+    # ── Check for existing local rating (detect re-rate) ────────────
+    from app.models.schema import UserRating
+
+    existing_q = select(UserRating).where(
+        UserRating.user_id == user_id,
+        UserRating.item_type == item_type,
+    )
+    if item_type == "episode" and season_number is not None and episode_number is not None:
+        existing_q = existing_q.where(
+            UserRating.series_name == series_name,
+            UserRating.season_number == season_number,
+            UserRating.episode_number == episode_number,
+        )
+    elif imdb_id:
+        existing_q = existing_q.where(UserRating.imdb_id == imdb_id)
+    elif tmdb_id:
+        existing_q = existing_q.where(UserRating.tmdb_id == tmdb_id)
+
+    existing_rating_row = (await db.execute(existing_q.limit(1))).scalar_one_or_none()
+    old_rating = existing_rating_row.rating if existing_rating_row else None
+    is_rerate = old_rating is not None and int(old_rating) != rating
+
+    if old_rating is not None and int(old_rating) == rating:
+        log.info("rating.unchanged_skipped", user_id=user_id, imdb=imdb_id,
+                 rating=rating, item_type=item_type)
+        return {"ok": True, "rating": rating, "results": {
+            "simkl": {"ok": True, "skipped": "unchanged"},
+            "mdblist": {"ok": True, "skipped": "unchanged"},
+            "local": {"ok": True, "skipped": "unchanged"},
+        }}
+
+    if is_rerate:
+        log.info("rating.rerate_detected", user_id=user_id, imdb=imdb_id,
+                 old=old_rating, new=rating, item_type=item_type)
+
     # ── Push to providers ──────────────────────────────────────────────
     providers = await _get_active_providers(db)
+
+    # --- Helper: build Simkl remove payload (IDs only, no rating) ---
+    def _simkl_remove_payload() -> list[dict]:
+        if item_type == "episode" and season_number is not None and episode_number is not None:
+            ep_rm: dict = {"number": episode_number}
+            if imdb_id:
+                ep_rm["ids"] = {"imdb": imdb_id}
+            return [{
+                "ids": series_ids_obj or ids_obj,
+                "_type": "shows",
+                "seasons": [{"number": season_number, "episodes": [ep_rm]}],
+            }]
+        return [{"ids": ids_obj, "_type": "movies" if item_type == "movie" else "shows"}]
 
     if "simkl" in providers and user.simkl_access_token:
         try:
@@ -10282,6 +10328,16 @@ async def rate_item(
                 access_token=user.simkl_access_token,
                 token_expires=user.simkl_token_expires,
             )
+
+            # Re-rate: remove old rating first (Simkl add_ratings ignores
+            # items that already have a rating — must remove then re-add)
+            if is_rerate:
+                rm_resp = await simkl.remove_ratings(_simkl_remove_payload())
+                log.info("rating.simkl_removed_for_rerate", user_id=user_id,
+                         imdb=imdb_id, old_rating=old_rating,
+                         response=str(rm_resp)[:200])
+                await asyncio.sleep(1.1)  # Simkl 1 req/sec POST rate limit
+
             simkl_item = {
                 "ids": ids_obj,
                 "rating": rating,
@@ -10289,8 +10345,6 @@ async def rate_item(
                 "_type": "movies" if item_type == "movie" else "shows",
             }
             if item_type == "episode" and season_number is not None and episode_number is not None:
-                # Episode ratings: show-level ids must be the SERIES ids,
-                # episode IMDB goes in the episode object's ids
                 ep_obj: dict = {
                     "number": episode_number,
                     "rating": rating,
@@ -10311,7 +10365,8 @@ async def rate_item(
             resp = await simkl.add_ratings([simkl_item])
             results["simkl"] = {"ok": True, "response": resp}
             log.info("rating.simkl_pushed", user_id=user_id, imdb=imdb_id,
-                     rating=rating, series_ids=series_ids_obj or None)
+                     rating=rating, rerate=is_rerate,
+                     series_ids=series_ids_obj or None)
             await simkl.close()
         except Exception as e:
             results["simkl"] = {"ok": False, "error": str(e)[:200]}
@@ -10324,6 +10379,52 @@ async def rate_item(
             if key:
                 from app.utils.mdblist_client import MDBListClient
                 mdb = MDBListClient(api_key=key)
+
+                # --- Helper: build MDBList remove payload ---
+                if is_rerate:
+                    if item_type == "movie":
+                        rm_mdb = {"ids": {}}
+                        if imdb_id:
+                            rm_mdb["ids"]["imdb"] = imdb_id
+                        if tmdb_id:
+                            try:
+                                rm_mdb["ids"]["tmdb"] = int(tmdb_id)
+                            except (ValueError, TypeError):
+                                pass
+                        rm_resp = await mdb.remove_ratings(movies=[rm_mdb])
+                    elif item_type == "episode":
+                        show_ids = dict(series_ids_obj) if series_ids_obj else {}
+                        if not show_ids and imdb_id:
+                            show_ids["imdb"] = imdb_id
+                        ep_rm_obj: dict = {}
+                        if episode_number is not None:
+                            ep_rm_obj["number"] = episode_number
+                        if imdb_id:
+                            ep_rm_obj["ids"] = {"imdb": imdb_id}
+                        rm_show = {
+                            "ids": show_ids,
+                            "seasons": [{
+                                "number": season_number if season_number is not None else 1,
+                                "episodes": [ep_rm_obj],
+                            }],
+                        }
+                        rm_resp = await mdb.remove_ratings(shows=[rm_show])
+                    else:
+                        rm_mdb = {"ids": {}}
+                        if imdb_id:
+                            rm_mdb["ids"]["imdb"] = imdb_id
+                        if tmdb_id:
+                            try:
+                                rm_mdb["ids"]["tmdb"] = int(tmdb_id)
+                            except (ValueError, TypeError):
+                                pass
+                        rm_resp = await mdb.remove_ratings(shows=[rm_mdb])
+                    log.info("rating.mdblist_removed_for_rerate", user_id=user_id,
+                             imdb=imdb_id, old_rating=old_rating,
+                             item_type=item_type,
+                             response=str(rm_resp)[:200])
+
+                # --- Add new rating ---
                 mdb_item = {"ids": {}, "rating": rating, "rated_at": now_str}
                 if imdb_id:
                     mdb_item["ids"]["imdb"] = imdb_id
@@ -10336,17 +10437,10 @@ async def rate_item(
                 if item_type == "movie":
                     resp = await mdb.add_ratings(movies=[mdb_item])
                 elif item_type == "episode":
-                    # MDBList follows Trakt API pattern: episodes must be
-                    # nested inside a show object with the SERIES IDs so
-                    # MDBList can locate the show, then use season/episode
-                    # numbers.  The flat episodes=[] format only works when
-                    # MDBList can resolve the episode IMDB ID, which fails
-                    # for many episodes (they silently return 200 + not_found).
                     show_ids = {}
                     if series_ids_obj:
                         show_ids = dict(series_ids_obj)
                     else:
-                        # Fallback: use the episode's own IDs (old behaviour)
                         show_ids = dict(mdb_item["ids"])
 
                     ep_obj: dict = {
@@ -10355,7 +10449,6 @@ async def rate_item(
                     }
                     if episode_number is not None:
                         ep_obj["number"] = episode_number
-                    # Include episode-level IDs so MDBList can cross-ref
                     if imdb_id:
                         ep_obj["ids"] = {"imdb": imdb_id}
 
@@ -10377,7 +10470,7 @@ async def rate_item(
                     resp = await mdb.add_ratings(shows=[mdb_item])
                 results["mdblist"] = {"ok": True, "response": resp}
                 log.info("rating.mdblist_pushed", user_id=user_id, imdb=imdb_id,
-                         rating=rating, item_type=item_type,
+                         rating=rating, item_type=item_type, rerate=is_rerate,
                          response=str(resp)[:200])
                 await mdb.close()
         except Exception as e:
@@ -10386,34 +10479,16 @@ async def rate_item(
 
     # ── Store locally in UserRating ──────────────────────────────────
     try:
-        # Check if a rating already exists (update vs insert)
-        existing_q = select(UserRating).where(
-            UserRating.user_id == user_id,
-            UserRating.item_type == item_type,
-        )
-        if item_type == "episode" and season_number is not None and episode_number is not None:
-            # Episode-level: match by series+season+episode
-            existing_q = existing_q.where(
-                UserRating.series_name == series_name,
-                UserRating.season_number == season_number,
-                UserRating.episode_number == episode_number,
-            )
-        elif imdb_id:
-            existing_q = existing_q.where(UserRating.imdb_id == imdb_id)
-        elif tmdb_id:
-            existing_q = existing_q.where(UserRating.tmdb_id == tmdb_id)
-
-        existing = (await db.execute(existing_q.limit(1))).scalar_one_or_none()
         now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
 
-        if existing:
-            existing.rating = rating
-            existing.rated_at = now_naive
-            existing.source = "user"
+        if existing_rating_row:
+            existing_rating_row.rating = rating
+            existing_rating_row.rated_at = now_naive
+            existing_rating_row.source = "user"
             if imdb_id:
-                existing.imdb_id = imdb_id
+                existing_rating_row.imdb_id = imdb_id
             if tmdb_id:
-                existing.tmdb_id = tmdb_id
+                existing_rating_row.tmdb_id = tmdb_id
         else:
             new_rating = UserRating(
                 user_id=user_id,
