@@ -162,6 +162,7 @@ var radarrServers = [];
 var sonarrServers = [];
 var pendingRadarrItem = null;
 var pendingSonarrItem = null;
+var titleMatchedShows = {};  /* lowercase title -> original title */
 
 /* --- Suggestions --- */
 async function loadSuggestions() {
@@ -324,10 +325,13 @@ async function doSonarrSend(serverIndex) {
       /* Warn when Sonarr matched on title alone — no TVDB ID was
          available, so the series it picked may not be the right one */
       if (res.matched_by === 'title') {
+        titleMatchedShows[(item.title || '').toLowerCase().trim()] = item.title || '';
         showToast('Added "' + (res.title || item.title) + '" — matched by title, please verify in Sonarr', 'orange');
       } else {
         showToast('Added "' + (res.title || item.title) + '" to Sonarr', 'green');
       }
+      /* Re-render grid to show the warning badge */
+      renderGrid();
     } else {
       var msg = res.reason || res.message || 'Already exists or failed';
       showToast(msg, 'orange');
@@ -457,6 +461,11 @@ function renderGrid() {
     if (w.on_watchlist && !w.watched) {
       html += ' <span class="badge-watchlist">📋 Watchlisted</span>';
     }
+    /* Persistent warning for Sonarr title-matched shows */
+    var _wlower = (w.name || w.title || '').toLowerCase().trim();
+    if (titleMatchedShows[_wlower]) {
+      html += ' <span class="badge-title-match" onclick="verifyTitleMatch(\'' + esc(_wlower).replace(/'/g, "\\\\'") + '\',event)" title="Sent to Sonarr via title match — click to verify and dismiss" style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:0.65rem;font-weight:600;background:rgba(210,153,34,0.15);color:var(--orange);cursor:pointer;margin-left:3px;">⚠ Verify</span>';
+    }
     html += '</div>';
     if (roles) html += '<div class="work-role" title="' + esc(roles) + '">' + esc(roles) + '</div>';
     html += '</div></a>';
@@ -516,7 +525,34 @@ if (_initQ) {
 }
 loadRadarrServers();
 loadSonarrServers();
+loadTitleMatched();
 syncWatchlistOnce();
+
+async function loadTitleMatched() {
+  try {
+    var r = await fetch('/api/sonarr/title-matched');
+    if (!r.ok) return;
+    var d = await r.json();
+    (d.items || []).forEach(function(item) {
+      titleMatchedShows[item.key] = item.title;
+    });
+  } catch(e) { /* silent */ }
+}
+
+async function verifyTitleMatch(titleKey, evt) {
+  if (evt) { evt.preventDefault(); evt.stopPropagation(); }
+  if (!confirm('Have you verified this show in Sonarr is correctly matched?\\n\\nClicking OK will remove the warning badge.')) return;
+  try {
+    await fetch('/api/sonarr/title-matched', {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ title: titleKey }),
+    });
+    delete titleMatchedShows[titleKey];
+    renderGrid();
+    showToast('Verified — warning removed', 'green');
+  } catch(e) { showToast('Error: ' + e.message, 'red'); }
+}
 </script>
 </div>
 </div>

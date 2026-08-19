@@ -231,9 +231,9 @@ async def analyze_library_health(
 # ============================================================================
 # BULK ACTIONS UI - 3 Endpoints
 #
-# NOTE: Bulk action execution is not yet implemented.  create_bulk_action
-# records the request; a future background worker will process pending
-# actions.  Until then, status remains 'pending'.
+# Bulk actions are auto-executed in background on creation via
+# _process_bulk_action.  Pending actions can also be manually triggered
+# via POST /bulk/execute/{action_id}.
 # ============================================================================
 
 @router.post("/bulk/action")
@@ -245,10 +245,10 @@ async def create_bulk_action(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
-    """Create bulk action record.
+    """Create and execute a bulk action.
 
-    NOTE: Execution is not yet implemented — the action is recorded with
-    status='pending' for a future background processor.
+    Supported action_types: delete, rate_batch, export, add_collection.
+    Execution starts immediately in background.
     """
     require_user_ownership(_user.id, user_id, "bulk_action")
     try:
@@ -271,12 +271,15 @@ async def create_bulk_action(
         await db.commit()
         await db.refresh(action)
 
+        # Auto-execute immediately in background
+        import asyncio
+        asyncio.create_task(_process_bulk_action(action.id))
+
         return {
             "success": True,
             "action_id": action.id,
-            "status": "pending",
+            "status": "processing",
             "item_count": len(item_ids),
-            "note": "Bulk execution is not yet implemented — action recorded for future processing.",
         }
     except HTTPException:
         raise
@@ -358,6 +361,202 @@ async def get_bulk_action_history(
     except Exception as e:
         log.error("phase5.bulk_history_failed", error=str(e)[:200])
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# BULK ACTION PROCESSOR
+# ============================================================================
+
+
+async def _process_bulk_action(action_id: int) -> None:
+    """Background worker: execute a pending bulk action.
+
+    Called after creation or via the manual /bulk/execute endpoint.
+    Each action type operates on the list of item IDs stored on the
+    BulkAction row and writes per-item results back to result_json.
+    """
+    from app.utils.database import async_session
+    from app.utils.emby_client import EmbyClient
+
+    async with async_session() as db:
+        action = (await db.execute(
+            select(BulkAction).filter(BulkAction.id == action_id)
+        )).scalars().first()
+        if not action or action.status != "pending":
+            return
+
+        action.status = "in_progress"
+        await db.commit()
+
+        item_ids = action.item_ids or []
+        results: dict = {"processed": 0, "succeeded": 0, "failed": 0, "errors": []}
+
+        try:
+            if action.action_type == "delete":
+                async with EmbyClient() as emby:
+                    for eid in item_ids:
+                        try:
+                            item = await emby.get_item_safe(str(eid))
+                            if not item:
+                                results["errors"].append(
+                                    {"emby_id": eid, "error": "not found"})
+                                results["failed"] += 1
+                            else:
+                                await emby.delete_item(str(eid))
+                                results["succeeded"] += 1
+                        except Exception as e:
+                            results["errors"].append(
+                                {"emby_id": eid, "error": str(e)[:200]})
+                            results["failed"] += 1
+                        results["processed"] += 1
+
+            elif action.action_type == "rate_batch":
+                # item_ids are expected to be dicts serialised in the
+                # metadata: [{emby_id, imdb_id, rating, item_type, title}, ...]
+                meta = action.result_json or {}
+                rating_items = meta.get("items") or []
+                from app.models.schema import UserRating
+                for ri in rating_items:
+                    try:
+                        imdb_id = ri.get("imdb_id")
+                        rating = ri.get("rating")
+                        if not imdb_id or not rating:
+                            results["errors"].append(
+                                {"imdb_id": imdb_id, "error": "missing data"})
+                            results["failed"] += 1
+                            continue
+                        # Store locally
+                        existing = (await db.execute(
+                            select(UserRating).where(
+                                UserRating.user_id == action.user_id,
+                                UserRating.imdb_id == imdb_id,
+                            )
+                        )).scalar_one_or_none()
+                        if existing:
+                            existing.rating = float(rating)
+                            existing.source = "user"
+                        else:
+                            db.add(UserRating(
+                                user_id=action.user_id,
+                                simkl_id=imdb_id,
+                                title=ri.get("title", ""),
+                                item_type=ri.get("item_type", "movie"),
+                                rating=float(rating),
+                                imdb_id=imdb_id,
+                                tmdb_id=ri.get("tmdb_id"),
+                                source="user",
+                                rated_at=datetime.now(timezone.utc).replace(
+                                    tzinfo=None),
+                            ))
+                        await db.commit()
+                        results["succeeded"] += 1
+                    except Exception as e:
+                        await db.rollback()
+                        results["errors"].append(
+                            {"imdb_id": ri.get("imdb_id"),
+                             "error": str(e)[:200]})
+                        results["failed"] += 1
+                    results["processed"] += 1
+
+            elif action.action_type == "add_collection":
+                meta = action.result_json or {}
+                collection_name = meta.get("collection_name", "Bulk Collection")
+                async with EmbyClient() as emby:
+                    str_ids = [str(eid) for eid in item_ids]
+                    try:
+                        col_id = await emby.find_or_create_collection(
+                            collection_name, str_ids)
+                        results["succeeded"] = len(str_ids)
+                        results["processed"] = len(str_ids)
+                        results["collection_id"] = col_id
+                    except Exception as e:
+                        results["failed"] = len(str_ids)
+                        results["processed"] = len(str_ids)
+                        results["errors"].append(
+                            {"error": str(e)[:200]})
+
+            elif action.action_type == "export":
+                # Export watch history rows for the given emby IDs to JSON
+                from app.models.schema import WatchHistory
+                rows = (await db.execute(
+                    select(WatchHistory).where(
+                        WatchHistory.user_id == action.user_id,
+                        WatchHistory.emby_id.in_(
+                            [str(eid) for eid in item_ids]),
+                    ).order_by(WatchHistory.watched_at.desc())
+                )).scalars().all()
+
+                export_data = []
+                for row in rows:
+                    export_data.append({
+                        "title": row.title,
+                        "imdb_id": row.imdb_id,
+                        "tmdb_id": row.tmdb_id,
+                        "item_type": row.item_type,
+                        "watched_at": row.watched_at.isoformat()
+                        if row.watched_at else None,
+                        "series_name": row.series_name,
+                    })
+                results["succeeded"] = len(export_data)
+                results["processed"] = len(item_ids)
+                results["export_data"] = export_data
+
+            else:
+                results["errors"].append(
+                    {"error": f"Unknown action_type: {action.action_type}"})
+
+            action.status = "completed"
+
+        except Exception as e:
+            log.error("bulk.processor_failed", action_id=action_id,
+                      error=str(e)[:200])
+            results["errors"].append({"error": str(e)[:200]})
+            action.status = "failed"
+
+        # Trim errors list to avoid unbounded JSON growth
+        if len(results.get("errors", [])) > 50:
+            results["errors"] = results["errors"][:50]
+            results["errors_truncated"] = True
+
+        action.result_json = results
+        action.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await db.commit()
+
+        log.info("bulk.action_completed", action_id=action_id,
+                 action_type=action.action_type, status=action.status,
+                 succeeded=results.get("succeeded", 0),
+                 failed=results.get("failed", 0))
+
+
+@router.post("/bulk/execute/{action_id}")
+async def execute_bulk_action(
+    action_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """Manually trigger execution of a pending bulk action."""
+    action = (await db.execute(
+        select(BulkAction).filter(BulkAction.id == action_id)
+    )).scalars().first()
+
+    if not action:
+        raise HTTPException(404, "Action not found")
+
+    require_user_ownership(_user.id, action.user_id, "bulk_execute")
+
+    if action.status != "pending":
+        raise HTTPException(
+            400, f"Action is '{action.status}', not 'pending'")
+
+    import asyncio
+    asyncio.create_task(_process_bulk_action(action_id))
+
+    return {
+        "success": True,
+        "action_id": action_id,
+        "status": "processing",
+        "note": "Execution started in background.",
+    }
 
 
 # ============================================================================

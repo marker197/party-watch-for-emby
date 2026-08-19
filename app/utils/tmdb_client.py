@@ -727,3 +727,87 @@ async def get_tv_external_ids(tmdb_id: int) -> dict | None:
         log.debug("tmdb.tv_external_ids_failed", tmdb_id=tmdb_id,
                   error=str(e)[:120])
         return None
+
+
+async def search_tmdb(
+    query: str,
+    media_type: str = "movie",
+    year: int | None = None,
+) -> list[dict]:
+    """Search TMDB for movies or TV shows by title.
+
+    Returns a list of result dicts with id, title/name, release_date, etc.
+    ``media_type`` should be ``"movie"`` or ``"tv"``.
+    """
+    api_key = await _get_api_key()
+    if not api_key or not query:
+        return []
+
+    endpoint = "movie" if media_type == "movie" else "tv"
+    params: dict = {"api_key": api_key, "query": query}
+    if year:
+        params["year" if media_type == "movie" else "first_air_date_year"] = year
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{TMDB_BASE}/search/{endpoint}",
+                params=params,
+            )
+            resp.raise_for_status()
+            return resp.json().get("results", [])
+    except Exception as e:
+        log.debug("tmdb.search_failed", query=query, error=str(e)[:120])
+        return []
+
+
+async def get_external_ids(tmdb_id: int, media_type: str = "movie") -> dict:
+    """Return external IDs (imdb_id, tvdb_id) for a movie or TV show.
+
+    For TV shows, delegates to ``get_tv_external_ids``.  For movies,
+    fetches ``/movie/{id}/external_ids``.  Cached 7 days.
+    """
+    if media_type == "tv":
+        return await get_tv_external_ids(tmdb_id) or {}
+
+    api_key = await _get_api_key()
+    if not api_key or not tmdb_id:
+        return {}
+
+    import json
+
+    cache_key = f"tmdb_movie_extids:{tmdb_id}"
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{TMDB_BASE}/movie/{tmdb_id}/external_ids",
+                params={"api_key": api_key},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        result = {
+            "tmdb_id": tmdb_id,
+            "imdb_id": data.get("imdb_id"),
+        }
+
+        try:
+            r = await get_redis()
+            await r.setex(cache_key, 604800, json.dumps(result))
+        except Exception:
+            pass
+
+        return result
+
+    except Exception as e:
+        log.debug("tmdb.movie_external_ids_failed", tmdb_id=tmdb_id,
+                  error=str(e)[:120])
+        return {}

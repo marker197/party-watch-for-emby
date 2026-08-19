@@ -740,16 +740,6 @@ class MDBListClient:
         except Exception:
             return None
 
-    async def get_ratings_batch(self, media_type: str, ids: list[dict]) -> list[dict]:
-        """Batch ratings lookup.
-        media_type: 'movie' or 'show'
-        ids: [{"imdb": "tt..."}, {"tmdb": 123}]
-        """
-        try:
-            return await self._post(f"/rating/{media_type}/all", ids)
-        except Exception:
-            return []
-
     # ═══════════════════════════════════════════════════════════════════════
     # Trending / Popular (via list endpoints)
     # ═══════════════════════════════════════════════════════════════════════

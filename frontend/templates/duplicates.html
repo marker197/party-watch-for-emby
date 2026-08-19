@@ -113,6 +113,38 @@
   }
   .dup-dismiss-btn:hover, .dup-restore-btn:hover { background: rgba(125,133,144,0.25); color: #E6EDF3; }
   .dup-dismiss-btn:disabled, .dup-restore-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .bulk-bar {
+    position: sticky; top: 0; z-index: 50; background: var(--surface); border: 1px solid var(--accent);
+    border-radius: var(--radius); padding: 10px 16px; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .bulk-bar .count { font-weight: 600; font-size: 0.88rem; color: var(--accent-light); }
+  .bulk-bar .btn-sm {
+    padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: transparent; color: var(--text); cursor: pointer; font-size: 0.82rem;
+  }
+  .bulk-bar .btn-sm:hover { background: var(--surface-hover); }
+  .bulk-bar .btn-sm.dismiss { background: rgba(125,133,144,0.15); }
+  .bulk-bar .btn-sm.dismiss:hover { background: rgba(125,133,144,0.3); }
+  .issue-cb { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; flex-shrink: 0; }
+  .dismissed-panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px; margin-top: 16px;
+  }
+  .dismissed-panel h3 { font-size: 0.95rem; margin-bottom: 12px; }
+  .dismissed-item {
+    display: flex; align-items: center; gap: 10px; padding: 8px 0;
+    border-bottom: 1px solid var(--border); font-size: 0.84rem;
+  }
+  .dismissed-item:last-child { border-bottom: none; }
+  .dismissed-item .type-tag { font-size: 0.7rem; padding: 1px 6px; border-radius: 4px; }
+  .suggest-list { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+  .suggest-item {
+    padding: 7px 10px; border: 1px solid #2A3040; border-radius: 6px; cursor: pointer;
+    font-size: 0.8rem; color: #E6EDF3; transition: border-color 0.2s;
+  }
+  .suggest-item:hover { border-color: #7B68EE; }
+  .suggest-item.selected { border-color: #7B68EE; background: rgba(123,104,238,0.12); }
 </style>
 <script src="/static/js/csrf.js"></script>
 <link rel="stylesheet" href="/static/css/sidebar.css">
@@ -156,6 +188,8 @@
   <h1>🔍 Duplicate &amp; Conflict Detector</h1>
   <p class="subtitle">Scans your library and watch history for duplicates, orphaned entries, and missing metadata.</p>
   <button class="btn btn-accent" id="scanBtn" onclick="runScan()">🔍 Run Scan</button>
+  <button class="btn" style="background:var(--surface);border:1px solid var(--border);color:var(--text-dim);margin-left:8px;" onclick="toggleDismissedPanel()">📋 Manage Dismissed</button>
+  <div id="dismissedPanel"></div>
   <div id="results"></div>
 </div>
 <script>
@@ -230,13 +264,82 @@ function fmtSize(mb) {
   return mb.toFixed(0) + ' MB';
 }
 
+var selectedIssues = new Set();
+
+function toggleIssueSelect(idx, ev) {
+  if (ev) ev.stopPropagation();
+  if (selectedIssues.has(idx)) selectedIssues.delete(idx);
+  else selectedIssues.add(idx);
+  updateBulkBar();
+}
+
+function selectAllVisible() {
+  currentFiltered.forEach(function(_, idx) { if (!currentFiltered[idx].dismissed) selectedIssues.add(idx); });
+  document.querySelectorAll('.issue-cb').forEach(function(cb) { if (!currentFiltered[cb.dataset.idx]?.dismissed) cb.checked = true; });
+  updateBulkBar();
+}
+
+function deselectAll() {
+  selectedIssues.clear();
+  document.querySelectorAll('.issue-cb').forEach(function(cb) { cb.checked = false; });
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  var bar = document.getElementById('bulkBar');
+  if (!bar) return;
+  if (selectedIssues.size > 0) {
+    bar.style.display = 'flex';
+    bar.querySelector('.count').textContent = selectedIssues.size + ' selected';
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+async function bulkDismissSelected() {
+  if (selectedIssues.size === 0) return;
+  if (!confirm('Dismiss ' + selectedIssues.size + ' issue(s)? They will be hidden from future scans.')) return;
+  var items = [];
+  selectedIssues.forEach(function(idx) {
+    var issue = currentFiltered[idx];
+    if (issue && issue.issue_key) {
+      items.push({ issue_type: issue.type, issue_key: issue.issue_key, title: issue.title });
+    }
+  });
+  if (!items.length) return;
+  try {
+    var r = await fetch('/api/duplicates/dismiss-bulk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ items: items }),
+    });
+    var d = await r.json();
+    if (r.ok) {
+      showToast('Dismissed ' + d.added + ' issue(s)', 'green');
+      selectedIssues.clear();
+      setTimeout(runScan, 400);
+    } else {
+      showToast(d.detail || 'Bulk dismiss failed', 'red');
+    }
+  } catch(e) {
+    showToast('Error: ' + e.message, 'red');
+  }
+}
+
 function renderIssues(type) {
   var filtered = type === 'all' ? allIssues : allIssues.filter(function(i) { return i.type === type; });
-  currentFiltered = filtered;  /* action handlers index into this, not allIssues */
+  currentFiltered = filtered;
+  selectedIssues.clear();
   var el = document.getElementById('issueList');
   if (!filtered.length) { el.innerHTML = '<div class="empty">No issues found — your library looks clean!</div>'; return; }
 
-  var html = '';
+  var html = '<div class="bulk-bar" id="bulkBar" style="display:none;">';
+  html += '<span class="count">0 selected</span>';
+  html += '<button class="btn-sm dismiss" onclick="bulkDismissSelected()">🙈 Dismiss selected</button>';
+  html += '<button class="btn-sm" onclick="selectAllVisible()">Select all</button>';
+  html += '<button class="btn-sm" onclick="deselectAll()">Deselect</button>';
+  html += '</div>';
+
   filtered.forEach(function(issue, idx) {
     var typeLabel = issue.type === 'duplicate_library' ? 'Duplicate' : issue.type === 'orphaned_history' ? 'Orphaned' : 'No Metadata';
     var typeClass = issue.type === 'duplicate_library' ? 'type-duplicate' : issue.type === 'orphaned_history' ? 'type-orphaned' : 'type-metadata';
@@ -247,6 +350,9 @@ function renderIssues(type) {
 
     html += '<div class="issue-card" id="issue-' + idx + '" style="flex-direction:column;align-items:stretch;">';
     html += '<div style="display:flex;align-items:center;gap:14px;">';
+    if (!issue.dismissed) {
+      html += '<input type="checkbox" class="issue-cb" data-idx="' + idx + '" onclick="toggleIssueSelect(' + idx + ',event)" />';
+    }
     html += '<div class="severity-dot ' + issue.severity + '"></div>';
     html += '<div class="issue-body">';
     html += '<div class="issue-title">' + esc(issue.title) + typeBadge + '</div>';
@@ -607,6 +713,9 @@ function openRelink(embyId, ev) {
     h += 'style="width:100%;box-sizing:border-box;background:#0D0F14;border:1px solid #2A3040;color:#E6EDF3;border-radius:6px;padding:8px 10px;font-size:0.85rem;margin-bottom:12px;font-family:ui-monospace,Menlo,monospace;">';
   });
 
+  h += '<button onclick="autoSuggestRelink(\'' + embyId + '\')" style="background:rgba(123,104,238,0.12);border:1px solid rgba(123,104,238,0.28);color:#7B68EE;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:0.78rem;margin-bottom:10px;width:100%;">🔍 Auto-suggest from TMDB</button>';
+  h += '<div id="suggestResults"></div>';
+
   h += '<label style="display:flex;align-items:center;gap:8px;font-size:0.78rem;color:#7D8590;margin-bottom:16px;cursor:pointer;">';
   h += '<input type="checkbox" id="relinkRefresh" checked style="accent-color:#7B68EE;"> Refresh metadata from the new IDs afterwards</label>';
   h += '<div style="font-size:0.72rem;color:#7D8590;margin-bottom:16px;font-style:italic;">Clear a field to remove that ID. Emby will lock these so the next library scan won\'t revert them.</div>';
@@ -625,6 +734,156 @@ function openRelink(embyId, ev) {
 function closeRelink() {
   var ov = document.getElementById('relinkOverlay');
   if (ov) ov.remove();
+}
+
+async function autoSuggestRelink(embyId) {
+  var box = document.getElementById('suggestResults');
+  if (!box) return;
+  box.innerHTML = '<div style="font-size:0.74rem;color:#7D8590;">Searching TMDB…</div>';
+  try {
+    var r = await fetch('/api/duplicates/suggest-relink/' + encodeURIComponent(embyId));
+    var d = await r.json();
+    var suggestions = d.suggestions || [];
+    if (!suggestions.length) {
+      box.innerHTML = '<div style="font-size:0.74rem;color:#7D8590;">No TMDB matches found for "' + esc(d.emby_title || '') + '".</div>';
+      return;
+    }
+    var h = '<div class="suggest-list">';
+    suggestions.forEach(function(s, i) {
+      var ids = [];
+      if (s.imdb_id) ids.push(s.imdb_id);
+      if (s.tmdb_id) ids.push('tmdb:' + s.tmdb_id);
+      if (s.tvdb_id) ids.push('tvdb:' + s.tvdb_id);
+      h += '<div class="suggest-item" id="suggest-' + i + '" onclick="pickSuggestion(' + i + ')">';
+      h += '<div style="font-weight:600;">' + esc(s.title || '?') + (s.year ? ' <span style="color:#7D8590;">(' + s.year + ')</span>' : '') + '</div>';
+      if (ids.length) h += '<div style="font-size:0.7rem;color:#7D8590;font-family:ui-monospace,Menlo,monospace;">' + esc(ids.join('  ')) + '</div>';
+      h += '</div>';
+    });
+    h += '</div>';
+    box.innerHTML = h;
+    window._suggestData = suggestions;
+  } catch(e) {
+    box.innerHTML = '<div style="font-size:0.74rem;color:var(--red);">Error: ' + esc(e.message) + '</div>';
+  }
+}
+
+function pickSuggestion(i) {
+  var s = (window._suggestData || [])[i];
+  if (!s) return;
+  if (s.imdb_id) document.getElementById('relinkImdb').value = s.imdb_id;
+  if (s.tmdb_id) document.getElementById('relinkTmdb').value = s.tmdb_id;
+  if (s.tvdb_id) document.getElementById('relinkTvdb').value = s.tvdb_id;
+  (window._suggestData || []).forEach(function(_, j) {
+    var el = document.getElementById('suggest-' + j);
+    if (el) { el.classList.toggle('selected', j === i); }
+  });
+}
+
+/* ── Dismissed issues management panel ──────────────────────────────── */
+var _dismissedPanelOpen = false;
+
+async function toggleDismissedPanel() {
+  var el = document.getElementById('dismissedPanel');
+  if (_dismissedPanelOpen) {
+    el.innerHTML = '';
+    _dismissedPanelOpen = false;
+    return;
+  }
+  _dismissedPanelOpen = true;
+  el.innerHTML = '<div class="dismissed-panel"><div class="loading"><div class="spinner"></div> Loading…</div></div>';
+  try {
+    var r = await fetch('/api/duplicates/dismissed');
+    var d = await r.json();
+    var items = d.items || [];
+    if (!items.length) {
+      el.innerHTML = '<div class="dismissed-panel"><div class="empty" style="padding:16px;">No dismissed issues.</div></div>';
+      return;
+    }
+    var h = '<div class="dismissed-panel">';
+    h += '<h3>Dismissed Issues (' + items.length + ')</h3>';
+    h += '<div style="display:flex;gap:8px;margin-bottom:12px;">';
+    h += '<button class="btn-sm dismiss" style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:rgba(224,82,82,0.12);color:var(--red);cursor:pointer;font-size:0.78rem;" onclick="bulkUndismissAll()">↩ Restore all</button>';
+    h += '<button class="btn-sm" style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-dim);cursor:pointer;font-size:0.78rem;" onclick="toggleDismissedPanel()">Close</button>';
+    h += '</div>';
+    items.forEach(function(item) {
+      var typeColor = item.issue_type === 'duplicate_library' ? 'var(--orange)' : item.issue_type === 'orphaned_history' ? 'var(--blue)' : 'var(--red)';
+      var typeLabel = item.issue_type === 'duplicate_library' ? 'Duplicate' : item.issue_type === 'orphaned_history' ? 'Orphaned' : 'No Metadata';
+      h += '<div class="dismissed-item" id="di-' + item.id + '">';
+      h += '<input type="checkbox" class="issue-cb dismissed-cb" data-id="' + item.id + '" />';
+      h += '<span class="type-tag" style="background:rgba(125,133,144,0.12);color:' + typeColor + ';">' + typeLabel + '</span>';
+      h += '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(item.title || item.issue_key) + '">' + esc(item.title || item.issue_key) + '</span>';
+      h += '<span style="font-size:0.72rem;color:var(--text-dim);">' + (item.dismissed_at ? item.dismissed_at.substring(0, 10) : '') + '</span>';
+      h += '<button class="dup-restore-btn" onclick="undismissSingle(' + item.id + ',event)" style="padding:3px 8px;">↩</button>';
+      h += '</div>';
+    });
+    h += '<div style="margin-top:10px;"><button class="btn-sm dismiss" style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:rgba(224,82,82,0.12);color:var(--red);cursor:pointer;font-size:0.78rem;" onclick="bulkUndismissChecked()">↩ Restore checked</button></div>';
+    h += '</div>';
+    el.innerHTML = h;
+    window._dismissedItems = items;
+  } catch(e) {
+    el.innerHTML = '<div class="dismissed-panel"><div class="empty">Error: ' + esc(e.message) + '</div></div>';
+  }
+}
+
+async function undismissSingle(id, ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  try {
+    var r = await fetch('/api/duplicates/dismiss', {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ id: id }),
+    });
+    if (r.ok) {
+      var row = document.getElementById('di-' + id);
+      if (row) { row.style.transition = 'opacity 0.3s'; row.style.opacity = '0'; setTimeout(function() { row.remove(); }, 300); }
+      showToast('Restored', 'green');
+    } else {
+      showToast('Restore failed', 'red');
+    }
+  } catch(e) { showToast('Error: ' + e.message, 'red'); }
+}
+
+async function bulkUndismissChecked() {
+  var ids = [];
+  document.querySelectorAll('.dismissed-cb:checked').forEach(function(cb) { ids.push(parseInt(cb.dataset.id)); });
+  if (!ids.length) { showToast('Nothing checked', 'orange'); return; }
+  if (!confirm('Restore ' + ids.length + ' dismissed issue(s)?')) return;
+  try {
+    var r = await fetch('/api/duplicates/undismiss-bulk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ ids: ids }),
+    });
+    var d = await r.json();
+    if (r.ok) {
+      showToast('Restored ' + d.removed + ' issue(s)', 'green');
+      toggleDismissedPanel(); /* close */
+      _dismissedPanelOpen = true;
+      toggleDismissedPanel(); /* reopen refreshed */
+    } else {
+      showToast(d.detail || 'Restore failed', 'red');
+    }
+  } catch(e) { showToast('Error: ' + e.message, 'red'); }
+}
+
+async function bulkUndismissAll() {
+  if (!window._dismissedItems || !window._dismissedItems.length) return;
+  if (!confirm('Restore all ' + window._dismissedItems.length + ' dismissed issue(s)?')) return;
+  var ids = window._dismissedItems.map(function(i) { return i.id; });
+  try {
+    var r = await fetch('/api/duplicates/undismiss-bulk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ ids: ids }),
+    });
+    var d = await r.json();
+    if (r.ok) {
+      showToast('Restored ' + d.removed + ' issue(s)', 'green');
+      toggleDismissedPanel();
+    } else {
+      showToast(d.detail || 'Restore failed', 'red');
+    }
+  } catch(e) { showToast('Error: ' + e.message, 'red'); }
 }
 
 async function submitRelink(embyId) {

@@ -4173,6 +4173,22 @@ async def add_to_sonarr(payload: dict, _user: User = Depends(get_current_user)):
         if exclude_tvdb:
             await r.sadd("manual_arr_exclude:tvdb", *exclude_tvdb)
 
+    # Persist matched_by provenance so filmography UI can warn on
+    # title-matched items even after page navigation
+    try:
+        r = await get_redis()
+        for show, res in zip(shows, results):
+            if res.get("status") == "ok" and res.get("matched_by") == "title":
+                _prov_title = show.get("title") or res.get("title") or ""
+                if _prov_title:
+                    await r.hset(
+                        "sonarr:matched_by_title",
+                        _prov_title.lower().strip(),
+                        _prov_title,
+                    )
+    except Exception:
+        pass  # best-effort — UI hint only
+
     return {
         "status": "ok",
         "server": srv["name"],
@@ -4180,6 +4196,51 @@ async def add_to_sonarr(payload: dict, _user: User = Depends(get_current_user)):
         "total": len(shows),
         "results": results,
     }
+
+
+@router.get("/api/sonarr/title-matched")
+async def get_title_matched_sonarr(
+    _user: User = Depends(get_current_user),
+):
+    """Return list of shows that were sent to Sonarr via title match only.
+
+    These should be verified in Sonarr since the matched series may not
+    be the correct one.
+    """
+    try:
+        r = await get_redis()
+        items = await r.hgetall("sonarr:matched_by_title")
+        # items is {b"key": b"val"} — decode
+        return {
+            "items": [
+                {"key": k.decode() if isinstance(k, bytes) else k,
+                 "title": v.decode() if isinstance(v, bytes) else v}
+                for k, v in items.items()
+            ],
+            "total": len(items),
+        }
+    except Exception:
+        return {"items": [], "total": 0}
+
+
+@router.delete("/api/sonarr/title-matched")
+async def clear_title_matched_sonarr(
+    payload: dict,
+    _user: User = Depends(get_current_user),
+):
+    """Remove a show from the title-matched warning list after verification.
+
+    Payload: {title: "show name"}
+    """
+    title = (payload.get("title") or "").lower().strip()
+    if not title:
+        raise HTTPException(400, "title is required")
+    try:
+        r = await get_redis()
+        await r.hdel("sonarr:matched_by_title", title)
+    except Exception:
+        pass
+    return {"status": "ok"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -10233,7 +10294,7 @@ async def rate_item(
         cached_series = await LibraryCache.find_by_title(series_name)
         if cached_series:
             s_pids = cached_series.get("provider_ids") or cached_series.get("ProviderIds") or {}
-            s_imdb = s_pids.get("Imdb") or s_pids.get("imdb")
+            s_imdb = s_pids.get("Imdb") or s_pids.get("imdb") or s_pids.get("IMDB")
             s_tmdb = s_pids.get("Tmdb") or s_pids.get("tmdb")
             if s_imdb:
                 series_ids_obj["imdb"] = s_imdb
@@ -10243,23 +10304,21 @@ async def rate_item(
                 except (ValueError, TypeError):
                     series_ids_obj["tmdb"] = s_tmdb
         if not series_ids_obj.get("imdb"):
-            # Fallback: search Emby for the series to get IMDB
-            # (bulk endpoint often omits ProviderIds for Series items)
+            # Cache may lack IMDB for series — search Emby directly
             try:
                 from app.utils.emby_client import EmbyClient
                 _emby_sr = EmbyClient()
                 sr_results = await _emby_sr.search_items(series_name, item_type="Series")
-                for sr in (sr_results if isinstance(sr_results, list) else (sr_results or {}).get("Items", sr_results or [])):
+                _sr_list = sr_results if isinstance(sr_results, list) else (sr_results or {}).get("Items", sr_results or [])
+                for sr in _sr_list:
                     sr_pids = sr.get("ProviderIds", {})
                     sr_title = (sr.get("Name") or "").strip().lower()
                     _sn_lower = series_name.strip().lower()
-                    # Match exact, or contains (e.g. "Lioness" in
-                    # "Special Ops: Lioness"), or by TMDB ID if known
                     sr_tmdb = sr_pids.get("Tmdb") or sr_pids.get("tmdb")
                     _tmdb_match = (sr_tmdb and series_ids_obj.get("tmdb")
                                    and str(sr_tmdb) == str(series_ids_obj["tmdb"]))
                     if sr_title == _sn_lower or _sn_lower in sr_title or _tmdb_match:
-                        s_imdb = sr_pids.get("Imdb") or sr_pids.get("imdb")
+                        s_imdb = sr_pids.get("Imdb") or sr_pids.get("imdb") or sr_pids.get("IMDB")
                         s_tmdb = sr_pids.get("Tmdb") or sr_pids.get("tmdb")
                         if s_imdb:
                             series_ids_obj["imdb"] = s_imdb
@@ -10271,8 +10330,8 @@ async def rate_item(
                         if series_ids_obj.get("imdb"):
                             break
                 await _emby_sr.close()
-            except Exception as e:
-                log.debug("rate.series_id_emby_fallback_failed", error=str(e)[:120])
+            except Exception:
+                pass
         log.debug("rate.series_ids_resolved",
                    series_name=series_name,
                    series_ids=series_ids_obj,
@@ -10321,67 +10380,58 @@ async def rate_item(
         return [{"ids": ids_obj, "_type": "movies" if item_type == "movie" else "shows"}]
 
     if "simkl" in providers and user.simkl_access_token:
-        try:
-            simkl = SimklClient(
-                access_token=user.simkl_access_token,
-                token_expires=user.simkl_token_expires,
-            )
+        # Simkl episode re-rating not supported — remove_ratings with a
+        # show-nested payload destroys the show-level rating and history.
+        # Episode re-rates are handled by MDBList only.
+        if is_rerate and item_type == "episode":
+            results["simkl"] = {"ok": True, "skipped": "episode_rerate_unsupported"}
+        else:
+            try:
+                simkl = SimklClient(
+                    access_token=user.simkl_access_token,
+                    token_expires=user.simkl_token_expires,
+                )
 
-            # Re-rate for movies/shows: remove old rating first (add_ratings
-            # is add-only for movies/shows — must remove then re-add).
-            # Episodes: Simkl add_ratings overwrites existing episode ratings
-            # directly — no remove step needed (and remove_ratings with a
-            # show-nested payload destroys the show-level rating).
-            if is_rerate and item_type not in ("episode",):
-                rm_resp = await simkl.remove_ratings(_simkl_remove_payload())
-                log.info("rating.simkl_removed_for_rerate", user_id=user_id,
-                         imdb=imdb_id, old_rating=old_rating,
-                         response=str(rm_resp)[:200])
-                await asyncio.sleep(1.1)  # Simkl 1 req/sec POST rate limit
+                # Re-rate for movies/shows: remove then re-add
+                if is_rerate:
+                    rm_resp = await simkl.remove_ratings(_simkl_remove_payload())
+                    log.info("rating.simkl_removed_for_rerate", user_id=user_id,
+                             imdb=imdb_id, old_rating=old_rating,
+                             response=str(rm_resp)[:200])
+                    await asyncio.sleep(1.1)
 
-            # Build the add payload
-            if item_type == "episode" and season_number is not None and episode_number is not None:
-                # Episode: clean show-nested payload matching Simkl's
-                # documented format — show IDs + season/episode + rating only
-                simkl_item = {
-                    "ids": series_ids_obj or ids_obj,
-                    "_type": "shows",
-                    "seasons": [{
-                        "number": season_number,
-                        "episodes": [{
-                            "number": episode_number,
-                            "rating": rating,
+                # Build payload
+                if item_type == "episode" and season_number is not None and episode_number is not None:
+                    simkl_item = {
+                        "ids": series_ids_obj or ids_obj,
+                        "_type": "shows",
+                        "seasons": [{
+                            "number": season_number,
+                            "episodes": [{
+                                "number": episode_number,
+                                "rating": rating,
+                            }],
                         }],
-                    }],
-                }
-            else:
-                simkl_item = {
-                    "ids": ids_obj,
-                    "rating": rating,
-                    "rated_at": now_str,
-                    "_type": "movies" if item_type == "movie" else "shows",
-                }
-            if title:
-                simkl_item["title"] = series_name or title
+                    }
+                else:
+                    simkl_item = {
+                        "ids": ids_obj,
+                        "rating": rating,
+                        "rated_at": now_str,
+                        "_type": "movies" if item_type == "movie" else "shows",
+                    }
+                if title:
+                    simkl_item["title"] = series_name or title
 
-            # Log exact payload for debugging
-            import json as _json_rate
-            _clean_log = {k: v for k, v in simkl_item.items()
-                          if not k.startswith("_")}
-            log.info("rating.simkl_payload",
-                     payload=_json_rate.dumps(_clean_log, default=str)[:500])
+                resp = await simkl.add_ratings([simkl_item])
+                results["simkl"] = {"ok": True, "response": resp}
+                log.info("rating.simkl_pushed", user_id=user_id, imdb=imdb_id,
+                         rating=rating, rerate=is_rerate)
 
-            resp = await simkl.add_ratings([simkl_item])
-            results["simkl"] = {"ok": True, "response": resp}
-            log.info("rating.simkl_pushed", user_id=user_id, imdb=imdb_id,
-                     rating=rating, rerate=is_rerate,
-                     response=str(resp)[:300],
-                     series_ids=series_ids_obj or None)
-
-            await simkl.close()
-        except Exception as e:
-            results["simkl"] = {"ok": False, "error": str(e)[:200]}
-            log.warning("rating.simkl_failed", error=str(e)[:200])
+                await simkl.close()
+            except Exception as e:
+                results["simkl"] = {"ok": False, "error": str(e)[:200]}
+                log.warning("rating.simkl_failed", error=str(e)[:200])
 
     # ── Push to MDBList ──────────────────────────────────────────────
     if "mdblist" in providers:
@@ -12969,6 +13019,151 @@ async def undismiss_issue(
     log.info("duplicates.issue_undismissed", user_id=current_user.id,
              issue_key=row.issue_key)
     return {"status": "ok", "title": title}
+
+
+@router.post("/api/duplicates/dismiss-bulk")
+async def dismiss_issues_bulk(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Dismiss multiple scan issues at once.
+
+    Payload: {items: [{issue_type, issue_key, title?}, ...]}
+    """
+    from app.models.schema import DismissedIssue
+
+    items = payload.get("items") or []
+    if not items or len(items) > 500:
+        raise HTTPException(400, "Supply 1-500 items")
+
+    valid = {"orphaned_history", "missing_metadata", "duplicate_library"}
+    added = 0
+    skipped = 0
+
+    for item in items:
+        issue_type = (item.get("issue_type") or "").strip()
+        issue_key = (item.get("issue_key") or "").strip()
+        if not issue_type or not issue_key or issue_type not in valid:
+            skipped += 1
+            continue
+
+        existing = (await db.execute(
+            select(DismissedIssue).where(
+                DismissedIssue.user_id == current_user.id,
+                DismissedIssue.issue_type == issue_type,
+                DismissedIssue.issue_key == issue_key,
+            )
+        )).scalar_one_or_none()
+
+        if existing:
+            skipped += 1
+            continue
+
+        db.add(DismissedIssue(
+            user_id=current_user.id,
+            issue_type=issue_type,
+            issue_key=issue_key[:512],
+            title=(item.get("title") or None),
+            dismissed_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        ))
+        added += 1
+
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(500, "Bulk dismiss failed")
+
+    log.info("duplicates.bulk_dismissed", user_id=current_user.id,
+             added=added, skipped=skipped)
+    return {"status": "ok", "added": added, "skipped": skipped}
+
+
+@router.post("/api/duplicates/undismiss-bulk")
+async def undismiss_issues_bulk(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Restore multiple dismissed issues.
+
+    Payload: {ids: [1, 2, 3]}  — DismissedIssue row IDs.
+    """
+    from app.models.schema import DismissedIssue
+
+    ids = payload.get("ids") or []
+    if not ids or len(ids) > 500:
+        raise HTTPException(400, "Supply 1-500 ids")
+
+    rows = (await db.execute(
+        select(DismissedIssue).where(
+            DismissedIssue.user_id == current_user.id,
+            DismissedIssue.id.in_([int(i) for i in ids]),
+        )
+    )).scalars().all()
+
+    removed = len(rows)
+    for row in rows:
+        await db.delete(row)
+
+    await db.commit()
+    log.info("duplicates.bulk_undismissed", user_id=current_user.id, removed=removed)
+    return {"status": "ok", "removed": removed}
+
+
+@router.get("/api/duplicates/suggest-relink/{emby_id}")
+async def suggest_relink(
+    emby_id: str,
+    _user: User = Depends(get_current_user),
+):
+    """Suggest correct provider IDs for a mis-matched duplicate.
+
+    Looks up the item's title+year in TMDB and returns the best match's
+    provider IDs so the relink dialog can pre-fill them.
+    """
+    from app.utils.tmdb_client import search_tmdb
+
+    async with EmbyClient() as emby:
+        item = await emby.get_item_safe(emby_id)
+    if not item:
+        raise HTTPException(404, "Item not found in Emby")
+
+    title = item.get("Name", "")
+    year = item.get("ProductionYear")
+    item_type = item.get("Type", "")  # Movie | Series
+    media_type = "movie" if item_type == "Movie" else "tv"
+
+    if not title:
+        return {"suggestions": []}
+
+    results = await search_tmdb(title, media_type=media_type, year=year)
+    suggestions = []
+    for r in (results or [])[:5]:
+        tmdb_id = r.get("id")
+        r_title = r.get("title") or r.get("name") or ""
+        r_year = (r.get("release_date") or r.get("first_air_date") or "")[:4]
+
+        # Look up IMDB from TMDB external IDs
+        imdb_id = None
+        tvdb_id = None
+        try:
+            from app.utils.tmdb_client import get_external_ids
+            ext = await get_external_ids(tmdb_id, media_type)
+            imdb_id = ext.get("imdb_id")
+            tvdb_id = str(ext["tvdb_id"]) if ext.get("tvdb_id") else None
+        except Exception:
+            pass
+
+        suggestions.append({
+            "tmdb_id": str(tmdb_id) if tmdb_id else None,
+            "imdb_id": imdb_id,
+            "tvdb_id": tvdb_id,
+            "title": r_title,
+            "year": r_year,
+        })
+
+    return {"suggestions": suggestions, "emby_title": title, "emby_year": year}
 
 
 # ── History re-link (orphaned / missing metadata) ───────────────────────
