@@ -391,7 +391,7 @@ class AiringAlertsService:
             except Exception:
                 pass
 
-            log.info("airing_alerts.followed_ids", count=len(followed_ids))
+            log.debug("airing_alerts.followed_ids", count=len(followed_ids))
 
             try:
                 raw_premieres = await simkl.get_my_premieres(start_date=today, days=days)
@@ -408,7 +408,7 @@ class AiringAlertsService:
                             break
                     if matched:
                         premieres.append(entry)
-                log.info("airing_alerts.premieres_filtered",
+                log.debug("airing_alerts.premieres_filtered",
                          raw=len(raw_premieres), kept=len(premieres))
             except Exception as e:
                 log.warning("airing_alerts.premieres_failed", error=str(e)[:200])

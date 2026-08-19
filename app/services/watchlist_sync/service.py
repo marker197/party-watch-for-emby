@@ -50,7 +50,7 @@ class WatchlistSyncService:
 
         providers = await self._get_active_providers()
         if not providers:
-            log.info("watchlist_sync.no_active_providers")
+            log.debug("watchlist_sync.no_active_providers")
             return
 
         log.info("watchlist_sync.run_start",
@@ -166,7 +166,7 @@ class WatchlistSyncService:
             missing_tmdb, missing_tvdb)
 
         if not missing_tmdb and not missing_tvdb:
-            log.info("watchlist_sync.arr_to_simkl.nothing_missing", user_id=user.id)
+            log.debug("watchlist_sync.arr_to_simkl.nothing_missing", user_id=user.id)
             return
 
         # Fetch current Simkl watchlist for dupe check
@@ -201,7 +201,7 @@ class WatchlistSyncService:
         ]
 
         if not movies_to_add and not shows_to_add:
-            log.info("watchlist_sync.arr_to_simkl.all_on_watchlist",
+            log.debug("watchlist_sync.arr_to_simkl.all_on_watchlist",
                      user_id=user.id,
                      missing_movies=len(missing_tmdb),
                      missing_shows=len(missing_tvdb))
@@ -240,7 +240,7 @@ class WatchlistSyncService:
             missing_tmdb, missing_tvdb)
 
         if not missing_tmdb and not missing_tvdb:
-            log.info("watchlist_sync.arr_to_mdblist.nothing_missing", user_id=user.id)
+            log.debug("watchlist_sync.arr_to_mdblist.nothing_missing", user_id=user.id)
             return
 
         # Fetch current MDBList watchlist for dupe check
@@ -291,7 +291,7 @@ class WatchlistSyncService:
                               tvdb=tvdb)
 
         if not movies_to_add and not shows_to_add:
-            log.info("watchlist_sync.arr_to_mdblist.all_on_watchlist",
+            log.debug("watchlist_sync.arr_to_mdblist.all_on_watchlist",
                      user_id=user.id,
                      missing_movies=len(missing_tmdb),
                      missing_shows=len(missing_tvdb))
@@ -491,7 +491,7 @@ class WatchlistSyncService:
         await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
         wl_shows = await simkl.get_watchlist(kind="shows")
 
-        log.info("watchlist_sync.simkl_to_arr.raw_counts",
+        log.debug("watchlist_sync.simkl_to_arr.raw_counts",
                  user_id=user.id,
                  movies=len(wl_movies or []),
                  shows=len(wl_shows or []))
@@ -532,10 +532,10 @@ class WatchlistSyncService:
                 }
 
         if not wl_movie_map and not wl_movie_imdb_map and not wl_show_map:
-            log.info("watchlist_sync.simkl_to_arr.empty_watchlist", user_id=user.id)
+            log.debug("watchlist_sync.simkl_to_arr.empty_watchlist", user_id=user.id)
             return
 
-        log.info("watchlist_sync.simkl_to_arr.parsed",
+        log.debug("watchlist_sync.simkl_to_arr.parsed",
                  user_id=user.id,
                  movies_tmdb=len(wl_movie_map),
                  movies_imdb_only=len(wl_movie_imdb_map),
@@ -640,7 +640,7 @@ class WatchlistSyncService:
                               tmdb=tmdb, title=title)
 
         if not wl_movie_map and not wl_show_map:
-            log.info("watchlist_sync.mdblist_to_arr.empty_watchlist", user_id=user.id)
+            log.debug("watchlist_sync.mdblist_to_arr.empty_watchlist", user_id=user.id)
             return
 
         await self._add_to_arr(
@@ -886,7 +886,7 @@ class WatchlistSyncService:
         missing_tmdb = list(set(missing_tmdb))
         missing_tvdb = list(set(missing_tvdb))
 
-        log.info("watchlist_sync.arr_missing_totals",
+        log.debug("watchlist_sync.arr_missing_totals",
                  movies=len(missing_tmdb), shows=len(missing_tvdb))
 
         return missing_tmdb, missing_tvdb
@@ -928,7 +928,7 @@ class WatchlistSyncService:
         tvdb_ids = [t for t in tvdb_ids if t not in exclude_tvdb]
         excluded = (before_tmdb - len(tmdb_ids)) + (before_tvdb - len(tvdb_ids))
         if excluded:
-            log.info("watchlist_sync.manual_arr_excluded",
+            log.debug("watchlist_sync.manual_arr_excluded",
                      movies=before_tmdb - len(tmdb_ids),
                      shows=before_tvdb - len(tvdb_ids))
 
@@ -1042,7 +1042,7 @@ class WatchlistSyncService:
                 keys.append(key)
             if keys:
                 await r.delete(*keys)
-            log.info("watchlist_sync.airing_soon_cache_cleared",
+            log.debug("watchlist_sync.airing_soon_cache_cleared",
                      user_id=user.id, keys_cleared=len(keys))
         except Exception:
             log.warning("watchlist_sync.airing_soon_cache_clear_failed",

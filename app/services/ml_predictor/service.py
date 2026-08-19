@@ -334,17 +334,10 @@ class MLPredictorService:
                 "genres": item.get("genres", []),
                 "year": item.get("year"),
                 "runtime": item.get("runtime"),
-                "simkl_rating": (
-                    item.get("ratings", {}).get("simkl", {}).get("rating")
-                    or item.get("ratings", {}).get("mal", {}).get("rating")
-                ),  # community rating from extended=full
+                "simkl_rating": None,  # Simkl sync endpoint doesn't include community ratings
                 "ids": item.get("ids", {}),
                 "rated_at": entry.get("rated_at"),
             })
-
-        community_count = sum(1 for r in rows if r.get("simkl_rating"))
-        log.info("ml_predictor.simkl_community_ratings",
-                 total=len(rows), with_community=community_count)
 
         # ── MDBList ratings (supplement — has a rating for every watched item) ──
         mdb_added = 0
@@ -358,7 +351,7 @@ class MLPredictorService:
                 mdb = MDBListClient(api_key=mdb_key)
                 try:
                     mdb_ratings = await mdb.get_all_ratings()
-                    log.info("ml_predictor.mdblist_ratings_raw",
+                    log.debug("ml_predictor.mdblist_ratings_raw",
                              type=type(mdb_ratings).__name__,
                              keys=list(mdb_ratings.keys()) if isinstance(mdb_ratings, dict) else "not_dict",
                              movies=len(mdb_ratings.get("movies", [])) if isinstance(mdb_ratings, dict) else 0,
@@ -417,101 +410,7 @@ class MLPredictorService:
             log.warning("ml_predictor.mdblist_ratings_failed", error=str(e)[:120])
 
         if mdb_added:
-            log.info("ml_predictor.mdblist_ratings_merged", count=mdb_added)
-
-        # ── Backfill community ratings via MDBList batch lookup ──
-        # Simkl /sync/ratings/ doesn't return community scores, so use
-        # MDBList's /rating/{type}/all batch endpoint to fill them in.
-        missing_community = [r for r in rows if not r.get("simkl_rating") and r.get("ids", {}).get("imdb")]
-        if missing_community:
-            try:
-                from app.utils.mdblist_client import MDBListClient
-                from app.utils.secure_redis import secure_get
-                mdb_key_cr = await secure_get("mdblist_api_key")
-                if mdb_key_cr:
-                    mdb_cr = MDBListClient(api_key=mdb_key_cr)
-                    try:
-                        # Split into movies and shows
-                        movie_ids = [{"imdb": r["ids"]["imdb"]} for r in missing_community if r.get("item_type") == "movie"]
-                        show_ids = [{"imdb": r["ids"]["imdb"]} for r in missing_community if r.get("item_type") == "show"]
-
-                        # Batch lookup (API handles up to ~500 per call)
-                        cr_results: dict[str, float] = {}
-                        for batch_ids, media_type in ((movie_ids, "movie"), (show_ids, "show")):
-                            if not batch_ids:
-                                continue
-                            # Send in chunks of 100 to avoid oversized requests
-                            for i in range(0, len(batch_ids), 100):
-                                chunk = batch_ids[i:i + 100]
-                                batch_resp = await mdb_cr.get_ratings_batch(media_type, chunk)
-                                # Log first response to discover field names
-                                if i == 0 and batch_resp:
-                                    sample = batch_resp[0] if isinstance(batch_resp, list) else batch_resp
-                                    log.info("ml_predictor.mdblist_batch_sample",
-                                             type=type(batch_resp).__name__,
-                                             sample_keys=list(sample.keys())[:20] if isinstance(sample, dict) else str(sample)[:200],
-                                             media_type=media_type)
-                                if isinstance(batch_resp, list):
-                                    for item in batch_resp:
-                                        # Try all plausible field names for IMDB ID
-                                        imdb = (
-                                            item.get("imdbid")
-                                            or item.get("imdb_id")
-                                            or item.get("imdb")
-                                            or (item.get("ids", {}) or {}).get("imdb", "")
-                                        )
-                                        # Try multiple score fields — MDBList may use
-                                        # score (0-100) or imdbrating or rating
-                                        score_raw = item.get("score")
-                                        if score_raw is not None:
-                                            try:
-                                                cr_results[imdb] = round(float(score_raw) / 10, 1)
-                                                continue
-                                            except (ValueError, TypeError):
-                                                pass
-                                        # imdbrating is typically on 0-100 scale too
-                                        imdb_rating = item.get("imdbrating")
-                                        if imdb_rating is not None:
-                                            try:
-                                                cr_results[imdb] = round(float(imdb_rating) / 10, 1)
-                                                continue
-                                            except (ValueError, TypeError):
-                                                pass
-                                        # Plain 'rating' on 1-10 scale
-                                        plain_rating = item.get("rating")
-                                        if plain_rating is not None and imdb:
-                                            try:
-                                                val = float(plain_rating)
-                                                cr_results[imdb] = round(val if val <= 10 else val / 10, 1)
-                                            except (ValueError, TypeError):
-                                                pass
-                                elif isinstance(batch_resp, dict):
-                                    # Response might be a dict keyed by IMDB ID
-                                    for imdb, data in batch_resp.items():
-                                        if isinstance(data, dict):
-                                            score_raw = data.get("score") or data.get("imdbrating") or data.get("rating")
-                                            if score_raw is not None:
-                                                try:
-                                                    val = float(score_raw)
-                                                    cr_results[imdb] = round(val if val <= 10 else val / 10, 1)
-                                                except (ValueError, TypeError):
-                                                    pass
-
-                        # Apply community ratings to rows
-                        filled = 0
-                        for r in rows:
-                            if not r.get("simkl_rating"):
-                                imdb = r.get("ids", {}).get("imdb", "")
-                                if imdb and imdb in cr_results:
-                                    r["simkl_rating"] = cr_results[imdb]
-                                    filled += 1
-                        log.info("ml_predictor.community_ratings_backfilled",
-                                 queried=len(missing_community), filled=filled)
-                    finally:
-                        await mdb_cr.close()
-            except Exception as e:
-                log.warning("ml_predictor.community_ratings_backfill_failed",
-                            error=str(e)[:120])
+            log.debug("ml_predictor.mdblist_ratings_merged", count=mdb_added)
 
         # persist to DB — preserve user-submitted ratings
         async with async_session() as db:
@@ -1050,8 +949,14 @@ class MLPredictorService:
                 "summary": "Need at least 2 training runs to detect drift. Retrain again next week.",
             }
 
-        # Compare latest vs earliest
-        oldest = snapshots[0]
+        # Compare the two most recent snapshots (adjacent drift) rather
+        # than oldest vs latest.  The oldest snapshot comes from the
+        # first ever training run which typically has fewer ratings and
+        # sparse feature importances — comparing against it makes
+        # everything look like it went "up" as the model matures.
+        # Adjacent comparison isolates genuine week-over-week taste
+        # shifts from model-maturity artefacts.
+        oldest = snapshots[-2]
         latest = snapshots[-1]
 
         changes = []

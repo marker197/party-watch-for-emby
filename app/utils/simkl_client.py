@@ -455,7 +455,7 @@ class SimklClient:
         try:
             shows_sample = payload.get("shows", [])[:2]
             movies_sample = payload.get("movies", [])[:2]
-            log.info("simkl.add_to_history_payload",
+            log.debug("simkl.add_to_history_payload",
                      shows_count=len(payload.get("shows", [])),
                      movies_count=len(payload.get("movies", [])),
                      shows_sample=_json.dumps(shows_sample, default=str)[:500],

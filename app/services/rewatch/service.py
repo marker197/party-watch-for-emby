@@ -139,7 +139,7 @@ class RewatchRecommender:
                        count=len(emby_candidates))
 
         if not all_candidates:
-            log.info("rewatch.no_candidates", user_id=user_id)
+            log.debug("rewatch.no_candidates", user_id=user_id)
             await r.set(f"{self.CACHE_PREFIX}:suggestions:{user_id}",
                         json.dumps([]), ex=self.CACHE_TTL)
             return []
@@ -862,7 +862,7 @@ class RewatchRecommender:
                         "source": "mdblist",
                     })
 
-            log.info("rewatch.mdblist_filter_stages", user_id=user_id,
+            log.debug("rewatch.mdblist_filter_stages", user_id=user_id,
                      total=_dbg_total, no_date=_dbg_no_date,
                      too_recent=_dbg_too_recent, no_rating=_dbg_no_rating,
                      below_min=_dbg_below_min, passed=len(candidates),
@@ -985,7 +985,7 @@ class RewatchRecommender:
                     "source": "emby",
                 })
 
-            log.info("rewatch.emby_filter_stages", user_id=user_id,
+            log.debug("rewatch.emby_filter_stages", user_id=user_id,
                      total=len(movies) + len(shows),
                      no_rating=_emby_no_rating, below_min=_emby_below_min,
                      no_date=_emby_no_date, too_recent=_emby_too_recent,

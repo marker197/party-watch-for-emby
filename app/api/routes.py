@@ -7500,7 +7500,11 @@ async def set_debug_mode(payload: dict, _user: User = Depends(get_current_user))
     for h in root.handlers:
         h.setLevel(new_level)
 
-    # Also reconfigure structlog's filtering threshold
+    # Reconfigure structlog's filtering threshold — must pass the full
+    # processor chain (not just wrapper_class) to avoid resetting to
+    # defaults.  With cache_logger_on_first_use=False (set in
+    # setup_logging), all existing module-level loggers pick up the new
+    # level immediately.
     _sl.configure(
         wrapper_class=_sl.make_filtering_bound_logger(new_level),
     )

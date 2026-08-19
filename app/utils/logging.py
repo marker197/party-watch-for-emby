@@ -60,12 +60,18 @@ def setup_logging():
     # -- Silence noisy third-party loggers --
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler.executors").setLevel(logging.WARNING)
 
     # -- Filter repetitive poll endpoints from uvicorn access log --
     _access_logger = logging.getLogger("uvicorn.access")
     _access_logger.addFilter(_PollEndpointFilter())
 
     # -- Configure structlog to use stdlib as its sink --
+    #    cache_logger_on_first_use=False so that runtime level changes
+    #    (via the debug-mode toggle) propagate to all existing loggers
+    #    immediately instead of being ignored by cached bound loggers.
     structlog.configure(
         processors=[
             *shared_processors,
@@ -74,7 +80,7 @@ def setup_logging():
         wrapper_class=structlog.make_filtering_bound_logger(level),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
-        cache_logger_on_first_use=True,
+        cache_logger_on_first_use=False,
     )
 
 
