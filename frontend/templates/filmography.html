@@ -541,7 +541,7 @@ async function loadTitleMatched() {
 
 async function verifyTitleMatch(titleKey, evt) {
   if (evt) { evt.preventDefault(); evt.stopPropagation(); }
-  if (!confirm('Have you verified this show in Sonarr is correctly matched?\\n\\nClicking OK will remove the warning badge.')) return;
+  if (!confirm('Have you verified this show in Sonarr is correctly matched?\n\nClicking OK will remove the warning badge.')) return;
   try {
     await fetch('/api/sonarr/title-matched', {
       method: 'DELETE',

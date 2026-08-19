@@ -380,12 +380,16 @@ async def _process_bulk_action(action_id: int) -> None:
 
     async with async_session() as db:
         action = (await db.execute(
-            select(BulkAction).filter(BulkAction.id == action_id)
+            select(BulkAction)
+            .filter(BulkAction.id == action_id)
+            .with_for_update(skip_locked=True)
         )).scalars().first()
         if not action or action.status != "pending":
             return
 
         action.status = "in_progress"
+        # Preserve the caller's input metadata so retries are possible
+        input_meta = dict(action.result_json) if action.result_json else {}
         await db.commit()
 
         item_ids = action.item_ids or []
@@ -413,8 +417,7 @@ async def _process_bulk_action(action_id: int) -> None:
             elif action.action_type == "rate_batch":
                 # item_ids are expected to be dicts serialised in the
                 # metadata: [{emby_id, imdb_id, rating, item_type, title}, ...]
-                meta = action.result_json or {}
-                rating_items = meta.get("items") or []
+                rating_items = input_meta.get("items") or []
                 from app.models.schema import UserRating
                 for ri in rating_items:
                     try:
@@ -459,8 +462,7 @@ async def _process_bulk_action(action_id: int) -> None:
                     results["processed"] += 1
 
             elif action.action_type == "add_collection":
-                meta = action.result_json or {}
-                collection_name = meta.get("collection_name", "Bulk Collection")
+                collection_name = input_meta.get("collection_name", "Bulk Collection")
                 async with EmbyClient() as emby:
                     str_ids = [str(eid) for eid in item_ids]
                     try:
@@ -518,6 +520,8 @@ async def _process_bulk_action(action_id: int) -> None:
             results["errors"] = results["errors"][:50]
             results["errors_truncated"] = True
 
+        # Preserve caller's input alongside output so retries are possible
+        results["_input"] = input_meta
         action.result_json = results
         action.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await db.commit()

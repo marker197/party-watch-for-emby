@@ -13138,27 +13138,32 @@ async def suggest_relink(
         return {"suggestions": []}
 
     results = await search_tmdb(title, media_type=media_type, year=year)
+    top = (results or [])[:5]
+
+    # Fetch external IDs concurrently instead of sequentially
+    import asyncio
+    from app.utils.tmdb_client import get_external_ids
+
+    async def _safe_ext(tmdb_id):
+        try:
+            return await get_external_ids(tmdb_id, media_type)
+        except Exception:
+            return {}
+
+    ext_results = await asyncio.gather(
+        *[_safe_ext(r.get("id")) for r in top]
+    )
+
     suggestions = []
-    for r in (results or [])[:5]:
+    for r, ext in zip(top, ext_results):
         tmdb_id = r.get("id")
         r_title = r.get("title") or r.get("name") or ""
         r_year = (r.get("release_date") or r.get("first_air_date") or "")[:4]
 
-        # Look up IMDB from TMDB external IDs
-        imdb_id = None
-        tvdb_id = None
-        try:
-            from app.utils.tmdb_client import get_external_ids
-            ext = await get_external_ids(tmdb_id, media_type)
-            imdb_id = ext.get("imdb_id")
-            tvdb_id = str(ext["tvdb_id"]) if ext.get("tvdb_id") else None
-        except Exception:
-            pass
-
         suggestions.append({
             "tmdb_id": str(tmdb_id) if tmdb_id else None,
-            "imdb_id": imdb_id,
-            "tvdb_id": tvdb_id,
+            "imdb_id": ext.get("imdb_id"),
+            "tvdb_id": str(ext["tvdb_id"]) if ext.get("tvdb_id") else None,
             "title": r_title,
             "year": r_year,
         })
