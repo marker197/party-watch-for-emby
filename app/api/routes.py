@@ -4960,13 +4960,17 @@ async def remove_from_watchlist(
         _remove_simkl(), _remove_mdblist()
     )
 
-    # Clean from manual_arr_exclude Redis sets
+    # Add to manual_arr_exclude so watchlist sync won't re-add these
+    # items from Radarr/Sonarr on the next cycle
     try:
         r = await get_redis()
         if tmdb_id:
-            await r.srem("manual_arr_exclude:tmdb", str(tmdb_id))
+            await r.sadd("manual_arr_exclude:tmdb", str(tmdb_id))
+            await r.sadd("watchlist_removed:tmdb", str(tmdb_id))
         if payload.get("tvdb_id"):
-            await r.srem("manual_arr_exclude:tvdb", str(payload["tvdb_id"]))
+            await r.sadd("manual_arr_exclude:tvdb", str(payload["tvdb_id"]))
+        if imdb_id:
+            await r.sadd("watchlist_removed:imdb", str(imdb_id))
     except Exception:
         pass
 

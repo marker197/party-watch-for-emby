@@ -165,6 +165,10 @@ class WatchlistSyncService:
         missing_tmdb, missing_tvdb = await self._filter_manual_excludes(
             missing_tmdb, missing_tvdb)
 
+        # Exclude items explicitly removed from watchlist via UI
+        missing_tmdb, missing_tvdb = await self._filter_watchlist_removals(
+            missing_tmdb, missing_tvdb)
+
         if not missing_tmdb and not missing_tvdb:
             log.debug("watchlist_sync.arr_to_simkl.nothing_missing", user_id=user.id)
             return
@@ -237,6 +241,10 @@ class WatchlistSyncService:
 
         # Exclude items manually sent to Radarr/Sonarr (not from watchlist)
         missing_tmdb, missing_tvdb = await self._filter_manual_excludes(
+            missing_tmdb, missing_tvdb)
+
+        # Exclude items explicitly removed from watchlist via UI
+        missing_tmdb, missing_tvdb = await self._filter_watchlist_removals(
             missing_tmdb, missing_tvdb)
 
         if not missing_tmdb and not missing_tvdb:
@@ -350,6 +358,18 @@ class WatchlistSyncService:
         movies_to_add: list[dict] = []
         shows_to_add: list[dict] = []
 
+        # Load items explicitly removed from watchlist via UI
+        _wl_removed_imdb: set[str] = set()
+        _wl_removed_tmdb: set[str] = set()
+        try:
+            r = await get_redis()
+            raw = await r.smembers("watchlist_removed:imdb")
+            _wl_removed_imdb = {(v.decode() if isinstance(v, bytes) else v) for v in raw}
+            raw = await r.smembers("watchlist_removed:tmdb")
+            _wl_removed_tmdb = {(v.decode() if isinstance(v, bytes) else v) for v in raw}
+        except Exception:
+            pass
+
         for item in wl_items:
             inner = item.get("movie") or item.get("show") or item
             inner_ids = inner.get("ids", {}) if isinstance(inner.get("ids"), dict) else {}
@@ -369,6 +389,12 @@ class WatchlistSyncService:
             if imdb and imdb in simkl_imdb:
                 continue
             if tmdb and int(tmdb) in simkl_tmdb:
+                continue
+
+            # Skip if user explicitly removed from watchlist
+            if imdb and imdb in _wl_removed_imdb:
+                continue
+            if tmdb and str(tmdb) in _wl_removed_tmdb:
                 continue
 
             simkl_ids = {}
@@ -434,6 +460,18 @@ class WatchlistSyncService:
         movies_to_add: list[dict] = []
         shows_to_add: list[dict] = []
 
+        # Load items explicitly removed from watchlist via UI
+        _wl_removed_imdb: set[str] = set()
+        _wl_removed_tmdb: set[str] = set()
+        try:
+            r = await get_redis()
+            raw = await r.smembers("watchlist_removed:imdb")
+            _wl_removed_imdb = {(v.decode() if isinstance(v, bytes) else v) for v in raw}
+            raw = await r.smembers("watchlist_removed:tmdb")
+            _wl_removed_tmdb = {(v.decode() if isinstance(v, bytes) else v) for v in raw}
+        except Exception:
+            pass
+
         for item in (simkl_movies or []):
             inner = item.get("movie") or item
             ids = inner.get("ids", {})
@@ -442,6 +480,10 @@ class WatchlistSyncService:
             if imdb and imdb in mdb_imdb:
                 continue
             if tmdb and int(tmdb) in mdb_tmdb:
+                continue
+            if imdb and imdb in _wl_removed_imdb:
+                continue
+            if tmdb and str(tmdb) in _wl_removed_tmdb:
                 continue
             entry = {}
             if imdb:
@@ -459,6 +501,10 @@ class WatchlistSyncService:
             if imdb and imdb in mdb_imdb:
                 continue
             if tmdb and int(tmdb) in mdb_tmdb:
+                continue
+            if imdb and imdb in _wl_removed_imdb:
+                continue
+            if tmdb and str(tmdb) in _wl_removed_tmdb:
                 continue
             entry = {}
             if imdb:
@@ -931,6 +977,38 @@ class WatchlistSyncService:
             log.debug("watchlist_sync.manual_arr_excluded",
                      movies=before_tmdb - len(tmdb_ids),
                      shows=before_tvdb - len(tvdb_ids))
+
+        return tmdb_ids, tvdb_ids
+
+    @staticmethod
+    async def _filter_watchlist_removals(
+        tmdb_ids: list[int], tvdb_ids: list[int],
+    ) -> tuple[list[int], list[int]]:
+        """Remove IDs that the user explicitly removed from watchlist via UI.
+
+        Items removed through the watchlist page's ✕ button are stored
+        in ``watchlist_removed:imdb`` and ``watchlist_removed:tmdb`` Redis
+        sets.  These must not be re-added by any sync direction.
+        """
+        r = await get_redis()
+        exclude_tmdb: set[int] = set()
+
+        raw_tmdb = await r.smembers("watchlist_removed:tmdb")
+        for v in raw_tmdb:
+            try:
+                exclude_tmdb.add(int(v))
+            except (ValueError, TypeError):
+                pass
+
+        if not exclude_tmdb:
+            return tmdb_ids, tvdb_ids
+
+        before = len(tmdb_ids)
+        tmdb_ids = [t for t in tmdb_ids if t not in exclude_tmdb]
+        excluded = before - len(tmdb_ids)
+        if excluded:
+            log.debug("watchlist_sync.watchlist_removal_excluded",
+                     count=excluded)
 
         return tmdb_ids, tvdb_ids
 
