@@ -4743,20 +4743,25 @@ async def get_merged_watchlist(
     # Fetch from both providers concurrently
     simkl = None
     mdblist = None
-    simkl_items = []
-    mdblist_items = []
 
     try:
         from app.utils.simkl_client import SimklClient
-        simkl = SimklClient()
-        await simkl.set_user_token(user, db)
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            token_expires=user.simkl_token_expires,
+        )
     except Exception:
         pass
 
     try:
         from app.utils.mdblist_client import MDBListClient
-        mdblist = MDBListClient()
-        await mdblist.load_credentials(db)
+        from app.utils.redis_cache import get_redis as _get_redis
+        from app.utils.secure_redis import secure_get
+        _r = await _get_redis()
+        raw_key = await secure_get("mdblist_api_key")
+        mdb_key = (raw_key if isinstance(raw_key, str) else raw_key.decode()) if raw_key else ""
+        if mdb_key:
+            mdblist = MDBListClient(api_key=mdb_key)
     except Exception:
         pass
 
@@ -4900,8 +4905,10 @@ async def remove_from_watchlist(
     async def _remove_simkl():
         try:
             from app.utils.simkl_client import SimklClient
-            client = SimklClient()
-            await client.set_user_token(user, db)
+            client = SimklClient(
+                access_token=user.simkl_access_token,
+                token_expires=user.simkl_token_expires,
+            )
             item = {"ids": ids_obj, "title": title, "type": item_type}
             if item_type == "show":
                 item["_type"] = "show"
@@ -4914,8 +4921,12 @@ async def remove_from_watchlist(
     async def _remove_mdblist():
         try:
             from app.utils.mdblist_client import MDBListClient
-            client = MDBListClient()
-            await client.load_credentials(db)
+            from app.utils.secure_redis import secure_get
+            raw_key = await secure_get("mdblist_api_key")
+            mdb_key = (raw_key if isinstance(raw_key, str) else raw_key.decode()) if raw_key else ""
+            if not mdb_key:
+                return {"ok": False, "error": "MDBList API key not configured"}
+            client = MDBListClient(api_key=mdb_key)
             if item_type == "movie":
                 result = await client.remove_from_watchlist(movies=[ids_obj])
             else:
