@@ -147,7 +147,13 @@
 
 </div></div>
 
-<script src="/static/js/sidebar.js"></script>
+<script>
+function toggleSidebar(){
+  var s=document.getElementById('suiteSidebar'),o=document.getElementById('sidebarOverlay');
+  if(s.classList.contains('open')){s.classList.remove('open');o.classList.remove('open');}
+  else{s.classList.add('open');o.classList.add('open');}
+}
+</script>
 <script>
 var currentUserId = null;
 var allItems = [];
