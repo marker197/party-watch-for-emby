@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Watchlist - Emby-Simkl Suite</title>
+  <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
+  <style>
+    :root {
+      --bg: #0D0F14;
+      --surface: #151820;
+      --surface-hover: #1C2030;
+      --border: #222838;
+      --text: #E6EDF3;
+      --text-dim: #7D8590;
+      --accent: #7B68EE;
+      --accent-light: #9585F0;
+      --green: #4AAD6E;
+      --orange: #D29922;
+      --red: #E05252;
+      --blue: #7B8CDE;
+      --radius: 10px;
+      --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    body.light-mode {
+      --bg: #F6F8FA; --surface: #FFFFFF; --surface-hover: #E8ECF1; --border: #D0D7DE;
+      --text: #1F2328; --text-dim: #656D76; --accent: #6C5CE7; --accent-light: #5B4FD4;
+      --green: #1A7F37; --orange: #9A6700; --red: #CF222E; --blue: #5B6BD5;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: var(--font); background: var(--bg); color: var(--text); }
+    .header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 10px; }
+    .header h1 { font-size: 1.2rem; }
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+    .user-select { background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 10px; font-size: 0.82rem; }
+    .theme-toggle { background: none; border: none; font-size: 1.2rem; cursor: pointer; }
+    .btn { padding: 7px 16px; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; font-size: 0.82rem; }
+    .btn-accent { background: var(--accent); color: #fff; }
+    .btn-sm { padding: 5px 12px; font-size: 0.78rem; }
+    .filter-bar { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+    .filter-btn { padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); cursor: pointer; font-size: 0.78rem; font-weight: 600; transition: all 0.2s; }
+    .filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .search-box { background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; font-size: 0.82rem; min-width: 180px; }
+    .stats { font-size: 0.78rem; color: var(--text-dim); margin-bottom: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      overflow: hidden; position: relative; transition: border-color 0.2s;
+    }
+    .card:hover { border-color: var(--accent); }
+    .card-poster {
+      width: 100%; aspect-ratio: 2/3; background: var(--surface-hover); display: flex;
+      align-items: center; justify-content: center; color: var(--text-dim); font-size: 2rem;
+      overflow: hidden;
+    }
+    .card-poster img { width: 100%; height: 100%; object-fit: cover; }
+    .card-body { padding: 8px 10px; }
+    .card-title { font-size: 0.82rem; font-weight: 600; line-height: 1.3; margin-bottom: 3px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .card-year { font-size: 0.72rem; color: var(--text-dim); }
+    .card-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+    .badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.65rem; font-weight: 600; }
+    .badge-movie { background: rgba(123,140,222,0.15); color: var(--blue); }
+    .badge-show { background: rgba(123,104,238,0.15); color: var(--accent); }
+    .badge-simkl { background: rgba(123,104,238,0.1); color: var(--accent-light); }
+    .badge-mdblist { background: rgba(210,153,34,0.12); color: var(--orange); }
+    .badge-library { background: rgba(74,173,110,0.12); color: var(--green); }
+    .badge-missing { background: rgba(224,82,82,0.1); color: var(--red); }
+    .remove-btn {
+      position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 50%;
+      background: rgba(224,82,82,0.85); color: #fff; border: none; cursor: pointer;
+      font-size: 0.8rem; display: flex; align-items: center; justify-content: center;
+      opacity: 0; transition: opacity 0.2s; line-height: 1;
+    }
+    .card:hover .remove-btn { opacity: 1; }
+    .remove-btn:hover { background: var(--red); }
+    .empty { color: var(--text-dim); text-align: center; padding: 40px; font-size: 0.88rem; }
+    .loading { color: var(--text-dim); text-align: center; padding: 40px; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 999; display: flex; flex-direction: column; gap: 8px; }
+    .toast { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 16px; font-size: 0.82rem; min-width: 200px; border-left: 3px solid var(--green); }
+    .toast.error { border-left-color: var(--red); }
+    .toast.warn { border-left-color: var(--orange); }
+  </style>
+<script src="/static/js/csrf.js"></script>
+<link rel="stylesheet" href="/static/css/sidebar.css">
+</head>
+<body>
+<div id="bgBackdrop"></div>
+
+<div class="suite-shell">
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+<button class="mobile-menu-btn" id="mobileMenuBtn" onclick="toggleSidebar()">☰</button>
+<aside class="suite-sidebar" id="suiteSidebar">
+  <div class="sidebar-brand">
+    <div class="sidebar-brand-name">Emby-Simkl Suite</div>
+    <div class="sidebar-brand-ver">v2.1</div>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-label">Main</div>
+    <a class="sidebar-nav-item" href="/"><span class="nav-icon">⊞</span> Dashboard</a>
+    <a class="sidebar-nav-item" href="/lists"><span class="nav-icon">☰</span> Playlists</a>
+    <a class="sidebar-nav-item" href="/stats"><span class="nav-icon">◩</span> Stats</a>
+    <a class="sidebar-nav-item" href="/watch-history"><span class="nav-icon">↻</span> History</a>
+    <a class="sidebar-nav-item active" href="/watchlist"><span class="nav-icon">📋</span> Watchlist</a>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-label">Discover</div>
+    <a class="sidebar-nav-item" href="/predictions"><span class="nav-icon">◈</span> Predictions</a>
+    <a class="sidebar-nav-item" href="/bias"><span class="nav-icon">◎</span> Taste profile</a>
+    <a class="sidebar-nav-item" href="/rewatch"><span class="nav-icon">⟳</span> Rewatch</a>
+    <a class="sidebar-nav-item" href="/filmography"><span class="nav-icon">▣</span> Filmography</a>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-label">Tools</div>
+    <a class="sidebar-nav-item" href="/library-health"><span class="nav-icon">⊕</span> Library health</a>
+    <a class="sidebar-nav-item" href="/duplicates"><span class="nav-icon">⊜</span> Duplicates</a>
+    <a class="sidebar-nav-item" href="/watch-party"><span class="nav-icon">⊡</span> Watch party</a>
+    <a class="sidebar-nav-item" href="/guide"><span class="nav-icon">⊞</span> Guide</a>
+  </div>
+  <div class="sidebar-bottom">
+    <a class="sidebar-nav-item" href="/settings"><span class="nav-icon">⚙</span> Settings</a>
+  </div>
+</aside>
+<div class="suite-main">
+<div class="header">
+  <h1>📋 Watchlist</h1>
+  <div class="header-actions">
+    <select class="user-select" id="userSelect" onchange="switchUser()"></select>
+    <button class="btn btn-accent" onclick="loadWatchlist()">🔄 Refresh</button>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+  </div>
+</div>
+
+<div class="filter-bar">
+  <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
+  <button class="filter-btn" onclick="setFilter('movie',this)">Movies</button>
+  <button class="filter-btn" onclick="setFilter('show',this)">Shows</button>
+  <button class="filter-btn" onclick="setFilter('missing',this)">Missing</button>
+  <input type="text" class="search-box" id="searchBox" placeholder="Search titles…" oninput="renderGrid()">
+</div>
+
+<div class="stats" id="statsBar"></div>
+<div id="gridContainer"><div class="loading"><div class="spinner"></div> Loading watchlist…</div></div>
+<div class="toast-container" id="toastContainer"></div>
+
+</div></div>
+
+<script src="/static/js/sidebar.js"></script>
+<script>
+var currentUserId = null;
+var allItems = [];
+var currentFilter = 'all';
+
+function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function showToast(msg, type) {
+  var c = document.getElementById('toastContainer');
+  var t = document.createElement('div');
+  t.className = 'toast' + (type === 'red' ? ' error' : type === 'orange' ? ' warn' : '');
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(function() { t.remove(); }, 5000);
+}
+
+function toggleTheme() {
+  document.body.classList.toggle('light-mode');
+  try { localStorage.setItem('theme', document.body.classList.contains('light-mode') ? 'light' : 'dark'); } catch(e) {}
+}
+(function() { try { if (localStorage.getItem('theme') === 'light') document.body.classList.add('light-mode'); } catch(e) {} })();
+
+async function loadUsers() {
+  try {
+    var r = await fetch('/auth/users');
+    var users = await r.json();
+    var sel = document.getElementById('userSelect');
+    sel.innerHTML = '';
+    users.forEach(function(u) {
+      var opt = document.createElement('option');
+      opt.value = u.id;
+      opt.textContent = u.emby_username || ('User ' + u.id);
+      sel.appendChild(opt);
+    });
+    if (users.length > 0) {
+      currentUserId = users[0].id;
+      loadWatchlist();
+    }
+  } catch(e) {
+    document.getElementById('gridContainer').innerHTML = '<div class="empty">Failed to load users</div>';
+  }
+}
+
+function switchUser() {
+  currentUserId = parseInt(document.getElementById('userSelect').value);
+  loadWatchlist();
+}
+
+async function loadWatchlist() {
+  if (!currentUserId) return;
+  document.getElementById('gridContainer').innerHTML = '<div class="loading"><div class="spinner"></div> Loading watchlist…</div>';
+  try {
+    var r = await fetch('/api/watchlist/merged/' + currentUserId);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var data = await r.json();
+    allItems = data.items || [];
+    document.getElementById('statsBar').textContent =
+      data.total + ' items — Simkl: ' + data.simkl_count + ' / MDBList: ' + data.mdblist_count;
+    renderGrid();
+  } catch(e) {
+    document.getElementById('gridContainer').innerHTML = '<div class="empty">Failed to load watchlist: ' + esc(e.message) + '</div>';
+  }
+}
+
+function setFilter(f, btn) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+  if (btn) btn.classList.add('active');
+  renderGrid();
+}
+
+function getEmbyPoster(embyId) {
+  if (!embyId) return null;
+  return '/api/emby/image/' + embyId + '/Primary?maxWidth=240';
+}
+
+function renderGrid() {
+  var search = (document.getElementById('searchBox').value || '').toLowerCase().trim();
+  var filtered = allItems.filter(function(item) {
+    if (currentFilter === 'movie' && item.item_type !== 'movie') return false;
+    if (currentFilter === 'show' && item.item_type !== 'show') return false;
+    if (currentFilter === 'missing' && item.in_library) return false;
+    if (search && (item.title || '').toLowerCase().indexOf(search) === -1) return false;
+    return true;
+  });
+
+  if (!filtered.length) {
+    document.getElementById('gridContainer').innerHTML = '<div class="empty">No items match this filter.</div>';
+    return;
+  }
+
+  var html = '<div class="grid">';
+  filtered.forEach(function(item, idx) {
+    var posterUrl = getEmbyPoster(item.emby_id);
+    var posterHtml = posterUrl
+      ? '<img src="' + esc(posterUrl) + '" loading="lazy" onerror="this.parentElement.innerHTML=\'🎬\'">'
+      : '🎬';
+
+    html += '<div class="card" id="wl-' + idx + '">';
+    html += '<button class="remove-btn" onclick="removeItem(' + idx + ',event)" title="Remove from both watchlists">✕</button>';
+    html += '<div class="card-poster">' + posterHtml + '</div>';
+    html += '<div class="card-body">';
+    html += '<div class="card-title" title="' + esc(item.title || '') + '">' + esc(item.title || '?') + '</div>';
+    html += '<div class="card-year">' + (item.year || '') + '</div>';
+    html += '<div class="card-badges">';
+    html += '<span class="badge ' + (item.item_type === 'movie' ? 'badge-movie' : 'badge-show') + '">' + (item.item_type === 'movie' ? 'Movie' : 'Show') + '</span>';
+
+    var provs = item.providers || [];
+    if (provs.indexOf('simkl') !== -1) html += '<span class="badge badge-simkl">Simkl</span>';
+    if (provs.indexOf('mdblist') !== -1) html += '<span class="badge badge-mdblist">MDBList</span>';
+
+    if (item.in_library) {
+      html += '<span class="badge badge-library">In Library</span>';
+    } else {
+      html += '<span class="badge badge-missing">Missing</span>';
+    }
+
+    html += '</div></div></div>';
+  });
+  html += '</div>';
+  document.getElementById('gridContainer').innerHTML = html;
+}
+
+async function removeItem(idx, ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  var filtered = allItems.filter(function(item) {
+    var search = (document.getElementById('searchBox').value || '').toLowerCase().trim();
+    if (currentFilter === 'movie' && item.item_type !== 'movie') return false;
+    if (currentFilter === 'show' && item.item_type !== 'show') return false;
+    if (currentFilter === 'missing' && item.in_library) return false;
+    if (search && (item.title || '').toLowerCase().indexOf(search) === -1) return false;
+    return true;
+  });
+  var item = filtered[idx];
+  if (!item) return;
+
+  if (!confirm('Remove "' + item.title + '" from both Simkl and MDBList watchlists?')) return;
+
+  var card = document.getElementById('wl-' + idx);
+  if (card) { card.style.transition = 'opacity 0.3s'; card.style.opacity = '0.3'; }
+
+  try {
+    var r = await fetch('/api/watchlist/remove', {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        imdb_id: item.imdb_id,
+        tmdb_id: item.tmdb_id,
+        tvdb_id: item.tvdb_id,
+        item_type: item.item_type,
+        title: item.title,
+      }),
+    });
+    var d = await r.json();
+    if (d.status === 'ok') {
+      showToast('Removed "' + item.title + '" from both watchlists', 'green');
+      allItems = allItems.filter(function(i) { return i !== item; });
+      renderGrid();
+    } else if (d.status === 'partial') {
+      var failedOn = [];
+      if (!d.results.simkl.ok) failedOn.push('Simkl');
+      if (!d.results.mdblist.ok) failedOn.push('MDBList');
+      showToast('Partial remove — failed on: ' + failedOn.join(', '), 'orange');
+      allItems = allItems.filter(function(i) { return i !== item; });
+      renderGrid();
+    } else {
+      showToast('Remove failed', 'red');
+      if (card) card.style.opacity = '1';
+    }
+  } catch(e) {
+    showToast('Error: ' + e.message, 'red');
+    if (card) card.style.opacity = '1';
+  }
+}
+
+loadUsers();
+</script>
+</body>
+</html>

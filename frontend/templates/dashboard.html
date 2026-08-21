@@ -672,6 +672,7 @@
     <a class="sidebar-nav-item" href="/lists"><span class="nav-icon">☰</span> Playlists</a>
     <a class="sidebar-nav-item" href="/stats"><span class="nav-icon">◩</span> Stats</a>
     <a class="sidebar-nav-item" href="/watch-history"><span class="nav-icon">↻</span> History</a>
+    <a class="sidebar-nav-item" href="/watchlist"><span class="nav-icon">📋</span> Watchlist</a>
   </div>
   <div class="sidebar-section">
     <div class="sidebar-label">Discover</div>
@@ -774,6 +775,7 @@
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
     <span style="color:var(--text-dim);font-size:0.82rem;font-weight:600;letter-spacing:0.3px;">FEATURES</span>
     <div style="display:flex;gap:8px;align-items:center;">
+      <a href="/watchlist" style="background:none;border:1px solid var(--accent);color:var(--accent);padding:5px 14px;border-radius:5px;font-size:0.8rem;font-weight:600;cursor:pointer;letter-spacing:0.3px;text-decoration:none;">View Watchlist</a>
       <button id="btnWlSync" onclick="runWatchlistSync()" style="background:none;border:1px solid var(--blue);color:var(--blue);padding:5px 14px;border-radius:5px;font-size:0.8rem;font-weight:600;cursor:pointer;letter-spacing:0.3px;">Watchlist Sync</button>
       <button onclick="this.textContent=this.textContent==='Show'?'Hide':'Show';var g=document.getElementById('featureCardsGrid');if(g.style.maxHeight==='0px'){g.style.maxHeight=g.scrollHeight+'px';g.style.opacity='1';g.style.marginBottom='20px';var _t=function(){g.style.maxHeight='none';g.removeEventListener('transitionend',_t)};g.addEventListener('transitionend',_t)}else{g.style.maxHeight=g.scrollHeight+'px';requestAnimationFrame(function(){g.style.maxHeight='0px';g.style.opacity='0';g.style.marginBottom='0'})}" style="background:var(--accent);color:#fff;border:none;padding:5px 18px;border-radius:5px;font-size:0.8rem;font-weight:600;cursor:pointer;letter-spacing:0.3px;">Show</button>
     </div>

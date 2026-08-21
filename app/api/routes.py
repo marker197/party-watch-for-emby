@@ -4713,6 +4713,240 @@ async def get_watch_history_page():
         return "<h1>Page not found</h1>"
 
 
+@router.get("/watchlist", response_class=HTMLResponse)
+async def get_watchlist_page():
+    """Serve the unified watchlist page."""
+    try:
+        with open("frontend/templates/watchlist.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Page not found</h1>"
+
+
+@router.get("/api/watchlist/merged/{user_id}")
+async def get_merged_watchlist(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """Fetch watchlists from Simkl + MDBList, merge/dedup by IMDB ID,
+    and cross-reference against library cache + arr status."""
+    import asyncio
+    from app.utils.library_cache import LibraryCache
+
+    user = (await db.execute(
+        select(User).where(User.id == user_id)
+    )).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    # Fetch from both providers concurrently
+    simkl = None
+    mdblist = None
+    simkl_items = []
+    mdblist_items = []
+
+    try:
+        from app.utils.simkl_client import SimklClient
+        simkl = SimklClient()
+        await simkl.set_user_token(user, db)
+    except Exception:
+        pass
+
+    try:
+        from app.utils.mdblist_client import MDBListClient
+        mdblist = MDBListClient()
+        await mdblist.load_credentials(db)
+    except Exception:
+        pass
+
+    async def _fetch_simkl():
+        if not simkl:
+            return []
+        try:
+            movies = await simkl.get_watchlist(kind="movies")
+            await asyncio.sleep(1.1)
+            shows = await simkl.get_watchlist(kind="shows")
+            return [("simkl", "movie", m) for m in movies] + [("simkl", "show", s) for s in shows]
+        except Exception as e:
+            log.warning("watchlist.simkl_fetch_failed", error=str(e)[:120])
+            return []
+
+    async def _fetch_mdblist():
+        if not mdblist:
+            return []
+        try:
+            data = await mdblist.get_watchlist()
+            results = []
+            for m in (data.get("movies") or []):
+                results.append(("mdblist", "movie", m))
+            for s in (data.get("shows") or []):
+                results.append(("mdblist", "show", s))
+            return results
+        except Exception as e:
+            log.warning("watchlist.mdblist_fetch_failed", error=str(e)[:120])
+            return []
+
+    simkl_raw, mdblist_raw = await asyncio.gather(
+        _fetch_simkl(), _fetch_mdblist()
+    )
+
+    if simkl:
+        await simkl.close()
+    if mdblist:
+        await mdblist.close()
+
+    # Merge by IMDB ID, keeping track of which providers have each item
+    seen: dict[str, dict] = {}  # imdb_id -> merged item
+
+    def _extract_ids(provider, item):
+        ids = item.get("ids", {})
+        if provider == "mdblist":
+            return (
+                ids.get("imdb") or item.get("imdb_id") or item.get("imdb"),
+                str(ids.get("tmdb") or item.get("tmdb_id") or item.get("tmdb") or ""),
+                str(ids.get("tvdb") or item.get("tvdb_id") or item.get("tvdb") or ""),
+            )
+        else:
+            return (
+                ids.get("imdb"),
+                str(ids.get("tmdb") or ""),
+                str(ids.get("tvdb") or ""),
+            )
+
+    for provider, item_type, item in simkl_raw + mdblist_raw:
+        imdb_id, tmdb_id, tvdb_id = _extract_ids(provider, item)
+        key = imdb_id or tmdb_id or item.get("title", "")
+        if not key:
+            continue
+
+        if key not in seen:
+            title = item.get("title") or item.get("name") or ""
+            year = item.get("year") or None
+            seen[key] = {
+                "imdb_id": imdb_id,
+                "tmdb_id": tmdb_id,
+                "tvdb_id": tvdb_id,
+                "title": title,
+                "year": year,
+                "item_type": item_type,
+                "providers": [],
+                "in_library": False,
+                "emby_id": None,
+                "poster": None,
+            }
+
+        seen[key]["providers"].append(provider)
+        if not seen[key]["imdb_id"] and imdb_id:
+            seen[key]["imdb_id"] = imdb_id
+        if not seen[key]["tmdb_id"] and tmdb_id:
+            seen[key]["tmdb_id"] = tmdb_id
+
+    # Cross-reference against library cache
+    for key, item in seen.items():
+        for pid_type, pid_val in [("Imdb", item["imdb_id"]), ("Tmdb", item["tmdb_id"])]:
+            if not pid_val:
+                continue
+            cached = await LibraryCache.find_by_provider_id(pid_type, str(pid_val))
+            if cached:
+                item["in_library"] = True
+                item["emby_id"] = cached.get("emby_id")
+                item["poster"] = cached.get("poster")
+                break
+
+    items = sorted(seen.values(), key=lambda x: (x.get("title") or "").lower())
+
+    return {
+        "items": items,
+        "total": len(items),
+        "simkl_count": len(simkl_raw),
+        "mdblist_count": len(mdblist_raw),
+    }
+
+
+@router.delete("/api/watchlist/remove")
+async def remove_from_watchlist(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """Remove an item from both Simkl and MDBList watchlists.
+
+    Payload: {imdb_id, tmdb_id?, item_type (movie|show), title?}
+    """
+    import asyncio
+
+    imdb_id = payload.get("imdb_id")
+    tmdb_id = payload.get("tmdb_id")
+    item_type = payload.get("item_type", "movie")
+    title = payload.get("title", "")
+
+    if not imdb_id and not tmdb_id:
+        raise HTTPException(400, "imdb_id or tmdb_id required")
+
+    user = (await db.execute(
+        select(User).where(User.id == _user.id)
+    )).scalar_one_or_none()
+
+    results = {"simkl": None, "mdblist": None}
+
+    # Build item payloads
+    ids_obj = {}
+    if imdb_id:
+        ids_obj["imdb"] = imdb_id
+    if tmdb_id:
+        ids_obj["tmdb"] = int(tmdb_id) if str(tmdb_id).isdigit() else tmdb_id
+
+    async def _remove_simkl():
+        try:
+            from app.utils.simkl_client import SimklClient
+            client = SimklClient()
+            await client.set_user_token(user, db)
+            item = {"ids": ids_obj, "title": title, "type": item_type}
+            if item_type == "show":
+                item["_type"] = "show"
+            result = await client.remove_from_watchlist([item])
+            await client.close()
+            return {"ok": True, "result": result}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+
+    async def _remove_mdblist():
+        try:
+            from app.utils.mdblist_client import MDBListClient
+            client = MDBListClient()
+            await client.load_credentials(db)
+            if item_type == "movie":
+                result = await client.remove_from_watchlist(movies=[ids_obj])
+            else:
+                result = await client.remove_from_watchlist(shows=[ids_obj])
+            await client.close()
+            return {"ok": True, "result": result}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+
+    results["simkl"], results["mdblist"] = await asyncio.gather(
+        _remove_simkl(), _remove_mdblist()
+    )
+
+    # Clean from manual_arr_exclude Redis sets
+    try:
+        r = await get_redis()
+        if tmdb_id:
+            await r.srem("manual_arr_exclude:tmdb", str(tmdb_id))
+        if payload.get("tvdb_id"):
+            await r.srem("manual_arr_exclude:tvdb", str(payload["tvdb_id"]))
+    except Exception:
+        pass
+
+    all_ok = results["simkl"].get("ok") and results["mdblist"].get("ok")
+    log.info("watchlist.removed", imdb_id=imdb_id, item_type=item_type,
+             simkl_ok=results["simkl"].get("ok"),
+             mdblist_ok=results["mdblist"].get("ok"))
+
+    return {"status": "ok" if all_ok else "partial", "results": results}
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Continue Watching Audit
 # ═══════════════════════════════════════════════════════════════════════════
