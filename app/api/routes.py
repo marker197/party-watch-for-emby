@@ -4859,6 +4859,26 @@ async def get_merged_watchlist(
                 item["poster"] = cached.get("poster")
                 break
 
+    # For items not in library, fetch TMDB poster paths
+    missing_items = [v for v in seen.values() if not v["in_library"] and v.get("tmdb_id")]
+    if missing_items:
+        from app.utils.tmdb_client import get_full_details
+        for item in missing_items:
+            try:
+                tmdb_id = int(item["tmdb_id"])
+                media_type = "movie" if item["item_type"] == "movie" else "tv"
+                details = await get_full_details(tmdb_id, media_type)
+                if details and details.get("poster_path"):
+                    item["tmdb_poster"] = details["poster_path"]
+                if not item.get("title") or item["title"] == "?":
+                    item["title"] = details.get("title") or details.get("name") or item.get("title", "")
+                if not item.get("year") and details:
+                    rd = details.get("release_date") or details.get("first_air_date") or ""
+                    if rd:
+                        item["year"] = int(rd[:4]) if rd[:4].isdigit() else None
+            except Exception:
+                pass
+
     items = sorted(seen.values(), key=lambda x: (x.get("title") or "").lower())
 
     return {

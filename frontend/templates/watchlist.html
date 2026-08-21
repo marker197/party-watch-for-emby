@@ -224,6 +224,11 @@ function getEmbyPoster(embyId) {
   return '/api/emby/image/' + embyId + '/Primary?maxWidth=240';
 }
 
+function getTmdbPoster(posterPath) {
+  if (!posterPath) return null;
+  return '/api/tmdb/image/w185' + posterPath;
+}
+
 function renderGrid() {
   var search = (document.getElementById('searchBox').value || '').toLowerCase().trim();
   var filtered = allItems.filter(function(item) {
@@ -241,7 +246,7 @@ function renderGrid() {
 
   var html = '<div class="grid">';
   filtered.forEach(function(item, idx) {
-    var posterUrl = getEmbyPoster(item.emby_id);
+    var posterUrl = getEmbyPoster(item.emby_id) || getTmdbPoster(item.tmdb_poster);
     var posterHtml = posterUrl
       ? '<img src="' + esc(posterUrl) + '" loading="lazy" onerror="this.parentElement.innerHTML=\'🎬\'">'
       : '🎬';
