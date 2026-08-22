@@ -684,3 +684,52 @@ class EmbyClient:
             log.warning("emby.item_update_failed", item_id=item_id,
                         error=str(e)[:200])
             return False
+
+    # -- Item images ----------------------------------------------------------
+
+    async def set_item_image(
+        self, item_id: str, image_bytes: bytes,
+        image_type: str = "Primary",
+        content_type: str = "image/png",
+    ) -> bool:
+        """Upload an image for an Emby item.
+
+        POST /Items/{id}/Images/{type} with raw image bytes.
+        ``image_type`` can be Primary, Backdrop, Banner, Logo, etc.
+        """
+        try:
+            resp = await self._client.post(
+                self._url(f"/Items/{item_id}/Images/{image_type}"),
+                content=image_bytes,
+                headers={"Content-Type": content_type},
+                params=self._params(),
+            )
+            resp.raise_for_status()
+            log.info("emby.image_uploaded", item_id=item_id,
+                     image_type=image_type, size=len(image_bytes))
+            return True
+        except Exception as e:
+            log.warning("emby.image_upload_failed", item_id=item_id,
+                        image_type=image_type, error=str(e)[:200])
+            return False
+
+    async def delete_item_image(
+        self, item_id: str, image_type: str = "Primary",
+    ) -> bool:
+        """Remove an image from an Emby item.
+
+        DELETE /Items/{id}/Images/{type}
+        """
+        try:
+            resp = await self._client.delete(
+                self._url(f"/Items/{item_id}/Images/{image_type}"),
+                params=self._params(),
+            )
+            resp.raise_for_status()
+            log.info("emby.image_deleted", item_id=item_id,
+                     image_type=image_type)
+            return True
+        except Exception as e:
+            log.warning("emby.image_delete_failed", item_id=item_id,
+                        image_type=image_type, error=str(e)[:200])
+            return False

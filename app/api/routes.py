@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func, distinct, or_
@@ -1238,6 +1238,223 @@ async def update_universe_settings(universe_id: int, payload: dict, _user: User 
         "description": universe.description,
         "quality_pref": qp_val or None,
     }
+
+
+# -- Universe artwork management -------------------------------------------
+
+@router.get("/api/universes/artwork")
+async def list_universe_artwork(_user: User = Depends(get_current_user)):
+    """Return artwork status for all universes.
+
+    Looks up the Emby playlist by name for each universe and returns
+    whether it has a primary image set.
+    """
+    from app.utils.emby_client import EmbyClient
+    from app.utils.redis_cache import get_redis
+
+    universes = await universe_svc.get_universes()
+    r = await get_redis()
+    emby = None
+    try:
+        emby = EmbyClient()
+
+        # Fetch all playlists once
+        playlists = await emby.get_items(item_type="Playlist", recursive=True)
+        playlist_map = {}
+        for p in playlists.get("Items", []):
+            playlist_map[p.get("Name", "")] = p
+
+        result = []
+        for u in universes:
+            display_name = u.get("custom_name") or u["name"]
+            playlist_name = f"🌌 {display_name}"
+            playlist = playlist_map.get(playlist_name)
+            emby_id = playlist.get("Id") if playlist else None
+            has_image = bool(
+                playlist and playlist.get("ImageTags", {}).get("Primary")
+            ) if playlist else False
+
+            # Check Redis for custom artwork flag
+            has_custom = False
+            if r:
+                try:
+                    has_custom = bool(await r.get(f"universe:{u['id']}:custom_artwork"))
+                except Exception:
+                    pass
+
+            result.append({
+                "id": u["id"],
+                "name": u["name"],
+                "display_name": display_name,
+                "total_items": u["total_items"],
+                "in_library": u["in_library"],
+                "emby_playlist_id": emby_id,
+                "has_image": has_image,
+                "has_custom_artwork": has_custom,
+            })
+
+        return result
+    finally:
+        if emby:
+            await emby.close()
+
+
+@router.post("/api/universes/{universe_id}/artwork")
+async def upload_universe_artwork(
+    universe_id: int,
+    file: UploadFile = File(...),
+    _user: User = Depends(get_current_user),
+):
+    """Upload custom artwork for a universe's Emby playlist.
+
+    Accepts .png or .jpg, max 5 MB.  Looks up the playlist by name
+    and pushes the image via Emby's image API.
+    """
+    from app.utils.emby_client import EmbyClient
+    from app.utils.redis_cache import get_redis
+
+    # Validate file type
+    ct = file.content_type or ""
+    if ct not in ("image/png", "image/jpeg", "image/jpg"):
+        raise HTTPException(400, "Only .png and .jpg files are accepted")
+
+    # Read and validate size (5 MB max)
+    image_bytes = await file.read()
+    if len(image_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(413, "Image must be under 5 MB")
+    if len(image_bytes) < 100:
+        raise HTTPException(400, "File appears to be empty")
+
+    # Look up universe
+    async with async_session_ctx() as db:
+        universe = (await db.execute(
+            select(Universe).where(Universe.id == universe_id)
+        )).scalar_one_or_none()
+        if not universe:
+            raise HTTPException(404, "Universe not found")
+        display_name = universe.custom_name or universe.name
+
+    # Find the Emby playlist
+    emby = None
+    try:
+        emby = EmbyClient()
+        playlist_name = f"🌌 {display_name}"
+        playlists = await emby.get_items(item_type="Playlist", recursive=True)
+        playlist_id = None
+        for p in playlists.get("Items", []):
+            if p.get("Name") == playlist_name:
+                playlist_id = p["Id"]
+                break
+
+        if not playlist_id:
+            raise HTTPException(
+                404,
+                f"No Emby playlist found for '{display_name}'. "
+                "Enable playlist sync and run a scan first."
+            )
+
+        # Upload image
+        content_type = "image/png" if ct == "image/png" else "image/jpeg"
+        ok = await emby.set_item_image(playlist_id, image_bytes,
+                                        content_type=content_type)
+        if not ok:
+            raise HTTPException(500, "Failed to upload image to Emby")
+
+        # Mark as custom artwork in Redis
+        r = await get_redis()
+        await r.set(f"universe:{universe_id}:custom_artwork", "1")
+
+        return {"status": "ok", "emby_playlist_id": playlist_id}
+    finally:
+        if emby:
+            await emby.close()
+
+
+@router.delete("/api/universes/{universe_id}/artwork")
+async def delete_universe_artwork(
+    universe_id: int,
+    _user: User = Depends(get_current_user),
+):
+    """Remove custom artwork from a universe's Emby playlist."""
+    from app.utils.emby_client import EmbyClient
+    from app.utils.redis_cache import get_redis
+
+    async with async_session_ctx() as db:
+        universe = (await db.execute(
+            select(Universe).where(Universe.id == universe_id)
+        )).scalar_one_or_none()
+        if not universe:
+            raise HTTPException(404, "Universe not found")
+        display_name = universe.custom_name or universe.name
+
+    emby = None
+    try:
+        emby = EmbyClient()
+        playlist_name = f"🌌 {display_name}"
+        playlists = await emby.get_items(item_type="Playlist", recursive=True)
+        playlist_id = None
+        for p in playlists.get("Items", []):
+            if p.get("Name") == playlist_name:
+                playlist_id = p["Id"]
+                break
+
+        if not playlist_id:
+            raise HTTPException(404, "No Emby playlist found")
+
+        ok = await emby.delete_item_image(playlist_id)
+        if not ok:
+            raise HTTPException(500, "Failed to remove image from Emby")
+
+        r = await get_redis()
+        await r.delete(f"universe:{universe_id}:custom_artwork")
+
+        return {"status": "ok"}
+    finally:
+        if emby:
+            await emby.close()
+
+
+@router.get("/api/universes/{universe_id}/artwork/preview")
+async def preview_universe_artwork(universe_id: int):
+    """Proxy the Emby playlist's primary image for the artwork modal thumbnail."""
+    from app.utils.emby_client import EmbyClient
+
+    async with async_session_ctx() as db:
+        universe = (await db.execute(
+            select(Universe).where(Universe.id == universe_id)
+        )).scalar_one_or_none()
+        if not universe:
+            raise HTTPException(404, "Universe not found")
+        display_name = universe.custom_name or universe.name
+
+    emby = None
+    try:
+        emby = EmbyClient()
+        playlist_name = f"🌌 {display_name}"
+        playlists = await emby.get_items(item_type="Playlist", recursive=True)
+        playlist_id = None
+        for p in playlists.get("Items", []):
+            if p.get("Name") == playlist_name:
+                playlist_id = p["Id"]
+                break
+
+        if not playlist_id:
+            raise HTTPException(404, "No playlist found")
+
+        # Proxy the image from Emby
+        import httpx
+        from app.config import settings
+        img_url = f"{settings.emby_url}/Items/{playlist_id}/Images/Primary"
+        params = {"api_key": settings.emby_api_key, "maxWidth": "300"}
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(img_url, params=params)
+            if resp.status_code != 200:
+                raise HTTPException(404, "No image found")
+            ct = resp.headers.get("content-type", "image/png")
+            return Response(content=resp.content, media_type=ct)
+    finally:
+        if emby:
+            await emby.close()
 
 
 @router.get("/api/universes/export")

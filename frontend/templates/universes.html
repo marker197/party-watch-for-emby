@@ -597,6 +597,7 @@
       <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" onclick="toggleAllPlaylists()" title="Toggle playlist sync for all universes" id="toggleAllBtn">☑ Toggle All</button>
       <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" onclick="runAutoDiscover()" title="Scan Emby library via TMDB to auto-create universes from collections" id="autoDiscoverBtn">🎬 TMDB Auto-Discover</button>
       <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.82rem;" onclick="toggleImportLists()" id="importListsToggle">📋 Import Lists ▾</button>
+      <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.82rem;" onclick="openArtworkModal()" id="artworkBtn">🎨 Manage Artwork</button>
     </div>
 
     <!-- Create universe inline form -->
@@ -2510,6 +2511,154 @@ function toggleSidebar(){
   document.getElementById('suiteSidebar').classList.toggle('open');
   document.getElementById('sidebarOverlay').classList.toggle('open');
 }
+</script>
+
+<!-- Artwork management modal -->
+<div id="artworkModal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.65);align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px 28px;max-width:680px;width:94%;max-height:85vh;overflow-y:auto;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
+      <h2 style="font-size:1.1rem;font-weight:700;display:flex;align-items:center;gap:8px;">🎨 Universe artwork</h2>
+      <button class="btn" style="background:none;border:none;font-size:1.3rem;padding:4px 8px;cursor:pointer;color:var(--text-dim);" onclick="closeArtworkModal()">✕</button>
+    </div>
+    <div id="artworkGrid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));gap:14px;">
+      <p style="color:var(--text-dim);font-size:0.88rem;">Loading...</p>
+    </div>
+    <p style="font-size:0.78rem;color:var(--text-dim);margin-top:16px;text-align:center;">Upload a .png or .jpg (max 5 MB). Artwork syncs to the Emby playlist immediately.</p>
+  </div>
+</div>
+<style>
+  .aw-card { background:var(--surface-hover); border:1px solid var(--border); border-radius:var(--radius); padding:10px; display:flex; flex-direction:column; align-items:center; gap:8px; }
+  .aw-thumb { width:100%; aspect-ratio:1; border-radius:6px; overflow:hidden; display:flex; align-items:center; justify-content:center; background:var(--bg); position:relative; }
+  .aw-thumb img { width:100%; height:100%; object-fit:cover; }
+  .aw-placeholder { color:var(--text-dim); font-size:0.78rem; text-align:center; padding:12px; }
+  .aw-badge { position:absolute; top:5px; right:5px; background:var(--green); color:#fff; font-size:0.65rem; padding:2px 7px; border-radius:4px; font-weight:600; }
+  .aw-title { font-size:0.82rem; font-weight:600; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+  .aw-sub { font-size:0.72rem; color:var(--text-dim); }
+  .aw-actions { display:flex; gap:6px; width:100%; }
+  .aw-actions button { flex:1; font-size:0.75rem; padding:5px 0; background:var(--surface); border:1px solid var(--border); border-radius:6px; color:var(--text); cursor:pointer; }
+  .aw-actions button:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .aw-actions .aw-remove { flex:0; padding:5px 8px; }
+  .aw-actions .aw-remove:hover { background:var(--red); border-color:var(--red); }
+  .aw-uploading { opacity:0.5; pointer-events:none; }
+</style>
+<script>
+  function openArtworkModal() {
+    var modal = document.getElementById('artworkModal');
+    modal.style.display = 'flex';
+    loadArtworkGrid();
+  }
+  function closeArtworkModal() {
+    document.getElementById('artworkModal').style.display = 'none';
+  }
+  document.getElementById('artworkModal').addEventListener('click', function(e) {
+    if (e.target === this) closeArtworkModal();
+  });
+
+  async function loadArtworkGrid() {
+    var grid = document.getElementById('artworkGrid');
+    grid.innerHTML = '<p style="color:var(--text-dim);font-size:0.88rem;">Loading...</p>';
+    try {
+      var r = await fetch('/api/universes/artwork');
+      if (!r.ok) throw new Error('Failed to load');
+      var items = await r.json();
+
+      if (!items.length) {
+        grid.innerHTML = '<p style="color:var(--text-dim);font-size:0.88rem;">No universes found. Create one and enable playlist sync first.</p>';
+        return;
+      }
+
+      var html = '';
+      items.forEach(function(u) {
+        var thumbContent;
+        if (u.emby_playlist_id && u.has_image) {
+          var imgUrl = '/api/universes/' + u.id + '/artwork/preview?t=' + Date.now();
+          thumbContent = '<img src="' + imgUrl + '" alt="' + escapeHtml(u.display_name) + '" onerror="this.parentNode.innerHTML=\'<div class=aw-placeholder>No image</div>\'">';
+        } else {
+          thumbContent = '<div class="aw-placeholder">' + (u.emby_playlist_id ? 'No image set' : 'No playlist — enable sync') + '</div>';
+        }
+
+        var badge = u.has_custom_artwork ? '<div class="aw-badge">Custom</div>' : '';
+
+        var actions;
+        if (u.emby_playlist_id) {
+          if (u.has_custom_artwork) {
+            actions = '<button onclick="triggerArtworkUpload(' + u.id + ')">Replace</button>' +
+                      '<button class="aw-remove" onclick="removeArtwork(' + u.id + ', \'' + escapeHtml(u.display_name).replace(/'/g, "\\'") + '\')">✕</button>';
+          } else {
+            actions = '<button onclick="triggerArtworkUpload(' + u.id + ')">Upload</button>';
+          }
+        } else {
+          actions = '<button disabled style="opacity:0.4;cursor:default;">No playlist</button>';
+        }
+
+        html += '<div class="aw-card" id="aw-card-' + u.id + '">' +
+                  '<div class="aw-thumb">' + thumbContent + badge + '</div>' +
+                  '<div class="aw-title" title="' + escapeHtml(u.display_name) + '">' + escapeHtml(u.display_name) + '</div>' +
+                  '<div class="aw-sub">' + u.in_library + ' / ' + u.total_items + ' items</div>' +
+                  '<div class="aw-actions">' + actions + '</div>' +
+                '</div>';
+      });
+
+      grid.innerHTML = html;
+    } catch(e) {
+      grid.innerHTML = '<p style="color:var(--red);">Error: ' + e.message + '</p>';
+    }
+  }
+
+  function triggerArtworkUpload(universeId) {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/jpeg';
+    input.onchange = function() {
+      if (input.files && input.files[0]) {
+        uploadArtwork(universeId, input.files[0]);
+      }
+    };
+    input.click();
+  }
+
+  async function uploadArtwork(universeId, file) {
+    if (file.size > 5 * 1024 * 1024) {
+      showToast('Image must be under 5 MB');
+      return;
+    }
+
+    var card = document.getElementById('aw-card-' + universeId);
+    if (card) card.classList.add('aw-uploading');
+
+    try {
+      var form = new FormData();
+      form.append('file', file);
+      var r = await fetch('/api/universes/' + universeId + '/artwork', {
+        method: 'POST',
+        body: form
+      });
+      if (!r.ok) {
+        var d = await r.json().catch(function() { return {}; });
+        throw new Error(d.detail || 'Upload failed');
+      }
+      showToast('Artwork uploaded');
+      loadArtworkGrid();
+    } catch(e) {
+      showToast('Error: ' + e.message);
+      if (card) card.classList.remove('aw-uploading');
+    }
+  }
+
+  async function removeArtwork(universeId, name) {
+    if (!confirm('Remove custom artwork for "' + name + '"?')) return;
+    var card = document.getElementById('aw-card-' + universeId);
+    if (card) card.classList.add('aw-uploading');
+    try {
+      var r = await fetch('/api/universes/' + universeId + '/artwork', { method: 'DELETE' });
+      if (!r.ok) throw new Error('Failed');
+      showToast('Artwork removed');
+      loadArtworkGrid();
+    } catch(e) {
+      showToast('Error: ' + e.message);
+      if (card) card.classList.remove('aw-uploading');
+    }
+  }
 </script>
 </body>
 </html>
