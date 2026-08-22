@@ -694,13 +694,16 @@ class EmbyClient:
     ) -> bool:
         """Upload an image for an Emby item.
 
-        POST /Items/{id}/Images/{type} with raw image bytes.
+        POST /Items/{id}/Images/{type} with the image as a base64-encoded
+        string body.  Emby's API requires base64 encoding, not raw bytes.
         ``image_type`` can be Primary, Backdrop, Banner, Logo, etc.
         """
+        import base64
         try:
+            b64_data = base64.b64encode(image_bytes).decode("ascii")
             resp = await self._client.post(
                 self._url(f"/Items/{item_id}/Images/{image_type}"),
-                content=image_bytes,
+                content=b64_data,
                 headers={"Content-Type": content_type},
                 params=self._params(),
             )

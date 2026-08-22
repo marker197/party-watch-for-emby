@@ -63,6 +63,8 @@ def setup_logging():
     logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
     logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
     logging.getLogger("apscheduler.executors").setLevel(logging.WARNING)
+    logging.getLogger("multipart").setLevel(logging.WARNING)
+    logging.getLogger("multipart.multipart").setLevel(logging.WARNING)
 
     # -- Filter repetitive poll endpoints from uvicorn access log --
     _access_logger = logging.getLogger("uvicorn.access")
