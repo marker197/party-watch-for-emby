@@ -337,22 +337,21 @@ class SimklClient:
         return await self._post("/sync/add-to-list", payload)
 
     async def remove_from_watchlist(self, items: list[dict]) -> dict:
-        """Remove items from watchlist.
+        """Remove items from watchlist by moving them to 'dropped' status.
 
-        Uses POST /sync/history/remove which removes items from ALL
-        watchlist statuses (watching, plantowatch, hold, dropped,
-        completed).  Same payload shape as add_to_history — just
-        movies/shows/anime arrays with ids.
+        Simkl has no true delete — items always live in one of the five
+        watchlist buckets (watching, plantowatch, hold, dropped, completed).
+        The old ``notinteresting`` status was renamed to ``dropped``.
+        Uses POST /sync/add-to-list with ``"to": "dropped"``.
         """
         payload = self._build_sync_payload(items)
-        # Clean out any "to" keys — /sync/history/remove doesn't use them
         for key in ("movies", "shows", "anime"):
             if key in payload:
                 for item in payload[key]:
-                    item.pop("to", None)
+                    item["to"] = "dropped"
                     item.pop("type", None)
                     item.pop("_type", None)
-        return await self._post("/sync/history/remove", payload)
+        return await self._post("/sync/add-to-list", payload)
 
     # ------------------------------------------------------------------
     # History & watched status

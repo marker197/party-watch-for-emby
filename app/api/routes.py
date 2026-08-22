@@ -4804,13 +4804,23 @@ async def get_merged_watchlist(
     # Merge by IMDB ID, keeping track of which providers have each item
     seen: dict[str, dict] = {}  # imdb_id -> merged item
 
-    def _extract_ids(provider, item):
-        ids = item.get("ids", {})
+    def _unwrap_item(item):
+        """Unwrap movie/show sub-objects — MDBList may wrap items as
+        {"movie": {...}} or {"show": {...}}, Simkl /sync/all-items
+        returns flat objects.  Return the inner item either way."""
+        if isinstance(item.get("movie"), dict):
+            return item["movie"]
+        if isinstance(item.get("show"), dict):
+            return item["show"]
+        return item
+
+    def _extract_ids(provider, inner):
+        ids = inner.get("ids", {})
         if provider == "mdblist":
             return (
-                ids.get("imdb") or item.get("imdb_id") or item.get("imdb"),
-                str(ids.get("tmdb") or item.get("tmdb_id") or item.get("tmdb") or ""),
-                str(ids.get("tvdb") or item.get("tvdb_id") or item.get("tvdb") or ""),
+                ids.get("imdb") or inner.get("imdb_id") or inner.get("imdb"),
+                str(ids.get("tmdb") or inner.get("tmdb_id") or inner.get("tmdb") or ""),
+                str(ids.get("tvdb") or inner.get("tvdb_id") or inner.get("tvdb") or ""),
             )
         else:
             return (
@@ -4820,14 +4830,15 @@ async def get_merged_watchlist(
             )
 
     for provider, item_type, item in simkl_raw + mdblist_raw:
-        imdb_id, tmdb_id, tvdb_id = _extract_ids(provider, item)
-        key = imdb_id or tmdb_id or item.get("title", "")
+        inner = _unwrap_item(item)
+        imdb_id, tmdb_id, tvdb_id = _extract_ids(provider, inner)
+        title = inner.get("title") or inner.get("name") or item.get("title") or ""
+        key = imdb_id or tmdb_id or title
         if not key:
             continue
 
         if key not in seen:
-            title = item.get("title") or item.get("name") or ""
-            year = item.get("year") or None
+            year = inner.get("year") or item.get("year") or None
             seen[key] = {
                 "imdb_id": imdb_id,
                 "tmdb_id": tmdb_id,
@@ -4841,7 +4852,8 @@ async def get_merged_watchlist(
                 "poster": None,
             }
 
-        seen[key]["providers"].append(provider)
+        if provider not in seen[key]["providers"]:
+            seen[key]["providers"].append(provider)
         if not seen[key]["imdb_id"] and imdb_id:
             seen[key]["imdb_id"] = imdb_id
         if not seen[key]["tmdb_id"] and tmdb_id:
@@ -4859,25 +4871,31 @@ async def get_merged_watchlist(
                 item["poster"] = cached.get("poster")
                 break
 
-    # For items not in library, fetch TMDB poster paths
+    # For items not in library, fetch TMDB poster paths concurrently
     missing_items = [v for v in seen.values() if not v["in_library"] and v.get("tmdb_id")]
     if missing_items:
         from app.utils.tmdb_client import get_full_details
-        for item in missing_items:
-            try:
-                tmdb_id = int(item["tmdb_id"])
-                media_type = "movie" if item["item_type"] == "movie" else "tv"
-                details = await get_full_details(tmdb_id, media_type)
-                if details and details.get("poster_path"):
-                    item["tmdb_poster"] = details["poster_path"]
-                if not item.get("title") or item["title"] == "?":
-                    item["title"] = details.get("title") or details.get("name") or item.get("title", "")
-                if not item.get("year") and details:
-                    rd = details.get("release_date") or details.get("first_air_date") or ""
-                    if rd:
-                        item["year"] = int(rd[:4]) if rd[:4].isdigit() else None
-            except Exception:
-                pass
+
+        _tmdb_sem = asyncio.Semaphore(5)  # max 5 concurrent TMDB requests
+
+        async def _enrich_item(item):
+            async with _tmdb_sem:
+                try:
+                    tmdb_id = int(item["tmdb_id"])
+                    media_type = "movie" if item["item_type"] == "movie" else "tv"
+                    details = await get_full_details(tmdb_id, media_type)
+                    if details and details.get("poster_path"):
+                        item["tmdb_poster"] = details["poster_path"]
+                    if not item.get("title") or item["title"] == "?":
+                        item["title"] = details.get("title") or details.get("name") or item.get("title", "")
+                    if not item.get("year") and details:
+                        rd = details.get("release_date") or details.get("first_air_date") or ""
+                        if rd:
+                            item["year"] = int(rd[:4]) if rd[:4].isdigit() else None
+                except Exception:
+                    pass
+
+        await asyncio.gather(*[_enrich_item(item) for item in missing_items])
 
     items = sorted(seen.values(), key=lambda x: (x.get("title") or "").lower())
 
@@ -4969,6 +4987,7 @@ async def remove_from_watchlist(
             await r.sadd("watchlist_removed:tmdb", str(tmdb_id))
         if payload.get("tvdb_id"):
             await r.sadd("manual_arr_exclude:tvdb", str(payload["tvdb_id"]))
+            await r.sadd("watchlist_removed:tvdb", str(payload["tvdb_id"]))
         if imdb_id:
             await r.sadd("watchlist_removed:imdb", str(imdb_id))
     except Exception:
@@ -10517,11 +10536,12 @@ async def rate_item(
 
     # Fallback: search Emby directly by title if cache missed
     if not imdb_id and not tmdb_id and title:
+        _emby_rate = None
         try:
             from app.utils.emby_client import EmbyClient
-            emby = EmbyClient()
+            _emby_rate = EmbyClient()
             search_type = "Series" if item_type == "show" else "Movie"
-            results = await emby.search_items(title, item_type=search_type)
+            results = await _emby_rate.search_items(title, item_type=search_type)
             if results:
                 for result in (results if isinstance(results, list) else results.get("Items", results)):
                     r_pids = result.get("ProviderIds", {})
@@ -10531,10 +10551,12 @@ async def rate_item(
                         tmdb_id = r_pids.get("Tmdb") or r_pids.get("tmdb")
                         if imdb_id or tmdb_id:
                             break
-            await emby.close()
         except Exception as e:
             log_init = structlog.get_logger()
             log_init.debug("rate.emby_search_fallback_failed", error=str(e)[:120])
+        finally:
+            if _emby_rate:
+                await _emby_rate.close()
 
     if not imdb_id and not tmdb_id:
         raise HTTPException(400, "imdb_id or tmdb_id required (could not resolve from title)")
@@ -10578,6 +10600,7 @@ async def rate_item(
                     series_ids_obj["tmdb"] = s_tmdb
         if not series_ids_obj.get("imdb"):
             # Cache may lack IMDB for series — search Emby directly
+            _emby_sr = None
             try:
                 from app.utils.emby_client import EmbyClient
                 _emby_sr = EmbyClient()
@@ -10602,9 +10625,11 @@ async def rate_item(
                                 series_ids_obj["tmdb"] = s_tmdb
                         if series_ids_obj.get("imdb"):
                             break
-                await _emby_sr.close()
             except Exception:
                 pass
+            finally:
+                if _emby_sr:
+                    await _emby_sr.close()
         log.debug("rate.series_ids_resolved",
                    series_name=series_name,
                    series_ids=series_ids_obj,
@@ -10948,9 +10973,10 @@ async def get_user_ratings(
 
     # For cache misses, do batch Emby searches (max 30 to avoid hammering)
     if cache_misses:
+        _emby_ur = None
         try:
             from app.utils.emby_client import EmbyClient
-            emby = EmbyClient()
+            _emby_ur = EmbyClient()
             searched_titles: set[str] = set()
             for rid, title, itype in cache_misses:
                 title_lower = title.strip().lower()
@@ -10959,7 +10985,7 @@ async def get_user_ratings(
                 searched_titles.add(title_lower)
                 try:
                     search_type = "Movie" if itype == "movie" else "Series"
-                    results = await emby.search_items(title, item_type=search_type)
+                    results = await _emby_ur.search_items(title, item_type=search_type)
                     for res in results:
                         if res.get("Name", "").strip().lower() == title_lower:
                             eid = res.get("Id")
@@ -10970,9 +10996,11 @@ async def get_user_ratings(
                             break
                 except Exception:
                     pass
-            await emby.close()
         except Exception:
             pass
+        finally:
+            if _emby_ur:
+                await _emby_ur.close()
 
     # Resolve series_emby_id for episode ratings (for poster fallback)
     series_emby_cache: dict[str, str | None] = {}  # series_name → emby_id
@@ -10993,21 +11021,24 @@ async def get_user_ratings(
         name for name, eid in series_emby_cache.items() if eid is None
     ]
     if series_cache_misses:
+        _emby_s = None
         try:
             from app.utils.emby_client import EmbyClient
-            emby_s = EmbyClient()
+            _emby_s = EmbyClient()
             for sname in series_cache_misses:
                 try:
-                    results = await emby_s.search_items(sname, item_type="Series")
+                    results = await _emby_s.search_items(sname, item_type="Series")
                     for res in results:
                         if res.get("Name", "").strip().lower() == sname.strip().lower():
                             series_emby_cache[sname] = res.get("Id")
                             break
                 except Exception:
                     pass
-            await emby_s.close()
         except Exception:
             pass
+        finally:
+            if _emby_s:
+                await _emby_s.close()
 
     for r in rows:
         series_eid = None

@@ -987,11 +987,12 @@ class WatchlistSyncService:
         """Remove IDs that the user explicitly removed from watchlist via UI.
 
         Items removed through the watchlist page's ✕ button are stored
-        in ``watchlist_removed:imdb`` and ``watchlist_removed:tmdb`` Redis
+        in ``watchlist_removed:tmdb`` and ``watchlist_removed:tvdb`` Redis
         sets.  These must not be re-added by any sync direction.
         """
         r = await get_redis()
         exclude_tmdb: set[int] = set()
+        exclude_tvdb: set[int] = set()
 
         raw_tmdb = await r.smembers("watchlist_removed:tmdb")
         for v in raw_tmdb:
@@ -1000,15 +1001,25 @@ class WatchlistSyncService:
             except (ValueError, TypeError):
                 pass
 
-        if not exclude_tmdb:
+        raw_tvdb = await r.smembers("watchlist_removed:tvdb")
+        for v in raw_tvdb:
+            try:
+                exclude_tvdb.add(int(v))
+            except (ValueError, TypeError):
+                pass
+
+        if not exclude_tmdb and not exclude_tvdb:
             return tmdb_ids, tvdb_ids
 
-        before = len(tmdb_ids)
+        before_tmdb = len(tmdb_ids)
+        before_tvdb = len(tvdb_ids)
         tmdb_ids = [t for t in tmdb_ids if t not in exclude_tmdb]
-        excluded = before - len(tmdb_ids)
+        tvdb_ids = [t for t in tvdb_ids if t not in exclude_tvdb]
+        excluded = (before_tmdb - len(tmdb_ids)) + (before_tvdb - len(tvdb_ids))
         if excluded:
             log.debug("watchlist_sync.watchlist_removal_excluded",
-                     count=excluded)
+                     tmdb_excluded=before_tmdb - len(tmdb_ids),
+                     tvdb_excluded=before_tvdb - len(tvdb_ids))
 
         return tmdb_ids, tvdb_ids
 
