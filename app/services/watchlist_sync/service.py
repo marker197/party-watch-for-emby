@@ -159,6 +159,7 @@ class WatchlistSyncService:
 
     async def _arr_to_simkl_watchlist(self, user: User, simkl: SimklClient):
         """Send missing Radarr/Sonarr items to Simkl watchlist (with dupe check)."""
+        r = await get_redis()
         missing_tmdb, missing_tvdb = await self._get_arr_missing_ids()
 
         # Exclude items manually sent to Radarr/Sonarr (not from watchlist)
@@ -173,42 +174,78 @@ class WatchlistSyncService:
             log.debug("watchlist_sync.arr_to_simkl.nothing_missing", user_id=user.id)
             return
 
-        # Fetch current Simkl watchlist for dupe check
-        wl_movies = await simkl.get_watchlist(kind="movies")
-        await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
-        wl_shows = await simkl.get_watchlist(kind="shows")
-
+        # Fetch items already on Simkl in ANY status — not just plantowatch.
+        # Items in completed/dropped/watching/hold should not be re-added
+        # to the watchlist every cycle (Simkl returns "added" even for
+        # items already present, causing noisy logs and wasted API calls).
         wl_tmdb_ids: set[int] = set()
-        for item in (wl_movies or []):
-            movie = item.get("movie") or item
-            tmdb = (movie.get("ids") or {}).get("tmdb")
-            if tmdb:
-                wl_tmdb_ids.add(tmdb)
-
         wl_tvdb_ids: set[int] = set()
-        for item in (wl_shows or []):
-            show = item.get("show") or item
-            tvdb = (show.get("ids") or {}).get("tvdb")
-            if tvdb:
-                wl_tvdb_ids.add(tvdb)
 
-        # Filter out items already on watchlist
+        statuses = ["plantowatch", "completed", "dropped", "watching", "hold"]
+        for i, status in enumerate(statuses):
+            if i > 0:
+                await asyncio.sleep(1.1)
+            try:
+                movie_data = await simkl._activity_gated_get(
+                    f"/sync/all-items/movies/{status}",
+                    simkl._ACTIVITY_KEYS.get(f"movies/{status}", "all"),
+                    params={"extended": "full"},
+                )
+                for item in (simkl._unwrap_sync_response(movie_data, "movies") or []):
+                    movie = item.get("movie") or item
+                    tmdb = (movie.get("ids") or {}).get("tmdb")
+                    if tmdb:
+                        wl_tmdb_ids.add(tmdb)
+            except Exception:
+                log.debug("watchlist_sync.arr_to_simkl.status_fetch_failed",
+                          status=status, kind="movies")
+            await asyncio.sleep(1.1)
+            try:
+                show_data = await simkl._activity_gated_get(
+                    f"/sync/all-items/shows/{status}",
+                    simkl._ACTIVITY_KEYS.get(f"shows/{status}", "all"),
+                    params={"extended": "full"},
+                )
+                for item in (simkl._unwrap_sync_response(show_data, "shows") or []):
+                    show = item.get("show") or item
+                    tvdb = (show.get("ids") or {}).get("tvdb")
+                    if tvdb:
+                        wl_tvdb_ids.add(tvdb)
+            except Exception:
+                log.debug("watchlist_sync.arr_to_simkl.status_fetch_failed",
+                          status=status, kind="shows")
+
+        log.debug("watchlist_sync.arr_to_simkl.known_ids",
+                  tmdb_count=len(wl_tmdb_ids), tvdb_count=len(wl_tvdb_ids))
+
+        # Also filter out items previously sent to Simkl that it couldn't
+        # resolve (accepted as "added" but never persisted).  Without this,
+        # unresolvable items get re-sent every cycle.
+        try:
+            prev_sent_tmdb = {int(v) for v in await r.smembers("arr_to_simkl_sent:tmdb") if v}
+            prev_sent_tvdb = {int(v) for v in await r.smembers("arr_to_simkl_sent:tvdb") if v}
+        except Exception:
+            prev_sent_tmdb, prev_sent_tvdb = set(), set()
+
+        # Filter out items already on watchlist OR previously sent
         movies_to_add = [
             {"ids": {"tmdb": tmdb}}
             for tmdb in missing_tmdb
-            if tmdb not in wl_tmdb_ids
+            if tmdb not in wl_tmdb_ids and tmdb not in prev_sent_tmdb
         ]
         shows_to_add = [
             {"ids": {"tvdb": tvdb}}
             for tvdb in missing_tvdb
-            if tvdb not in wl_tvdb_ids
+            if tvdb not in wl_tvdb_ids and tvdb not in prev_sent_tvdb
         ]
 
         if not movies_to_add and not shows_to_add:
             log.debug("watchlist_sync.arr_to_simkl.all_on_watchlist",
                      user_id=user.id,
                      missing_movies=len(missing_tmdb),
-                     missing_shows=len(missing_tvdb))
+                     missing_shows=len(missing_tvdb),
+                     prev_sent_tmdb=len(prev_sent_tmdb),
+                     prev_sent_tvdb=len(prev_sent_tvdb))
             return
 
         log.info("watchlist_sync.arr_to_simkl.adding",
@@ -224,12 +261,29 @@ class WatchlistSyncService:
 
         added = result.get("added", {})
         existing = result.get("existing", {})
+        not_found = result.get("not_found", {})
         log.info("watchlist_sync.arr_to_simkl.done",
                  user_id=user.id,
-                 movies_added=added.get("movies", 0),
-                 shows_added=added.get("shows", 0),
-                 movies_existing=existing.get("movies", 0),
-                 shows_existing=existing.get("shows", 0))
+                 movies_added=len(added.get("movies", [])) if isinstance(added.get("movies"), list) else added.get("movies", 0),
+                 shows_added=len(added.get("shows", [])) if isinstance(added.get("shows"), list) else added.get("shows", 0),
+                 movies_existing=len(existing.get("movies", [])) if isinstance(existing.get("movies"), list) else existing.get("movies", 0),
+                 shows_existing=len(existing.get("shows", [])) if isinstance(existing.get("movies"), list) else existing.get("shows", 0),
+                 not_found_movies=len(not_found.get("movies", [])) if isinstance(not_found.get("movies"), list) else not_found.get("movies", 0))
+
+        # Cache sent IDs so we don't re-send them next cycle.
+        # TTL of 7 days — if Radarr removes the item, the key naturally
+        # expires and won't block a future re-add.
+        try:
+            sent_tmdb = [m["ids"]["tmdb"] for m in movies_to_add]
+            sent_tvdb = [s["ids"]["tvdb"] for s in shows_to_add]
+            if sent_tmdb:
+                await r.sadd("arr_to_simkl_sent:tmdb", *[str(t) for t in sent_tmdb])
+                await r.expire("arr_to_simkl_sent:tmdb", 7 * 86400)
+            if sent_tvdb:
+                await r.sadd("arr_to_simkl_sent:tvdb", *[str(t) for t in sent_tvdb])
+                await r.expire("arr_to_simkl_sent:tvdb", 7 * 86400)
+        except Exception:
+            pass
 
         # Refresh Airing Soon cache if any shows were added
         if shows_to_add:

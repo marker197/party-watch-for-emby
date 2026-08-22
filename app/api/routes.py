@@ -1360,9 +1360,10 @@ async def upload_universe_artwork(
         if not ok:
             raise HTTPException(500, "Failed to upload image to Emby")
 
-        # Mark as custom artwork in Redis
+        # Mark as custom artwork in Redis + invalidate thumbnail cache
         r = await get_redis()
         await r.set(f"universe:{universe_id}:custom_artwork", "1")
+        await r.delete(f"universe_artwork_thumb:{universe_id}")
 
         return {"status": "ok", "emby_playlist_id": playlist_id}
     finally:
@@ -1407,6 +1408,7 @@ async def delete_universe_artwork(
 
         r = await get_redis()
         await r.delete(f"universe:{universe_id}:custom_artwork")
+        await r.delete(f"universe_artwork_thumb:{universe_id}")
 
         return {"status": "ok"}
     finally:
@@ -1414,9 +1416,56 @@ async def delete_universe_artwork(
             await emby.close()
 
 
+async def _fetch_artwork_thumbnail(
+    playlist_id: str, universe_id: int,
+) -> tuple[bytes, str] | None:
+    """Fetch artwork thumbnail from Redis cache or Emby.
+
+    Returns (image_bytes, content_type) or None.
+    Caches in Redis with 1-hour TTL to avoid hammering Emby.
+    """
+    import base64 as _b64
+    import httpx
+    from app.config import settings
+    from app.utils.redis_cache import get_redis
+
+    cache_key = f"universe_artwork_thumb:{universe_id}"
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            data = _json.loads(cached)
+            return _b64.b64decode(data["b64"]), data["ct"]
+    except Exception:
+        pass
+
+    # Fetch from Emby
+    img_url = f"{settings.emby_url}/Items/{playlist_id}/Images/Primary"
+    params = {"api_key": settings.emby_api_key, "maxWidth": "300"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(img_url, params=params)
+            if resp.status_code != 200:
+                return None
+            ct = resp.headers.get("content-type", "image/png")
+            img_bytes = resp.content
+
+        # Cache for 1 hour
+        try:
+            r = await get_redis()
+            payload = _json.dumps({"b64": _b64.b64encode(img_bytes).decode(), "ct": ct})
+            await r.set(cache_key, payload, ex=3600)
+        except Exception:
+            pass
+
+        return img_bytes, ct
+    except Exception:
+        return None
+
+
 @router.get("/api/universes/{universe_id}/artwork/preview")
 async def preview_universe_artwork(universe_id: int):
-    """Proxy the Emby playlist's primary image for the artwork modal thumbnail."""
+    """Proxy the Emby playlist's primary image, with Redis thumbnail cache."""
     from app.utils.emby_client import EmbyClient
 
     async with async_session_ctx() as db:
@@ -1441,17 +1490,68 @@ async def preview_universe_artwork(universe_id: int):
         if not playlist_id:
             raise HTTPException(404, "No playlist found")
 
-        # Proxy the image from Emby
-        import httpx
-        from app.config import settings
-        img_url = f"{settings.emby_url}/Items/{playlist_id}/Images/Primary"
-        params = {"api_key": settings.emby_api_key, "maxWidth": "300"}
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(img_url, params=params)
-            if resp.status_code != 200:
-                raise HTTPException(404, "No image found")
-            ct = resp.headers.get("content-type", "image/png")
-            return Response(content=resp.content, media_type=ct)
+        result = await _fetch_artwork_thumbnail(playlist_id, universe_id)
+        if not result:
+            raise HTTPException(404, "No image found")
+        return Response(content=result[0], media_type=result[1])
+    finally:
+        if emby:
+            await emby.close()
+
+
+@router.post("/api/universes/artwork/previews")
+async def batch_artwork_previews(
+    request: Request,
+    _user: User = Depends(get_current_user),
+):
+    """Batch-fetch artwork thumbnails for multiple universes in one call.
+
+    Request body: {"universe_ids": [1, 2, 3]}
+    Response: {"previews": {"1": {"b64": "...", "ct": "image/jpeg"}, ...}}
+
+    Uses Redis thumbnail cache (1h TTL). Only hits Emby for cache misses.
+    """
+    import base64 as _b64
+    from app.utils.emby_client import EmbyClient
+
+    body = await request.json()
+    universe_ids = body.get("universe_ids", [])
+    if not universe_ids or not isinstance(universe_ids, list):
+        return {"previews": {}}
+
+    # Look up universe names
+    async with async_session_ctx() as db:
+        rows = (await db.execute(
+            select(Universe).where(Universe.id.in_(universe_ids))
+        )).scalars().all()
+        id_to_name = {
+            u.id: u.custom_name or u.name for u in rows
+        }
+
+    emby = None
+    try:
+        emby = EmbyClient()
+        playlists = await emby.get_items(item_type="Playlist", recursive=True)
+        playlist_map: dict[str, str] = {}
+        for p in playlists.get("Items", []):
+            playlist_map[p.get("Name", "")] = p.get("Id", "")
+
+        previews: dict[str, dict] = {}
+        for uid in universe_ids:
+            name = id_to_name.get(uid)
+            if not name:
+                continue
+            playlist_id = playlist_map.get(f"🌌 {name}")
+            if not playlist_id:
+                continue
+            result = await _fetch_artwork_thumbnail(playlist_id, uid)
+            if result:
+                previews[str(uid)] = {
+                    "b64": _b64.b64encode(result[0]).decode(),
+                    "ct": result[1],
+                }
+
+        return {"previews": previews}
     finally:
         if emby:
             await emby.close()

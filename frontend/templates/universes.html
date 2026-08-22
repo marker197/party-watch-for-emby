@@ -2567,10 +2567,31 @@ function toggleSidebar(){
         return;
       }
 
+      // Batch-fetch all thumbnails in one call instead of N individual requests
+      var idsWithImages = items.filter(function(u) { return u.emby_playlist_id && u.has_image; }).map(function(u) { return u.id; });
+      var previews = {};
+      if (idsWithImages.length) {
+        try {
+          var pr = await fetch('/api/universes/artwork/previews', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({universe_ids: idsWithImages})
+          });
+          if (pr.ok) {
+            var pd = await pr.json();
+            previews = pd.previews || {};
+          }
+        } catch(e) { /* fall back to placeholders */ }
+      }
+
       var html = '';
       items.forEach(function(u) {
         var thumbContent;
-        if (u.emby_playlist_id && u.has_image) {
+        var preview = previews[String(u.id)];
+        if (preview) {
+          thumbContent = '<img src="data:' + preview.ct + ';base64,' + preview.b64 + '" alt="' + escapeHtml(u.display_name) + '">';
+        } else if (u.emby_playlist_id && u.has_image) {
+          // Fallback to individual preview if batch missed it
           var imgUrl = '/api/universes/' + u.id + '/artwork/preview?t=' + Date.now();
           thumbContent = '<img src="' + imgUrl + '" alt="' + escapeHtml(u.display_name) + '" onerror="this.parentNode.innerHTML=\'<div class=aw-placeholder>No image</div>\'">';
         } else {

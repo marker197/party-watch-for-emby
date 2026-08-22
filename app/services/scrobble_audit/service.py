@@ -339,18 +339,32 @@ class ScrobbleAuditService:
         # ── Simkl side: build sets of watched IDs ──
         simkl_movie_ids: set[str] = set()
 
+        def _add_movie_ids(entries: list[dict]) -> None:
+            """Add provider IDs from movie/anime entries to the watched set."""
+            for entry in entries:
+                item = entry.get("movie", {}) if "movie" in entry else entry
+                ids = item.get("ids", {})
+                for key in ("imdb", "tmdb", "tvdb"):
+                    val = ids.get(key)
+                    if val:
+                        simkl_movie_ids.add(f"{key}:{val}")
+
         if simkl:
             try:
                 simkl_movies = await simkl.get_watched(kind="movies")
-                for entry in simkl_movies:
-                    item = entry.get("movie", {}) if "movie" in entry else entry
-                    ids = item.get("ids", {})
-                    for key in ("imdb", "tmdb", "tvdb"):
-                        val = ids.get(key)
-                        if val:
-                            simkl_movie_ids.add(f"{key}:{val}")
+                _add_movie_ids(simkl_movies)
             except Exception:
                 log.warning("scrobble_audit.simkl_movies_failed")
+
+            # Anime movies — Simkl classifies some films as anime, not movies.
+            # Without this check, anime films show as false-positive missed scrobbles.
+            try:
+                simkl_anime = await simkl.get_watched(kind="anime")
+                _add_movie_ids(simkl_anime)
+                log.debug("scrobble_audit.simkl_anime_merged",
+                          count=len(simkl_anime))
+            except Exception:
+                log.warning("scrobble_audit.simkl_anime_failed")
 
         # Simkl shows: build show-level completed set + episode-level set
         # 1. /sync/all-items/shows/completed → fully watched, skip entire show
@@ -498,10 +512,19 @@ class ScrobbleAuditService:
 
             provider_ids = item.get("ProviderIds", {})
             item_keys = set()
-            for prov, simkl_key in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
-                val = provider_ids.get(prov)
-                if val:
-                    item_keys.add(f"{simkl_key}:{val}")
+            # Emby ProviderIds keys are inconsistently cased across
+            # endpoints — bulk may return "Imdb", search returns "IMDB".
+            # Check all three variants to avoid false-positive misses.
+            for variants, simkl_key in [
+                (("Imdb", "imdb", "IMDB"), "imdb"),
+                (("Tmdb", "tmdb", "TMDB"), "tmdb"),
+                (("Tvdb", "tvdb", "TVDB"), "tvdb"),
+            ]:
+                for v in variants:
+                    val = provider_ids.get(v)
+                    if val:
+                        item_keys.add(f"{simkl_key}:{val}")
+                        break
 
             if not item_keys:
                 continue  # can't match without IDs
@@ -509,7 +532,11 @@ class ScrobbleAuditService:
             if not item_keys & simkl_movie_ids:
                 # Dedup: multiple resolutions of the same movie share provider IDs.
                 # Use IMDB or TMDB as the dedup key; keep the copy with the latest play date.
-                dedup_key = provider_ids.get("Imdb") or provider_ids.get("Tmdb") or ""
+                dedup_key = (
+                    provider_ids.get("Imdb") or provider_ids.get("imdb")
+                    or provider_ids.get("IMDB") or provider_ids.get("Tmdb")
+                    or provider_ids.get("tmdb") or provider_ids.get("TMDB") or ""
+                )
                 ud = item.get("UserData", {})
                 lp = ud.get("LastPlayedDate")
                 dc = item.get("DateCreated")
@@ -518,9 +545,9 @@ class ScrobbleAuditService:
                     "title": item.get("Name", ""),
                     "year": item.get("ProductionYear"),
                     "type": "movie",
-                    "imdb_id": provider_ids.get("Imdb"),
-                    "tmdb_id": provider_ids.get("Tmdb"),
-                    "tvdb_id": provider_ids.get("Tvdb"),
+                    "imdb_id": provider_ids.get("Imdb") or provider_ids.get("imdb") or provider_ids.get("IMDB"),
+                    "tmdb_id": provider_ids.get("Tmdb") or provider_ids.get("tmdb") or provider_ids.get("TMDB"),
+                    "tvdb_id": provider_ids.get("Tvdb") or provider_ids.get("tvdb") or provider_ids.get("TVDB"),
                     "last_played": lp or dc,
                     "date_source": "played" if lp else ("added" if dc else None),
                 }
@@ -564,10 +591,16 @@ class ScrobbleAuditService:
 
             # Build show-level keys for Simkl matching
             show_keys: list[str] = []
-            for prov, simkl_key in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
-                val = series_providers.get(prov)
-                if val:
-                    show_keys.append(f"{simkl_key}:{val}")
+            for variants, simkl_key in [
+                (("Imdb", "imdb", "IMDB"), "imdb"),
+                (("Tmdb", "tmdb", "TMDB"), "tmdb"),
+                (("Tvdb", "tvdb", "TVDB"), "tvdb"),
+            ]:
+                for v in variants:
+                    val = series_providers.get(v)
+                    if val:
+                        show_keys.append(f"{simkl_key}:{val}")
+                        break
             # Title-based fallback for when Emby bulk endpoint doesn't
             # return ProviderIds for Series items
             if series_name:
@@ -613,10 +646,17 @@ class ScrobbleAuditService:
                 # mismatches like The Pitt S2E24 in Emby = S2E14 on Simkl)
                 if not found and simkl_ep_ids:
                     ep_providers = ep.get("ProviderIds", {})
-                    for prov, simkl_key in [("Imdb", "imdb"), ("Tmdb", "tmdb"), ("Tvdb", "tvdb")]:
-                        val = ep_providers.get(prov)
-                        if val and f"{simkl_key}:{val}" in simkl_ep_ids:
-                            found = True
+                    for variants, simkl_key in [
+                        (("Imdb", "imdb", "IMDB"), "imdb"),
+                        (("Tmdb", "tmdb", "TMDB"), "tmdb"),
+                        (("Tvdb", "tvdb", "TVDB"), "tvdb"),
+                    ]:
+                        for v in variants:
+                            val = ep_providers.get(v)
+                            if val and f"{simkl_key}:{val}" in simkl_ep_ids:
+                                found = True
+                                break
+                        if found:
                             break
 
                 if found:
@@ -641,9 +681,9 @@ class ScrobbleAuditService:
                     "title": series_name,
                     "year": series_year,
                     "type": "show",
-                    "imdb_id": series_providers.get("Imdb"),
-                    "tmdb_id": series_providers.get("Tmdb"),
-                    "tvdb_id": series_providers.get("Tvdb"),
+                    "imdb_id": series_providers.get("Imdb") or series_providers.get("imdb") or series_providers.get("IMDB"),
+                    "tmdb_id": series_providers.get("Tmdb") or series_providers.get("tmdb") or series_providers.get("TMDB"),
+                    "tvdb_id": series_providers.get("Tvdb") or series_providers.get("tvdb") or series_providers.get("TVDB"),
                     "episode_count": len(missing_eps),
                     "episodes": missing_eps,
                     # Use latest episode's played date as the show-level date

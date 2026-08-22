@@ -579,10 +579,30 @@ class EmbyClient:
                     "X-MediaBrowser-Token": self._key,
                 },
             )
+            resp.raise_for_status()
+
+            # Verify LockedFields persisted — some Emby builds silently
+            # ignore LockedFields on POST.  Re-fetch and compare.
+            verify = await self.get_item_safe(item_id, user_id=user_id)
+            verified_locked = set(verify.get("LockedFields") or []) if verify else set()
+            verified_pids = dict(verify.get("ProviderIds") or {}) if verify else {}
+            locked_ok = "ProviderIds" in verified_locked
+            pids_ok = all(
+                verified_pids.get(k) == str(v)
+                for k, v in (provider_ids or {}).items()
+                if v
+            )
             log.info("emby.provider_ids_set", item_id=item_id,
                      provider_ids=existing,
-                     status_code=resp.status_code)
-            resp.raise_for_status()
+                     status_code=resp.status_code,
+                     locked_fields_verified=locked_ok,
+                     provider_ids_verified=pids_ok,
+                     actual_locked=list(verified_locked))
+            if not locked_ok:
+                log.warning("emby.locked_fields_not_persisted",
+                            item_id=item_id,
+                            expected="ProviderIds",
+                            actual=list(verified_locked))
             return True
         except Exception as e:
             log.warning("emby.set_provider_ids_failed", item_id=item_id,

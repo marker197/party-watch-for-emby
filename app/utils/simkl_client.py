@@ -510,6 +510,12 @@ class SimklClient:
         "movies/watching":     "movies.watching",
         "shows/watching":      "tv_shows.watching",
         "anime/watching":      "anime.watching",
+        "movies/hold":         "movies.hold",
+        "shows/hold":          "tv_shows.hold",
+        "anime/hold":          "anime.hold",
+        "movies/dropped":      "movies.dropped",
+        "shows/dropped":       "tv_shows.dropped",
+        "anime/dropped":       "anime.dropped",
     }
 
     def _cache_prefix(self) -> str:
