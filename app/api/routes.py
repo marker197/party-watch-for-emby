@@ -7058,22 +7058,29 @@ async def sync_mdblist_collection(
         # Build sets of provider IDs from library
         lib_movies: list[dict] = []
         lib_shows: list[dict] = []
-        lib_imdb_ids: set[str] = set()
+        # Use a composite dedup key: prefer IMDB, fall back to TMDB
+        lib_keys: set[str] = set()
 
         for item in library:
             imdb = item.get("imdb_id")
             tmdb = item.get("tmdb_id")
-            if not imdb and not tmdb:
+            tvdb = item.get("tvdb_id")
+            if not imdb and not tmdb and not tvdb:
                 continue
 
             ids: dict = {}
             if imdb:
                 ids["imdb"] = imdb
-                lib_imdb_ids.add(imdb)
             if tmdb:
                 ids["tmdb"] = int(tmdb)
+            if tvdb:
+                ids["tvdb"] = int(tvdb)
 
-            entry = {"ids": ids}
+            # Dedup key: IMDB preferred, then TMDB
+            key = f"imdb:{imdb}" if imdb else f"tmdb:{tmdb}" if tmdb else f"tvdb:{tvdb}"
+            lib_keys.add(key)
+
+            entry = {"ids": ids, "_key": key}
             if item.get("item_type") == "movie":
                 lib_movies.append(entry)
             else:
@@ -7084,27 +7091,36 @@ async def sync_mdblist_collection(
         mdb_movies = mdb_collection.get("movies", []) if isinstance(mdb_collection, dict) else []
         mdb_shows = mdb_collection.get("shows", []) if isinstance(mdb_collection, dict) else []
 
-        mdb_imdb_ids: set[str] = set()
+        mdb_keys: set[str] = set()
         for entry in mdb_movies + mdb_shows:
             item = entry.get("movie") or entry.get("show") or entry
-            imdb = (item.get("ids") or {}).get("imdb")
-            if imdb:
-                mdb_imdb_ids.add(imdb)
+            eids = item.get("ids") or {}
+            if eids.get("imdb"):
+                mdb_keys.add(f"imdb:{eids['imdb']}")
+            elif eids.get("tmdb"):
+                mdb_keys.add(f"tmdb:{eids['tmdb']}")
+            elif eids.get("tvdb"):
+                mdb_keys.add(f"tvdb:{eids['tvdb']}")
 
-        # 3. Calculate diffs (using IMDB as common key)
-        to_add_imdb = lib_imdb_ids - mdb_imdb_ids
-        to_remove_imdb = mdb_imdb_ids - lib_imdb_ids
+        # 3. Calculate diffs
+        to_add_keys = lib_keys - mdb_keys
+        to_remove_keys = mdb_keys - lib_keys
 
-        add_movies = [m for m in lib_movies if (m.get("ids") or {}).get("imdb") in to_add_imdb]
-        add_shows = [s for s in lib_shows if (s.get("ids") or {}).get("imdb") in to_add_imdb]
-        rm_movies = [{"ids": {"imdb": imdb}} for imdb in to_remove_imdb]  # simplified
+        add_movies = [{"ids": m["ids"]} for m in lib_movies if m["_key"] in to_add_keys]
+        add_shows = [{"ids": s["ids"]} for s in lib_shows if s["_key"] in to_add_keys]
+
+        # Build removal items from the keys
+        rm_items = []
+        for k in to_remove_keys:
+            prov, val = k.split(":", 1)
+            rm_items.append({"ids": {prov: int(val) if prov != "imdb" else val}})
 
         stats = {
             "library_movies": len(lib_movies),
             "library_shows": len(lib_shows),
-            "mdblist_existing": len(mdb_imdb_ids),
-            "to_add": len(to_add_imdb),
-            "to_remove": len(to_remove_imdb),
+            "mdblist_existing": len(mdb_keys),
+            "to_add": len(to_add_keys),
+            "to_remove": len(to_remove_keys),
         }
 
         # 4. Push diffs
@@ -7113,8 +7129,8 @@ async def sync_mdblist_collection(
                 movies=add_movies or None,
                 shows=add_shows or None,
             )
-        if rm_movies:
-            await client.remove_from_collection(movies=rm_movies or None)
+        if rm_items:
+            await client.remove_from_collection(movies=rm_items or None)
 
         log.info("mdblist.collection_sync", **stats)
 

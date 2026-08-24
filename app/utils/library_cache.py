@@ -179,24 +179,27 @@ class LibraryCache:
             r = await get_redis()
             seen_ids: set[str] = set()
             items: list[dict] = []
-            async for key in r.scan_iter(match=f"{CACHE_KEY_PREFIX}Imdb:*", count=200):
-                raw = await r.get(key)
-                if not raw:
-                    continue
-                data = json.loads(raw)
-                eid = data.get("emby_id")
-                if eid and eid not in seen_ids:
-                    seen_ids.add(eid)
-                    pids = data.get("provider_ids", {})
-                    items.append({
-                        "emby_id": eid,
-                        "title": data.get("title"),
-                        "year": data.get("year"),
-                        "item_type": data.get("type"),
-                        "imdb_id": pids.get("Imdb"),
-                        "tmdb_id": pids.get("Tmdb"),
-                        "tvdb_id": pids.get("Tvdb"),
-                    })
+            # Scan all provider ID prefixes — items without IMDB but with
+            # TMDB or TVDB would be missed if we only scan Imdb:*
+            for prefix in ("Imdb:", "imdb:", "IMDB:", "Tmdb:", "tmdb:", "TMDB:", "Tvdb:", "tvdb:", "TVDB:"):
+                async for key in r.scan_iter(match=f"{CACHE_KEY_PREFIX}{prefix}*", count=200):
+                    raw = await r.get(key)
+                    if not raw:
+                        continue
+                    data = json.loads(raw)
+                    eid = data.get("emby_id")
+                    if eid and eid not in seen_ids:
+                        seen_ids.add(eid)
+                        pids = data.get("provider_ids", {})
+                        items.append({
+                            "emby_id": eid,
+                            "title": data.get("title"),
+                            "year": data.get("year"),
+                            "item_type": data.get("type"),
+                            "imdb_id": pids.get("Imdb") or pids.get("imdb") or pids.get("IMDB"),
+                            "tmdb_id": pids.get("Tmdb") or pids.get("tmdb") or pids.get("TMDB"),
+                            "tvdb_id": pids.get("Tvdb") or pids.get("tvdb") or pids.get("TVDB"),
+                        })
             return items
         except Exception as e:
             log.warning("library_cache.get_all_items_error", error=str(e))
