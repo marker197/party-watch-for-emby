@@ -865,6 +865,18 @@
         </div>
         <div id="mdbToSimklSyncResult" style="font-size:0.8rem;margin-top:8px;"></div>
       </div>
+
+      <!-- MDBList Collection Sync -->
+      <div class="form-group" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
+        <label>Sync Library → MDBList Collection</label>
+        <p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:10px;">
+          Push your Emby library to MDBList's "owned" collection. Tells MDBList what you already have, improving its recommendations.
+        </p>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="btn btn-green" onclick="runCollectionSync(this)" id="btnCollectionSync">Sync Collection</button>
+        </div>
+        <div id="collectionSyncResult" style="font-size:0.8rem;margin-top:8px;"></div>
+      </div>
     </div>
 
     <!-- Notifications -->
@@ -2749,6 +2761,30 @@
       } finally {
         btn.disabled = false;
         btn.textContent = 'Sync New';
+      }
+    }
+
+    async function runCollectionSync(btn) {
+      var el = document.getElementById('collectionSyncResult');
+      btn.disabled = true;
+      btn.textContent = 'Syncing…';
+      el.innerHTML = '<span style="color:var(--text-dim);">Comparing library with MDBList collection…</span>';
+      try {
+        var r = await fetch('/api/mdblist/collection/sync', { method: 'POST' });
+        if (!r.ok) {
+          var d = await r.json();
+          throw new Error(d.detail || 'Sync failed');
+        }
+        var d = await r.json();
+        el.innerHTML = '<div style="color:var(--green);margin-top:6px;">' +
+          '✓ Collection synced<br>' +
+          '<strong>Library:</strong> ' + (d.library_movies || 0) + ' movies, ' + (d.library_shows || 0) + ' shows<br>' +
+          '<strong>Added:</strong> ' + (d.to_add || 0) + ' items &nbsp; <strong>Removed:</strong> ' + (d.to_remove || 0) + ' items</div>';
+      } catch(e) {
+        el.innerHTML = '<span style="color:var(--red);">✗ ' + e.message + '</span>';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sync Collection';
       }
     }
 

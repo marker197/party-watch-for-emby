@@ -143,6 +143,17 @@
 
 <div class="stats" id="statsBar"></div>
 <div id="gridContainer"><div class="loading"><div class="spinner"></div> Loading watchlist…</div></div>
+
+<!-- MDBList List Search -->
+<div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);">
+  <h3 style="font-size:0.95rem;margin:0 0 10px;">🔍 Search MDBList Lists</h3>
+  <div style="display:flex;gap:8px;margin-bottom:12px;">
+    <input type="text" id="mdbListSearchInput" class="search-box" placeholder="Search public lists…" style="flex:1;" onkeydown="if(event.key==='Enter')searchMdbLists()">
+    <button class="filter-btn" style="background:var(--accent);color:#fff;border-color:var(--accent);padding:5px 16px;" onclick="searchMdbLists()">Search</button>
+  </div>
+  <div id="mdbListSearchResults" style="font-size:0.82rem;"></div>
+</div>
+
 <div class="toast-container" id="toastContainer"></div>
 
 </div></div>
@@ -335,6 +346,41 @@ async function removeItem(idx, ev) {
 }
 
 loadUsers();
+
+async function searchMdbLists() {
+  var q = (document.getElementById('mdbListSearchInput').value || '').trim();
+  if (!q) return;
+  var el = document.getElementById('mdbListSearchResults');
+  el.innerHTML = '<span style="color:var(--text-dim);">Searching…</span>';
+  try {
+    var r = await fetch('/api/mdblist/lists/search?q=' + encodeURIComponent(q));
+    if (!r.ok) throw new Error('Search failed');
+    var d = await r.json();
+    var lists = d.lists || [];
+    if (!lists.length) {
+      el.innerHTML = '<span style="color:var(--text-dim);">No lists found.</span>';
+      return;
+    }
+    var html = '<div style="display:flex;flex-direction:column;gap:8px;">';
+    lists.forEach(function(lst) {
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--surface-hover);border:1px solid var(--border);border-radius:8px;">' +
+        '<div>' +
+          '<div style="font-weight:600;font-size:0.85rem;">' + escapeHtml(lst.name) + '</div>' +
+          '<div style="font-size:0.72rem;color:var(--text-dim);">' +
+            (lst.user_name || '') + ' · ' + (lst.items || 0) + ' items · ' + (lst.likes || 0) + ' ❤' +
+            (lst.mediatype ? ' · ' + lst.mediatype : '') +
+          '</div>' +
+          (lst.description ? '<div style="font-size:0.72rem;color:var(--text-dim);margin-top:2px;">' + escapeHtml(lst.description).substring(0,100) + '</div>' : '') +
+        '</div>' +
+        '<a href="https://mdblist.com/lists/' + (lst.user_name || '') + '/' + (lst.slug || lst.id) + '" target="_blank" style="font-size:0.75rem;color:var(--blue);text-decoration:none;white-space:nowrap;">View ↗</a>' +
+      '</div>';
+    });
+    html += '</div>';
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = '<span style="color:var(--red);">Error: ' + e.message + '</span>';
+  }
+}
 </script>
 </body>
 </html>

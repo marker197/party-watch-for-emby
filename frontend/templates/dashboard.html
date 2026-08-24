@@ -841,6 +841,7 @@
       </div>
       <p>Items marked played in Emby but missing from Simkl — missed webhooks, downtime, etc. One-click or bulk backfill.</p>
       <button class="btn btn-blue btn-sm" id="btnToggleAudit" onclick="toggleAudit()">Run Audit ▾</button>
+      <button class="btn btn-sm" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);margin-left:6px;" id="btnPublishMisses" onclick="publishScrobbleMisses(this)">📤 Publish Misses to MDBList</button>
       <div id="auditOutput" class="log-area" style="display:none; margin-top:12px;"></div>
     </div>
 
@@ -889,7 +890,10 @@
   <div id="queuePanel" class="card" style="display:none; margin-bottom:20px;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
       <h3 style="font-size:0.95rem;">🎯 Smart Watch Queue</h3>
-      <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleQueue()">✕ Close</button>
+      <div style="display:flex;gap:6px;">
+        <button class="btn btn-sm" style="background:var(--surface-hover);border:1px solid var(--border);" onclick="publishSmartQueue(this)">📤 Publish to MDBList</button>
+        <button class="btn btn-sm" style="background:var(--surface-hover);" onclick="toggleQueue()">✕ Close</button>
+      </div>
     </div>
     <div id="queueTable"></div>
   </div>
@@ -1000,6 +1004,46 @@
 function toggleSidebar(){
   document.getElementById('suiteSidebar').classList.toggle('open');
   document.getElementById('sidebarOverlay').classList.toggle('open');
+}
+
+async function publishSmartQueue(btn) {
+  var orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Publishing…';
+  try {
+    var uid = typeof currentUserId !== 'undefined' ? currentUserId : 1;
+    var r = await fetch('/api/mdblist/publish/smart-queue/' + uid, { method: 'POST' });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Failed');
+    btn.textContent = '✓ ' + (d.items || 0) + ' items published';
+    btn.style.background = 'var(--green)';
+    btn.style.color = '#fff';
+    setTimeout(function() { btn.textContent = orig; btn.disabled = false; btn.style.background = ''; btn.style.color = ''; }, 3000);
+  } catch(e) {
+    btn.textContent = '✗ ' + e.message;
+    btn.style.color = 'var(--red)';
+    setTimeout(function() { btn.textContent = orig; btn.disabled = false; btn.style.color = ''; }, 3000);
+  }
+}
+
+async function publishScrobbleMisses(btn) {
+  var orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Publishing…';
+  try {
+    var uid = typeof currentUserId !== 'undefined' ? currentUserId : 1;
+    var r = await fetch('/api/mdblist/publish/scrobble-misses/' + uid, { method: 'POST' });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Failed');
+    btn.textContent = '✓ ' + (d.items || 0) + ' misses published';
+    btn.style.background = 'var(--green)';
+    btn.style.color = '#fff';
+    setTimeout(function() { btn.textContent = orig; btn.disabled = false; btn.style.background = ''; btn.style.color = ''; }, 3000);
+  } catch(e) {
+    btn.textContent = '✗ ' + e.message;
+    btn.style.color = 'var(--red)';
+    setTimeout(function() { btn.textContent = orig; btn.disabled = false; btn.style.color = ''; }, 3000);
+  }
 }
 </script>
 </body>

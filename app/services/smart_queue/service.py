@@ -40,6 +40,7 @@ DEFAULT_WEIGHTS = {
     "friend": 8.0,
     "calendar": 7.0,
     "affinity": 5.0,
+    "mdb_upnext": 6.0,
 }
 
 # Source quotas for the 20-item queue
@@ -286,6 +287,43 @@ class SmartQueueService:
                     continue
         except Exception:
             log.warning("smart_queue.friends_skip")
+
+        # 6. MDBList "Up Next" — in-progress shows with next unwatched episode
+        try:
+            from app.utils.mdblist_client import MDBListClient
+            from app.utils.redis_cache import get_redis as _get_redis
+            from app.utils.secure_redis import secure_get as _sec_get
+            _r = await _get_redis()
+            mdb_key = await _sec_get(_r, "mdblist_api_key")
+            if mdb_key:
+                mdb = MDBListClient(api_key=mdb_key)
+                try:
+                    upnext_data = await mdb.get_upnext(limit=20)
+                    upnext_items = upnext_data if isinstance(upnext_data, list) else upnext_data.get("shows", [])
+                    for rank, entry in enumerate(upnext_items):
+                        show = entry.get("show") or entry
+                        ids = show.get("ids", {})
+                        # Try to match to a Simkl ID for dedup against other sources
+                        simkl_id = ids.get("simkl") or ids.get("simkl_id")
+                        imdb_id = ids.get("imdb") or ids.get("imdbid")
+                        tmdb_id = ids.get("tmdb") or ids.get("tmdbid")
+                        # Use IMDB as dedup key if no Simkl ID
+                        tid = str(simkl_id or imdb_id or tmdb_id or "")
+                        if tid and tid not in candidates:
+                            candidates[tid] = {
+                                "simkl_id": tid,
+                                "title": show.get("title") or show.get("name", ""),
+                                "year": show.get("year"),
+                                "item_type": "show",
+                                "ids": ids,
+                                "source": "mdb_upnext",
+                                "source_score": 1.0 - rank / 20,
+                            }
+                    log.info("smart_queue.mdb_upnext_gathered", count=len(upnext_items))
+                finally:
+                    await mdb.close()
+        except Exception:
+            log.debug("smart_queue.mdb_upnext_skip")
 
         # Filter out permanently blocked items
         blocked_ids = await self._load_blocklist(user.id)

@@ -598,6 +598,7 @@
       <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);" onclick="runAutoDiscover()" title="Scan Emby library via TMDB to auto-create universes from collections" id="autoDiscoverBtn">🎬 TMDB Auto-Discover</button>
       <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.82rem;" onclick="toggleImportLists()" id="importListsToggle">📋 Import Lists ▾</button>
       <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.82rem;" onclick="openArtworkModal()" id="artworkBtn">🎨 Manage Artwork</button>
+      <button class="btn" style="background:var(--surface-hover);color:var(--text);border:1px solid var(--border);font-size:0.82rem;" onclick="openPublishModal()" id="publishBtn">📤 Publish to MDBList</button>
     </div>
 
     <!-- Create universe inline form -->
@@ -2678,6 +2679,88 @@ function toggleSidebar(){
     } catch(e) {
       showToast('Error: ' + e.message);
       if (card) card.classList.remove('aw-uploading');
+    }
+  }
+</script>
+
+<!-- Publish to MDBList Modal -->
+<div id="publishModal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.65);align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:500px;width:92%;max-height:80vh;overflow-y:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <h3 style="margin:0;font-size:1.1rem;">📤 Publish to MDBList</h3>
+      <button onclick="closePublishModal()" style="background:none;border:none;color:var(--text-dim);font-size:1.3rem;cursor:pointer;">✕</button>
+    </div>
+    <p style="font-size:0.82rem;color:var(--text-dim);margin:0 0 16px;">Create or update static MDBList lists from your app data. Lists are shareable and visible outside the app.</p>
+    <div id="publishList" style="display:flex;flex-direction:column;gap:10px;"></div>
+  </div>
+</div>
+
+<script>
+  function openPublishModal() {
+    document.getElementById('publishModal').style.display = 'flex';
+    loadPublishList();
+  }
+  function closePublishModal() {
+    document.getElementById('publishModal').style.display = 'none';
+  }
+  document.getElementById('publishModal').addEventListener('click', function(e) {
+    if (e.target === this) closePublishModal();
+  });
+
+  async function loadPublishList() {
+    var container = document.getElementById('publishList');
+    container.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem;">Loading universes...</p>';
+
+    try {
+      var r = await fetch('/api/universes');
+      if (!r.ok) throw new Error('Failed to load');
+      var data = await r.json();
+      var universes = data.universes || data || [];
+
+      var html = '';
+      universes.forEach(function(u) {
+        var name = u.custom_name || u.name;
+        var count = u.total_items || 0;
+        html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--surface-hover);border:1px solid var(--border);border-radius:8px;">' +
+          '<div><div style="font-size:0.88rem;font-weight:600;">🌌 ' + escapeHtml(name) + '</div>' +
+          '<div style="font-size:0.72rem;color:var(--text-dim);">' + count + ' items</div></div>' +
+          '<button class="btn" style="font-size:0.78rem;padding:5px 14px;" onclick="publishUniverse(' + u.id + ', this)" data-uid="' + u.id + '">Publish</button>' +
+          '</div>';
+      });
+
+      if (!universes.length) {
+        html = '<p style="color:var(--text-dim);font-size:0.85rem;">No universes found.</p>';
+      }
+
+      container.innerHTML = html;
+    } catch(e) {
+      container.innerHTML = '<p style="color:var(--red);">Error: ' + e.message + '</p>';
+    }
+  }
+
+  async function publishUniverse(id, btn) {
+    var orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Publishing...';
+    try {
+      var r = await fetch('/api/mdblist/publish/universe/' + id, { method: 'POST' });
+      var d = await r.json();
+      if (!r.ok) throw new Error(d.detail || 'Failed');
+      btn.textContent = '✓ ' + (d.items || 0) + ' items';
+      btn.style.background = 'var(--green)';
+      btn.style.color = '#fff';
+      btn.style.borderColor = 'var(--green)';
+      setTimeout(function() {
+        btn.textContent = orig;
+        btn.disabled = false;
+        btn.style.background = '';
+        btn.style.color = '';
+        btn.style.borderColor = '';
+      }, 3000);
+    } catch(e) {
+      showToast('Error: ' + e.message);
+      btn.textContent = orig;
+      btn.disabled = false;
     }
   }
 </script>

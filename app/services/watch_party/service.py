@@ -118,6 +118,10 @@ class WatchPartyService:
         if item and host_user and host_user.simkl_access_token:
             await self._simkl_checkin(host_user, item)
 
+        # MDBList checkin (parallel to Simkl — gives a queryable session handle)
+        if item:
+            await self._mdblist_checkin(item)
+
         log.info("watch_party.created", code=code, title=title, host_id=host_user_id)
         return {"code": code, "party_id": party_id, "title": title}
 
@@ -227,6 +231,9 @@ class WatchPartyService:
                         # Simkl scrobble
                         if user.simkl_access_token:
                             await self._simkl_scrobble_stop(user, party.emby_item_id, position)
+
+            # MDBList checkin stop
+            await self._mdblist_checkin_stop()
 
             # Update database
             await db.execute(
@@ -461,6 +468,77 @@ class WatchPartyService:
                             detail="no active scrobble session on Simkl")
             else:
                 log.error("watch_party.simkl_scrobble_error", user_id=user.id, error=err_str)
+
+    async def _mdblist_checkin(self, emby_item: dict) -> None:
+        """Start an MDBList check-in session for the party item.
+
+        Unlike Simkl (per-user), MDBList checkin is per-API-key,
+        so one checkin covers the whole party.
+        """
+        try:
+            from app.utils.mdblist_client import MDBListClient
+            from app.utils.secure_redis import secure_get as _sec_get
+            r = await get_redis()
+            mdb_key = await _sec_get(r, "mdblist_api_key")
+            if not mdb_key:
+                return
+
+            provider_ids = emby_item.get("ProviderIds", {})
+            item_type = emby_item.get("Type", "Movie").lower()
+
+            # Build MDBList payload with available IDs
+            payload: dict = {}
+            imdb = provider_ids.get("Imdb") or provider_ids.get("imdb") or provider_ids.get("IMDB")
+            tmdb = provider_ids.get("Tmdb") or provider_ids.get("tmdb") or provider_ids.get("TMDB")
+
+            if item_type == "movie":
+                movie_ids: dict = {}
+                if imdb:
+                    movie_ids["imdb"] = imdb
+                if tmdb:
+                    movie_ids["tmdb"] = int(tmdb)
+                if movie_ids:
+                    payload = {"movie": {"ids": movie_ids}}
+            else:
+                tvdb = provider_ids.get("Tvdb") or provider_ids.get("tvdb") or provider_ids.get("TVDB")
+                show_ids: dict = {}
+                if imdb:
+                    show_ids["imdb"] = imdb
+                if tvdb:
+                    show_ids["tvdb"] = int(tvdb)
+                if show_ids:
+                    payload = {"show": {"ids": show_ids}}
+
+            if not payload:
+                return
+
+            client = MDBListClient(api_key=mdb_key)
+            try:
+                await client.checkin_start(payload)
+                log.info("watch_party.mdblist_checkin", item=emby_item.get("Name"))
+            finally:
+                await client.close()
+        except Exception as e:
+            log.debug("watch_party.mdblist_checkin_error", error=str(e))
+
+    async def _mdblist_checkin_stop(self) -> None:
+        """Stop the active MDBList check-in session."""
+        try:
+            from app.utils.mdblist_client import MDBListClient
+            from app.utils.secure_redis import secure_get as _sec_get
+            r = await get_redis()
+            mdb_key = await _sec_get(r, "mdblist_api_key")
+            if not mdb_key:
+                return
+
+            client = MDBListClient(api_key=mdb_key)
+            try:
+                await client.checkin_stop()
+                log.info("watch_party.mdblist_checkin_stop")
+            finally:
+                await client.close()
+        except Exception as e:
+            log.debug("watch_party.mdblist_checkin_stop_error", error=str(e))
 
     async def record_reaction(self, code: str, user_id: int | None, emoji: str, position_ticks: int) -> None:
         """Persist an in-party emoji reaction so it can be rolled into the
