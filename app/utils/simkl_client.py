@@ -435,6 +435,8 @@ class SimklClient:
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
+            if not data:
+                return []
             items = (
                 data.get(kind)
                 or data.get("movies")
