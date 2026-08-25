@@ -616,6 +616,9 @@ class AiringAlertsService:
                     if tvdb_key in binge_plans:
                         r["binge_plan"] = binge_plans[tvdb_key]
 
+        # ── Resolve TBA episode titles from Simkl ──
+        await self._resolve_tba_titles(results, simkl, sonarr_cal=sonarr_cal)
+
         return results
 
     @staticmethod
@@ -658,6 +661,370 @@ class AiringAlertsService:
                 return bool(episode_count) and ep_num == episode_count
 
         return False
+
+    # ------------------------------------------------------------------
+    # TBA episode title resolution
+    # ------------------------------------------------------------------
+
+    async def _resolve_tba_titles(
+        self, results: list[dict], simkl: SimklClient | None,
+        sonarr_cal: dict | None = None,
+    ) -> None:
+        """Resolve TBA/placeholder episode titles using MDBList and Simkl.
+
+        Mutates ``results`` in place — sets ``episode_title`` when a
+        better title is found.
+
+        Resolution order:
+          1. MDBList calendar (``/calendar/events``) — user-specific, cached 6h
+          2. Simkl CDN calendar (``/calendar/tv.json``) — global, cached 6h
+          3. Simkl per-show episode list (``get_tv_episodes``) — cached 24h
+        """
+        # Collect items that need resolution
+        tba_items = [
+            r for r in results
+            if r.get("media_type") == "show" and _is_tba_title(r.get("episode_title"))
+        ]
+        if not tba_items:
+            return
+
+        log.info("airing_tba_resolve.start", tba_count=len(tba_items))
+
+        # ── Pre-step: Enrich Sonarr-only items missing tmdb_id ──
+        # Sonarr-only items have tvdb_id but no tmdb_id/simkl_id — resolve
+        # via library cache so MDBList/Simkl lookups can match them.
+        enriched = 0
+        for item in tba_items:
+            if not item.get("tmdb_id") and item.get("tvdb_id"):
+                match = await LibraryCache.find_by_provider_id(
+                    "Tvdb", str(item["tvdb_id"]),
+                )
+                if match:
+                    pids = match.get("provider_ids", {})
+                    for tmdb_key in ("Tmdb", "tmdb", "TMDB"):
+                        if pids.get(tmdb_key):
+                            item["tmdb_id"] = int(pids[tmdb_key])
+                            enriched += 1
+                            break
+                    for imdb_key in ("Imdb", "imdb", "IMDB"):
+                        if not item.get("imdb_id") and pids.get(imdb_key):
+                            item["imdb_id"] = pids[imdb_key]
+                            break
+        if enriched:
+            log.debug("airing_tba_resolve.tvdb_enriched", count=enriched)
+
+        # ── Step 1: MDBList calendar (user-specific, most likely to have names) ──
+        mdb_index = await self._get_mdblist_calendar_index()
+        resolved_mdb = 0
+        still_tba: list[dict] = []
+
+        for item in tba_items:
+            title = self._lookup_mdblist_episode_title(mdb_index, item)
+            if title and not _is_tba_title(title):
+                item["episode_title"] = title
+                resolved_mdb += 1
+            else:
+                still_tba.append(item)
+
+        # ── Step 2: Simkl CDN calendar (batch lookup) ──
+        cdn_index = await self._get_simkl_cdn_calendar_index(simkl)
+        resolved_cdn = 0
+        still_tba2: list[dict] = []
+
+        for item in still_tba:
+            title = self._lookup_cdn_episode_title(cdn_index, item)
+            if title and not _is_tba_title(title):
+                item["episode_title"] = title
+                resolved_cdn += 1
+            else:
+                still_tba2.append(item)
+
+        # ── Step 3: Simkl per-show episode list (individual lookups) ──
+        resolved_eps = 0
+        if still_tba2 and simkl:
+            # Group by simkl_id to avoid duplicate fetches.
+            # For Sonarr-only items missing simkl_id, resolve via Simkl
+            # search using TMDB or IMDB ID.
+            by_show: dict[str, list[dict]] = {}
+            for item in still_tba2:
+                sid = item.get("simkl_id")
+                if not sid and (item.get("tmdb_id") or item.get("imdb_id")):
+                    # Try to resolve simkl_id via Simkl ID lookup
+                    try:
+                        if item.get("imdb_id"):
+                            found_list = await simkl.search_by_id("imdb", item["imdb_id"])
+                        elif item.get("tmdb_id"):
+                            found_list = await simkl.search_by_id("tmdb", str(item["tmdb_id"]))
+                        else:
+                            found_list = []
+                        for found in (found_list if isinstance(found_list, list) else []):
+                            if found.get("type") in ("tv", "show", "anime"):
+                                sid = str(
+                                    found.get("ids", {}).get("simkl")
+                                    or found.get("ids", {}).get("simkl_id")
+                                    or ""
+                                )
+                                if sid:
+                                    item["simkl_id"] = sid
+                                    break
+                    except Exception:
+                        pass
+                if sid:
+                    by_show.setdefault(sid, []).append(item)
+
+            for simkl_id, items in by_show.items():
+                episodes = await self._get_cached_tv_episodes(simkl, simkl_id)
+                for item in items:
+                    ep_title = self._find_episode_title(
+                        episodes, item.get("season"), item.get("episode"),
+                    )
+                    if ep_title and not _is_tba_title(ep_title):
+                        item["episode_title"] = ep_title
+                        resolved_eps += 1
+
+        log.info("airing_tba_resolve.done",
+                 mdb_resolved=resolved_mdb, cdn_resolved=resolved_cdn,
+                 eps_resolved=resolved_eps,
+                 remaining_tba=len(tba_items) - resolved_mdb - resolved_cdn - resolved_eps)
+
+    async def _get_mdblist_calendar_index(self) -> dict[tuple, str]:
+        """Fetch MDBList calendar events and build a lookup index for episode titles.
+
+        Returns {(show_tmdb_id, season, episode): episode_title}
+        Cached in Redis for 6 hours.
+        """
+        cache_key = "airing_alerts:mdblist_calendar_index"
+        try:
+            r = await get_redis()
+            cached = await r.get(cache_key)
+            if cached:
+                rows = json.loads(cached)
+                return {(str(row[0]), row[1], row[2]): row[3] for row in rows}
+        except Exception:
+            pass
+
+        index: dict[tuple, str] = {}
+
+        try:
+            mdb_key = await secure_get("mdblist_api_key")
+            if not mdb_key:
+                return index
+
+            from app.utils.mdblist_client import MDBListClient
+            mdb = MDBListClient(api_key=mdb_key)
+            try:
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                end = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
+                events = await mdb.get_calendar_events(
+                    start=today, end=end, limit=1000, favorite_cast=False,
+                )
+            finally:
+                await mdb.close()
+
+            for ev in events:
+                if ev.get("type") != "episode":
+                    continue
+                show_tmdb = ev.get("show_tmdb")
+                season = ev.get("season_number")
+                episode_num = ev.get("episode_number")
+                ep_title = ev.get("episode_title", "")
+
+                if season is None or episode_num is None or not ep_title:
+                    continue
+
+                # Index by TMDB ID (primary)
+                if show_tmdb:
+                    index[(str(show_tmdb), season, episode_num)] = ep_title
+                # Also index by show title (fallback for Sonarr-only items)
+                show_title = ev.get("title", "").strip().lower()
+                if show_title:
+                    index[(show_title, season, episode_num)] = ep_title
+
+        except Exception:
+            log.debug("airing_tba_resolve.mdblist_calendar_failed")
+
+        # Cache for 6 hours
+        try:
+            serialisable = [[k[0], k[1], k[2], v] for k, v in index.items()]
+            await r.setex(cache_key, 21600, json.dumps(serialisable))
+        except Exception:
+            pass
+
+        log.debug("airing_tba_resolve.mdblist_calendar_loaded", entries=len(index))
+        return index
+
+    @staticmethod
+    def _lookup_mdblist_episode_title(
+        index: dict[tuple, str], item: dict,
+    ) -> str | None:
+        """Try to find an episode title in the MDBList calendar index.
+
+        Tries TMDB ID first, then falls back to show title matching.
+        """
+        season = item.get("season")
+        episode = item.get("episode")
+        if season is None or episode is None:
+            return None
+
+        # Try by TMDB ID (primary)
+        tmdb_id = item.get("tmdb_id")
+        if tmdb_id:
+            title = index.get((str(tmdb_id), season, episode))
+            if title:
+                return title
+
+        # Fallback: try by show title (for Sonarr-only items)
+        show_title = (item.get("title") or "").strip().lower()
+        if show_title:
+            title = index.get((show_title, season, episode))
+            if title:
+                return title
+
+        return None
+
+    async def _get_simkl_cdn_calendar_index(
+        self, simkl: SimklClient | None,
+    ) -> dict[tuple, str]:
+        """Fetch Simkl CDN calendar and build a lookup index.
+
+        Returns {(simkl_id|imdb|tmdb|tvdb, season, episode): title}
+        Cached in Redis for 6 hours (CDN regenerates every 6h).
+        """
+        cache_key = "airing_alerts:simkl_cdn_calendar_index"
+        try:
+            r = await get_redis()
+            cached = await r.get(cache_key)
+            if cached:
+                # Stored as [[id, season, ep, title], ...]
+                rows = json.loads(cached)
+                return {(row[0], row[1], row[2]): row[3] for row in rows}
+        except Exception:
+            pass
+
+        index: dict[tuple, str] = {}
+
+        if not simkl:
+            # Even without auth, CDN calendar is public
+            try:
+                simkl_tmp = SimklClient(access_token=None)
+                try:
+                    cal_data = await simkl_tmp.get_calendar_shows()
+                finally:
+                    await simkl_tmp.close()
+            except Exception:
+                cal_data = []
+        else:
+            try:
+                cal_data = await simkl.get_calendar_shows()
+            except Exception:
+                cal_data = []
+
+        for entry in (cal_data if isinstance(cal_data, list) else []):
+            # CDN calendar can return either flat or nested format:
+            #   Flat:   {"title": "...", "season": 1, "episode": 3, "ids": {...}}
+            #   Nested: {"show": {"ids": {...}}, "episode": {"title": "...", "season": 1, "number": 3}}
+            ep = entry.get("episode")
+            show = entry.get("show")
+
+            if ep and isinstance(ep, dict):
+                # Nested format (personal calendar style)
+                ep_title = ep.get("title") or ""
+                season = ep.get("season")
+                episode_num = ep.get("number") or ep.get("episode")
+                ids = (show or {}).get("ids", {})
+            else:
+                # Flat format (CDN style)
+                ep_title = entry.get("title") or ""
+                season = entry.get("season")
+                episode_num = entry.get("episode") or entry.get("number")
+                ids = entry.get("ids", {})
+                # CDN may also have show title at top level
+                if not ids and entry.get("show_ids"):
+                    ids = entry["show_ids"]
+
+            if not ep_title or season is None or episode_num is None:
+                continue
+            # Index by every available ID for broad matching
+            for id_key in ("simkl", "simkl_id", "imdb", "tmdb", "tvdb"):
+                id_val = ids.get(id_key)
+                if id_val:
+                    index[(str(id_val), season, episode_num)] = ep_title
+
+        # Cache for 6 hours
+        try:
+            # Store as [[id, season, ep, title], ...]
+            serialisable = [[k[0], k[1], k[2], v] for k, v in index.items()]
+            await r.setex(cache_key, 21600, json.dumps(serialisable))
+        except Exception:
+            pass
+
+        log.debug("airing_tba_resolve.cdn_calendar_loaded", entries=len(index))
+        return index
+
+    @staticmethod
+    def _lookup_cdn_episode_title(
+        index: dict[tuple, str], item: dict,
+    ) -> str | None:
+        """Try to find an episode title in the CDN calendar index."""
+        season = item.get("season")
+        episode = item.get("episode")
+        if season is None or episode is None:
+            return None
+
+        # Try all available IDs
+        for id_val in (
+            item.get("simkl_id"),
+            item.get("imdb_id"),
+            item.get("tmdb_id"),
+            item.get("tvdb_id"),
+        ):
+            if id_val:
+                title = index.get((str(id_val), season, episode))
+                if title:
+                    return title
+        return None
+
+    async def _get_cached_tv_episodes(
+        self, simkl: SimklClient, simkl_id: str,
+    ) -> list[dict]:
+        """Fetch full episode list for a show, cached 24h."""
+        cache_key = f"airing_alerts:tv_episodes:{simkl_id}"
+        try:
+            r = await get_redis()
+            cached = await r.get(cache_key)
+            if cached:
+                return json.loads(cached)
+        except Exception:
+            pass
+
+        try:
+            episodes = await simkl.get_tv_episodes(simkl_id)
+        except Exception:
+            log.debug("airing_tba_resolve.episodes_fetch_failed",
+                      simkl_id=simkl_id)
+            return []
+
+        episodes = episodes if isinstance(episodes, list) else []
+
+        try:
+            await r.setex(cache_key, SEASON_INFO_CACHE_TTL,
+                          json.dumps(episodes))
+        except Exception:
+            pass
+
+        return episodes
+
+    @staticmethod
+    def _find_episode_title(
+        episodes: list[dict], season: int | None, episode_num: int | None,
+    ) -> str | None:
+        """Find an episode title from Simkl's full episode list."""
+        if season is None or episode_num is None:
+            return None
+        for ep in episodes:
+            if ep.get("season") == season and ep.get("episode") == episode_num:
+                return ep.get("title")
+        return None
 
     # ------------------------------------------------------------------
     # Binge planner
@@ -935,6 +1302,7 @@ class AiringAlertsService:
             theatrical, digital, physical, release_source = await self._get_release_dates(
                 simkl, movie_simkl_id, movie_tmdb_id, country=country,
                 arr_movies=radarr_movies,
+                imdb_id=movie.get("ids", {}).get("imdb"),
             )
 
             results.append({
@@ -958,6 +1326,79 @@ class AiringAlertsService:
                 "physical_release": physical,
                 "release_source": release_source,
             })
+        # ── Pass 3: MDBList calendar (enriches digital/physical dates for
+        #    existing movies, adds movies only in MDBList calendar) ──
+        try:
+            mdb_key = await secure_get("mdblist_api_key")
+            if mdb_key:
+                from app.utils.mdblist_client import MDBListClient
+                mdb_cal = MDBListClient(api_key=mdb_key)
+                try:
+                    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    end_str = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
+                    mdb_events = await mdb_cal.get_calendar_events(
+                        start=today_str, end=end_str, limit=1000, favorite_cast=False,
+                    )
+                finally:
+                    await mdb_cal.close()
+
+                for ev in mdb_events:
+                    if ev.get("type") != "movie":
+                        continue
+                    ev_tmdb = ev.get("tmdb")
+                    ev_date = ev.get("start")
+                    ev_release_type = ev.get("release_type", "")
+                    if not ev_tmdb or not ev_date:
+                        continue
+
+                    ev_tmdb_str = str(ev_tmdb)
+
+                    # Enrich existing results with MDBList calendar dates
+                    if ev_tmdb_str in seen_tmdb:
+                        for r in results:
+                            if r.get("tmdb_id") and str(r["tmdb_id"]) == ev_tmdb_str:
+                                if ev_release_type == "digital" and not r.get("digital_release"):
+                                    r["digital_release"] = ev_date
+                                elif ev_release_type == "physical" and not r.get("physical_release"):
+                                    r["physical_release"] = ev_date
+                                elif ev_release_type in ("release", "theatrical", "premiere") and not r.get("theatrical_release"):
+                                    r["theatrical_release"] = ev_date
+                                break
+                        continue
+
+                    # New movie not in Radarr or Simkl — add it
+                    seen_tmdb.add(ev_tmdb_str)
+                    in_lib = False
+                    emby_id = None
+                    match = await LibraryCache.find_by_provider_id("Tmdb", ev_tmdb_str)
+                    if match:
+                        in_lib = True
+                        emby_id = match.get("emby_id")
+
+                    results.append({
+                        "media_type": "movie",
+                        "title": ev.get("title", ""),
+                        "simkl_id": None,
+                        "tmdb_id": ev_tmdb,
+                        "imdb_id": None,
+                        "season": None,
+                        "episode": None,
+                        "episode_title": None,
+                        "air_date": ev_date,
+                        "days_until_air": self._days_until(ev_date),
+                        "is_premiere": ev_release_type in ("release", "theatrical", "premiere"),
+                        "is_finale": False,
+                        "in_library": in_lib,
+                        "emby_item_id": emby_id,
+                        "year": None,
+                        "theatrical_release": ev_date if ev_release_type in ("release", "theatrical", "premiere") else None,
+                        "digital_release": ev_date if ev_release_type == "digital" else None,
+                        "physical_release": ev_date if ev_release_type == "physical" else None,
+                        "release_source": "mdblist_calendar",
+                    })
+        except Exception:
+            log.debug("airing_alerts.mdblist_calendar_movies_failed")
+
         return results
 
     async def _get_release_dates(
@@ -965,17 +1406,19 @@ class AiringAlertsService:
         tmdb_id: int | None = None,
         country: str = "us",
         arr_movies: dict | None = None,
+        imdb_id: str | None = None,
     ) -> tuple[str | None, str | None, str | None, str]:
         """Return (theatrical, digital, physical, source) for a movie.
 
-        Priority: Radarr → TMDB → Simkl (if available).
+        Priority: Radarr → TMDB → MDBList → Simkl.
+        Cross-verifies dates when multiple sources provide them.
         Cached 24h per movie+country.
         """
         if not movie_simkl_id and not tmdb_id:
             return None, None, None, ""
 
         cache_id = movie_simkl_id or str(tmdb_id)
-        cache_key = f"airing_alerts:releases:{cache_id}:{country}_v2"
+        cache_key = f"airing_alerts:releases:{cache_id}:{country}_v3"
         try:
             r = await get_redis()
             cached = await r.get(cache_key)
@@ -991,6 +1434,9 @@ class AiringAlertsService:
         physical = None
         source = ""
 
+        # Track per-source dates for cross-verification logging
+        source_dates: dict[str, dict] = {}
+
         # ── Tier 1: Radarr ──
         if tmdb_id and arr_movies:
             radarr_data = arr_movies.get(str(tmdb_id))
@@ -1000,12 +1446,24 @@ class AiringAlertsService:
                 physical = radarr_data.get("physical")
                 if theatrical or digital or physical:
                     source = "radarr"
+                    source_dates["radarr"] = {
+                        "theatrical": theatrical,
+                        "digital": digital,
+                        "physical": physical,
+                    }
 
         # ── Tier 2: TMDB (fills any gaps left by Radarr) ──
         if tmdb_id and (not theatrical or not digital or not physical):
             tmdb_theat, tmdb_dig, tmdb_phys = await _tmdb_release_dates(
                 tmdb_id, country=country,
             )
+            tmdb_any = tmdb_theat or tmdb_dig or tmdb_phys
+            if tmdb_any:
+                source_dates["tmdb"] = {
+                    "theatrical": tmdb_theat,
+                    "digital": tmdb_dig,
+                    "physical": tmdb_phys,
+                }
             if not theatrical and tmdb_theat:
                 theatrical = tmdb_theat
                 if not source:
@@ -1019,11 +1477,43 @@ class AiringAlertsService:
                 if not source:
                     source = "tmdb"
 
-        # ── Tier 3: Simkl (last resort for any still-missing dates) ──
+        # ── Tier 3: MDBList (fills gaps, provides cross-verification) ──
+        if not theatrical or not digital or not physical:
+            mdb_theat, mdb_dig, mdb_phys = await self._get_mdblist_releases(
+                tmdb_id=tmdb_id, imdb_id=imdb_id,
+            )
+            mdb_any = mdb_theat or mdb_dig or mdb_phys
+            if mdb_any:
+                source_dates["mdblist"] = {
+                    "theatrical": mdb_theat,
+                    "digital": mdb_dig,
+                    "physical": mdb_phys,
+                }
+            if not theatrical and mdb_theat:
+                theatrical = mdb_theat
+                if not source:
+                    source = "mdblist"
+            if not digital and mdb_dig:
+                digital = mdb_dig
+                if not source:
+                    source = "mdblist"
+            if not physical and mdb_phys:
+                physical = mdb_phys
+                if not source:
+                    source = "mdblist"
+
+        # ── Tier 4: Simkl (last resort for any still-missing dates) ──
         if simkl and movie_simkl_id and (not theatrical or not digital):
             simkl_theatrical, simkl_digital = await self._get_simkl_releases(
                 simkl, movie_simkl_id, country,
             )
+            simkl_any = simkl_theatrical or simkl_digital
+            if simkl_any:
+                source_dates["simkl"] = {
+                    "theatrical": simkl_theatrical,
+                    "digital": simkl_digital,
+                    "physical": None,
+                }
             if not theatrical and simkl_theatrical:
                 theatrical = simkl_theatrical
                 if not source:
@@ -1033,9 +1523,15 @@ class AiringAlertsService:
                 if not source:
                     source = "simkl"
 
+        # ── Cross-verification: log discrepancies between sources ──
+        if len(source_dates) > 1:
+            self._log_release_date_discrepancies(
+                cache_id, source_dates,
+            )
+
         # Resolve source label when only lower tiers contributed
         if not source and (theatrical or digital or physical):
-            source = "simkl"
+            source = "mdblist" if "mdblist" in source_dates else "simkl"
 
         # Cache result (even if all None — avoids re-fetching for movies
         # that genuinely have no typed releases)
@@ -1047,6 +1543,160 @@ class AiringAlertsService:
             pass
 
         return theatrical, digital, physical, source
+
+    async def _get_mdblist_releases(
+        self, tmdb_id: int | None = None, imdb_id: str | None = None,
+    ) -> tuple[str | None, str | None, str | None]:
+        """Fetch release dates from MDBList — media info + calendar.
+
+        Returns (theatrical, digital, physical).
+        Uses 24h Redis cache per movie.
+
+        Two sources are checked:
+          1. ``/calendar/events`` — has typed ``release_type`` (release, digital)
+          2. ``get_media_info`` — general movie info with release fields
+        """
+        if not tmdb_id and not imdb_id:
+            return None, None, None
+
+        provider = None
+        media_id = None
+        if imdb_id:
+            provider, media_id = "imdb", imdb_id
+        elif tmdb_id:
+            provider, media_id = "tmdb", str(tmdb_id)
+
+        cache_key = f"airing_alerts:mdblist_releases:{provider}:{media_id}"
+        try:
+            r = await get_redis()
+            cached = await r.get(cache_key)
+            if cached:
+                data = json.loads(cached)
+                return data.get("theatrical"), data.get("digital"), data.get("physical")
+        except Exception:
+            pass
+
+        theatrical = None
+        digital = None
+        physical = None
+
+        try:
+            mdb_key = await secure_get("mdblist_api_key")
+            if not mdb_key:
+                return None, None, None
+
+            from app.utils.mdblist_client import MDBListClient
+
+            # ── Source 1: MDBList calendar (typed release dates) ──
+            # Check cached calendar index for this movie by TMDB ID
+            cal_cache_key = "airing_alerts:mdblist_movie_releases"
+            try:
+                cal_cached = await r.get(cal_cache_key)
+                if cal_cached:
+                    movie_index = json.loads(cal_cached)
+                else:
+                    # Build movie release index from calendar
+                    mdb_cal = MDBListClient(api_key=mdb_key)
+                    try:
+                        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                        end = (datetime.now(timezone.utc) + timedelta(days=120)).strftime("%Y-%m-%d")
+                        events = await mdb_cal.get_calendar_events(
+                            start=today, end=end, limit=1000, favorite_cast=False,
+                        )
+                    finally:
+                        await mdb_cal.close()
+
+                    movie_index = {}
+                    for ev in events:
+                        if ev.get("type") != "movie":
+                            continue
+                        ev_tmdb = ev.get("tmdb")
+                        if not ev_tmdb:
+                            continue
+                        key = str(ev_tmdb)
+                        release_type = ev.get("release_type", "")
+                        ev_date = ev.get("start")
+                        if not ev_date:
+                            continue
+
+                        if key not in movie_index:
+                            movie_index[key] = {}
+                        if release_type in ("release", "theatrical", "premiere"):
+                            movie_index[key]["theatrical"] = ev_date
+                        elif release_type == "digital":
+                            movie_index[key]["digital"] = ev_date
+                        elif release_type == "physical":
+                            movie_index[key]["physical"] = ev_date
+
+                    await r.setex(cal_cache_key, 21600, json.dumps(movie_index))
+            except Exception:
+                movie_index = {}
+
+            tmdb_str = str(tmdb_id) if tmdb_id else None
+            if tmdb_str and tmdb_str in movie_index:
+                cal_dates = movie_index[tmdb_str]
+                theatrical = cal_dates.get("theatrical")
+                digital = cal_dates.get("digital")
+                physical = cal_dates.get("physical")
+
+            # ── Source 2: MDBList media info (fills gaps) ──
+            if provider and (not theatrical or not digital or not physical):
+                mdb = MDBListClient(api_key=mdb_key)
+                try:
+                    info = await mdb.get_media_info(provider, "movie", media_id)
+                finally:
+                    await mdb.close()
+
+                if info and isinstance(info, dict):
+                    if not theatrical:
+                        theatrical = _normalise_date(
+                            info.get("released")
+                            or info.get("release_date")
+                            or info.get("theatrical_release")
+                        )
+                    if not digital:
+                        digital = _normalise_date(
+                            info.get("digital_release")
+                            or info.get("digital_release_date")
+                        )
+                    if not physical:
+                        physical = _normalise_date(
+                            info.get("physical_release")
+                            or info.get("physical_release_date")
+                        )
+        except Exception:
+            log.debug("airing_alerts.mdblist_releases_failed",
+                      provider=provider, media_id=media_id)
+
+        # Cache even if all None
+        try:
+            await r.setex(cache_key, SEASON_INFO_CACHE_TTL,
+                          json.dumps({"theatrical": theatrical, "digital": digital,
+                                      "physical": physical}))
+        except Exception:
+            pass
+
+        return theatrical, digital, physical
+
+    @staticmethod
+    def _log_release_date_discrepancies(
+        movie_id: str, source_dates: dict[str, dict],
+    ) -> None:
+        """Log when multiple sources disagree on release dates."""
+        sources = list(source_dates.keys())
+        for date_type in ("theatrical", "digital", "physical"):
+            values: dict[str, str] = {}
+            for src in sources:
+                val = source_dates[src].get(date_type)
+                if val:
+                    values[src] = val
+
+            if len(values) > 1:
+                unique = set(values.values())
+                if len(unique) > 1:
+                    log.info("airing_alerts.release_date_mismatch",
+                             movie=movie_id, date_type=date_type,
+                             dates=values)
 
     async def _get_simkl_releases(
         self, simkl: SimklClient, movie_simkl_id: str, country: str,
@@ -1157,6 +1807,20 @@ class AiringAlertsService:
 
 
 # ── Module-level helpers ──────────────────────────────────────────────
+
+
+def _is_tba_title(title: str | None) -> bool:
+    """Detect placeholder episode titles that should be resolved from other sources."""
+    if not title or not title.strip():
+        return True
+    t = title.strip().lower()
+    if t in ("tba", "tbd", "to be announced", "to be determined", "n/a"):
+        return True
+    # "Episode 1", "Episode 12", etc.
+    import re
+    if re.fullmatch(r"episode\s+\d+", t):
+        return True
+    return False
 
 
 def _normalise_date(dt_str: str | None) -> str | None:

@@ -741,6 +741,44 @@ class MDBListClient:
             return None
 
     # ═══════════════════════════════════════════════════════════════════════
+    # Calendar
+    # ═══════════════════════════════════════════════════════════════════════
+
+    async def get_calendar_events(
+        self,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 1000,
+        favorite_cast: bool = False,
+    ) -> list[dict]:
+        """Fetch upcoming calendar events (movies, shows, episodes).
+
+        ``GET /calendar/events``
+
+        Each event has:
+          - ``type``: "movie" | "episode"
+          - ``release_type``: "release" | "digital" | "episode" | "watched"
+          - ``title``: show title (episodes) or movie title
+          - ``episode_title``: episode name (episodes only)
+          - ``show_tmdb``: TMDB show ID (episodes only)
+          - ``tmdb``: TMDB movie ID (movies only)
+          - ``season_number``, ``episode_number`` (episodes only)
+          - ``start``: date string YYYY-MM-DD
+        """
+        params: dict = {"limit": limit, "favorite_cast": str(favorite_cast).lower()}
+        if start:
+            params["start"] = start
+        if end:
+            params["end"] = end
+        try:
+            data = await self._get("/calendar/events", params=params)
+            if isinstance(data, dict):
+                return data.get("events", [])
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    # ═══════════════════════════════════════════════════════════════════════
     # Trending / Popular (via list endpoints)
     # ═══════════════════════════════════════════════════════════════════════
 
