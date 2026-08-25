@@ -463,7 +463,7 @@
         </div>
       </div>
       <!-- Comment box disabled pending MDBList discussion API integration -->
-      <div class="simkl-comment-box" id="commentSection" style="display:none !important;">
+      <div class="simkl-comment-box" id="commentSection" style="display:none;">
         <div class="sidebar-title" id="commentBoxTitle">Watch Party Comment</div>
         <textarea id="simklCommentInput" placeholder="Leave a comment…" rows="2" maxlength="1000"></textarea>
         <button id="simklCommentBtn" onclick="submitSimklComment()">💬 Post Comment</button>
@@ -510,6 +510,7 @@ async function loadProvider() {
   const commentEl = document.getElementById('commentSection');
   if (hasAny) {
     reactEl.style.display = '';
+    commentEl.style.display = '';
   }
   const titleEl = document.getElementById('commentBoxTitle');
   const noteEl = document.getElementById('commentBoxNote');

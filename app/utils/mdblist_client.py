@@ -773,7 +773,7 @@ class MDBListClient:
             API response dict (comment_id, etc.) on success.
         """
         path = f"/discussion/{provider}/{target_type}/{target_id}"
-        return await self._post(path, {"text": comment})
+        return await self._post(path, {"content": comment})
 
     async def get_discussion(
         self,
