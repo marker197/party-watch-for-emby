@@ -677,10 +677,11 @@ class AiringAlertsService:
 
         Resolution order:
           1. MDBList calendar (``/calendar/events``) — user-specific, cached 6h
-          2. Simkl CDN calendar (``/calendar/tv.json``) — global, cached 6h
-          3. Simkl per-show episode list (``get_tv_episodes``) — cached 24h
+          2. Simkl per-show episode list (``get_tv_episodes``) — cached 24h
+
+        Note: Simkl CDN calendar (``/calendar/tv.json``) was evaluated but
+        its episode dict only contains season/episode/url — no title field.
         """
-        # Collect items that need resolution
         tba_items = [
             r for r in results
             if r.get("media_type") == "show" and _is_tba_title(r.get("episode_title"))
@@ -713,7 +714,7 @@ class AiringAlertsService:
         if enriched:
             log.debug("airing_tba_resolve.tvdb_enriched", count=enriched)
 
-        # ── Step 1: MDBList calendar (user-specific, most likely to have names) ──
+        # ── Step 1: MDBList calendar (user-specific) ──
         mdb_index = await self._get_mdblist_calendar_index()
         resolved_mdb = 0
         still_tba: list[dict] = []
@@ -726,30 +727,16 @@ class AiringAlertsService:
             else:
                 still_tba.append(item)
 
-        # ── Step 2: Simkl CDN calendar (batch lookup) ──
-        cdn_index = await self._get_simkl_cdn_calendar_index(simkl)
-        resolved_cdn = 0
-        still_tba2: list[dict] = []
-
-        for item in still_tba:
-            title = self._lookup_cdn_episode_title(cdn_index, item)
-            if title and not _is_tba_title(title):
-                item["episode_title"] = title
-                resolved_cdn += 1
-            else:
-                still_tba2.append(item)
-
-        # ── Step 3: Simkl per-show episode list (individual lookups) ──
+        # ── Step 2: Simkl per-show episode list (individual lookups) ──
         resolved_eps = 0
-        if still_tba2 and simkl:
+        if still_tba and simkl:
             # Group by simkl_id to avoid duplicate fetches.
             # For Sonarr-only items missing simkl_id, resolve via Simkl
             # search using TMDB or IMDB ID.
             by_show: dict[str, list[dict]] = {}
-            for item in still_tba2:
+            for item in still_tba:
                 sid = item.get("simkl_id")
                 if not sid and (item.get("tmdb_id") or item.get("imdb_id")):
-                    # Try to resolve simkl_id via Simkl ID lookup
                     try:
                         if item.get("imdb_id"):
                             found_list = await simkl.search_by_id("imdb", item["imdb_id"])
@@ -783,9 +770,8 @@ class AiringAlertsService:
                         resolved_eps += 1
 
         log.info("airing_tba_resolve.done",
-                 mdb_resolved=resolved_mdb, cdn_resolved=resolved_cdn,
-                 eps_resolved=resolved_eps,
-                 remaining_tba=len(tba_items) - resolved_mdb - resolved_cdn - resolved_eps)
+                 mdb_resolved=resolved_mdb, eps_resolved=resolved_eps,
+                 remaining_tba=len(tba_items) - resolved_mdb - resolved_eps)
 
     async def _get_mdblist_calendar_index(self) -> dict[tuple, str]:
         """Fetch MDBList calendar events and build a lookup index for episode titles.
@@ -793,7 +779,7 @@ class AiringAlertsService:
         Returns {(show_tmdb_id, season, episode): episode_title}
         Cached in Redis for 6 hours.
         """
-        cache_key = "airing_alerts:mdblist_calendar_index"
+        cache_key = "airing_alerts:mdblist_calendar_index_v2"
         try:
             r = await get_redis()
             cached = await r.get(cache_key)
@@ -850,7 +836,8 @@ class AiringAlertsService:
         except Exception:
             pass
 
-        log.debug("airing_tba_resolve.mdblist_calendar_loaded", entries=len(index))
+        log.debug("airing_tba_resolve.mdblist_calendar_loaded", entries=len(index),
+                  sample_keys=list(index.keys())[:10])
         return index
 
     @staticmethod
@@ -880,108 +867,6 @@ class AiringAlertsService:
             if title:
                 return title
 
-        return None
-
-    async def _get_simkl_cdn_calendar_index(
-        self, simkl: SimklClient | None,
-    ) -> dict[tuple, str]:
-        """Fetch Simkl CDN calendar and build a lookup index.
-
-        Returns {(simkl_id|imdb|tmdb|tvdb, season, episode): title}
-        Cached in Redis for 6 hours (CDN regenerates every 6h).
-        """
-        cache_key = "airing_alerts:simkl_cdn_calendar_index"
-        try:
-            r = await get_redis()
-            cached = await r.get(cache_key)
-            if cached:
-                # Stored as [[id, season, ep, title], ...]
-                rows = json.loads(cached)
-                return {(row[0], row[1], row[2]): row[3] for row in rows}
-        except Exception:
-            pass
-
-        index: dict[tuple, str] = {}
-
-        if not simkl:
-            # Even without auth, CDN calendar is public
-            try:
-                simkl_tmp = SimklClient(access_token=None)
-                try:
-                    cal_data = await simkl_tmp.get_calendar_shows()
-                finally:
-                    await simkl_tmp.close()
-            except Exception:
-                cal_data = []
-        else:
-            try:
-                cal_data = await simkl.get_calendar_shows()
-            except Exception:
-                cal_data = []
-
-        for entry in (cal_data if isinstance(cal_data, list) else []):
-            # CDN calendar can return either flat or nested format:
-            #   Flat:   {"title": "...", "season": 1, "episode": 3, "ids": {...}}
-            #   Nested: {"show": {"ids": {...}}, "episode": {"title": "...", "season": 1, "number": 3}}
-            ep = entry.get("episode")
-            show = entry.get("show")
-
-            if ep and isinstance(ep, dict):
-                # Nested format (personal calendar style)
-                ep_title = ep.get("title") or ""
-                season = ep.get("season")
-                episode_num = ep.get("number") or ep.get("episode")
-                ids = (show or {}).get("ids", {})
-            else:
-                # Flat format (CDN style)
-                ep_title = entry.get("title") or ""
-                season = entry.get("season")
-                episode_num = entry.get("episode") or entry.get("number")
-                ids = entry.get("ids", {})
-                # CDN may also have show title at top level
-                if not ids and entry.get("show_ids"):
-                    ids = entry["show_ids"]
-
-            if not ep_title or season is None or episode_num is None:
-                continue
-            # Index by every available ID for broad matching
-            for id_key in ("simkl", "simkl_id", "imdb", "tmdb", "tvdb"):
-                id_val = ids.get(id_key)
-                if id_val:
-                    index[(str(id_val), season, episode_num)] = ep_title
-
-        # Cache for 6 hours
-        try:
-            # Store as [[id, season, ep, title], ...]
-            serialisable = [[k[0], k[1], k[2], v] for k, v in index.items()]
-            await r.setex(cache_key, 21600, json.dumps(serialisable))
-        except Exception:
-            pass
-
-        log.debug("airing_tba_resolve.cdn_calendar_loaded", entries=len(index))
-        return index
-
-    @staticmethod
-    def _lookup_cdn_episode_title(
-        index: dict[tuple, str], item: dict,
-    ) -> str | None:
-        """Try to find an episode title in the CDN calendar index."""
-        season = item.get("season")
-        episode = item.get("episode")
-        if season is None or episode is None:
-            return None
-
-        # Try all available IDs
-        for id_val in (
-            item.get("simkl_id"),
-            item.get("imdb_id"),
-            item.get("tmdb_id"),
-            item.get("tvdb_id"),
-        ):
-            if id_val:
-                title = index.get((str(id_val), season, episode))
-                if title:
-                    return title
         return None
 
     async def _get_cached_tv_episodes(
