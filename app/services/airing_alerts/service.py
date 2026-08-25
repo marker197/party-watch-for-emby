@@ -52,7 +52,7 @@ class AiringAlertsService:
             }
         """
         # Determine whether Simkl is active
-        from app.api.routes import _get_active_providers
+        from app.api.route_helpers import _get_active_providers
         providers = await _get_active_providers()
         use_simkl = "simkl" in providers and bool(user.simkl_access_token)
 

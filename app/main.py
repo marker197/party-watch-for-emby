@@ -36,7 +36,26 @@ from app.utils.logging import setup_logging, security_log
 from app.utils.database import init_db, get_db, async_session
 from app.utils.redis_cache import close_redis
 from app.utils.secure_redis import secure_get, secure_set, migrate_plaintext_secrets
-from app.api.routes import router
+from app.api.auth_routes import router as auth_router
+from app.api.queue_routes import router as queue_router
+from app.api.ml_routes import router as ml_router
+from app.api.scrobble_audit_routes import router as scrobble_audit_router
+from app.api.universe_routes import router as universe_router
+from app.api.party_routes import router as party_router
+from app.api.webhook_routes import router as webhook_router
+from app.api.settings_routes import router as settings_router
+from app.api.bias_routes import router as bias_router
+from app.api.arr_routes import router as arr_router
+from app.api.watch_history_routes import router as watch_history_router
+from app.api.downloads_routes import router as downloads_router
+from app.api.media_routes import router as media_router
+from app.api.mdblist_routes import router as mdblist_router
+from app.api.ratings_routes import router as ratings_router
+from app.api.import_routes import router as import_router
+from app.api.item_detail_routes import router as item_detail_router
+from app.api.duplicates_routes import router as duplicates_router
+from app.api.library_health_routes import router as library_health_router
+from app.api.cross_sync_routes import router as cross_sync_router
 from app.api.monitoring_routes import router as monitoring_router
 from app.api.phase5_routes import router as phase5_router
 from app.services.watch_party.service import sio as watch_party_sio
@@ -67,7 +86,7 @@ class SecurityAuditMiddleware:
     # Paths exempt from CSRF (webhooks, health, auth device-code polling, image proxy)
     _CSRF_EXEMPT = frozenset({"/health", "/api/auth/poll",
                               "/api/auth/device-code"})
-    _CSRF_EXEMPT_PREFIXES = ("/webhook/", "/api/emby/image/")
+    _CSRF_EXEMPT_PREFIXES = ("/webhook/", "/api/emby/image/", "/api/remote-play")
 
     # Security headers injected on every HTTP response
     _SECURITY_HEADERS = [
@@ -385,8 +404,27 @@ async def _validation_error_handler(request: Request, exc: RequestValidationErro
     )
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
-# REST routes
-app.include_router(router)
+# REST routes (split across domain-specific modules)
+app.include_router(auth_router)
+app.include_router(queue_router)
+app.include_router(ml_router)
+app.include_router(scrobble_audit_router)
+app.include_router(universe_router)
+app.include_router(party_router)
+app.include_router(webhook_router)
+app.include_router(settings_router)
+app.include_router(bias_router)
+app.include_router(arr_router)
+app.include_router(watch_history_router)
+app.include_router(downloads_router)
+app.include_router(media_router)
+app.include_router(mdblist_router)
+app.include_router(ratings_router)
+app.include_router(import_router)
+app.include_router(item_detail_router)
+app.include_router(duplicates_router)
+app.include_router(library_health_router)
+app.include_router(cross_sync_router)
 # Monitoring routes (health checks, metrics)
 app.include_router(monitoring_router)
 # Social Watching, Library Health, Bulk Actions
@@ -884,7 +922,7 @@ def _register_jobs():
 
     async def _run_mdblist_sync():
         async def _do():
-            from app.api.routes import sync_all_mdblist_lists
+            from app.api.mdblist_routes import sync_all_mdblist_lists
             from app.utils.database import async_session as _async_session
             async with _async_session() as db:
                 await sync_all_mdblist_lists(db)
@@ -904,7 +942,7 @@ def _register_jobs():
 
     async def _run_simkl_list_sync():
         async def _do():
-            from app.api.routes import sync_all_simkl_lists
+            from app.api.mdblist_routes import sync_all_simkl_lists
             from app.utils.database import async_session as _async_session
             async with _async_session() as db:
                 await sync_all_simkl_lists(db)
@@ -1029,7 +1067,7 @@ def _register_jobs():
     # SSL certificate check — daily at 6 AM (only runs if SSL_DOMAIN is set)
     if settings.ssl_domain:
         async def check_ssl_certificate():
-            from app.api.routes import _check_ssl_cert
+            from app.api.route_helpers import _check_ssl_cert
             from app.utils.redis_cache import get_redis
             result = await _check_ssl_cert(settings.ssl_domain)
             r = await get_redis()
