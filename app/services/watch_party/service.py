@@ -478,8 +478,7 @@ class WatchPartyService:
         try:
             from app.utils.mdblist_client import MDBListClient
             from app.utils.secure_redis import secure_get as _sec_get
-            r = await get_redis()
-            mdb_key = await _sec_get(r, "mdblist_api_key")
+            mdb_key = await _sec_get("mdblist_api_key")
             if not mdb_key:
                 return
 
@@ -526,8 +525,7 @@ class WatchPartyService:
         try:
             from app.utils.mdblist_client import MDBListClient
             from app.utils.secure_redis import secure_get as _sec_get
-            r = await get_redis()
-            mdb_key = await _sec_get(r, "mdblist_api_key")
+            mdb_key = await _sec_get("mdblist_api_key")
             if not mdb_key:
                 return
 
