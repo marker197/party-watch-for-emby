@@ -259,6 +259,7 @@ async def get_sonarr_imported():
 async def get_airing_soon(
     user_id: int,
     days: int = Query(30, ge=1, le=90),
+    force_refresh: bool = Query(False),
     current_user: User = Depends(get_current_user),  # ✅ SECURITY
     db: AsyncSession = Depends(get_db),
     background_tasks: BackgroundTasks = BackgroundTasks(),
@@ -270,6 +271,14 @@ async def get_airing_soon(
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(404, "user not found")
+
+    # Clear response cache if force refresh requested
+    if force_refresh:
+        try:
+            r = await get_redis()
+            await r.delete(f"airing_alerts:response:{user_id}:{days}")
+        except Exception:
+            pass
 
     try:
         result = await airing_alerts_svc.get_airing_soon(user, days=days)

@@ -687,9 +687,21 @@ class SimklClient:
         """Full episode list for a show."""
         return await self._get(f"/tv/episodes/{simkl_id}", auth_required=False)
 
-    async def get_tv_premieres(self, param: str = "new") -> list[dict]:
-        """TV premieres — 'new' or 'soon'. No auth. Paginated (default 60, max 20 pages)."""
-        import asyncio
+    async def get_tv_premieres(self, param: str = "new",
+                              max_days_ahead: int = 0) -> list[dict]:
+        """TV premieres — 'new' or 'soon'. No auth. Paginated (default 60, max 20 pages).
+
+        If ``max_days_ahead`` > 0, stop paginating once all items on a page
+        have ``first_aired`` dates beyond that window (Simkl returns premieres
+        in chronological order).
+        """
+        import asyncio as _asyncio
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+        cutoff = None
+        if max_days_ahead > 0:
+            cutoff = (_dt.now(_tz.utc) + _td(days=max_days_ahead)).strftime("%Y-%m-%d")
+
         all_items: list[dict] = []
         page = 1
         max_pages = 20
@@ -702,16 +714,44 @@ class SimklClient:
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                if isinstance(data, list):
-                    all_items.extend(data)
-                else:
+                if not isinstance(data, list) or not data:
                     break
+
+                all_items.extend(data)
+
+                # Early-bail: if every item with a date on this page is
+                # beyond the date window, stop paginating. Also bail if
+                # we've accumulated enough items (premieres are global,
+                # only a handful match the user's library).
+                if cutoff:
+                    dates_on_page = []
+                    for item in data:
+                        d = (
+                            item.get("first_aired")
+                            or item.get("date")
+                            or item.get("air_date")
+                            or ""
+                        )[:10]
+                        if d:
+                            dates_on_page.append(d)
+                    # If we found dates and the earliest is past cutoff, bail
+                    if dates_on_page and min(dates_on_page) > cutoff:
+                        log.debug("simkl.premieres_early_bail",
+                                  page=page, min_date=min(dates_on_page),
+                                  cutoff=cutoff, accumulated=len(all_items))
+                        break
+                    # Also cap at 3 pages (180 items) — global premieres
+                    # rarely match the user's library
+                    if page >= 3:
+                        log.debug("simkl.premieres_page_cap",
+                                  page=page, accumulated=len(all_items))
+                        break
+
                 total_pages = int(resp.headers.get("X-Pagination-Page-Count", "1"))
                 if page >= total_pages:
                     break
                 page += 1
-                # Respect Simkl 1 req/sec rate limit between pages
-                await asyncio.sleep(1.1)
+                await _asyncio.sleep(1.1)
         except Exception:
             pass
         return all_items
@@ -1048,11 +1088,15 @@ class SimklClient:
         """Fetch upcoming TV premieres (new + soon).
         Returns combined list from /tv/premieres/new and /tv/premieres/soon.
         Each entry is reshaped to {show, episode, first_aired} format
-        expected by airing_alerts._merge_entry."""
+        expected by airing_alerts._merge_entry.
+
+        Accepts ``days`` kwarg to limit pagination to a date window.
+        """
+        max_days = kw.get("days", 0)
         results = []
         for param in ("new", "soon"):
             try:
-                data = await self.get_tv_premieres(param)
+                data = await self.get_tv_premieres(param, max_days_ahead=max_days)
                 if isinstance(data, list):
                     for item in data:
                         # Simkl premiere endpoints return flat show objects:

@@ -15,6 +15,7 @@ Release dates are sourced with a priority cascade:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone, timedelta
 
@@ -66,19 +67,45 @@ class AiringAlertsService:
         try:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+            # ── Check Redis response cache first (15 min TTL) ──
+            response_cache_key = f"airing_alerts:response:{user.id}:{days}"
+            try:
+                r = await get_redis()
+                cached_response = await r.get(response_cache_key)
+                if cached_response:
+                    log.info("airing_alerts.cache_hit", user_id=user.id)
+                    return json.loads(cached_response)
+            except Exception:
+                pass
+
             # Determine server country for release-date lookups
             server_country = await self._get_server_country()
 
             # Build arr release date index from live calendar data (always primary)
             arr_dates = await self._build_arr_release_index(today, days)
 
-            results = []
-            results.extend(await self._get_show_alerts(
+            # ── Fetch show + movie alerts in parallel ──
+            show_task = asyncio.create_task(self._get_show_alerts(
                 simkl, today, days, user=user, arr_dates=arr_dates,
             ))
-            results.extend(await self._get_movie_alerts(
+            movie_task = asyncio.create_task(self._get_movie_alerts(
                 simkl, today, days, country=server_country, arr_dates=arr_dates,
             ))
+            show_results, movie_results = await asyncio.gather(
+                show_task, movie_task, return_exceptions=True,
+            )
+            results = []
+            if isinstance(show_results, list):
+                results.extend(show_results)
+            else:
+                log.warning("airing_alerts.show_alerts_error",
+                            error=str(show_results)[:200])
+            if isinstance(movie_results, list):
+                results.extend(movie_results)
+            else:
+                log.warning("airing_alerts.movie_alerts_error",
+                            error=str(movie_results)[:200])
+
             results.sort(key=lambda r: (r["days_until_air"] if r["days_until_air"] is not None else 9999))
 
             # Upcoming digital/physical releases for missing Radarr movies
@@ -88,10 +115,18 @@ class AiringAlertsService:
             await self._enrich_with_providers(results, server_country)
             await self._enrich_with_providers(home_releases, server_country)
 
-            return {
+            response = {
                 "items": results,
                 "upcoming_home_releases": home_releases,
             }
+
+            # ── Cache response for 15 min ──
+            try:
+                await r.setex(response_cache_key, 900, json.dumps(response))
+            except Exception:
+                pass
+
+            return response
         finally:
             if simkl:
                 await simkl.close()
@@ -336,26 +371,50 @@ class AiringAlertsService:
         # ── Simkl calendar (optional — only if enabled) ──
         merged: dict[tuple, dict] = {}
         if simkl:
-            try:
-                upcoming = await simkl.get_my_shows(start_date=today, days=days)
-            except Exception as e:
-                log.warning("airing_alerts.my_shows_failed", error=str(e)[:200])
-                upcoming = []
+            # Fetch shows, watchlist, and premieres in parallel
+            async def _fetch_upcoming():
+                try:
+                    return await simkl.get_my_shows(start_date=today, days=days)
+                except Exception as e:
+                    log.warning("airing_alerts.my_shows_failed", error=str(e)[:200])
+                    return []
+
+            async def _fetch_watchlist():
+                try:
+                    return await simkl.get_watchlist(kind="shows")
+                except Exception:
+                    return []
+
+            async def _fetch_mdblist_wl():
+                try:
+                    from app.utils.secure_redis import secure_get
+                    mdb_key = await secure_get("mdblist_api_key")
+                    if not mdb_key:
+                        return []
+                    from app.utils.mdblist_client import MDBListClient
+                    mdb = MDBListClient(api_key=mdb_key)
+                    try:
+                        mdb_wl = await mdb.get_watchlist(mediatype="show")
+                        return mdb_wl.get("shows", []) if isinstance(mdb_wl, dict) else []
+                    finally:
+                        await mdb.close()
+                except Exception:
+                    return []
+
+            upcoming, wl, mdb_wl_shows = await asyncio.gather(
+                _fetch_upcoming(), _fetch_watchlist(), _fetch_mdblist_wl(),
+            )
 
             # Build a set of show IDs the user follows (Simkl watchlist + Sonarr)
             # so we can filter global premieres to only relevant shows
             followed_ids: set[str] = set()
-            try:
-                wl = await simkl.get_watchlist(kind="shows")
-                for entry in wl:
-                    inner = entry.get("show") or entry
-                    ids = inner.get("ids", {})
-                    for k in ("simkl", "simkl_id", "imdb", "tmdb", "tvdb"):
-                        v = ids.get(k)
-                        if v:
-                            followed_ids.add(f"{k}:{v}")
-            except Exception:
-                pass
+            for entry in wl:
+                inner = entry.get("show") or entry
+                ids = inner.get("ids", {})
+                for k in ("simkl", "simkl_id", "imdb", "tmdb", "tvdb"):
+                    v = ids.get(k)
+                    if v:
+                        followed_ids.add(f"{k}:{v}")
             # Also add IDs from get_my_shows (user's "watching" shows)
             for entry in upcoming:
                 inner = entry.get("show") or entry
@@ -370,26 +429,14 @@ class AiringAlertsService:
             for tvdb_str in sonarr_cal:
                 followed_ids.add(f"tvdb:{tvdb_str}")
 
-            # Add MDBList watchlist IDs if available
-            try:
-                from app.utils.secure_redis import secure_get
-                mdb_key = await secure_get("mdblist_api_key")
-                if mdb_key:
-                    from app.utils.mdblist_client import MDBListClient
-                    mdb = MDBListClient(api_key=mdb_key)
-                    try:
-                        mdb_wl = await mdb.get_watchlist(mediatype="show")
-                        for entry in (mdb_wl.get("shows", []) if isinstance(mdb_wl, dict) else []):
-                            inner = entry.get("show") or entry
-                            ids = inner.get("ids", {})
-                            for k in ("imdb", "tmdb", "tvdb"):
-                                v = ids.get(k)
-                                if v:
-                                    followed_ids.add(f"{k}:{v}")
-                    finally:
-                        await mdb.close()
-            except Exception:
-                pass
+            # Add MDBList watchlist IDs (already fetched in parallel above)
+            for entry in mdb_wl_shows:
+                inner = entry.get("show") or entry
+                ids = inner.get("ids", {})
+                for k in ("imdb", "tmdb", "tvdb"):
+                    v = ids.get(k)
+                    if v:
+                        followed_ids.add(f"{k}:{v}")
 
             log.debug("airing_alerts.followed_ids", count=len(followed_ids))
 
