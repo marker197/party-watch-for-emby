@@ -23,6 +23,7 @@ log = structlog.get_logger()
 EVENT_TYPES = {
     "scrobble":   "Scrobble complete (Simkl/MDBList sync)",
     "premiere":   "Premiere or finale airing today",
+    "release":    "Movie digital or physical release today",
     "download":   "Download finished / new content arrived",
     "prediction": "High-score ML prediction found",
     "system":     "System alerts (token failures, errors)",
@@ -32,6 +33,7 @@ EVENT_TYPES = {
 DEFAULT_EVENTS = {
     "scrobble":   False,
     "premiere":   True,
+    "release":    True,
     "download":   True,
     "prediction": False,
     "system":     True,

@@ -16,13 +16,131 @@ from app.utils.database import async_session as async_session_ctx, get_db
 from app.utils.emby_client import EmbyClient
 from app.utils.redis_cache import get_redis
 from app.security.auth import get_current_user, require_user_ownership
-from app.api.route_helpers import _get_setting, _put_setting
+from app.api.route_helpers import _get_mdblist_key, _get_setting, _put_setting
 from app.services.airing_alerts.service import AiringAlertsService
 from app.services.smart_queue.service import SmartQueueService
 
 log = structlog.get_logger()
 
 router = APIRouter()
+
+
+async def _fetch_mdblist_ratings(
+    items: list, mdb_key: str
+) -> dict[str, dict]:
+    """Batch-fetch MDBList media info for queue items.
+
+    Returns {imdb_id: {imdb, tmdb, tomatoes, popcorn}} where each value
+    is a number or None.  Uses the same 24h Redis cache as the individual
+    ``/api/mdblist/media-info`` endpoint.
+    """
+    import json as _json
+    from app.utils.mdblist_client import MDBListClient
+
+    result: dict[str, dict] = {}
+
+    # Dedupe by imdb_id — many items share no IMDB, skip those
+    id_map: dict[str, str] = {}  # imdb_id → media_type
+    for i in items:
+        ids = (i.metadata_json or {}).get("ids", {})
+        imdb = ids.get("imdb")
+        if imdb and imdb not in id_map:
+            id_map[imdb] = "show" if i.item_type == "show" else "movie"
+
+    if not id_map:
+        log.debug("queue.mdblist_ratings.no_imdb_ids")
+        return result
+
+    r = await get_redis()
+
+    # Check Redis cache first
+    uncached: dict[str, str] = {}
+    for imdb_id, media_type in id_map.items():
+        cache_key = f"mdblist_media_info:imdb:{media_type}:{imdb_id}"
+        try:
+            raw = await r.get(cache_key)
+            if raw:
+                data = _json.loads(raw)
+                result[imdb_id] = _extract_ratings(data)
+                continue
+        except Exception:
+            pass
+        uncached[imdb_id] = media_type
+
+    log.debug("queue.mdblist_ratings.cache_check",
+              total=len(id_map), cached=len(result), uncached=len(uncached))
+
+    if not uncached:
+        return result
+
+    # Fetch uncached items in parallel (max 5 concurrent)
+    sem = asyncio.Semaphore(5)
+    client = MDBListClient(api_key=mdb_key)
+
+    async def _fetch_one(imdb_id: str, media_type: str):
+        async with sem:
+            try:
+                data = await client.get_media_info("imdb", media_type, imdb_id)
+                if data:
+                    cache_key = f"mdblist_media_info:imdb:{media_type}:{imdb_id}"
+                    try:
+                        await r.set(cache_key, _json.dumps(data), ex=86400)
+                    except Exception:
+                        pass
+                    extracted = _extract_ratings(data)
+                    result[imdb_id] = extracted
+                    log.debug("queue.mdblist_ratings.fetched",
+                              imdb_id=imdb_id, ratings=extracted)
+                else:
+                    log.debug("queue.mdblist_ratings.empty_response",
+                              imdb_id=imdb_id)
+            except Exception as exc:
+                log.warning("queue.mdblist_ratings.fetch_error",
+                            imdb_id=imdb_id, error=str(exc)[:120])
+
+    try:
+        await asyncio.gather(
+            *[_fetch_one(iid, mt) for iid, mt in uncached.items()]
+        )
+    finally:
+        await client.close()
+
+    return result
+
+
+def _extract_ratings(data: dict) -> dict:
+    """Pull the 4 display ratings from an MDBList media-info response.
+
+    MDBList stores ratings in two places:
+    1. ``data["ratings"]`` — list of ``{source, value, score, votes}``
+    2. Top-level fields: ``imdbrating``, ``tmdbrating``, etc.
+    We check the list first (more reliable), then fall back to top-level.
+    """
+    r: dict = {}
+    # Source 1: ratings array
+    for item in (data.get("ratings") or []):
+        src = (item.get("source") or "").lower()
+        val = item.get("value")
+        if val is None:
+            continue
+        if src == "imdb" and "imdb" not in r:
+            r["imdb"] = val
+        elif src == "tmdb" and "tmdb" not in r:
+            r["tmdb"] = val
+        elif src == "tomatoes" and "tomatoes" not in r:
+            r["tomatoes"] = val
+        elif src in ("tomatoesaudience", "audience") and "popcorn" not in r:
+            r["popcorn"] = val
+    # Source 2: top-level fields (fill gaps only)
+    if "imdb" not in r and data.get("imdbrating"):
+        r["imdb"] = data["imdbrating"]
+    if "tmdb" not in r and data.get("tmdbrating"):
+        r["tmdb"] = data["tmdbrating"]
+    if "tomatoes" not in r and data.get("tomatoesrating"):
+        r["tomatoes"] = data["tomatoesrating"]
+    if "popcorn" not in r and data.get("tomatoesaudience"):
+        r["popcorn"] = data["tomatoesaudience"]
+    return r
 
 airing_alerts_svc = AiringAlertsService()
 smart_queue_svc = SmartQueueService()
@@ -71,6 +189,16 @@ async def get_queue(
     finally:
         await emby.close()
 
+    # ── MDBList multi-source ratings enrichment ───────────────────────────
+    mdb_ratings: dict[str, dict] = {}
+    mdb_key = await _get_mdblist_key(db)
+    if mdb_key:
+        log.info("queue.mdblist_ratings.start", items_count=len(items))
+        mdb_ratings = await _fetch_mdblist_ratings(items, mdb_key)
+        log.info("queue.mdblist_ratings.done", enriched=len(mdb_ratings))
+    else:
+        log.warning("queue.mdblist_ratings.no_key")
+
     return [
         {
             "emby_item_id": i.emby_item_id,
@@ -90,6 +218,9 @@ async def get_queue(
             "tvdb_id": (i.metadata_json or {}).get("ids", {}).get("tvdb"),
             "simkl_id": (i.metadata_json or {}).get("simkl_id"),
             "year": (i.metadata_json or {}).get("year"),
+            "mdblist_ratings": mdb_ratings.get(
+                (i.metadata_json or {}).get("ids", {}).get("imdb", ""), {}
+            ),
         }
         for i in items
     ]

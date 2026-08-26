@@ -602,7 +602,18 @@ async function viewQueue(skipTransition) {
       '</tr></thead><tbody>' +
       items.map((i, n) => {
         const inLib = i.in_library !== false;
-        const rating = (i.community_rating != null) ? ` <span style="color:var(--orange);font-size:0.78rem;">★${Number(i.community_rating).toFixed(1)}</span>` : '';
+        let rating = '';
+        const mr = i.mdblist_ratings || {};
+        if (mr.imdb || mr.tmdb || mr.tomatoes || mr.popcorn) {
+          const parts = [];
+          if (mr.imdb != null) parts.push('⭐' + mr.imdb);
+          if (mr.tmdb != null) parts.push('🎬' + mr.tmdb);
+          if (mr.tomatoes != null) parts.push('🍅' + mr.tomatoes + '%');
+          if (mr.popcorn != null) parts.push('🍿' + mr.popcorn + '%');
+          rating = ' <span style="font-size:0.72rem;letter-spacing:0.5px;">' + parts.join(' ') + '</span>';
+        } else if (i.community_rating != null) {
+          rating = ' <span style="color:var(--orange);font-size:0.78rem;">★' + Number(i.community_rating).toFixed(1) + '</span>';
+        }
         const yearStr = i.year ? ` <span style="color:var(--text-dim);font-size:0.72rem;">(${i.year})</span>` : '';
 
         // Check if this item is actively downloading

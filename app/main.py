@@ -964,9 +964,10 @@ def _register_jobs():
         async def _do():
             from app.utils.notification_client import notify, _load_config
             from app.models.schema import User
-            # Only run if premiere notifications are enabled
             config = await _load_config()
-            if not config.get("events", {}).get("premiere", False):
+            premiere_enabled = config.get("events", {}).get("premiere", False)
+            release_enabled = config.get("events", {}).get("release", False)
+            if not premiere_enabled and not release_enabled:
                 return
             if not config.get("services"):
                 return
@@ -981,19 +982,42 @@ def _register_jobs():
             svc = AiringAlertsService()
             result = await svc.get_airing_soon(user, days=1)
             items = result.get("items", [])
-            today_premieres = [e for e in items if e.get("is_premiere") and e.get("days_until_air", 99) == 0]
-            today_finales = [e for e in items if e.get("is_finale") and e.get("days_until_air", 99) == 0]
+
             parts = []
-            if today_premieres:
-                names = [e.get("title", "?") for e in today_premieres[:3]]
-                parts.append("Premieres: " + ", ".join(names)
-                             + (f" +{len(today_premieres)-3}" if len(today_premieres) > 3 else ""))
-            if today_finales:
-                names = [e.get("title", "?") for e in today_finales[:3]]
-                parts.append("Finales: " + ", ".join(names)
-                             + (f" +{len(today_finales)-3}" if len(today_finales) > 3 else ""))
+
+            # ── Premieres / Finales ──
+            if premiere_enabled:
+                today_premieres = [e for e in items if e.get("is_premiere") and e.get("days_until_air", 99) == 0]
+                today_finales = [e for e in items if e.get("is_finale") and e.get("days_until_air", 99) == 0]
+                if today_premieres:
+                    names = [e.get("title", "?") for e in today_premieres[:3]]
+                    parts.append("Premieres: " + ", ".join(names)
+                                 + (f" +{len(today_premieres)-3}" if len(today_premieres) > 3 else ""))
+                if today_finales:
+                    names = [e.get("title", "?") for e in today_finales[:3]]
+                    parts.append("Finales: " + ", ".join(names)
+                                 + (f" +{len(today_finales)-3}" if len(today_finales) > 3 else ""))
             if parts:
                 notify("premiere", "📅 Airing Today", " · ".join(parts))
+
+            # ── Digital / Physical releases ──
+            if release_enabled:
+                from datetime import datetime, timezone
+                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                release_parts = []
+                for e in items:
+                    if e.get("media_type") != "movie":
+                        continue
+                    title = e.get("title", "?")
+                    if e.get("digital_release") == today_str:
+                        release_parts.append(f"{title} (Digital)")
+                    if e.get("physical_release") == today_str:
+                        release_parts.append(f"{title} (Physical)")
+                if release_parts:
+                    msg = ", ".join(release_parts[:5])
+                    if len(release_parts) > 5:
+                        msg += f" +{len(release_parts)-5}"
+                    notify("release", "📀 Releases Today", msg)
         await _tracked_job("premiere_notify", _do)
 
     scheduler.add_job(

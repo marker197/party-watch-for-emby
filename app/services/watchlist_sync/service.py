@@ -267,7 +267,7 @@ class WatchlistSyncService:
                  movies_added=len(added.get("movies", [])) if isinstance(added.get("movies"), list) else added.get("movies", 0),
                  shows_added=len(added.get("shows", [])) if isinstance(added.get("shows"), list) else added.get("shows", 0),
                  movies_existing=len(existing.get("movies", [])) if isinstance(existing.get("movies"), list) else existing.get("movies", 0),
-                 shows_existing=len(existing.get("shows", [])) if isinstance(existing.get("movies"), list) else existing.get("shows", 0),
+                 shows_existing=len(existing.get("shows", [])) if isinstance(existing.get("shows"), list) else existing.get("shows", 0),
                  not_found_movies=len(not_found.get("movies", [])) if isinstance(not_found.get("movies"), list) else not_found.get("movies", 0))
 
         # Cache sent IDs so we don't re-send them next cycle.
