@@ -85,6 +85,32 @@ async def scheduler_status():
     return jobs
 
 
+@router.get("/api/job-history")
+async def job_history(
+    job_id: str = Query(default=None),
+    limit: int = Query(default=100, le=500),
+):
+    """Return recent job run history from Postgres."""
+    from app.models.schema import JobRun
+    from app.utils.database import async_session as _async_session
+    async with _async_session() as db:
+        q = select(JobRun).order_by(JobRun.started_at.desc()).limit(limit)
+        if job_id:
+            q = q.where(JobRun.job_id == job_id)
+        rows = (await db.execute(q)).scalars().all()
+    return [
+        {
+            "id": r.id,
+            "job_id": r.job_id,
+            "status": r.status,
+            "started_at": r.started_at.strftime("%Y-%m-%d %H:%M:%S") if r.started_at else None,
+            "duration_s": r.duration_s,
+            "error": r.error,
+        }
+        for r in rows
+    ]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -338,6 +364,16 @@ async def get_settings_page():
     """Serve the settings configuration page."""
     try:
         with open("frontend/templates/settings.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Page not found</h1>"
+
+
+@router.get("/job-history", response_class=HTMLResponse)
+async def get_job_history_page():
+    """Serve the job run history page."""
+    try:
+        with open("frontend/templates/job_history.html", "r") as f:
             return f.read()
     except FileNotFoundError:
         return "<h1>Page not found</h1>"

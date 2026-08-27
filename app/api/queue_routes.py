@@ -48,7 +48,6 @@ async def _fetch_mdblist_ratings(
             id_map[imdb] = "show" if i.item_type == "show" else "movie"
 
     if not id_map:
-        log.debug("queue.mdblist_ratings.no_imdb_ids")
         return result
 
     r = await get_redis()
@@ -66,9 +65,6 @@ async def _fetch_mdblist_ratings(
         except Exception:
             pass
         uncached[imdb_id] = media_type
-
-    log.debug("queue.mdblist_ratings.cache_check",
-              total=len(id_map), cached=len(result), uncached=len(uncached))
 
     if not uncached:
         return result
@@ -89,11 +85,6 @@ async def _fetch_mdblist_ratings(
                         pass
                     extracted = _extract_ratings(data)
                     result[imdb_id] = extracted
-                    log.debug("queue.mdblist_ratings.fetched",
-                              imdb_id=imdb_id, ratings=extracted)
-                else:
-                    log.debug("queue.mdblist_ratings.empty_response",
-                              imdb_id=imdb_id)
             except Exception as exc:
                 log.warning("queue.mdblist_ratings.fetch_error",
                             imdb_id=imdb_id, error=str(exc)[:120])
@@ -193,11 +184,7 @@ async def get_queue(
     mdb_ratings: dict[str, dict] = {}
     mdb_key = await _get_mdblist_key(db)
     if mdb_key:
-        log.info("queue.mdblist_ratings.start", items_count=len(items))
         mdb_ratings = await _fetch_mdblist_ratings(items, mdb_key)
-        log.info("queue.mdblist_ratings.done", enriched=len(mdb_ratings))
-    else:
-        log.warning("queue.mdblist_ratings.no_key")
 
     return [
         {

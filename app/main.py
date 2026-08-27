@@ -226,7 +226,7 @@ async def lifespan(app: FastAPI):
         async with async_session() as db:
             result = await db.execute(sa_text("SELECT version_num FROM alembic_version LIMIT 1"))
             row = result.first()
-            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres", "005_watch_history_progress", "006_dedup_watch_history", "007_simkl", "008_user_rating", "009_episode_ratings", "010_watchlist_items", "011_dismissed_issues", "012_watch_history_null_dedup"):
+            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres", "005_watch_history_progress", "006_dedup_watch_history", "007_simkl", "008_user_rating", "009_episode_ratings", "010_watchlist_items", "011_dismissed_issues", "012_watch_history_null_dedup", "013_job_runs"):
                 # Pre-squash revision — jump to current head
                 await db.execute(sa_text("UPDATE alembic_version SET version_num = '007_simkl'"))
                 await db.commit()
@@ -546,7 +546,8 @@ async def _seed_redis_from_db():
     from app.utils.redis_cache import get_redis
     from app.utils.secure_redis import SECRET_KEYS
     _KEYS = ("radarr_servers", "sonarr_servers", "sabnzbd_servers", "auto_send_settings",
-             "emby_url", "emby_api_key")
+             "emby_url", "emby_api_key", "tmdb_api_key", "mdblist_api_key",
+             "notifications_config")
     try:
         r = await get_redis()
         async with async_session() as db:
@@ -563,6 +564,23 @@ async def _seed_redis_from_db():
                     else:
                         await r.set(key, row.value)
                     log.info("suite.redis_seeded_from_db", key=key)
+
+            # Restore arr_to_simkl_sent sets from AppSetting
+            for suffix in ("tmdb", "tvdb"):
+                redis_key = f"arr_to_simkl_sent:{suffix}"
+                existing = await r.scard(redis_key)
+                if existing:
+                    continue  # Redis already has it
+                db_key = f"arr_to_simkl_sent_{suffix}"
+                row = (await db.execute(
+                    select(AppSetting).where(AppSetting.key == db_key)
+                )).scalar_one_or_none()
+                if row and row.value:
+                    import json as _sj
+                    ids = _sj.loads(row.value)
+                    if ids:
+                        await r.sadd(redis_key, *[str(i) for i in ids])
+                        log.info("suite.redis_seeded_from_db", key=redis_key, count=len(ids))
     except Exception as e:
         log.warning("suite.redis_seed_skipped", error=str(e)[:200])
 
@@ -624,10 +642,11 @@ def _parse_cron(expr: str) -> dict:
 
 
 async def _tracked_job(job_id: str, func):
-    """Run a scheduled job and record last-run status to Redis."""
+    """Run a scheduled job and record last-run status to Redis + DB."""
     import json as _json
     from app.utils.redis_cache import get_redis
     start = time.time()
+    started_at = datetime.now(timezone.utc).replace(tzinfo=None)
     status = "ok"
     error_msg = None
     try:
@@ -637,19 +656,35 @@ async def _tracked_job(job_id: str, func):
         error_msg = str(e)[:200]
         log.exception("scheduler.job_failed", job=job_id)
     elapsed = round(time.time() - start, 1)
+    # Redis — quick dashboard status
     try:
         r = await get_redis()
         run_data = {
-            "last_run": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "last_run": started_at.strftime("%Y-%m-%d %H:%M:%S"),
             "status": status,
             "duration_s": elapsed,
             "error": error_msg,
         }
         await r.set(f"scheduler:status:{job_id}", _json.dumps(run_data))
-        # Note: no longer pushing to job_completions Redis list.
-        # Cron job toasts were stacking overnight and flooding the
-        # dashboard on first morning load.  The scheduler status grid
-        # already surfaces last-run / error info per job.
+    except Exception:
+        pass
+    # Postgres — persistent run history
+    try:
+        from app.models.schema import JobRun
+        async with async_session() as db:
+            db.add(JobRun(
+                job_id=job_id, status=status, started_at=started_at,
+                duration_s=elapsed, error=error_msg,
+            ))
+            # Keep only the most recent 500 rows per job
+            subq = sa_text(
+                "DELETE FROM job_runs WHERE id IN ("
+                "  SELECT id FROM job_runs WHERE job_id = :jid"
+                "  ORDER BY started_at DESC OFFSET 500"
+                ")"
+            )
+            await db.execute(subq, {"jid": job_id})
+            await db.commit()
     except Exception:
         pass
 

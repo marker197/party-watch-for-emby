@@ -1362,3 +1362,145 @@ async def get_filmography(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Stale Emby ID Repair
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/api/library/repair-emby-ids")
+async def repair_stale_emby_ids(_user: User = Depends(get_current_user)):
+    """Detect and repair stale Emby IDs across all tables after a library rebuild.
+
+    For each row with a non-null emby_item_id / emby_id, checks whether that
+    ID still exists in the current library cache.  If not, attempts to
+    re-resolve via IMDB → TMDB → title lookup.  Returns a summary of what
+    was found and fixed.
+    """
+    from app.models.schema import (
+        QueueItem, Prediction, UniverseItem, WatchHistory, LibraryGap,
+    )
+
+    emby = EmbyClient()
+    try:
+        # Get first user for Emby calls
+        async with async_session_ctx() as db:
+            user = (await db.execute(
+                select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
+            )).scalars().first()
+        uid = user.emby_user_id if user else None
+
+        # Build a set of all valid emby IDs from library cache
+        all_items = await LibraryCache.get_all_items()
+        valid_ids = {item["emby_id"] for item in all_items if item.get("emby_id")}
+
+        # Build reverse lookup: provider_id → emby_id
+        imdb_to_emby: dict[str, str] = {}
+        tmdb_to_emby: dict[str, str] = {}
+        title_to_emby: dict[str, str] = {}
+        for item in all_items:
+            eid = item.get("emby_id")
+            if not eid:
+                continue
+            if item.get("imdb_id"):
+                imdb_to_emby[item["imdb_id"]] = eid
+            if item.get("tmdb_id"):
+                tmdb_to_emby[str(item["tmdb_id"])] = eid
+            t = item.get("title", "").strip().lower()
+            if t:
+                key = t
+                if item.get("year"):
+                    key = f"{t}:{item['year']}"
+                title_to_emby[key] = eid
+
+        stats = {"scanned": 0, "stale": 0, "repaired": 0, "unresolvable": 0}
+        details: list[dict] = []
+
+        # Table definitions: (Model, id_col_name, provider_id_cols)
+        table_defs = [
+            (QueueItem, "emby_item_id", "metadata_json"),
+            (Prediction, "emby_item_id", None),
+            (UniverseItem, "emby_item_id", None),
+            (WatchHistory, "emby_id", None),
+            (LibraryGap, "emby_item_id", None),
+        ]
+
+        async with async_session_ctx() as db:
+            for Model, id_col, meta_col in table_defs:
+                col = getattr(Model, id_col)
+                rows = (await db.execute(
+                    select(Model).where(col.isnot(None))
+                )).scalars().all()
+
+                for row in rows:
+                    old_id = getattr(row, id_col)
+                    if not old_id:
+                        continue
+                    stats["scanned"] += 1
+                    if old_id in valid_ids:
+                        continue
+
+                    # Stale — try to resolve new ID
+                    stats["stale"] += 1
+                    new_id = None
+                    source = None
+
+                    # Try IMDB
+                    imdb = getattr(row, "imdb_id", None)
+                    if not imdb and meta_col and hasattr(row, meta_col):
+                        meta = getattr(row, meta_col) or {}
+                        ids = meta.get("ids", {})
+                        imdb = ids.get("imdb")
+                    if imdb and imdb in imdb_to_emby:
+                        new_id = imdb_to_emby[imdb]
+                        source = "imdb"
+
+                    # Try TMDB
+                    if not new_id:
+                        tmdb = getattr(row, "tmdb_id", None)
+                        if not tmdb and meta_col and hasattr(row, meta_col):
+                            meta = getattr(row, meta_col) or {}
+                            ids = meta.get("ids", {})
+                            tmdb = ids.get("tmdb")
+                        if tmdb and str(tmdb) in tmdb_to_emby:
+                            new_id = tmdb_to_emby[str(tmdb)]
+                            source = "tmdb"
+
+                    # Try title
+                    if not new_id:
+                        title = getattr(row, "title", None) or getattr(row, "series_name", None) or ""
+                        title_lower = title.strip().lower()
+                        year = getattr(row, "year", None)
+                        if title_lower:
+                            key = f"{title_lower}:{year}" if year else title_lower
+                            if key in title_to_emby:
+                                new_id = title_to_emby[key]
+                                source = "title"
+                            elif title_lower in title_to_emby:
+                                new_id = title_to_emby[title_lower]
+                                source = "title"
+
+                    table_name = Model.__tablename__
+                    title_display = getattr(row, "title", None) or getattr(row, "series_name", None) or "?"
+
+                    if new_id:
+                        setattr(row, id_col, new_id)
+                        stats["repaired"] += 1
+                        details.append({
+                            "table": table_name, "title": title_display,
+                            "old_id": old_id, "new_id": new_id, "via": source,
+                        })
+                    else:
+                        stats["unresolvable"] += 1
+                        details.append({
+                            "table": table_name, "title": title_display,
+                            "old_id": old_id, "new_id": None, "via": None,
+                        })
+
+            await db.commit()
+    finally:
+        await emby.close()
+
+    log.info("library.repair_emby_ids", **stats)
+    return {"stats": stats, "details": details[:200]}
+
+
+# ═══════════════════════════════════════════════════════════════════════════

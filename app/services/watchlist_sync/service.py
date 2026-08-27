@@ -271,23 +271,44 @@ class WatchlistSyncService:
                  not_found_movies=len(not_found.get("movies", [])) if isinstance(not_found.get("movies"), list) else not_found.get("movies", 0))
 
         # Cache sent IDs so we don't re-send them next cycle.
-        # TTL of 7 days — if Radarr removes the item, the key naturally
-        # expires and won't block a future re-add.
         try:
             sent_tmdb = [m["ids"]["tmdb"] for m in movies_to_add]
             sent_tvdb = [s["ids"]["tvdb"] for s in shows_to_add]
             if sent_tmdb:
                 await r.sadd("arr_to_simkl_sent:tmdb", *[str(t) for t in sent_tmdb])
-                await r.expire("arr_to_simkl_sent:tmdb", 7 * 86400)
             if sent_tvdb:
                 await r.sadd("arr_to_simkl_sent:tvdb", *[str(t) for t in sent_tvdb])
-                await r.expire("arr_to_simkl_sent:tvdb", 7 * 86400)
+            # Persist full sets to Postgres so they survive Redis restarts
+            await self._persist_sent_sets(r)
         except Exception:
             pass
 
         # Refresh Airing Soon cache if any shows were added
         if shows_to_add:
             await self._refresh_airing_soon(user)
+
+    @staticmethod
+    async def _persist_sent_sets(r):
+        """Snapshot arr_to_simkl_sent Redis sets into AppSetting for durability."""
+        try:
+            from app.models.schema import AppSetting
+            from app.utils.database import async_session
+            async with async_session() as db:
+                for suffix in ("tmdb", "tvdb"):
+                    members = await r.smembers(f"arr_to_simkl_sent:{suffix}")
+                    ids = sorted(int(v) for v in members if v)
+                    db_key = f"arr_to_simkl_sent_{suffix}"
+                    row = (await db.execute(
+                        select(AppSetting).where(AppSetting.key == db_key)
+                    )).scalar_one_or_none()
+                    val = _json.dumps(ids)
+                    if row:
+                        row.value = val
+                    else:
+                        db.add(AppSetting(key=db_key, value=val))
+                await db.commit()
+        except Exception:
+            pass
 
     async def _arr_to_mdblist_watchlist(self, user: User, mdb):
         """Send missing Radarr/Sonarr items to MDBList watchlist (with dupe check)."""

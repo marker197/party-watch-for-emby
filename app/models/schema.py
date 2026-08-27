@@ -443,6 +443,22 @@ class WatchlistItem(Base):
     user = relationship("User", foreign_keys=[user_id])
 
 
+# ---------------------------------------------------------------------------
+# Job Run History
+# ---------------------------------------------------------------------------
+
+class JobRun(Base):
+    """Record of each scheduled job execution for the run history page."""
+    __tablename__ = "job_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(String(64), nullable=False, index=True)
+    status = Column(String(16), nullable=False)  # ok | error
+    started_at = Column(DateTime, nullable=False)
+    duration_s = Column(Float, nullable=True)
+    error = Column(Text, nullable=True)
+
+
 class AppSetting(Base):
     """Key/value store for runtime-configurable settings (schedules, toggles).
 

@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Job Run History — Emby-Simkl Suite</title>
+<style>
+  :root {
+    --bg: #0f0f0f; --surface: #1a1a2e; --surface2: #16213e; --accent: #00d4ff;
+    --green: #00e676; --red: #ff5252; --yellow: #ffd740; --text: #e0e0e0;
+    --text-dim: #888; --radius: 10px; --border: #2a2a4a;
+  }
+  .light-mode {
+    --bg: #f4f4f8; --surface: #ffffff; --surface2: #f0f0f5; --accent: #0077cc;
+    --green: #2e7d32; --red: #c62828; --yellow: #f57f17; --text: #1a1a1a;
+    --text-dim: #666; --border: #ddd;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  .suite-shell { display: flex; min-height: 100vh; }
+  .suite-main { flex: 1; padding: 20px; min-width: 0; }
+  .header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .header h1 { font-size: 1.4rem; }
+  .back-link { color: var(--accent); text-decoration: none; font-size: 0.85rem; }
+  .back-link:hover { text-decoration: underline; }
+
+  .controls { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+  .controls select, .controls input {
+    background: var(--surface); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 0.82rem;
+  }
+  .controls label { font-size: 0.82rem; color: var(--text-dim); }
+
+  .stats-row { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+  .stat-card {
+    background: var(--surface); border-radius: var(--radius); padding: 12px 16px;
+    flex: 1; min-width: 120px; text-align: center;
+  }
+  .stat-card .val { font-size: 1.4rem; font-weight: 700; }
+  .stat-card .lbl { font-size: 0.72rem; color: var(--text-dim); margin-top: 2px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  thead th {
+    background: var(--surface2); padding: 8px 10px; text-align: left;
+    font-weight: 600; font-size: 0.75rem; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.5px; position: sticky; top: 0;
+  }
+  tbody tr { border-bottom: 1px solid var(--border); }
+  tbody tr:hover { background: var(--surface2); }
+  tbody td { padding: 7px 10px; vertical-align: top; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .dot-ok { background: var(--green); }
+  .dot-error { background: var(--red); }
+  .error-text { color: var(--red); font-size: 0.75rem; word-break: break-all; max-width: 320px; display: inline-block; }
+  .job-label { font-weight: 500; }
+  .empty { text-align: center; padding: 40px; color: var(--text-dim); }
+
+  .theme-toggle {
+    background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.78rem;
+    margin-left: auto;
+  }
+</style>
+<script src="/static/js/csrf.js"></script>
+<link rel="stylesheet" href="/static/css/sidebar.css">
+</head>
+<body>
+<script>if(localStorage.getItem('suite-theme')==='light')document.body.classList.add('light-mode');</script>
+<div class="suite-shell">
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+<button class="mobile-menu-btn" id="mobileMenuBtn" onclick="toggleSidebar()">☰</button>
+<aside class="suite-sidebar" id="suiteSidebar">
+  <div class="sidebar-brand">
+    <div class="sidebar-brand-name">Emby-Simkl Suite</div>
+    <div class="sidebar-brand-ver">v2.1</div>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-label">Main</div>
+    <a class="sidebar-nav-item" href="/"><span class="nav-icon">⊞</span> Dashboard</a>
+    <a class="sidebar-nav-item" href="/lists"><span class="nav-icon">☰</span> Playlists</a>
+    <a class="sidebar-nav-item" href="/stats"><span class="nav-icon">◩</span> Stats</a>
+    <a class="sidebar-nav-item" href="/watch-history"><span class="nav-icon">↻</span> History</a>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-label">Discover</div>
+    <a class="sidebar-nav-item" href="/predictions"><span class="nav-icon">◈</span> Predictions</a>
+    <a class="sidebar-nav-item" href="/bias"><span class="nav-icon">◎</span> Taste profile</a>
+    <a class="sidebar-nav-item" href="/rewatch"><span class="nav-icon">⟳</span> Rewatch</a>
+    <a class="sidebar-nav-item" href="/filmography"><span class="nav-icon">▣</span> Filmography</a>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-label">Tools</div>
+    <a class="sidebar-nav-item" href="/library-health"><span class="nav-icon">⊕</span> Library health</a>
+    <a class="sidebar-nav-item" href="/duplicates"><span class="nav-icon">⊜</span> Duplicates</a>
+    <a class="sidebar-nav-item" href="/watch-party"><span class="nav-icon">⊡</span> Watch party</a>
+    <a class="sidebar-nav-item" href="/guide"><span class="nav-icon">⊞</span> Guide</a>
+  </div>
+  <div class="sidebar-bottom">
+    <a class="sidebar-nav-item" href="/settings"><span class="nav-icon">⚙</span> Settings</a>
+  </div>
+</aside>
+<div class="suite-main">
+
+<div class="header">
+  <h1>📋 Job Run History</h1>
+  <a href="/settings" class="back-link">← Back to Settings</a>
+  <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">☀️ Light</button>
+</div>
+
+<div class="controls">
+  <label>Filter:</label>
+  <select id="jobFilter" onchange="loadHistory()">
+    <option value="">All jobs</option>
+  </select>
+  <label>Status:</label>
+  <select id="statusFilter" onchange="applyFilters()">
+    <option value="">All</option>
+    <option value="ok">OK</option>
+    <option value="error">Errors</option>
+  </select>
+  <label>Show:</label>
+  <select id="limitSelect" onchange="loadHistory()">
+    <option value="50">50</option>
+    <option value="100" selected>100</option>
+    <option value="200">200</option>
+    <option value="500">500</option>
+  </select>
+</div>
+
+<div class="stats-row" id="statsRow"></div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Status</th>
+      <th>Job</th>
+      <th>Started</th>
+      <th>Duration</th>
+      <th>Error</th>
+    </tr>
+  </thead>
+  <tbody id="historyBody">
+    <tr><td colspan="5" class="empty">Loading…</td></tr>
+  </tbody>
+</table>
+
+</div>
+</div>
+
+<script>
+const JOB_LABELS = {
+  library_cache_rebuild: '💾 Cache Rebuild',
+  smart_queue: '🎯 Smart Queue',
+  ml_retrain: '🤖 ML Retrain',
+  universe_scan: '🌌 Universe Scan',
+  bias_analysis: '🎓 Bias Analysis',
+  ssl_cert_check: '🔒 SSL Check',
+  heartbeat: '💓 Heartbeat',
+  watchlist_sync: '🔄 Watchlist Sync',
+  rewatch_rebuild: '⟳ Rewatch Rebuild',
+  mdblist_sync: '📋 MDBList Sync',
+  simkl_list_sync: '📋 Simkl List Sync',
+  premiere_notify: '📅 Premiere Notify',
+  library_health_scan: '🏥 Library Health',
+};
+
+let _allData = [];
+
+function jobLabel(id) {
+  return JOB_LABELS[id] || id.replace(/_/g, ' ');
+}
+
+async function loadHistory() {
+  const jobId = document.getElementById('jobFilter').value;
+  const limit = document.getElementById('limitSelect').value;
+  let url = '/api/job-history?limit=' + limit;
+  if (jobId) url += '&job_id=' + encodeURIComponent(jobId);
+  try {
+    const r = await fetch(url);
+    _allData = await r.json();
+    populateJobFilter(_allData);
+    applyFilters();
+  } catch(e) {
+    document.getElementById('historyBody').innerHTML =
+      '<tr><td colspan="5" class="empty">Failed to load history</td></tr>';
+  }
+}
+
+function populateJobFilter(data) {
+  const sel = document.getElementById('jobFilter');
+  const current = sel.value;
+  const ids = [...new Set(data.map(d => d.job_id))].sort();
+  // Only rebuild if options changed
+  const existing = [...sel.options].map(o => o.value).filter(v => v);
+  if (JSON.stringify(ids) === JSON.stringify(existing)) return;
+  sel.innerHTML = '<option value="">All jobs</option>';
+  ids.forEach(id => {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = jobLabel(id);
+    sel.appendChild(opt);
+  });
+  sel.value = current;
+}
+
+function applyFilters() {
+  const statusFilter = document.getElementById('statusFilter').value;
+  let data = _allData;
+  if (statusFilter) data = data.filter(d => d.status === statusFilter);
+  renderStats(data);
+  renderTable(data);
+}
+
+function renderStats(data) {
+  const total = data.length;
+  const ok = data.filter(d => d.status === 'ok').length;
+  const errors = data.filter(d => d.status === 'error').length;
+  const avgDur = total ? (data.reduce((s, d) => s + (d.duration_s || 0), 0) / total).toFixed(1) : '—';
+  document.getElementById('statsRow').innerHTML = `
+    <div class="stat-card"><div class="val">${total}</div><div class="lbl">Total Runs</div></div>
+    <div class="stat-card"><div class="val" style="color:var(--green)">${ok}</div><div class="lbl">Succeeded</div></div>
+    <div class="stat-card"><div class="val" style="color:var(--red)">${errors}</div><div class="lbl">Failed</div></div>
+    <div class="stat-card"><div class="val">${avgDur}s</div><div class="lbl">Avg Duration</div></div>
+  `;
+}
+
+function renderTable(data) {
+  const body = document.getElementById('historyBody');
+  if (!data.length) {
+    body.innerHTML = '<tr><td colspan="5" class="empty">No job runs recorded yet</td></tr>';
+    return;
+  }
+  body.innerHTML = data.map(d => {
+    const dot = d.status === 'ok'
+      ? '<span class="dot dot-ok"></span>OK'
+      : '<span class="dot dot-error"></span>Error';
+    const ts = d.started_at
+      ? new Date(d.started_at + 'Z').toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'})
+      : '—';
+    const dur = d.duration_s != null ? d.duration_s + 's' : '—';
+    const err = d.error ? '<span class="error-text">' + d.error.substring(0, 120) + '</span>' : '';
+    return `<tr>
+      <td>${dot}</td>
+      <td class="job-label">${jobLabel(d.job_id)}</td>
+      <td>${ts}</td>
+      <td>${dur}</td>
+      <td>${err}</td>
+    </tr>`;
+  }).join('');
+}
+
+function toggleTheme() {
+  document.body.classList.toggle('light-mode');
+  const isLight = document.body.classList.contains('light-mode');
+  localStorage.setItem('suite-theme', isLight ? 'light' : 'dark');
+  document.getElementById('themeToggle').textContent = isLight ? '🌙 Dark' : '☀️ Light';
+}
+
+function toggleSidebar() {
+  document.getElementById('suiteSidebar').classList.toggle('open');
+  document.getElementById('sidebarOverlay').classList.toggle('open');
+}
+
+// Init
+(function() {
+  const isLight = localStorage.getItem('suite-theme') === 'light';
+  document.getElementById('themeToggle').textContent = isLight ? '🌙 Dark' : '☀️ Light';
+  loadHistory();
+})();
+</script>
+</body>
+</html>
