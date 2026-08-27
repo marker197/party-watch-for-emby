@@ -77,6 +77,9 @@ class RatingBiasDetectorService:
             # Convert to dicts for analysis
             ratings = [self._rating_to_dict(r) for r in ratings_rows]
 
+            # Enrich community ratings from MDBList cache/API
+            await self._enrich_community_ratings(ratings, ratings_rows)
+
             # 2. Compute overall stats
             overall_stats = self._compute_overall_stats(ratings)
 
@@ -187,6 +190,102 @@ class RatingBiasDetectorService:
             "item_type": rating.item_type or "movie",
         }
 
+    async def _enrich_community_ratings(self, ratings: list[dict], db_rows: list) -> None:
+        """Populate simkl_rating from MDBList cache/API for items missing it.
+
+        Mutates ``ratings`` in place.  Uses the same Redis cache keys as the
+        Smart Queue MDBList enrichment (``mdblist_media_info:imdb:{type}:{id}``,
+        24h TTL) so most items are already cached.
+        """
+        import asyncio
+        from app.utils.redis_cache import get_redis
+        from app.utils.secure_redis import secure_get
+
+        need: list[tuple[int, str, str]] = []  # (index, imdb_id, media_type)
+        for i, (rd, row) in enumerate(zip(ratings, db_rows)):
+            if rd.get("simkl_rating"):
+                continue
+            imdb = getattr(row, "imdb_id", None) or ""
+            if not imdb:
+                continue
+            mtype = "show" if rd.get("item_type") == "show" else "movie"
+            need.append((i, imdb, mtype))
+
+        if not need:
+            return
+
+        r = await get_redis()
+        uncached: list[tuple[int, str, str]] = []
+
+        # Check Redis cache first
+        for idx, imdb, mtype in need:
+            cache_key = f"mdblist_media_info:imdb:{mtype}:{imdb}"
+            try:
+                raw = await r.get(cache_key)
+                if raw:
+                    data = json.loads(raw)
+                    cr = self._extract_community_rating(data)
+                    if cr:
+                        ratings[idx]["simkl_rating"] = cr
+                    continue
+            except Exception:
+                pass
+            uncached.append((idx, imdb, mtype))
+
+        # Fetch uncached from MDBList API
+        if not uncached:
+            return
+        mdb_key = await secure_get("mdblist_api_key")
+        if not mdb_key:
+            return
+
+        from app.utils.mdblist_client import MDBListClient
+        sem = asyncio.Semaphore(5)
+        client = MDBListClient(api_key=mdb_key)
+        try:
+            async def _fetch(idx: int, imdb: str, mtype: str):
+                async with sem:
+                    try:
+                        data = await client.get_media_info("imdb", mtype, imdb)
+                        if data:
+                            cache_key = f"mdblist_media_info:imdb:{mtype}:{imdb}"
+                            try:
+                                await r.set(cache_key, json.dumps(data), ex=86400)
+                            except Exception:
+                                pass
+                            cr = self._extract_community_rating(data)
+                            if cr:
+                                ratings[idx]["simkl_rating"] = cr
+                    except Exception:
+                        pass
+
+            await asyncio.gather(*[_fetch(i, im, mt) for i, im, mt in uncached])
+        finally:
+            await client.close()
+
+        enriched = sum(1 for rd in ratings if rd.get("simkl_rating"))
+        log.debug("bias_detector.community_ratings_enriched",
+                  total=len(ratings), enriched=enriched, fetched=len(uncached))
+
+    @staticmethod
+    def _extract_community_rating(mdblist_data: dict) -> float | None:
+        """Extract IMDb community rating from MDBList media info response."""
+        # Check ratings array first (primary)
+        for entry in mdblist_data.get("ratings", []):
+            if entry.get("source") == "imdb" and entry.get("value"):
+                try:
+                    return round(float(entry["value"]), 1)
+                except (ValueError, TypeError):
+                    pass
+        # Fallback to top-level field
+        val = mdblist_data.get("imdbrating")
+        if val:
+            try:
+                return round(float(val), 1)
+            except (ValueError, TypeError):
+                pass
+        return None
+
     def _compute_overall_stats(self, ratings: list[dict]) -> dict:
         """Compute overall rating statistics."""
         user_ratings = [r["rating"] for r in ratings]
@@ -206,6 +305,7 @@ class RatingBiasDetectorService:
     def _compute_genre_stats(self, ratings: list[dict]) -> dict:
         """Analyze rating patterns by genre."""
         genre_ratings = defaultdict(list)
+        genre_community = defaultdict(list)
         genre_counts = defaultdict(int)
 
         for r in ratings:
@@ -216,10 +316,14 @@ class RatingBiasDetectorService:
                 g_lower = g.lower()
                 genre_ratings[g_lower].append(r["rating"])
                 genre_counts[g_lower] += 1
+                if r.get("simkl_rating"):
+                    genre_community[g_lower].append(r["simkl_rating"])
 
         stats = {}
         for genre in sorted(genre_ratings.keys()):
             ratings_list = genre_ratings[genre]
+            community_list = genre_community.get(genre, [])
+            community_avg = round(np.mean(community_list), 2) if community_list else 5.0
             stats[genre] = {
                 "count": len(ratings_list),
                 "avg": round(np.mean(ratings_list), 2),
@@ -227,7 +331,8 @@ class RatingBiasDetectorService:
                 "std_dev": round(np.std(ratings_list), 2),
                 "min": min(ratings_list),
                 "max": max(ratings_list),
-                "bias_score": round(np.mean(ratings_list) - 5.0, 2),  # vs neutral 5.0
+                "community_avg": community_avg,
+                "bias_score": round(np.mean(ratings_list) - community_avg, 2),
             }
 
         return stats

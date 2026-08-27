@@ -17,7 +17,7 @@ from app.utils.redis_cache import get_redis
 from app.utils.secure_redis import secure_get, secure_set
 from app.utils.simkl_client import SimklClient
 from app.security.auth import get_current_user
-from app.api.route_helpers import _first_emby_user_id, _get_mdblist_key, _get_setting, _put_setting
+from app.api.route_helpers import _first_emby_user_id, _get_mdblist_key, _get_setting, _put_setting, record_job_run
 
 log = structlog.get_logger()
 
@@ -368,6 +368,8 @@ async def remove_simkl_synced(slug: str, db: AsyncSession = Depends(get_db), _us
 async def sync_all_simkl_lists(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Re-import all auto-synced Simkl lists."""
     import json as _json
+    import time as _time
+    t = _time.time()
     r = await get_redis()
     raw = await r.get("simkl_synced_lists")
     if not raw:
@@ -375,20 +377,25 @@ async def sync_all_simkl_lists(db: AsyncSession = Depends(get_db), _user: User =
     synced = _json.loads(raw) if raw else []
 
     results = []
-    for entry in synced:
-        if not entry.get("auto_sync", True):
-            results.append({"slug": entry["slug"], "status": "skipped", "reason": "auto_sync_off"})
-            continue
-        try:
-            result = await import_simkl_list({
-                "list_slug": entry["slug"],
-                "playlist_name": entry.get("playlist_name", ""),
-                "description": entry.get("description", ""),
-                "username": entry.get("username", "me"),
-            })
-            results.append({"slug": entry["slug"], "status": "ok", "matched": result.get("matched", 0)})
-        except Exception as e:
-            results.append({"slug": entry["slug"], "status": "error", "message": str(e)[:200]})
+    try:
+        for entry in synced:
+            if not entry.get("auto_sync", True):
+                results.append({"slug": entry["slug"], "status": "skipped", "reason": "auto_sync_off"})
+                continue
+            try:
+                result = await import_simkl_list({
+                    "list_slug": entry["slug"],
+                    "playlist_name": entry.get("playlist_name", ""),
+                    "description": entry.get("description", ""),
+                    "username": entry.get("username", "me"),
+                })
+                results.append({"slug": entry["slug"], "status": "ok", "matched": result.get("matched", 0)})
+            except Exception as e:
+                results.append({"slug": entry["slug"], "status": "error", "message": str(e)[:200]})
+        await record_job_run("simkl_list_sync", "ok", _time.time() - t)
+    except Exception as e:
+        await record_job_run("simkl_list_sync", "error", _time.time() - t, str(e)[:200])
+        raise
 
     return {"status": "ok", "results": results}
 
@@ -553,6 +560,8 @@ async def remove_mdblist_synced(list_id: int, db: AsyncSession = Depends(get_db)
 async def sync_all_mdblist_lists(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Re-import all auto-synced MDBList lists (used by the daily cron and manual refresh)."""
     import json as _json
+    import time as _time
+    t = _time.time()
     r = await get_redis()
     raw = await r.get("mdblist_synced_lists")
     if not raw:
@@ -564,22 +573,27 @@ async def sync_all_mdblist_lists(db: AsyncSession = Depends(get_db), _user: User
         return {"status": "skipped", "reason": "no_api_key"}
 
     results = []
-    for entry in synced:
-        if not entry.get("auto_sync", True):
-            results.append({"list_id": entry["list_id"], "status": "skipped", "reason": "auto_sync_off"})
-            continue
-        try:
-            result = await import_mdblist_list(
-                {
-                    "list_id": entry["list_id"],
-                    "playlist_name": entry.get("playlist_name", ""),
-                    "description": entry.get("description", ""),
-                },
-                db,
-            )
-            results.append({"list_id": entry["list_id"], "status": "ok", "matched": result.get("matched", 0)})
-        except Exception as e:
-            results.append({"list_id": entry["list_id"], "status": "error", "message": str(e)[:200]})
+    try:
+        for entry in synced:
+            if not entry.get("auto_sync", True):
+                results.append({"list_id": entry["list_id"], "status": "skipped", "reason": "auto_sync_off"})
+                continue
+            try:
+                result = await import_mdblist_list(
+                    {
+                        "list_id": entry["list_id"],
+                        "playlist_name": entry.get("playlist_name", ""),
+                        "description": entry.get("description", ""),
+                    },
+                    db,
+                )
+                results.append({"list_id": entry["list_id"], "status": "ok", "matched": result.get("matched", 0)})
+            except Exception as e:
+                results.append({"list_id": entry["list_id"], "status": "error", "message": str(e)[:200]})
+        await record_job_run("mdblist_sync", "ok", _time.time() - t)
+    except Exception as e:
+        await record_job_run("mdblist_sync", "error", _time.time() - t, str(e)[:200])
+        raise
 
     return {"status": "ok", "results": results}
 

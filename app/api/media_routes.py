@@ -22,7 +22,7 @@ from app.utils.redis_cache import get_redis
 from app.utils.secure_redis import secure_get
 from app.utils.simkl_client import SimklClient
 from app.security.auth import get_current_user, require_user_ownership
-from app.api.route_helpers import _first_emby_user_id, _get_active_providers, _get_mdblist_key, _validate_item_key
+from app.api.route_helpers import _first_emby_user_id, _get_active_providers, _get_mdblist_key, _validate_item_key, record_job_run
 
 log = structlog.get_logger()
 
@@ -716,11 +716,18 @@ async def refresh_rewatch(
     _user: User = Depends(get_current_user),
 ):
     """Force rebuild rewatch suggestions (clears cache first)."""
+    import time as _time
     require_user_ownership(_user.id, user_id, "rewatch_refresh")
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(404, "User not found")
-    all_items = await _rewatch_svc.build_suggestions(user_id)
+    t = _time.time()
+    try:
+        all_items = await _rewatch_svc.build_suggestions(user_id)
+        await record_job_run("rewatch_rebuild", "ok", _time.time() - t)
+    except Exception as e:
+        await record_job_run("rewatch_rebuild", "error", _time.time() - t, str(e)[:200])
+        raise
     total = len(all_items)
     start = (page - 1) * page_size
     end = start + page_size

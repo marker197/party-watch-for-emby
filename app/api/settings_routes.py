@@ -23,7 +23,7 @@ from app.utils.redis_cache import get_redis
 from app.utils.secure_redis import secure_get, secure_set
 from app.utils.simkl_client import SimklClient
 from app.security.auth import get_current_user
-from app.api.route_helpers import MASKED_SUFFIX, _check_ssl_cert, _first_emby_user_id, _get_setting, _is_masked, _mask_api_key, _put_setting, _resolve_servers
+from app.api.route_helpers import MASKED_SUFFIX, _check_ssl_cert, _first_emby_user_id, _get_setting, _is_masked, _mask_api_key, _put_setting, _resolve_servers, record_job_run
 
 log = structlog.get_logger()
 
@@ -207,10 +207,17 @@ async def ssl_status():
 @router.post("/cache/rebuild")
 async def rebuild_cache(_user: User = Depends(get_current_user)):
     """Manually trigger library cache rebuild."""
-    async with EmbyClient() as emby:
-        uid = await _first_emby_user_id()
-        summary = await LibraryCache.index_library(emby, user_id=uid)
-    return {"status": "rebuilt", **summary}
+    import time as _time
+    t = _time.time()
+    try:
+        async with EmbyClient() as emby:
+            uid = await _first_emby_user_id()
+            summary = await LibraryCache.index_library(emby, user_id=uid)
+        await record_job_run("library_cache_rebuild", "ok", _time.time() - t)
+        return {"status": "rebuilt", **summary}
+    except Exception as e:
+        await record_job_run("library_cache_rebuild", "error", _time.time() - t, str(e)[:200])
+        raise
 
 
 @router.get("/cache/stats")

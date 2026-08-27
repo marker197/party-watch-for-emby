@@ -11,6 +11,7 @@ from app.models.schema import MLModel, User
 from app.utils.database import get_db
 from app.security.auth import get_current_user, require_user_ownership
 from app.services.ml_predictor.service import MLPredictorService
+from app.api.route_helpers import record_job_run
 
 log = structlog.get_logger()
 
@@ -26,6 +27,7 @@ async def train_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Trigger model training for a specific user."""
+    import time as _time
     require_user_ownership(current_user.id, user_id, "ml_training")  # ✅ SECURITY
     
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
@@ -33,8 +35,14 @@ async def train_model(
         raise HTTPException(404, "User not found")
     if not user.simkl_access_token:
         raise HTTPException(400, "User not linked to Simkl")
-    result = await ml_predictor_svc.train_for_user(user)
-    return result
+    t = _time.time()
+    try:
+        result = await ml_predictor_svc.train_for_user(user)
+        await record_job_run("ml_retrain", "ok", _time.time() - t)
+        return result
+    except Exception as e:
+        await record_job_run("ml_retrain", "error", _time.time() - t, str(e)[:200])
+        raise
 
 
 @router.get("/ml/predictions/{user_id}")
@@ -75,7 +83,7 @@ async def get_model_info(
                 genre: {
                     "delta": s.get("bias_score", 0.0),
                     "user_avg": s.get("avg", 0.0),
-                    "simkl_avg": round(s.get("avg", 0.0) - s.get("bias_score", 0.0), 1),
+                    "simkl_avg": s.get("community_avg", 5.0),
                 }
                 for genre, s in top
             }

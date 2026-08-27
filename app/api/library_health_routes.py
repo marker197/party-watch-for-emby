@@ -13,6 +13,7 @@ from app.models.schema import AppSetting, User
 from app.utils.database import get_db
 from app.utils.redis_cache import get_redis
 from app.security.auth import get_current_user, require_user_ownership
+from app.api.route_helpers import record_job_run
 
 log = structlog.get_logger()
 
@@ -56,11 +57,19 @@ async def scan_library_health(
     db: AsyncSession = Depends(get_db),
 ):
     """Run a full library health scan for a user."""
+    import time as _time
     require_user_ownership(current_user.id, user_id, "library_health")
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(404, "User not found")
-    return await _library_health_svc.scan(user)
+    t = _time.time()
+    try:
+        result = await _library_health_svc.scan(user)
+        await record_job_run("library_health_scan", "ok", _time.time() - t)
+        return result
+    except Exception as e:
+        await record_job_run("library_health_scan", "error", _time.time() - t, str(e)[:200])
+        raise
 
 
 @router.post("/api/library-health/{user_id}/dismiss")

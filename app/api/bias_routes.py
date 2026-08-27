@@ -11,6 +11,7 @@ from app.models.schema import User
 from app.utils.database import get_db
 from app.security.auth import get_current_user
 from app.services.rating_bias_detector.service import RatingBiasDetectorService
+from app.api.route_helpers import record_job_run
 
 log = structlog.get_logger()
 
@@ -22,6 +23,7 @@ bias_detector_svc = RatingBiasDetectorService()
 @router.post("/bias/analyze/{user_id}")
 async def analyze_bias(user_id: int, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Trigger bias analysis for a user."""
+    import time as _time
     user = (await db.execute(
         select(User).where(User.id == user_id)
     )).scalar_one_or_none()
@@ -29,8 +31,14 @@ async def analyze_bias(user_id: int, db: AsyncSession = Depends(get_db), _user: 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    result = await bias_detector_svc.analyze_user(user)
-    return result
+    t = _time.time()
+    try:
+        result = await bias_detector_svc.analyze_user(user)
+        await record_job_run("bias_analysis", "ok", _time.time() - t)
+        return result
+    except Exception as e:
+        await record_job_run("bias_analysis", "error", _time.time() - t, str(e)[:200])
+        raise
 
 
 @router.get("/bias/report/{user_id}")

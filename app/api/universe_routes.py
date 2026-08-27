@@ -18,7 +18,7 @@ from app.utils.database import async_session as async_session_ctx, get_db
 from app.utils.emby_client import EmbyClient
 from app.utils.redis_cache import get_redis
 from app.security.auth import get_current_user
-from app.api.route_helpers import _get_setting, _put_setting
+from app.api.route_helpers import _get_setting, _put_setting, record_job_run
 from app.services.universe_discovery.service import UniverseDiscoveryService
 
 log = structlog.get_logger()
@@ -31,7 +31,15 @@ universe_svc = UniverseDiscoveryService()
 @router.post("/universes/scan")
 async def scan_universes(_user: User = Depends(get_current_user)):
     """Trigger a full universe scan."""
-    asyncio.create_task(universe_svc.run_scan())
+    import time as _time
+    async def _run():
+        t = _time.time()
+        try:
+            await universe_svc.run_scan()
+            await record_job_run("universe_scan", "ok", _time.time() - t)
+        except Exception as e:
+            await record_job_run("universe_scan", "error", _time.time() - t, str(e)[:200])
+    asyncio.create_task(_run())
     return {"status": "scan_started"}
 
 

@@ -18,6 +18,22 @@ from app.models.schema import User, AppSetting
 from app.utils.database import get_db
 from app.utils.redis_cache import get_redis
 from app.utils.secure_redis import secure_get, secure_set
+
+
+async def record_job_run(job_id: str, status: str, duration_s: float, error: str | None = None):
+    """Record a manual job run to the job_runs table."""
+    try:
+        from app.models.schema import JobRun
+        from app.utils.database import async_session
+        async with async_session() as db:
+            db.add(JobRun(
+                job_id=job_id, status=status,
+                started_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                duration_s=round(duration_s, 1), error=error,
+            ))
+            await db.commit()
+    except Exception:
+        pass
 from app.utils.database import async_session as async_session_ctx
 
 log = structlog.get_logger()

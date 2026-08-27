@@ -16,7 +16,7 @@ from app.utils.database import async_session as async_session_ctx, get_db
 from app.utils.emby_client import EmbyClient
 from app.utils.redis_cache import get_redis
 from app.security.auth import get_current_user, require_user_ownership
-from app.api.route_helpers import _get_mdblist_key, _get_setting, _put_setting
+from app.api.route_helpers import _get_mdblist_key, _get_setting, _put_setting, record_job_run
 from app.services.airing_alerts.service import AiringAlertsService
 from app.services.smart_queue.service import SmartQueueService
 
@@ -140,7 +140,15 @@ smart_queue_svc = SmartQueueService()
 @router.post("/queue/refresh")
 async def refresh_queue(_user: User = Depends(get_current_user)):
     """Manually trigger a Smart Queue update for all users."""
-    asyncio.create_task(smart_queue_svc.run_for_all_users())
+    import time as _time
+    async def _run():
+        t = _time.time()
+        try:
+            await smart_queue_svc.run_for_all_users()
+            await record_job_run("smart_queue", "ok", _time.time() - t)
+        except Exception as e:
+            await record_job_run("smart_queue", "error", _time.time() - t, str(e)[:200])
+    asyncio.create_task(_run())
     return {"status": "refresh_started"}
 
 

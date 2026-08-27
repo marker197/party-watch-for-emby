@@ -17,7 +17,7 @@ from app.utils.emby_client import EmbyClient
 from app.utils.redis_cache import get_redis
 from app.utils.secure_redis import secure_get, secure_set
 from app.security.auth import get_current_user
-from app.api.route_helpers import _get_setting, _is_masked, _mask_api_key, _put_setting, _resolve_servers
+from app.api.route_helpers import _get_setting, _is_masked, _mask_api_key, _put_setting, _resolve_servers, record_job_run
 
 log = structlog.get_logger()
 
@@ -560,12 +560,16 @@ async def run_watchlist_sync(
     current_user: User = Depends(get_current_user),
 ):
     """Manually trigger a Radarr/Sonarr ↔ Simkl watchlist sync."""
+    import time as _time
     from app.services.watchlist_sync.service import WatchlistSyncService
     svc = WatchlistSyncService()
+    t = _time.time()
     try:
         await svc._sync_user(current_user)
+        await record_job_run("watchlist_sync", "ok", _time.time() - t)
         return {"status": "ok"}
     except Exception as e:
+        await record_job_run("watchlist_sync", "error", _time.time() - t, str(e)[:200])
         log.exception("watchlist_sync.manual_failed", user_id=current_user.id)
         raise HTTPException(500, f"Watchlist sync failed: {e}")
 
