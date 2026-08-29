@@ -60,6 +60,11 @@
     padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.78rem;
     margin-left: auto;
   }
+  .btn-clear {
+    background: var(--surface); border: 1px solid var(--red); color: var(--red);
+    padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.78rem;
+  }
+  .btn-clear:hover { background: var(--red); color: #fff; }
 </style>
 <script src="/static/js/csrf.js"></script>
 <link rel="stylesheet" href="/static/css/sidebar.css">
@@ -104,6 +109,7 @@
 <div class="header">
   <h1>📋 Job Run History</h1>
   <a href="/settings" class="back-link">← Back to Settings</a>
+  <button class="btn-clear" onclick="clearHistory()">🗑 Clear History</button>
   <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">☀️ Light</button>
 </div>
 
@@ -247,6 +253,16 @@ function renderTable(data) {
       <td>${err}</td>
     </tr>`;
   }).join('');
+}
+
+async function clearHistory() {
+  if (!confirm('Clear all job run history? This cannot be undone.')) return;
+  try {
+    const r = await fetch('/api/job-history', { method: 'DELETE' });
+    if (r.ok) loadHistory();
+  } catch(e) {
+    alert('Failed to clear history');
+  }
 }
 
 function toggleTheme() {

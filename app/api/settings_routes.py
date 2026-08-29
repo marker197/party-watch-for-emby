@@ -11,7 +11,7 @@ import structlog
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -109,6 +109,17 @@ async def job_history(
         }
         for r in rows
     ]
+
+
+@router.delete("/api/job-history")
+async def clear_job_history(_user: User = Depends(get_current_user)):
+    """Delete all job run history."""
+    from app.models.schema import JobRun
+    from app.utils.database import async_session as _async_session
+    async with _async_session() as db:
+        await db.execute(delete(JobRun))
+        await db.commit()
+    return {"status": "ok"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
