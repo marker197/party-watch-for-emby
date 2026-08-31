@@ -1381,63 +1381,74 @@ async def repair_stale_emby_ids(_user: User = Depends(get_current_user)):
     ID still exists in the current library cache.  If not, attempts to
     re-resolve via IMDB → TMDB → title lookup.  Returns a summary of what
     was found and fixed.
+
+    NOTE: The library cache only indexes Movie and Series items.  WatchHistory
+    episode rows store episode-level Emby IDs that won't appear in the cache,
+    so they are intentionally skipped to avoid false-positive "stale" matches
+    that would corrupt episode IDs with series IDs.
     """
     from app.models.schema import (
         QueueItem, Prediction, UniverseItem, WatchHistory, LibraryGap,
     )
 
-    emby = EmbyClient()
-    try:
-        # Get first user for Emby calls
-        async with async_session_ctx() as db:
-            user = (await db.execute(
-                select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
-            )).scalars().first()
-        uid = user.emby_user_id if user else None
+    # Build a set of all valid emby IDs from library cache
+    all_items = await LibraryCache.get_all_items()
+    valid_ids = {item["emby_id"] for item in all_items if item.get("emby_id")}
 
-        # Build a set of all valid emby IDs from library cache
-        all_items = await LibraryCache.get_all_items()
-        valid_ids = {item["emby_id"] for item in all_items if item.get("emby_id")}
+    # Build reverse lookup: provider_id → emby_id
+    imdb_to_emby: dict[str, str] = {}
+    tmdb_to_emby: dict[str, str] = {}
+    title_to_emby: dict[str, str] = {}
+    for item in all_items:
+        eid = item.get("emby_id")
+        if not eid:
+            continue
+        if item.get("imdb_id"):
+            imdb_to_emby[item["imdb_id"]] = eid
+        if item.get("tmdb_id"):
+            tmdb_to_emby[str(item["tmdb_id"])] = eid
+        t = item.get("title", "").strip().lower()
+        if t:
+            key = t
+            if item.get("year"):
+                key = f"{t}:{item['year']}"
+            title_to_emby[key] = eid
 
-        # Build reverse lookup: provider_id → emby_id
-        imdb_to_emby: dict[str, str] = {}
-        tmdb_to_emby: dict[str, str] = {}
-        title_to_emby: dict[str, str] = {}
-        for item in all_items:
-            eid = item.get("emby_id")
-            if not eid:
-                continue
-            if item.get("imdb_id"):
-                imdb_to_emby[item["imdb_id"]] = eid
-            if item.get("tmdb_id"):
-                tmdb_to_emby[str(item["tmdb_id"])] = eid
-            t = item.get("title", "").strip().lower()
-            if t:
-                key = t
-                if item.get("year"):
-                    key = f"{t}:{item['year']}"
-                title_to_emby[key] = eid
+    stats = {"scanned": 0, "stale": 0, "repaired": 0, "unresolvable": 0,
+             "skipped_episodes": 0}
+    details: list[dict] = []
 
-        stats = {"scanned": 0, "stale": 0, "repaired": 0, "unresolvable": 0}
-        details: list[dict] = []
+    # Table definitions: (Model, id_col_name, meta_col, extra_filter)
+    # extra_filter narrows the SELECT to rows whose emby IDs are
+    # expected to exist in the Movie/Series library cache.
+    table_defs = [
+        (QueueItem, "emby_item_id", "metadata_json", None),
+        (Prediction, "emby_item_id", None, None),
+        (UniverseItem, "emby_item_id", None, None),
+        # WatchHistory: only movie rows — episode rows store episode-level
+        # Emby IDs that the library cache (Movie + Series only) doesn't index.
+        (WatchHistory, "emby_id", None, WatchHistory.item_type == "movie"),
+        (LibraryGap, "emby_item_id", None, None),
+    ]
 
-        # Table definitions: (Model, id_col_name, provider_id_cols)
-        table_defs = [
-            (QueueItem, "emby_item_id", "metadata_json"),
-            (Prediction, "emby_item_id", None),
-            (UniverseItem, "emby_item_id", None),
-            (WatchHistory, "emby_id", None),
-            (LibraryGap, "emby_item_id", None),
-        ]
+    async with async_session_ctx() as db:
+        # Count skipped episode rows for transparency
+        ep_count_result = await db.execute(
+            select(WatchHistory).where(
+                WatchHistory.emby_id.isnot(None),
+                WatchHistory.item_type == "episode",
+            )
+        )
+        stats["skipped_episodes"] = len(ep_count_result.scalars().all())
 
-        async with async_session_ctx() as db:
-            for Model, id_col, meta_col in table_defs:
-                col = getattr(Model, id_col)
-                rows = (await db.execute(
-                    select(Model).where(col.isnot(None))
-                )).scalars().all()
+        for Model, id_col, meta_col, extra_filter in table_defs:
+            col = getattr(Model, id_col)
+            q = select(Model).where(col.isnot(None))
+            if extra_filter is not None:
+                q = q.where(extra_filter)
+            rows = (await db.execute(q)).scalars().all()
 
-                for row in rows:
+            for row in rows:
                     old_id = getattr(row, id_col)
                     if not old_id:
                         continue
@@ -1503,8 +1514,6 @@ async def repair_stale_emby_ids(_user: User = Depends(get_current_user)):
                         })
 
             await db.commit()
-    finally:
-        await emby.close()
 
     log.info("library.repair_emby_ids", **stats)
     return {"stats": stats, "details": details[:200]}
