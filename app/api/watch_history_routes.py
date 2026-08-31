@@ -1225,6 +1225,9 @@ async def get_random_backdrop(current_user: User = Depends(get_current_user)):
         return {"emby_id": None}
     except Exception:
         return {"emby_id": None}
+
+
+@router.get("/api/watch-history/{user_id}/item/{item_key:path}")
 async def get_item_watch_history(
     user_id: int,
     item_key: str,
