@@ -444,6 +444,29 @@ async def get_airing_soon(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+QUEUE_SETTINGS_DEFAULTS = {
+    "s01e01_only": False,
+    "queue_size": 20,
+    "create_playlist": True,
+}
+VALID_QUEUE_SIZES = (20, 30, 40, 50)
+
+
+def _normalise_queue_settings(data: dict) -> dict:
+    """Coerce a raw settings blob to known keys with valid values."""
+    out = dict(QUEUE_SETTINGS_DEFAULTS)
+    if not isinstance(data, dict):
+        return out
+    out["s01e01_only"] = bool(data.get("s01e01_only", out["s01e01_only"]))
+    out["create_playlist"] = bool(data.get("create_playlist", out["create_playlist"]))
+    try:
+        size = int(data.get("queue_size", out["queue_size"]))
+    except (TypeError, ValueError):
+        size = out["queue_size"]
+    out["queue_size"] = size if size in VALID_QUEUE_SIZES else QUEUE_SETTINGS_DEFAULTS["queue_size"]
+    return out
+
+
 @router.get("/api/queue-settings")
 async def get_queue_settings(db: AsyncSession = Depends(get_db)):
     """Read smart queue settings (Redis → DB fallback)."""
@@ -454,20 +477,37 @@ async def get_queue_settings(db: AsyncSession = Depends(get_db)):
         raw = await _get_setting(db, "queue_settings", "")
     if raw:
         try:
-            return _json.loads(raw)
+            return _normalise_queue_settings(_json.loads(raw))
         except Exception:
             pass
-    return {"s01e01_only": False}
+    return dict(QUEUE_SETTINGS_DEFAULTS)
 
 
 @router.put("/api/queue-settings")
 async def update_queue_settings(payload: dict, db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
-    """Save smart queue settings to DB + Redis."""
+    """Save smart queue settings to DB + Redis.
+
+    Merges into the existing blob rather than replacing it, so a partial
+    payload (e.g. just the size dropdown) doesn't wipe the other settings.
+    """
     import json as _json
     r = await get_redis()
-    queue_settings = {
-        "s01e01_only": bool(payload.get("s01e01_only", False)),
-    }
+
+    # Start from what's already stored so unsent keys survive
+    existing = dict(QUEUE_SETTINGS_DEFAULTS)
+    try:
+        raw = await r.get("queue_settings") or await _get_setting(db, "queue_settings", "")
+        if raw:
+            existing = _normalise_queue_settings(_json.loads(raw))
+    except Exception:
+        pass
+
+    merged = dict(existing)
+    for key in QUEUE_SETTINGS_DEFAULTS:
+        if key in payload:
+            merged[key] = payload[key]
+    queue_settings = _normalise_queue_settings(merged)
+
     encoded = _json.dumps(queue_settings)
     await r.set("queue_settings", encoded)
     await _put_setting(db, "queue_settings", encoded)

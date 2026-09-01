@@ -112,6 +112,41 @@
     margin-bottom: 12px;
   }
 
+  .queue-inline-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  .queue-inline-toggle input {
+    cursor: pointer;
+    accent-color: var(--accent);
+    margin: 0;
+  }
+
+  .queue-size-select {
+    background: var(--surface-hover);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: 0.78rem;
+    font-family: inherit;
+    cursor: pointer;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  .queue-size-select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
   .card-header h2 {
     font-size: 1.1rem;
     font-weight: 600;
@@ -785,13 +820,26 @@
     <div class="card">
       <div class="card-header">
         <h2>🎯 Smart Watch Queue</h2>
-        <span class="badge __BADGE_SMART_QUEUE__">
-          __STATUS_SMART_QUEUE__
-        </span>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <label class="queue-inline-toggle" title="When off, the queue still builds but no Emby playlist is created or updated.">
+            <input type="checkbox" id="queueCreatePlaylist" onchange="saveQueueOption('create_playlist', this.checked)">
+            <span>Playlist</span>
+          </label>
+          <span class="badge __BADGE_SMART_QUEUE__">
+            __STATUS_SMART_QUEUE__
+          </span>
+        </div>
       </div>
       <p>Simkl-powered recommendations ranked by watchlist, trending, friends, and calendar data. Updated daily.</p>
       <button class="btn btn-accent" onclick="triggerQueue()">Refresh Now</button>
       <button class="btn btn-blue btn-sm" id="btnToggleQueue" onclick="toggleQueue()">View Queue ▾</button>
+      <select id="queueSizeSelect" class="queue-size-select" onchange="saveQueueOption('queue_size', parseInt(this.value,10))"
+              title="Number of items in the Smart Queue. Applies on the next refresh.">
+        <option value="20">20 items</option>
+        <option value="30">30 items</option>
+        <option value="40">40 items</option>
+        <option value="50">50 items</option>
+      </select>
 
       <div id="queueOutput" class="log-area" style="display:none; margin-top:12px;"></div>
     </div>
@@ -992,7 +1040,7 @@
 </div>
 
 <script>const WATCH_PARTY_ENABLED = __WATCH_PARTY_BOOL__;</script>
-<script src="/static/js/dashboard.js?v=109"></script>
+<script src="/static/js/dashboard.js?v=111"></script>
 
 </div>
 </div>

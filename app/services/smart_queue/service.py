@@ -43,12 +43,48 @@ DEFAULT_WEIGHTS = {
     "mdb_upnext": 6.0,
 }
 
-# Source quotas for the 20-item queue
-SOURCE_QUOTAS = {
-    "watchlist": 7,
-    "trending": 7,
-    "recommended": 6,
+# Source quota ratios. The queue length is user-configurable (20/30/40/50);
+# quotas are derived from these shares so the split stays proportional at
+# every size. At size 20 this reproduces the original fixed 7/7/6 table.
+SOURCE_QUOTA_RATIOS = {
+    "watchlist": 0.35,
+    "trending": 0.35,
+    "recommended": 0.30,
 }
+
+# Allowed queue sizes (enforced here and in the settings endpoint)
+VALID_QUEUE_SIZES = (20, 30, 40, 50)
+DEFAULT_QUEUE_SIZE = 20
+
+
+def build_source_quotas(size: int) -> dict[str, int]:
+    """Split `size` across the quota sources by ratio.
+
+    Uses largest-remainder allocation so the parts always sum to exactly
+    `size` — a plain round() can drift over or under the target.
+
+        20 -> watchlist 7,  trending 7,  recommended 6   (original table)
+        30 -> watchlist 11, trending 10, recommended 9
+        40 -> watchlist 14, trending 14, recommended 12
+        50 -> watchlist 18, trending 17, recommended 15
+    """
+    exact = {s: size * ratio for s, ratio in SOURCE_QUOTA_RATIOS.items()}
+    quotas = {s: int(v) for s, v in exact.items()}
+
+    # Hand out the leftover slots to the largest fractional remainders
+    remaining = size - sum(quotas.values())
+    if remaining > 0:
+        by_remainder = sorted(
+            exact, key=lambda s: (exact[s] - int(exact[s]), SOURCE_QUOTA_RATIOS[s]),
+            reverse=True,
+        )
+        for s in by_remainder[:remaining]:
+            quotas[s] += 1
+    return quotas
+
+
+# Backwards-compatible default table (size 20)
+SOURCE_QUOTAS = build_source_quotas(DEFAULT_QUEUE_SIZE)
 
 # Candidate keys for the MDBList /upnext payload. The endpoint's response
 # shape isn't formally documented and the web UI splits results into
@@ -173,11 +209,15 @@ class SmartQueueService:
                 log.warning("smart_queue.rate_limit_low", remaining=info["remaining"])
                 return
 
+            # User-configurable queue length (20/30/40/50) and playlist toggle
+            queue_settings = await self._get_queue_settings()
+            queue_size = queue_settings["queue_size"]
+
             # Prune MOVIE items already in Simkl watched history
             # Shows are NOT filtered here — they use Emby episode awareness instead
             watched_movie_ids = await self._get_watched_simkl_ids(simkl)
 
-            candidates = await self._gather_candidates(simkl, user)
+            candidates = await self._gather_candidates(simkl, user, size=queue_size)
 
             # Filter out already-watched movies (shows skip this filter)
             before = len(candidates)
@@ -203,11 +243,11 @@ class SmartQueueService:
             staleness = await self._load_staleness(user.id)
             scored = self._score_candidates(candidates, weights, staleness=staleness)
 
-            # Source-stratified selection: 7 watchlist, 7 trending, 6 recommended
-            top = self._stratified_select(scored)
+            # Source-stratified selection, sized by the user's queue_size setting
+            top = self._stratified_select(scored, size=queue_size)
 
-            # Overflow rotation — swap bottom 3 unplayed items for top overflow
-            top = await self._rotate_overflow(user.id, top)
+            # Overflow rotation — swap the stalest bottom items for fresh overflow
+            top = await self._rotate_overflow(user.id, top, size=queue_size)
 
             # Remaining candidates (not selected) become overflow for backfill
             top_ids = {c["simkl_id"] for c in top}
@@ -215,7 +255,7 @@ class SmartQueueService:
                 [c for c in scored if c["simkl_id"] not in top_ids],
                 key=lambda c: c["score"], reverse=True,
             )
-            overflow = leftover[:30]
+            overflow = leftover[:queue_size + 10]
             await self._cache_overflow(user.id, overflow)
 
             # Update staleness counters: increment for items still in queue,
@@ -228,7 +268,14 @@ class SmartQueueService:
             await self._save_staleness(user.id, new_staleness)
 
             resolved_ids = await self._persist_queue(user, top)
-            await self._sync_emby_collection(user, top, resolved_ids)
+            if queue_settings["create_playlist"]:
+                await self._sync_emby_collection(user, top, resolved_ids)
+            else:
+                # Playlist creation disabled — the queue still builds and
+                # persists, we just leave Emby alone. Any existing
+                # "🎯 Smart Up Next" playlist is left in place, not deleted.
+                log.info("smart_queue.playlist_skipped", user_id=user.id,
+                         reason="create_playlist disabled")
 
             # Auto-send missing items to Radarr/Sonarr if enabled
             await self._auto_send_missing(top, resolved_ids)
@@ -243,8 +290,14 @@ class SmartQueueService:
     # Gather candidates from multiple Simkl sources
     # -----------------------------------------------------------------------
 
-    async def _gather_candidates(self, simkl: SimklClient, user: User) -> list[dict]:
+    async def _gather_candidates(self, simkl: SimklClient, user: User,
+                                 size: int = DEFAULT_QUEUE_SIZE) -> list[dict]:
         candidates: dict[str, dict] = {}
+
+        # Per-source fetch depth. A 50-item queue can't fill an 18-item
+        # watchlist quota from a 15-item trending page, so the pools scale
+        # with the target. Same number of API calls, larger pages.
+        pool_limit = max(15, size)
 
         # 1. Watchlist items
         watchlist = await simkl.get_watchlist()
@@ -270,7 +323,7 @@ class SmartQueueService:
         # 2. Trending shows + movies (randomise page for variety)
         trending_page = random.randint(1, 3)
         for kind in ("shows", "movies"):
-            trending = await simkl.get_trending(kind=kind, limit=15, page=trending_page)
+            trending = await simkl.get_trending(kind=kind, limit=pool_limit, page=trending_page)
             for rank, entry in enumerate(trending):
                 item = entry.get("movie") or entry.get("show") or entry
                 tid = str(item.get("ids", {}).get("simkl") or item.get("ids", {}).get("simkl_id") or "")
@@ -289,7 +342,7 @@ class SmartQueueService:
         # 3. Recommended (personalised based on user's Simkl ratings)
         for kind in ("shows", "movies"):
             try:
-                recs = await simkl.get_recommended(kind=kind, limit=15)
+                recs = await simkl.get_recommended(kind=kind, limit=pool_limit)
                 for rank, entry in enumerate(recs):
                     # Recommended endpoint returns items directly (not wrapped)
                     item = entry.get("movie") or entry.get("show") or entry
@@ -494,15 +547,17 @@ class SmartQueueService:
     # Stratified source selection
     # -----------------------------------------------------------------------
 
-    def _stratified_select(self, candidates: list[dict]) -> list[dict]:
+    def _stratified_select(self, candidates: list[dict],
+                           size: int = DEFAULT_QUEUE_SIZE) -> list[dict]:
         """Select top items per source quota, then fill any shortfalls.
 
-        Quotas: 7 watchlist, 7 trending, 6 recommended = 20 items.
-        Calendar, friend, and affinity items count toward their closest
-        quota bucket (calendar/friend fill watchlist slots, etc.).
-        If a source doesn't have enough candidates, remaining slots
-        are filled from any source by score.
+        Quotas are derived from `size` by ratio — at the default 20 that's
+        7 watchlist, 7 trending, 6 recommended. Calendar, friend, affinity
+        and mdb_upnext items have no quota of their own; they enter through
+        the shortfall fill, which takes the highest-scoring remaining
+        candidates from any source once the quota buckets are exhausted.
         """
+        quotas = build_source_quotas(size)
         # Group by source, sorted by score within each group
         by_source: dict[str, list[dict]] = {}
         for c in candidates:
@@ -514,7 +569,7 @@ class SmartQueueService:
         used_ids: set[str] = set()
 
         # Fill each quota bucket
-        for source, quota in SOURCE_QUOTAS.items():
+        for source, quota in quotas.items():
             pool = by_source.get(source, [])
             count = 0
             for c in pool:
@@ -525,7 +580,7 @@ class SmartQueueService:
                     used_ids.add(c["simkl_id"])
                     count += 1
 
-        target = sum(SOURCE_QUOTAS.values())  # 20
+        target = size
 
         # Fill remaining slots from any source by score (calendar, friend, etc.)
         if len(selected) < target:
@@ -541,7 +596,7 @@ class SmartQueueService:
         selected.sort(key=lambda c: c["score"], reverse=True)
 
         log.info("smart_queue.stratified_select",
-                 total=len(selected),
+                 total=len(selected), target=target,
                  sources={s: sum(1 for c in selected if c.get("source") == s)
                           for s in set(c.get("source", "") for c in selected)})
         return selected
@@ -550,13 +605,16 @@ class SmartQueueService:
     # Overflow rotation — swap stale bottom items for fresh overflow
     # -----------------------------------------------------------------------
 
-    async def _rotate_overflow(self, user_id: int, top: list[dict]) -> list[dict]:
-        """Replace the bottom 3 unplayed items with top overflow candidates.
+    async def _rotate_overflow(self, user_id: int, top: list[dict],
+                               size: int = DEFAULT_QUEUE_SIZE) -> list[dict]:
+        """Replace the lowest-scoring unplayed items with top overflow.
 
         This guarantees that every refresh introduces some fresh content,
-        even when the same sources return the same items.
+        even when the same sources return the same items. The count scales
+        with queue length so the proportion of churn stays roughly constant
+        (3 at size 20, 7 at size 50).
         """
-        ROTATE_COUNT = 3
+        ROTATE_COUNT = max(3, size // 7)
 
         try:
             overflow = await cache_get(f"queue_overflow:{user_id}")
@@ -788,15 +846,35 @@ class SmartQueueService:
                      count=len(emby_ids), types=type_counts,
                      s01e01_mode=s01e01_mode)
 
-    async def _get_s01e01_setting(self) -> bool:
-        """Read the S01E01 toggle from Redis (queue_settings key)."""
+    async def _get_queue_settings(self) -> dict:
+        """Read the queue_settings blob from Redis, with safe defaults."""
+        settings = {
+            "s01e01_only": False,
+            "queue_size": DEFAULT_QUEUE_SIZE,
+            "create_playlist": True,
+        }
         try:
             data = await cache_get("queue_settings")
+            if isinstance(data, str):
+                import json as _json
+                data = _json.loads(data)
             if data and isinstance(data, dict):
-                return bool(data.get("s01e01_only", False))
+                settings["s01e01_only"] = bool(data.get("s01e01_only", False))
+                settings["create_playlist"] = bool(data.get("create_playlist", True))
+                size = data.get("queue_size", DEFAULT_QUEUE_SIZE)
+                try:
+                    size = int(size)
+                except (TypeError, ValueError):
+                    size = DEFAULT_QUEUE_SIZE
+                if size in VALID_QUEUE_SIZES:
+                    settings["queue_size"] = size
         except Exception:
             pass
-        return False
+        return settings
+
+    async def _get_s01e01_setting(self) -> bool:
+        """Read the S01E01 toggle from Redis (queue_settings key)."""
+        return (await self._get_queue_settings())["s01e01_only"]
 
     async def _resolve_s01e01(self, series_emby_id: str, user_id: str) -> str | None:
         """Given a Series Emby ID, find the S01E01 episode ID.

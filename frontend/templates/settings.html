@@ -2436,6 +2436,8 @@
     async function toggleQueueSetting(key) {
       const el = document.getElementById('queueS01E01');
       el.classList.toggle('active');
+      // Send only the key being changed — the endpoint merges into the
+      // stored blob, so queue_size / create_playlist survive untouched.
       const payload = { s01e01_only: el.classList.contains('active') };
       try {
         const r = await fetch('/api/queue-settings', {

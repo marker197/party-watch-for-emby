@@ -2,6 +2,7 @@ function esc(s) { if (!s && s !== 0) return ''; return String(s).replace(/&/g,'&
 const API = '';  // same origin
 let currentUserId = null;
 let allUsers = [];
+let queueSettings = { queue_size: 20, create_playlist: true, s01e01_only: false };
 let _radarrServers = [];
 let _sonarrServers = [];
 // WATCH_PARTY_ENABLED is set inline in the HTML template (Jinja2 variable)
@@ -424,6 +425,51 @@ async function startLink() {
 // Feature #1: Smart Queue
 // ═══════════════════════════════════════════════════════════════════════════
 
+async function loadQueueOptions() {
+  try {
+    const r = await fetch(API + '/api/queue-settings');
+    if (!r.ok) return;
+    const d = await r.json();
+    queueSettings = Object.assign(queueSettings, d);
+  } catch (e) {
+    console.warn('Failed to load queue settings:', e);
+  }
+  const sel = document.getElementById('queueSizeSelect');
+  if (sel) sel.value = String(queueSettings.queue_size || 20);
+  const cb = document.getElementById('queueCreatePlaylist');
+  if (cb) cb.checked = queueSettings.create_playlist !== false;
+}
+
+async function saveQueueOption(key, value) {
+  const previous = queueSettings[key];
+  queueSettings[key] = value;
+  try {
+    const r = await fetch(API + '/api/queue-settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [key]: value }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.status !== 'ok') throw new Error(d.detail || 'Save failed');
+    queueSettings = Object.assign(queueSettings, d);
+    if (key === 'queue_size') {
+      logTo('queueOutput', `Queue size set to ${value} — applies on next refresh.`, 'ok');
+    } else if (key === 'create_playlist') {
+      logTo('queueOutput', value
+        ? 'Emby playlist creation enabled.'
+        : 'Emby playlist creation disabled — the existing playlist is left as-is.', 'ok');
+    }
+  } catch (e) {
+    // Roll the control back so the UI matches what's actually stored
+    queueSettings[key] = previous;
+    const sel = document.getElementById('queueSizeSelect');
+    if (sel) sel.value = String(queueSettings.queue_size || 20);
+    const cb = document.getElementById('queueCreatePlaylist');
+    if (cb) cb.checked = queueSettings.create_playlist !== false;
+    logTo('queueOutput', 'Failed to save queue setting: ' + e.message, 'err');
+  }
+}
+
 async function triggerQueue() {
   if (!currentUserId) return alert('Select a user first');
   glog('Smart Queue refresh triggered…');
@@ -563,7 +609,7 @@ async function viewQueue(skipTransition) {
   if (!currentUserId) return alert('Select a user first');
   try {
     const [qr, dlr, arrr] = await Promise.all([
-      fetch(API + `/queue/${currentUserId}?limit=30`),
+      fetch(API + `/queue/${currentUserId}?limit=${queueSettings.queue_size || 20}`),
       fetch(API + '/api/download-queue').catch(() => null),
       fetch(API + '/api/arr-library').catch(() => null),
     ]);
@@ -2345,6 +2391,7 @@ function init() {
   loadParties();
   loadSSLStatus();
   _loadArrServers();
+  loadQueueOptions();
   refreshDownloadsCard();
   setInterval(dashboardPoll, 30000); // consolidated: health + activity + job completions
   setInterval(loadParties, 60000);
