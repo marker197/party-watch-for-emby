@@ -53,9 +53,23 @@ _SEASONAL_GENRES: dict[int, list[str]] = {
 }
 
 
+def _provider_id(provider_ids: dict, base: str) -> str:
+    """Read a provider ID from an Emby ProviderIds dict, tolerating casing.
+
+    Emby is inconsistent: bulk ``/Users/{id}/Items`` may return ``Imdb``
+    while ``search_items`` returns ``IMDB``. Check every variant.
+    """
+    if not provider_ids:
+        return ""
+    for key in (base.capitalize(), base.lower(), base.upper()):
+        val = provider_ids.get(key)
+        if val:
+            return str(val)
+    return ""
+
+
 class RewatchRecommender:
     """Build and serve rewatch suggestions for a user."""
-
     CACHE_PREFIX = "rewatch"
     CACHE_TTL = 86400  # 24 hours
     MAX_ITEMS = 30  # Default page size
@@ -683,10 +697,10 @@ class RewatchRecommender:
                                 if not lpd:
                                     continue
                                 pids = it.get("ProviderIds", {})
-                                imdb = pids.get("Imdb", "")
+                                imdb = _provider_id(pids, "imdb")
                                 if imdb:
                                     emby_date_lookup[imdb] = lpd
-                                tmdb = pids.get("Tmdb", "")
+                                tmdb = _provider_id(pids, "tmdb")
                                 if tmdb:
                                     emby_date_lookup[f"tmdb:{tmdb}"] = lpd
                     finally:
@@ -892,6 +906,7 @@ class RewatchRecommender:
         from app.utils.database import async_session
         from app.models.schema import User
         from app.utils.emby_client import EmbyClient
+        from app.utils.library_cache import LibraryCache
         from sqlalchemy import select
 
         async with async_session() as db:
@@ -963,8 +978,21 @@ class RewatchRecommender:
                 genres = [g.lower() for g in item.get("Genres", [])]
 
                 emby_id = item.get("Id")
-                imdb_id = provider_ids.get("Imdb", "")
-                tmdb_id = str(provider_ids.get("Tmdb", ""))
+                imdb_id = _provider_id(provider_ids, "imdb")
+                tmdb_id = _provider_id(provider_ids, "tmdb")
+
+                # Emby's bulk /Users/{id}/Items does not reliably return
+                # ProviderIds for Series. Without an IMDB ID the dedup pass
+                # can't match this against the same show from Simkl/MDBList,
+                # so recover it from the library cache by title + year.
+                if not imdb_id and not tmdb_id:
+                    cached = await LibraryCache.find_by_title(
+                        item.get("Name", ""), year=item.get("ProductionYear"),
+                    )
+                    if cached:
+                        cached_pids = cached.get("provider_ids", {})
+                        imdb_id = _provider_id(cached_pids, "imdb")
+                        tmdb_id = _provider_id(cached_pids, "tmdb")
                 item_key = f"emby:{emby_id}" if emby_id else f"imdb:{imdb_id}"
 
                 candidates.append({
@@ -1087,7 +1115,9 @@ class RewatchRecommender:
 
             for kind in ("movies", "shows"):
                 for entry in watched_data.get(kind, []):
-                    ids = entry.get("ids", {})
+                    # MDBList wraps items: {watched_at, plays, movie: {ids, ...}}
+                    inner = entry.get("movie") or entry.get("show") or entry
+                    ids = inner.get("ids", {})
 
                     # Match by provider ID
                     entry_val = ids.get(provider)

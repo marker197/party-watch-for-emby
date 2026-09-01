@@ -291,10 +291,7 @@ class SmartQueueService:
         # 6. MDBList "Up Next" — in-progress shows with next unwatched episode
         try:
             from app.utils.mdblist_client import MDBListClient
-            from app.utils.redis_cache import get_redis as _get_redis
-            from app.utils.secure_redis import secure_get as _sec_get
-            _r = await _get_redis()
-            mdb_key = await _sec_get(_r, "mdblist_api_key")
+            mdb_key = await secure_get("mdblist_api_key")
             if mdb_key:
                 mdb = MDBListClient(api_key=mdb_key)
                 try:
@@ -322,8 +319,8 @@ class SmartQueueService:
                     log.info("smart_queue.mdb_upnext_gathered", count=len(upnext_items))
                 finally:
                     await mdb.close()
-        except Exception:
-            log.debug("smart_queue.mdb_upnext_skip")
+        except Exception as e:
+            log.warning("smart_queue.mdb_upnext_skip", error=str(e))
 
         # Filter out permanently blocked items
         blocked_ids = await self._load_blocklist(user.id)

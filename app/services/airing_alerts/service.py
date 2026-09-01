@@ -145,25 +145,6 @@ class AiringAlertsService:
             log.debug("enrich_providers.skipped_no_api_key")
             return
 
-        # Force-clear any stale cached empty results so fresh calls go through
-        try:
-            r = await get_redis()
-            cursor = b"0"
-            stale_keys = []
-            while True:
-                cursor, keys = await r.scan(cursor, match="tmdb_providers:*", count=100)
-                for k in keys:
-                    val = await r.get(k)
-                    if val == b"[]":
-                        stale_keys.append(k)
-                if cursor == b"0" or cursor == 0:
-                    break
-            if stale_keys:
-                await r.delete(*stale_keys)
-                log.info("enrich_providers.stale_cache_cleared", count=len(stale_keys))
-        except Exception:
-            pass
-
         enriched = 0
         for item in items:
             tmdb_id = item.get("tmdb_id")
@@ -1213,7 +1194,7 @@ class AiringAlertsService:
             # If already covered by Radarr pass, enrich instead of adding duplicate
             if movie_tmdb_id and str(movie_tmdb_id) in seen_tmdb:
                 for r in results:
-                    if r.get("tmdb_id") == movie_tmdb_id:
+                    if r.get("tmdb_id") and str(r["tmdb_id"]) == str(movie_tmdb_id):
                         if not r["title"]:
                             r["title"] = movie.get("title", "")
                         if not r["simkl_id"]:
@@ -1227,6 +1208,10 @@ class AiringAlertsService:
 
             release_date = entry.get("released")
             days_until = self._days_until(release_date)
+
+            # Record the TMDB ID so the MDBList pass doesn't re-add this movie
+            if movie_tmdb_id:
+                seen_tmdb.add(str(movie_tmdb_id))
 
             in_library, emby_item_id = await self._match_in_library(movie)
 
