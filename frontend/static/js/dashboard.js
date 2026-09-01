@@ -889,11 +889,16 @@ async function viewAiring() {
     }
 
     // ── Main airing table ──
-    // Filter out movies that are in library with digital/physical release dates
-    // — those belong in the Upcoming Releases section only
+    // Movies belong in the top section only while their cinema release is
+    // still ahead. Once the theatrical date has passed — or if there was
+    // never one — the film lives in the Upcoming Digital / Physical
+    // Releases section below instead. Digital/physical dates don't affect
+    // this: a film can legitimately appear in both sections.
+    const _todayISO = new Date().toISOString().slice(0, 10);
     const mainItems = items.filter(i => {
-      if (i.media_type === 'movie' && i.in_library && (i.digital_release || i.physical_release)) return false;
-      return true;
+      if (i.media_type !== 'movie') return true;
+      if (!i.theatrical_release) return false;
+      return String(i.theatrical_release).slice(0, 10) >= _todayISO;
     });
     if (mainItems.length > 0) {
     html += '<table class="queue-table" id="airingMainTable"><thead><tr>' +
@@ -941,10 +946,12 @@ async function viewAiring() {
             binge = `<div style="font-size:0.72rem;color:${diffColor};margin-top:2px;">📺 ${bp.message}</div>`;
           }
         }
-        // Movie release dates — only show under main heading if NOT in library
-        // and only for upcoming airing (not release dates which go in the releases section)
+        // Movie release dates — every movie left in this table has a future
+        // cinema date (that's the filter above), so always show it. Home
+        // release dates are deliberately not shown here; they live in the
+        // Upcoming Digital / Physical Releases section.
         let releaseDates = '';
-        if (i.media_type === 'movie' && !i.in_library && i.theatrical_release && !i.digital_release && !i.physical_release) {
+        if (i.media_type === 'movie' && i.theatrical_release) {
           releaseDates = `<div style="font-size:0.72rem;color:var(--text-dim);margin-top:2px;">🎬 Cinema: ${fmtDate(i.theatrical_release)}</div>`;
         }
         // Streaming service logos
@@ -1007,7 +1014,7 @@ async function viewAiring() {
       html += `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--surface-hover);">
         <h4 style="font-size:0.85rem;margin:0 0 8px;">💿 Upcoming Digital / Physical Releases</h4>
         <table class="queue-table"><thead><tr>
-          <th>Title</th><th style="width:120px;">Digital</th><th style="width:120px;">Physical</th><th style="width:70px;">In</th>
+          <th>Title</th><th style="width:150px;">Digital</th><th style="width:150px;">Physical</th>
         </tr></thead><tbody>` +
         homeReleases.map(m => {
           const title = (m.title || '').replace(/</g, '&lt;');
@@ -1033,9 +1040,8 @@ async function viewAiring() {
           }
           return `<tr>
             <td>${title}${streamLogos}</td>
-            <td style="font-size:0.8rem;">${digitalCell}</td>
-            <td style="font-size:0.8rem;">${physicalCell}</td>
-            <td style="font-size:0.75rem;color:var(--text-dim);">${daysStr}</td>
+            <td style="font-size:0.8rem;white-space:nowrap;">${digitalCell}</td>
+            <td style="font-size:0.8rem;white-space:nowrap;">${physicalCell}</td>
           </tr>`;
         }).join('') +
         '</tbody></table></div>';

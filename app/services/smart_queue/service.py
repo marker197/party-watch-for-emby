@@ -45,12 +45,27 @@ DEFAULT_WEIGHTS = {
 
 # Source quota ratios. The queue length is user-configurable (20/30/40/50);
 # quotas are derived from these shares so the split stays proportional at
-# every size. At size 20 this reproduces the original fixed 7/7/6 table.
+# every size. Every gathered source has a share — calendar, friend and
+# mdb_upnext get small ones so a good spread reaches the final queue
+# instead of being crowded out by watchlist/trending on score alone.
+# Quotas are ceilings, not guarantees: if a source returns nothing, its
+# slots fall through to the shortfall fill. Tune these freely — they only
+# need to sum to 1.0.
 SOURCE_QUOTA_RATIOS = {
-    "watchlist": 0.35,
-    "trending": 0.35,
-    "recommended": 0.30,
+    "watchlist": 0.28,
+    "trending": 0.26,
+    "recommended": 0.22,
+    "calendar": 0.10,
+    "friend": 0.07,
+    "mdb_upnext": 0.07,
 }
+
+# Availability bonuses applied at scoring time. Source weights run 5–10 and
+# the airing-soon boost is +4.0, so +3.0 is meaningful without being
+# decisive: an in-library trending item (6.0 + 3.0) edges out a watchlist
+# item that isn't in the library (10.0 + 0.0) only once other factors tip it.
+IN_LIBRARY_BONUS = 3.0
+IN_ARR_BONUS = 1.0
 
 # Allowed queue sizes (enforced here and in the settings endpoint)
 VALID_QUEUE_SIZES = (20, 30, 40, 50)
@@ -63,10 +78,10 @@ def build_source_quotas(size: int) -> dict[str, int]:
     Uses largest-remainder allocation so the parts always sum to exactly
     `size` — a plain round() can drift over or under the target.
 
-        20 -> watchlist 7,  trending 7,  recommended 6   (original table)
-        30 -> watchlist 11, trending 10, recommended 9
-        40 -> watchlist 14, trending 14, recommended 12
-        50 -> watchlist 18, trending 17, recommended 15
+        20 -> watchlist 6,  trending 5,  recommended 4,
+              calendar 2, friend 1, mdb_upnext 2
+        50 -> watchlist 14, trending 13, recommended 11,
+              calendar 5, friend 4, mdb_upnext 3
     """
     exact = {s: size * ratio for s, ratio in SOURCE_QUOTA_RATIOS.items()}
     quotas = {s: int(v) for s, v in exact.items()}
@@ -237,6 +252,11 @@ class SmartQueueService:
 
             # Pre-resolve Emby IDs and check played status
             candidates = await self._resolve_and_filter_played(candidates, user)
+
+            # Tag Radarr/Sonarr presence so scoring can prefer items that
+            # are actually available (in Emby > in *arr > neither)
+            radarr_tmdb, sonarr_tvdb = await self._get_arr_id_sets()
+            self._tag_arr_presence(candidates, radarr_tmdb, sonarr_tvdb)
 
             # Load learned weights and staleness counters
             weights = await self._load_weights(user.id)
@@ -532,6 +552,14 @@ class SmartQueueService:
             if c.get("friend_rating"):
                 score += (c["friend_rating"] - 7) * 1.5
 
+            # availability bonus — prefer things you can actually watch now.
+            # In the Emby library beats merely being in Radarr/Sonarr (where
+            # it may still be unreleased, unmonitored, or not downloaded).
+            if c.get("_resolved_emby_id"):
+                score += IN_LIBRARY_BONUS
+            elif c.get("_in_arr"):
+                score += IN_ARR_BONUS
+
             # staleness decay — reduce score for items that have sat unplayed
             if staleness:
                 days_stale = staleness.get(str(c.get("simkl_id", "")), 0)
@@ -597,6 +625,9 @@ class SmartQueueService:
 
         log.info("smart_queue.stratified_select",
                  total=len(selected), target=target,
+                 in_library=sum(1 for c in selected if c.get("_resolved_emby_id")),
+                 in_arr=sum(1 for c in selected
+                            if not c.get("_resolved_emby_id") and c.get("_in_arr")),
                  sources={s: sum(1 for c in selected if c.get("source") == s)
                           for s in set(c.get("source", "") for c in selected)})
         return selected
@@ -845,6 +876,40 @@ class SmartQueueService:
             log.info("smart_queue.playlist_synced",
                      count=len(emby_ids), types=type_counts,
                      s01e01_mode=s01e01_mode)
+
+    async def _get_arr_id_sets(self) -> tuple[set[str], set[str]]:
+        """Return (radarr TMDB ids, sonarr TVDB ids) as string sets.
+
+        Reads the same `arr_library_ids_v2` cache the dashboard uses
+        (populated by GET /api/arr-library, 60s TTL). Returns empty sets
+        when the cache is cold or *arr isn't configured — the library
+        bonus then simply doesn't apply rather than failing the refresh.
+        """
+        try:
+            cached = await cache_get("arr_library_ids_v2")
+            if isinstance(cached, str):
+                import json as _json
+                cached = _json.loads(cached)
+            if not isinstance(cached, dict):
+                return set(), set()
+            radarr = {str(i) for i in (cached.get("radarr_tmdb") or [])}
+            sonarr = {str(i) for i in (cached.get("sonarr_tvdb") or [])}
+            return radarr, sonarr
+        except Exception:
+            return set(), set()
+
+    def _tag_arr_presence(self, candidates: list[dict],
+                          radarr_tmdb: set[str], sonarr_tvdb: set[str]) -> None:
+        """Mark each candidate with whether it's already in Radarr/Sonarr."""
+        if not radarr_tmdb and not sonarr_tvdb:
+            return
+        for c in candidates:
+            ids = c.get("ids", {}) or {}
+            tmdb = str(ids.get("tmdb") or "")
+            tvdb = str(ids.get("tvdb") or "")
+            c["_in_arr"] = bool(
+                (tmdb and tmdb in radarr_tmdb) or (tvdb and tvdb in sonarr_tvdb)
+            )
 
     async def _get_queue_settings(self) -> dict:
         """Read the queue_settings blob from Redis, with safe defaults."""
