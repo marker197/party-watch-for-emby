@@ -50,6 +50,77 @@ SOURCE_QUOTAS = {
     "recommended": 6,
 }
 
+# Candidate keys for the MDBList /upnext payload. The endpoint's response
+# shape isn't formally documented and the web UI splits results into
+# "Up Next" and "Upcoming" tabs, so the wrapper key is uncertain. Try the
+# in-progress keys first — "upcoming" is release/premiere data, which the
+# calendar source already covers, so it's only a last resort.
+_UPNEXT_LIST_KEYS = (
+    "upnext", "up_next", "next", "shows", "items", "results", "data",
+)
+
+# Where the show object may live inside an entry. Up Next rows are
+# episode-level ("S02E01 7th Quarter"), so the series may be nested.
+_UPNEXT_SHOW_KEYS = ("show", "series", "tv")
+
+
+def _unwrap_upnext(data) -> list:
+    """Normalise the MDBList /upnext response to a list of entries."""
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    for key in _UPNEXT_LIST_KEYS:
+        val = data.get(key)
+        if isinstance(val, list) and val:
+            return val
+    # Last resort: a single list-valued key of dicts, whatever it's called.
+    for val in data.values():
+        if isinstance(val, list) and val and isinstance(val[0], dict):
+            return val
+    return []
+
+
+def _upnext_show_and_ids(entry) -> tuple[dict, dict]:
+    """Return (show_object, ids) for an /upnext entry.
+
+    Entries are episode-level, so series IDs may sit on a nested show
+    object, on the entry itself, or be flattened as ``show_tmdb`` style
+    keys. Prefer whichever actually carries usable IDs.
+    """
+    if not isinstance(entry, dict):
+        return {}, {}
+
+    for key in _UPNEXT_SHOW_KEYS:
+        nested = entry.get(key)
+        if isinstance(nested, dict):
+            ids = nested.get("ids")
+            if isinstance(ids, dict) and ids:
+                return nested, ids
+
+    ids = entry.get("ids")
+    if isinstance(ids, dict) and ids:
+        return entry, ids
+
+    # Flattened provider IDs on the entry (e.g. show_tmdb / imdb_id).
+    flat: dict = {}
+    for provider in ("simkl", "imdb", "tmdb", "tvdb"):
+        for candidate in (
+            f"show_{provider}", f"{provider}_id", provider, f"{provider}id",
+        ):
+            val = entry.get(candidate)
+            if val:
+                flat[provider] = val
+                break
+
+    show = entry
+    for key in _UPNEXT_SHOW_KEYS:
+        nested = entry.get(key)
+        if isinstance(nested, dict):
+            show = nested
+            break
+    return show, flat
+
 
 class SmartQueueService:
     def __init__(self):
@@ -295,11 +366,11 @@ class SmartQueueService:
             if mdb_key:
                 mdb = MDBListClient(api_key=mdb_key)
                 try:
-                    upnext_data = await mdb.get_upnext(limit=20)
-                    upnext_items = upnext_data if isinstance(upnext_data, list) else upnext_data.get("shows", [])
+                    upnext_data = await mdb.get_upnext(limit=50)
+                    upnext_items = _unwrap_upnext(upnext_data)
+                    added = 0
                     for rank, entry in enumerate(upnext_items):
-                        show = entry.get("show") or entry
-                        ids = show.get("ids", {})
+                        show, ids = _upnext_show_and_ids(entry)
                         # Try to match to a Simkl ID for dedup against other sources
                         simkl_id = ids.get("simkl") or ids.get("simkl_id")
                         imdb_id = ids.get("imdb") or ids.get("imdbid")
@@ -314,9 +385,34 @@ class SmartQueueService:
                                 "item_type": "show",
                                 "ids": ids,
                                 "source": "mdb_upnext",
-                                "source_score": 1.0 - rank / 20,
+                                "source_score": 1.0 - rank / 50,
                             }
-                    log.info("smart_queue.mdb_upnext_gathered", count=len(upnext_items))
+                            added += 1
+                    log.info("smart_queue.mdb_upnext_gathered",
+                             count=len(upnext_items), added=added)
+                    # Diagnostic: the /upnext response shape is not formally
+                    # documented. If we parsed nothing, dump the actual shape
+                    # so the next log upload tells us what to key off.
+                    if not upnext_items:
+                        log.warning(
+                            "smart_queue.mdb_upnext_unparsed",
+                            payload_type=type(upnext_data).__name__,
+                            top_level_keys=(
+                                list(upnext_data.keys())[:15]
+                                if isinstance(upnext_data, dict) else None
+                            ),
+                        )
+                    elif not added:
+                        sample = upnext_items[0]
+                        log.warning(
+                            "smart_queue.mdb_upnext_no_ids",
+                            count=len(upnext_items),
+                            entry_keys=(
+                                list(sample.keys())[:15]
+                                if isinstance(sample, dict) else None
+                            ),
+                            sample_ids=_upnext_show_and_ids(sample)[1],
+                        )
                 finally:
                     await mdb.close()
         except Exception as e:
