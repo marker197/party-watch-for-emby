@@ -425,6 +425,23 @@ async function startLink() {
 // Feature #1: Smart Queue
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Friendly display names for queue source keys. Anything not listed falls
+// back to the raw key with underscores turned into spaces, so a new source
+// added server-side still renders readably instead of leaking a variable name.
+const QUEUE_SOURCE_LABELS = {
+  watchlist: 'watchlist',
+  trending: 'trending',
+  recommended: 'recommended',
+  friend: 'friend',
+  calendar: 'calendar',
+  mdb_upnext: 'MDB up next',
+};
+
+function queueSourceLabel(source) {
+  if (!source) return '—';
+  return QUEUE_SOURCE_LABELS[source] || String(source).replace(/_/g, ' ');
+}
+
 async function loadQueueOptions() {
   try {
     const r = await fetch(API + '/api/queue-settings');
@@ -754,7 +771,7 @@ async function viewQueue(skipTransition) {
         return `<tr id="queue-row-${n}">
           <td style="color:var(--text-dim);font-size:0.78rem;">${n + 1}</td>
           <td><span class="${titleClass}">${esc(i.title)}</span>${yearStr}${rating}${newBadge}${imdbLink}${dlInline}</td>
-          <td class="queue-source"><span class="source-tag source-${i.source}">${i.source}</span></td>
+          <td class="queue-source"><span class="source-tag source-${i.source}">${esc(queueSourceLabel(i.source))}</span></td>
           <td class="queue-score">${i.score}</td>
           <td>${actionBtn}</td>
           <td>${blockBtn}</td>
