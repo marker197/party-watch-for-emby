@@ -91,12 +91,12 @@ async function loadUsers() {
       }
     }
 
-    // Render user cards
+    // Render user cards — linked users only
     const list = document.getElementById('userList');
-    if (!allUsers.length) { list.innerHTML = ''; return; }
+    if (!linkedUsers.length) { list.innerHTML = ''; return; }
 
     let html = '<div class="section-label">Linked users</div>';
-    html += allUsers.map(u => {
+    html += linkedUsers.map(u => {
       const name = u.emby_username || u.emby_user_id;
       const initials = name.split(/\s+/).map(w => w[0] || '').join('').slice(0,2).toUpperCase();
       const isLinked = u.linked;
