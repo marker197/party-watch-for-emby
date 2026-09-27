@@ -35,46 +35,113 @@ async function _loadArrServers() {
 
 async function loadUsers() {
   try {
-    const r = await fetch(API + '/auth/users');
+    // Fetch from emby-users (creates DB records for any new Emby users automatically)
+    const r = await fetch(API + '/auth/emby-users');
     allUsers = await r.json();
-    // Dashboard only shows Simkl-linked users
+
     const linkedUsers = allUsers.filter(u => u.linked);
+    const unlinkedUsers = allUsers.filter(u => !u.linked);
     document.getElementById('userCount').textContent = linkedUsers.length;
-    
-    // Populate selector with linked users only
+
+    // Populate the top dashboard user selector with linked users only
     const select = document.getElementById('userSelect');
-    select.innerHTML = linkedUsers.map(u => 
-      `<option value="${u.id}">${esc(u.emby_username || u.emby_user_id)}${u.linked ? ' ✓' : ''}</option>`
+    select.innerHTML = linkedUsers.map(u =>
+      `<option value="${u.id}">${esc(u.emby_username || u.emby_user_id)} ✓</option>`
     ).join('');
-    
-    // Auto-select first linked user
+
     if (linkedUsers.length > 0) {
       select.value = linkedUsers[0].id;
       switchUser();
     }
-    
-    // Update user list below selector — linked users only
-    const list = document.getElementById('userList');
-    list.innerHTML = linkedUsers.map(u => {
-      let tokenHtml = '';
-      if (u.token_status) {
-        const icon = u.token_status === 'ok' ? '🟢' : u.token_status === 'expiring_soon' ? '🟡' : u.token_status === 'expiring_today' ? '🟠' : '🔴';
-        let label = '';
-        if (u.token_status === 'expired') label = 'Token expired';
-        else if (u.token_status === 'expiring_today') {
-          if (u.token_hours_left > 0) label = `${u.token_hours_left}h ${u.token_minutes_left || 0}m left`;
-          else label = `${u.token_minutes_left || 0}m left`;
-        }
-        else if (u.token_days_left != null) label = `${u.token_days_left}d left`;
-        tokenHtml = ` <span style="font-size:0.72rem;opacity:0.7;">${icon} ${label}</span>`;
+
+    // Populate the link dropdown with unlinked users (linked are disabled at the bottom)
+    const linkSelect = document.getElementById('linkUserSelect');
+    const btn = document.getElementById('btnStartLink');
+    if (linkSelect) {
+      let opts = '';
+      if (unlinkedUsers.length > 0) {
+        opts += unlinkedUsers.map(u =>
+          `<option value="${u.emby_user_id}" data-name="${esc(u.emby_username)}">${esc(u.emby_username || u.emby_user_id)}</option>`
+        ).join('');
       }
-      return `<div class="user-row">
-        <span class="name">${esc(u.emby_username || u.emby_user_id)}</span>
-        <span class="linked">✓ ${esc(u.simkl_username)}${tokenHtml}</span>
+      if (linkedUsers.length > 0) {
+        if (unlinkedUsers.length > 0) opts += '<option disabled>── already linked ──</option>';
+        opts += linkedUsers.map(u =>
+          `<option value="${u.emby_user_id}" disabled>${esc(u.emby_username || u.emby_user_id)}  ✓ linked</option>`
+        ).join('');
+      }
+      if (!opts) {
+        opts = '<option value="" disabled selected>No Emby users found</option>';
+      }
+      linkSelect.innerHTML = opts;
+      // Enable button if there's an unlinked user selected
+      if (unlinkedUsers.length > 0) {
+        linkSelect.value = unlinkedUsers[0].emby_user_id;
+        btn.disabled = false;
+      } else {
+        linkSelect.innerHTML = '<option value="" disabled selected>All users linked ✓</option>' + opts;
+        btn.disabled = true;
+      }
+    }
+
+    // Render user cards
+    const list = document.getElementById('userList');
+    if (!allUsers.length) { list.innerHTML = ''; return; }
+
+    let html = '<div class="section-label">Linked users</div>';
+    html += allUsers.map(u => {
+      const name = u.emby_username || u.emby_user_id;
+      const initials = name.split(/\s+/).map(w => w[0] || '').join('').slice(0,2).toUpperCase();
+      const isLinked = u.linked;
+
+      let metaHtml = '';
+      if (isLinked) {
+        // Token status
+        let tokenLabel = '';
+        if (u.token_status === 'expired') tokenLabel = 'expired';
+        else if (u.token_status === 'expiring_today') {
+          tokenLabel = u.token_hours_left > 0 ? `${u.token_hours_left}h left` : `${u.token_minutes_left || 0}m left`;
+        } else if (u.token_days_left != null) {
+          tokenLabel = `${u.token_days_left}d left`;
+        }
+        metaHtml = `<span class="badge-linked">✓ linked</span>`;
+        if (tokenLabel) metaHtml += `<span class="token-hint">${tokenLabel}</span>`;
+        metaHtml += `<button class="btn-relink" onclick="relinkUser('${u.emby_user_id}','${esc(name)}')">re-link</button>`;
+      } else {
+        metaHtml = `<span class="badge-unlinked">unlinked</span>`;
+      }
+
+      return `<div class="user-card">
+        <div class="user-info">
+          <div class="avatar ${isLinked ? 'linked-avatar' : 'unlinked-avatar'}">${initials}</div>
+          <div>
+            <div class="user-name">${esc(name)}</div>
+            <div class="user-simkl">${isLinked ? 'Simkl: ' + esc(u.simkl_username || '—') : 'not linked'}</div>
+          </div>
+        </div>
+        <div class="user-meta">${metaHtml}</div>
       </div>`;
     }).join('');
+
+    list.innerHTML = html;
   } catch(e) {
     console.error('Failed to load users:', e);
+  }
+}
+
+function relinkUser(embyUserId, embyUsername) {
+  const linkSelect = document.getElementById('linkUserSelect');
+  if (linkSelect) {
+    // Temporarily add this user as a selectable option if it's disabled
+    for (const opt of linkSelect.options) {
+      if (opt.value === embyUserId) {
+        opt.disabled = false;
+        opt.selected = true;
+        break;
+      }
+    }
+    document.getElementById('btnStartLink').disabled = false;
+    startLink();
   }
 }
 
@@ -345,21 +412,36 @@ function glog(msg, cls='') {
 let _authPollInterval = null;
 let _authPollTimeout = null;
 
+function showAuthStatus(msg, level) {
+  const el = document.getElementById('authStatus');
+  el.textContent = msg;
+  el.className = 'auth-status ' + level;
+}
+
+function hideAuthStatus() {
+  const el = document.getElementById('authStatus');
+  el.className = 'auth-status';
+  el.style.display = 'none';
+}
+
 async function startLink() {
-  const uid = document.getElementById('embyUserId').value.trim();
-  const uname = document.getElementById('embyUsername').value.trim();
+  const linkSelect = document.getElementById('linkUserSelect');
+  const uid = linkSelect.value;
+  const uname = linkSelect.selectedOptions.length ? (linkSelect.selectedOptions[0].dataset.name || linkSelect.selectedOptions[0].textContent.trim()) : '';
   if (!uid) {
-    logTo('authOutput', 'Enter your Emby User ID first', 'err');
-    document.getElementById('embyUserId').style.border = '1px solid var(--red)';
+    showAuthStatus('Select an Emby user first.', 'err');
     return;
   }
-  document.getElementById('embyUserId').style.border = '';
 
   // Cancel any previous poll loop
   if (_authPollInterval) { clearInterval(_authPollInterval); _authPollInterval = null; }
   if (_authPollTimeout) { clearTimeout(_authPollTimeout); _authPollTimeout = null; }
 
-  logTo('authOutput', 'Requesting device code…');
+  const btn = document.getElementById('btnStartLink');
+  btn.disabled = true;
+  btn.textContent = 'Requesting…';
+  showAuthStatus('Requesting device code…', 'info');
+
   try {
     const r = await fetch(API + '/auth/simkl/device-code', {
       method: 'POST',
@@ -371,11 +453,14 @@ async function startLink() {
       const msg = typeof err.detail === 'string' ? err.detail
         : Array.isArray(err.detail) ? err.detail.map(e => e.msg || e).join('; ')
         : `HTTP ${r.status}`;
-      logTo('authOutput', `Failed to get device code: ${msg}`, 'err');
+      showAuthStatus('Failed: ' + msg, 'err');
+      btn.disabled = false;
+      btn.textContent = 'Link to Simkl';
       return;
     }
     const d = await r.json();
-    logTo('authOutput', `Go to ${d.verification_url} and enter: ${d.user_code}`, 'ok');
+    showAuthStatus(`Go to ${d.verification_url} and enter code: ${d.user_code}   — polling…`, 'info');
+    btn.textContent = 'Polling…';
 
     const expiresIn = (d.expires_in || 600) * 1000;
     const pollInterval = (d.interval || 5) * 1000;
@@ -383,7 +468,9 @@ async function startLink() {
     // Auto-stop after expiry
     _authPollTimeout = setTimeout(() => {
       if (_authPollInterval) { clearInterval(_authPollInterval); _authPollInterval = null; }
-      logTo('authOutput', 'Device code expired — click Link again to get a new code.', 'err');
+      showAuthStatus('Device code expired — click Link to Simkl to try again.', 'err');
+      btn.disabled = false;
+      btn.textContent = 'Link to Simkl';
     }, expiresIn);
 
     // Poll loop
@@ -395,29 +482,34 @@ async function startLink() {
           body: JSON.stringify({emby_user_id: uid, device_code: d.device_code})
         });
         if (!pr.ok) {
-          // 429 or server error — stop polling
           clearInterval(_authPollInterval); _authPollInterval = null;
           clearTimeout(_authPollTimeout); _authPollTimeout = null;
-          logTo('authOutput', `Poll error (HTTP ${pr.status}) — click Link to retry.`, 'err');
+          showAuthStatus(`Poll error (HTTP ${pr.status}) — click Link to Simkl to retry.`, 'err');
+          btn.disabled = false;
+          btn.textContent = 'Link to Simkl';
           return;
         }
         const pd = await pr.json();
         if (pd.status === 'linked') {
           clearInterval(_authPollInterval); _authPollInterval = null;
           clearTimeout(_authPollTimeout); _authPollTimeout = null;
-          logTo('authOutput', `Linked as ${pd.simkl_username}!`, 'ok');
+          showAuthStatus(`Linked as ${pd.simkl_username} ✓`, 'ok');
           glog(`User linked: ${pd.simkl_username}`, 'ok');
+          btn.textContent = 'Link to Simkl';
           loadUsers();
         }
       } catch(e) {
-        // Network error — stop polling
         clearInterval(_authPollInterval); _authPollInterval = null;
         clearTimeout(_authPollTimeout); _authPollTimeout = null;
-        logTo('authOutput', 'Poll failed: ' + e.message, 'err');
+        showAuthStatus('Poll failed: ' + e.message, 'err');
+        btn.disabled = false;
+        btn.textContent = 'Link to Simkl';
       }
     }, pollInterval);
   } catch(e) {
-    logTo('authOutput', 'Failed: ' + e.message, 'err');
+    showAuthStatus('Failed: ' + e.message, 'err');
+    btn.disabled = false;
+    btn.textContent = 'Link to Simkl';
   }
 }
 
