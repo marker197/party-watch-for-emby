@@ -35,9 +35,16 @@ async function _loadArrServers() {
 
 async function loadUsers() {
   try {
-    // Fetch from emby-users (creates DB records for any new Emby users automatically)
-    const r = await fetch(API + '/auth/emby-users');
+    // Try emby-users first (auto-creates DB records for new Emby users)
+    // Falls back to /auth/users (DB-only) if Emby is unreachable
+    let r = await fetch(API + '/auth/emby-users');
+    if (!r.ok) {
+      console.warn('emby-users failed (' + r.status + '), falling back to /auth/users');
+      r = await fetch(API + '/auth/users');
+      if (!r.ok) throw new Error('Both user endpoints failed');
+    }
     allUsers = await r.json();
+    if (!Array.isArray(allUsers)) throw new Error('Unexpected response');
 
     const linkedUsers = allUsers.filter(u => u.linked);
     const unlinkedUsers = allUsers.filter(u => !u.linked);
@@ -126,6 +133,11 @@ async function loadUsers() {
     list.innerHTML = html;
   } catch(e) {
     console.error('Failed to load users:', e);
+    // Don't leave the dropdown stuck on "Loading…"
+    const linkSelect = document.getElementById('linkUserSelect');
+    if (linkSelect && linkSelect.options.length === 1 && linkSelect.options[0].textContent === 'Loading…') {
+      linkSelect.innerHTML = '<option value="" disabled selected>Failed to load users</option>';
+    }
   }
 }
 
