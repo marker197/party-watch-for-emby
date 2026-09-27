@@ -18,6 +18,7 @@ from app.utils.secure_redis import secure_get, secure_set
 from app.utils.simkl_client import SimklClient
 from app.security.auth import get_current_user
 from app.api.route_helpers import _first_emby_user_id, _get_mdblist_key, _get_setting, _put_setting, record_job_run
+from app.api.media_routes import import_simkl_list
 
 log = structlog.get_logger()
 
@@ -291,7 +292,7 @@ async def track_simkl_list(payload: dict, db: AsyncSession = Depends(get_db), _u
 
     playlist_name = (payload.get("playlist_name") or "").strip()
     description = (payload.get("description") or "").strip()
-    username = (payload.get("username") or "").strip() or "me"
+    list_id = payload.get("list_id")
     matched = payload.get("matched", 0)
 
     r = await get_redis()
@@ -303,7 +304,8 @@ async def track_simkl_list(payload: dict, db: AsyncSession = Depends(get_db), _u
         if entry.get("slug") == slug:
             entry["playlist_name"] = playlist_name or entry.get("playlist_name", "")
             entry["description"] = description or entry.get("description", "")
-            entry["username"] = username
+            if list_id:
+                entry["list_id"] = list_id
             entry["last_synced"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             entry["matched"] = matched
             entry_found = True
@@ -312,9 +314,9 @@ async def track_simkl_list(payload: dict, db: AsyncSession = Depends(get_db), _u
     if not entry_found:
         synced.append({
             "slug": slug,
+            "list_id": list_id,
             "playlist_name": playlist_name or f"📋 {slug}",
             "description": description,
-            "username": username,
             "last_synced": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "matched": matched,
             "auto_sync": True,
@@ -384,10 +386,10 @@ async def sync_all_simkl_lists(db: AsyncSession = Depends(get_db), _user: User =
                 continue
             try:
                 result = await import_simkl_list({
+                    "list_id": entry.get("list_id"),
                     "list_slug": entry["slug"],
                     "playlist_name": entry.get("playlist_name", ""),
                     "description": entry.get("description", ""),
-                    "username": entry.get("username", "me"),
                 })
                 results.append({"slug": entry["slug"], "status": "ok", "matched": result.get("matched", 0)})
             except Exception as e:
@@ -453,8 +455,16 @@ async def get_simkl_trending_lists():
 
 
 @router.get("/api/simkl-lists/items")
-async def get_simkl_list_items_detail(slug: str, username: str = "me"):
-    """Fetch items from a Simkl list with in-library/missing status for each item."""
+async def get_simkl_list_items_detail(
+    slug: str = "", username: str = "me", list_id: int = 0,
+):
+    """Fetch items from a Simkl custom list with in-library/missing status.
+
+    Accepts list_id (numeric) or falls back to slug (legacy, returns empty).
+    """
+    if not list_id and not slug:
+        raise HTTPException(400, "list_id or slug required")
+
     async with async_session_ctx() as db:
         user = (await db.execute(
             select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
@@ -462,25 +472,32 @@ async def get_simkl_list_items_detail(slug: str, username: str = "me"):
         if not user or not user.simkl_access_token:
             raise HTTPException(400, "No Simkl-linked user found")
 
-        simkl = SimklClient(
-            access_token=user.simkl_access_token,
-            token_expires=user.simkl_token_expires,
-        )
-
+    simkl = SimklClient(
+        access_token=user.simkl_access_token,
+        refresh_token=user.simkl_refresh_token,
+        token_expires=user.simkl_token_expires,
+    )
+    items_data = []
     try:
-        items = await simkl.get_list_items(username, slug)
+        if list_id:
+            data = await simkl.get_custom_list_items_v2(list_id=list_id, limit=500)
+            if isinstance(data, dict) and data.get("error") == "premium_only":
+                return {"items": [], "total": 0, "in_library": 0, "missing": 0,
+                        "message": "Custom Lists require Simkl PRO or VIP"}
+            items_data = data.get("items", [])
+        else:
+            return {"items": [], "total": 0, "in_library": 0, "missing": 0,
+                    "message": "Slug-based lookup requires V2 list_id — refresh lists"}
     finally:
         await simkl.close()
 
     results = []
-    for entry in (items or []):
+    for entry in items_data:
+        ids = entry.get("ids", {})
+        title = entry.get("title", "Unknown")
+        year = entry.get("year")
         item_type = entry.get("type", "")
-        item_data = entry.get(item_type, {}) if item_type else {}
-        ids = item_data.get("ids", {})
-        title = item_data.get("title", "Unknown")
-        year = item_data.get("year")
 
-        # Resolve against library cache
         match = None
         if ids.get("imdb"):
             match = await LibraryCache.find_by_provider_id("Imdb", ids["imdb"])
@@ -488,6 +505,8 @@ async def get_simkl_list_items_detail(slug: str, username: str = "me"):
             match = await LibraryCache.find_by_provider_id("Tmdb", str(ids["tmdb"]))
         if not match and ids.get("tvdb"):
             match = await LibraryCache.find_by_provider_id("Tvdb", str(ids["tvdb"]))
+        if not match:
+            match = await LibraryCache.find_by_title(title, year=year)
 
         in_library = bool(match and match.get("emby_id"))
         results.append({

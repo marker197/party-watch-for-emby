@@ -227,10 +227,18 @@ class LibraryHealthService:
                 pass
 
         # ── Resolve missing IMDB IDs via Simkl ──
+        # Lookups are Redis-cached in SimklClient (ID mappings don't change),
+        # so repeat scans are free. On a first scan of a large library, stop
+        # enriching once the daily allowance is nearly spent.
         if simkl:
-            for item in results:
+            from app.utils.simkl_client import budget_allows_background
+            for idx, item in enumerate(results):
                 if item.get("imdb_id"):
                     continue
+                if idx % 10 == 0 and not await budget_allows_background(0.10):
+                    log.info("library_health.id_enrichment_stopped_budget",
+                             remaining=len(results) - idx)
+                    break
                 try:
                     search_result = None
                     if item.get("tmdb_id"):
@@ -694,6 +702,7 @@ class LibraryHealthService:
 
         return SimklClient(
             access_token=user.simkl_access_token,
+            refresh_token=user.simkl_refresh_token,
             token_expires=user.simkl_token_expires,
         )
 

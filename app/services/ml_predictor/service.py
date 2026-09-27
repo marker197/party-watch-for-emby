@@ -140,6 +140,7 @@ class MLPredictorService:
         """Internal training pipeline."""
         simkl = SimklClient(
             access_token=user.simkl_access_token,
+            refresh_token=user.simkl_refresh_token,
             token_expires=user.simkl_token_expires,
         )
         try:

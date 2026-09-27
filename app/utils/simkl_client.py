@@ -3,8 +3,8 @@
 Drop-in replacement for SimklClient. Every request includes client_id,
 app-name, app-version as URL params plus User-Agent header.
 
-Auth: PIN flow (GET /oauth/pin → poll GET /oauth/pin/{user_code}).
-Tokens are ~5 years, NO refresh token — just re-auth on 401.
+Auth: V2 device flow (RFC 8628) via /oauth2/device → /oauth2/token.
+Tokens are 7-day access + 180-day refresh (rolling on each use).
 Scrobble: POST /scrobble/{start|pause|stop|checkin}, progress 0-100 (max 2dp).
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import Any
+from typing import Any, Callable, Awaitable
 
 import httpx
 import structlog
@@ -24,27 +24,154 @@ log = structlog.get_logger()
 BASE_URL = "https://api.simkl.com"
 CDN_URL = "https://data.simkl.in"
 
+import re as _re
+
+# Cloudflare-cached catalog endpoints (per api.simkl.org/conventions/headers):
+# lookups by NUMERIC Simkl ID and episode lists. These need no user token and
+# must NOT carry an Authorization header (it defeats the edge cache).
+# Everything else under an AUTH V2 client_id requires a user token.
+_CACHED_PATH = _re.compile(r"^/(movies|tv|anime)/\d+$|^/(tv|anime)/episodes/\d+$")
+
+# ── Daily API allowance (api.simkl.org/resources/rate-limits) ─────────────
+# Free 500 / Pro 1,000 / VIP 10,000 uncached requests per user per day,
+# resetting at midnight US Eastern (Simkl server time). Cached catalog
+# endpoints and the data.simkl.in CDN do not count.
+_TIER_LIMITS = {"free": 500, "pro": 1000, "vip": 10000}
+_QUOTA_BLOCK_KEY = "simkl_quota_block"          # set on 429 user_limit_exceeded
+_ACCOUNT_TYPE_KEY = "simkl_account_type"        # written at link time
+
+
+def _quota_day() -> str:
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        now = datetime.now(timezone.utc) - timedelta(hours=5)
+    return now.strftime("%Y%m%d")
+
+
+async def _redis():
+    from app.utils.redis_cache import get_redis
+    return await get_redis()
+
+
+async def quota_blocked_seconds() -> int:
+    """Seconds until Simkl lifts the daily-limit block (0 = not blocked)."""
+    try:
+        ttl = await (await _redis()).ttl(_QUOTA_BLOCK_KEY)
+        return int(ttl) if ttl and ttl > 0 else 0
+    except Exception:
+        return 0
+
+
+async def usage_today() -> int:
+    """Uncached Simkl requests this app has made since midnight US Eastern."""
+    try:
+        v = await (await _redis()).get(f"simkl_usage:{_quota_day()}")
+        return int(v or 0)
+    except Exception:
+        return 0
+
+
+async def account_type() -> str:
+    try:
+        v = await (await _redis()).get(_ACCOUNT_TYPE_KEY)
+        v = (v.decode() if isinstance(v, bytes) else v) or "free"
+        return v if v in _TIER_LIMITS else "free"
+    except Exception:
+        return "free"
+
+
+async def daily_limit() -> int:
+    return _TIER_LIMITS[await account_type()]
+
+
+async def budget_allows_background(reserve_fraction: float = 0.25) -> bool:
+    """True if a background job may spend Simkl calls. Keeps the last
+    `reserve_fraction` of the daily allowance for interactive page use."""
+    if await quota_blocked_seconds():
+        return False
+    limit = await daily_limit()
+    return await usage_today() < int(limit * (1 - reserve_fraction))
+
+
+async def _count_request() -> None:
+    try:
+        r = await _redis()
+        key = f"simkl_usage:{_quota_day()}"
+        await r.incr(key)
+        await r.expire(key, 172800)
+    except Exception:
+        pass
+
+
+# Callback type: receives (access_token, refresh_token, expires_at_naive_utc)
+TokenRefreshCallback = Callable[[str, str, datetime], Awaitable[None]]
+
 
 class SimklClient:
-    """Async Simkl API client."""
+    """Async Simkl API client with V2 token auto-refresh."""
 
     def __init__(
         self,
         access_token: str | None = None,
+        refresh_token: str | None = None,
         token_expires: datetime | None = None,
+        on_token_refresh: TokenRefreshCallback | None = None,
     ):
         self._access_token = access_token
+        self._refresh_token = refresh_token
         self._token_expires = token_expires
+        self._on_token_refresh = on_token_refresh
         self._client = httpx.AsyncClient(timeout=15.0)
         self._client_id = settings.simkl_client_id
+        self._client_id_v2 = settings.simkl_client_id_v2
 
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
 
+    async def _auto_refresh_if_needed(self) -> None:
+        """Refresh the V2 access token if within 1 day of expiry."""
+        if not self._refresh_token or not self._token_expires:
+            return
+        if not self._client_id_v2:
+            return
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        remaining = (self._token_expires - now).total_seconds()
+        if remaining > 86400:  # more than 1 day left
+            return
+
+        log.info("simkl.auto_refresh", remaining_hours=round(remaining / 3600, 1))
+        new_tokens = await self.refresh_token_v2(
+            self._client_id_v2, None, self._refresh_token,
+        )
+        if not new_tokens:
+            log.warning("simkl.auto_refresh_failed")
+            return
+
+        self._access_token = new_tokens["access_token"]
+        self._refresh_token = new_tokens.get("refresh_token", self._refresh_token)
+        expires_in = new_tokens.get("expires_in", 604800)
+        self._token_expires = (
+            datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        ).replace(tzinfo=None)
+
+        if self._on_token_refresh:
+            try:
+                await self._on_token_refresh(
+                    self._access_token, self._refresh_token, self._token_expires,
+                )
+            except Exception as e:
+                log.warning("simkl.token_refresh_callback_error", error=str(e)[:120])
+
+        log.info("simkl.auto_refresh_done", expires_in=expires_in)
+
     def _base_params(self) -> dict:
+        # Prefer V2 client_id (matches the token's app); fall back to V1
+        cid = self._client_id_v2 or self._client_id
         return {
-            "client_id": self._client_id,
+            "client_id": cid,
             "app-name": "emby-simkl-suite",
             "app-version": "1.0",
         }
@@ -87,26 +214,70 @@ class SimklClient:
             request=resp.request, response=resp,
         )
 
+    async def _quota_guard(self, method: str, path: str) -> None:
+        """Short-circuit locally once Simkl has told us the daily limit is
+        spent, instead of hammering the API with requests that will 429."""
+        secs = await quota_blocked_seconds()
+        if secs:
+            req = httpx.Request(method, f"{BASE_URL}{path}")
+            resp = httpx.Response(
+                429, request=req, headers={"Retry-After": str(secs)},
+                json={"error": "user_limit_exceeded", "local_block": True},
+            )
+            raise httpx.HTTPStatusError(
+                f"Simkl daily limit reached - calls paused for {secs}s",
+                request=req, response=resp,
+            )
+
+    async def _handle_429(self, resp: httpx.Response, path: str) -> None:
+        retry_after = int(resp.headers.get("Retry-After", "30") or 30)
+        body = resp.text[:200]
+        if "user_limit_exceeded" in body:
+            try:
+                await (await _redis()).set(_QUOTA_BLOCK_KEY, "1", ex=max(retry_after, 60))
+            except Exception:
+                pass
+            log.warning("simkl.daily_limit_reached", path=path,
+                        resets_in_hours=round(retry_after / 3600, 1),
+                        used_today=await usage_today())
+        else:
+            log.warning("simkl.rate_limited", path=path,
+                        retry_after=retry_after, body=body)
+        raise httpx.HTTPStatusError(
+            f"Rate limited, retry after {retry_after}s",
+            request=resp.request, response=resp,
+        )
+
     async def _get(
         self, path: str, params: dict | None = None, auth_required: bool = True,
+        include_client_id: bool = True,  # retained for call-site compat; ignored
     ) -> Any:
+        # Per Simkl headers convention: client_id/app-name/app-version on EVERY
+        # request (omitting client_id returns 412). Under AUTH V2 every
+        # non-cached endpoint needs the user's Bearer token, so we send it
+        # whenever we hold one — except on Cloudflare-cached catalog paths.
+        cached = bool(_CACHED_PATH.match(path))
+        send_token = bool(self._access_token) and not cached
+        if not cached:
+            await self._quota_guard("GET", path)
+        if send_token:
+            await self._auto_refresh_if_needed()
         merged = {**self._base_params(), **(params or {})}
-        headers = self._auth_headers() if auth_required else {
-            "Content-Type": "application/json",
-            "User-Agent": "emby-simkl-suite/1.0",
-        }
+        headers = {"User-Agent": "emby-simkl-suite/1.0"}
+        if send_token:
+            headers["Authorization"] = f"Bearer {self._access_token}"
         resp = await self._client.get(
             f"{BASE_URL}{path}", params=merged, headers=headers,
         )
+        if not cached:
+            await _count_request()
         if resp.status_code == 401:
             raise self._parse_401(resp, path)
         if resp.status_code == 429:
-            retry_after = int(resp.headers.get("Retry-After", "30"))
-            log.warning("simkl.rate_limited", retry_after=retry_after)
-            raise httpx.HTTPStatusError(
-                f"Rate limited, retry after {retry_after}s",
-                request=resp.request, response=resp,
-            )
+            await self._handle_429(resp, path)
+        if resp.status_code in (403, 412):
+            log.warning("simkl.get_rejected", path=path,
+                        status=resp.status_code, response_body=resp.text[:300])
         resp.raise_for_status()
         if resp.status_code == 204:
             return {}
@@ -115,8 +286,13 @@ class SimklClient:
     async def _post(
         self, path: str, payload: dict | None = None,
         params: dict | None = None, auth_required: bool = True,
+        include_client_id: bool = True,
     ) -> Any:
-        merged = {**self._base_params(), **(params or {})}
+        await self._quota_guard("POST", path)
+        if auth_required:
+            await self._auto_refresh_if_needed()
+        base = self._base_params() if include_client_id else {}
+        merged = {**base, **(params or {})}
         headers = self._auth_headers() if auth_required else {
             "Content-Type": "application/json",
             "User-Agent": "emby-simkl-suite/1.0",
@@ -124,15 +300,11 @@ class SimklClient:
         resp = await self._client.post(
             f"{BASE_URL}{path}", json=payload or {}, params=merged, headers=headers,
         )
+        await _count_request()
         if resp.status_code == 401:
             raise self._parse_401(resp, path)
         if resp.status_code == 429:
-            retry_after = int(resp.headers.get("Retry-After", "30"))
-            log.warning("simkl.rate_limited", retry_after=retry_after)
-            raise httpx.HTTPStatusError(
-                f"Rate limited, retry after {retry_after}s",
-                request=resp.request, response=resp,
-            )
+            await self._handle_429(resp, path)
         # 409 = duplicate prevention on scrobble (not an error)
         if resp.status_code == 409:
             return resp.json()
@@ -146,16 +318,31 @@ class SimklClient:
                         response_body=body_text,
                         payload_keys=list((payload or {}).keys()),
                         token_hint=self._token_hint())
+        if resp.status_code == 403:
+            body_text = ""
+            try:
+                body_text = resp.text[:500]
+            except Exception:
+                pass
+            log.warning("simkl.forbidden", path=path,
+                        response_body=body_text,
+                        token_hint=self._token_hint(),
+                        headers_sent=list(headers.keys()))
         resp.raise_for_status()
         if resp.status_code == 204:
             return {}
         return resp.json()
 
-    async def _delete(self, path: str) -> None:
-        merged = self._base_params()
+    async def _delete(self, path: str, include_client_id: bool = True) -> None:
+        await self._quota_guard("DELETE", path)
+        await self._auto_refresh_if_needed()
+        base = self._base_params() if include_client_id else {}
         resp = await self._client.delete(
-            f"{BASE_URL}{path}", params=merged, headers=self._auth_headers(),
+            f"{BASE_URL}{path}", params=base, headers=self._auth_headers(),
         )
+        await _count_request()
+        if resp.status_code == 429:
+            await self._handle_429(resp, path)
         resp.raise_for_status()
 
     async def _get_cdn(self, path: str) -> Any:
@@ -179,36 +366,9 @@ class SimklClient:
             await self._client.aclose()
 
     # ------------------------------------------------------------------
-    # Auth — PIN flow
+    # Auth — V2 Device flow (RFC 8628)
     # ------------------------------------------------------------------
-
-    async def get_pin_code(self) -> dict:
-        """Step 1: Request a PIN code for device auth.
-        Returns {user_code, verification_url, expires_in, interval}."""
-        params = {"client_id": self._client_id}
-        resp = await self._client.get(
-            f"{BASE_URL}/oauth/pin",
-            params=params,
-            headers={"User-Agent": "emby-simkl-suite/1.0"},
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    async def poll_pin_token(self, user_code: str) -> dict | None:
-        """Step 2: Poll for token after user enters PIN.
-        Returns token dict on success, None if still pending."""
-        params = {"client_id": self._client_id}
-        resp = await self._client.get(
-            f"{BASE_URL}/oauth/pin/{user_code}",
-            params=params,
-            headers={"User-Agent": "emby-simkl-suite/1.0"},
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("result") == "OK" and data.get("access_token"):
-                return data
-            return None  # still pending
-        return None
+    # V1 PIN flow removed. Use get_device_code_v2() + poll_device_token_v2().
 
     # ------------------------------------------------------------------
     # User info
@@ -216,7 +376,7 @@ class SimklClient:
 
     async def get_me(self) -> dict:
         """Get authenticated user's profile and settings."""
-        return await self._post("/users/settings")
+        return await self._get("/users/settings")
 
     # ------------------------------------------------------------------
     # Ratings
@@ -289,6 +449,7 @@ class SimklClient:
         import asyncio
         results = []
         types = ["movies", "shows", "anime"] if kind == "all" else [kind]
+        type_counts = {}
         for i, item_type in enumerate(types):
             if i > 0:
                 await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
@@ -302,18 +463,12 @@ class SimklClient:
                 items = self._unwrap_sync_response(data, item_type)
                 if items:
                     results.extend(items)
-                    first = items[0]
-                    first_ids = first.get("ids", {})
-                    log.debug("simkl.watchlist_fetched", kind=item_type,
-                              count=len(items),
-                              first_title=str(first.get("title", "?"))[:40],
-                              has_tmdb=bool(first_ids.get("tmdb")),
-                              has_imdb=bool(first_ids.get("imdb")))
-                else:
-                    log.debug("simkl.watchlist_empty", kind=item_type)
+                    type_counts[item_type] = len(items)
             except Exception as e:
                 log.warning("simkl.watchlist_fetch_failed", kind=item_type,
                             error=str(e)[:120])
+        if type_counts:
+            log.info("simkl.watchlist_fetched", total=len(results), **type_counts)
         return results
 
     async def add_to_watchlist(self, items: list[dict] | None = None,
@@ -329,11 +484,12 @@ class SimklClient:
                 payload["movies"] = movies
             if shows:
                 payload["shows"] = shows
-        # Set destination status
+        # Live API returns 400 'Missed "to" parameter' when 'to' is only at
+        # top level — it must be on each item. Top-level copy kept too.
         for key in ("movies", "shows", "anime"):
-            if key in payload:
-                for item in payload[key]:
-                    item["to"] = "plantowatch"
+            for item in payload.get(key, []):
+                item["to"] = "plantowatch"
+        payload["to"] = "plantowatch"
         return await self._post("/sync/add-to-list", payload)
 
     async def remove_from_watchlist(self, items: list[dict]) -> dict:
@@ -351,6 +507,7 @@ class SimklClient:
                     item["to"] = "dropped"
                     item.pop("type", None)
                     item.pop("_type", None)
+        payload["to"] = "dropped"
         return await self._post("/sync/add-to-list", payload)
 
     # ------------------------------------------------------------------
@@ -546,7 +703,7 @@ class SimklClient:
             from app.utils.redis_cache import get_redis
             r = await get_redis()
             key = f"simkl_activities_cache:{self._cache_prefix()}"
-            await r.set(key, _json.dumps(activities), ex=60)
+            await r.set(key, _json.dumps(activities), ex=180)
         except Exception:
             pass
 
@@ -577,6 +734,11 @@ class SimklClient:
         """
         import json as _json
 
+        # Movies have no `watching` or `hold` bucket (per Simkl list-status
+        # conventions) - these requests can only ever return nothing.
+        if activity_key in ("movies.watching", "movies.hold"):
+            return {}
+
         prefix = self._cache_prefix()
         data_cache_key = f"simkl_sync_data:{prefix}:{activity_key}"
         ts_store_key = f"simkl_sync_ts:{prefix}:{activity_key}"
@@ -587,7 +749,10 @@ class SimklClient:
 
             # Step 1: check activities
             activities = await self._get_activities_cached()
-            current_ts = self._extract_activity_ts(activities, activity_key)
+            # A bucket with no activity yet has no timestamp. Previously that
+            # None never matched, so the bucket was re-downloaded on EVERY run.
+            # Treat it as a stable marker: fetch once, then cache until it moves.
+            current_ts = self._extract_activity_ts(activities, activity_key) or "none"
 
             # Step 2: compare against stored timestamp
             stored_ts = await r.get(ts_store_key)
@@ -598,14 +763,13 @@ class SimklClient:
                 # Nothing changed — try to return cached data
                 cached = await r.get(data_cache_key)
                 if cached:
-                    log.debug("simkl.activity_gate_cache_hit",
-                              endpoint=endpoint, activity_key=activity_key)
                     return _json.loads(cached)
 
-            # Step 3: fetch fresh data
-            log.debug("simkl.activity_gate_fetching",
-                       endpoint=endpoint, activity_key=activity_key,
-                       current_ts=current_ts, stored_ts=stored_ts)
+            # Step 3: fetch fresh data (timestamp changed or no cache)
+            changed = bool(stored_ts and current_ts != stored_ts)
+            if changed:
+                log.debug("simkl.activity_gate_changed",
+                           endpoint=endpoint, activity_key=activity_key)
             data = await self._get(endpoint, params=params)
 
             # Cache response (24h TTL) and store timestamp
@@ -807,17 +971,42 @@ class SimklClient:
     # Search
     # ------------------------------------------------------------------
 
+    async def _cached_get(self, path: str, params: dict,
+                          ttl: int, empty_ttl: int) -> Any:
+        """GET with a shared Redis cache for results that do not change
+        (ID lookups, title searches). Saves the daily Simkl allowance."""
+        import hashlib
+        import json as _json
+        raw = path + "?" + "&".join(f"{k}={params[k]}" for k in sorted(params))
+        key = "simkl_lookup:" + hashlib.sha1(raw.encode()).hexdigest()
+        try:
+            r = await _redis()
+            hit = await r.get(key)
+            if hit is not None:
+                return _json.loads(hit)
+        except Exception:
+            r = None
+        data = await self._get(path, params=params)
+        if r is not None:
+            try:
+                await r.set(key, _json.dumps(data), ex=ttl if data else empty_ttl)
+            except Exception:
+                pass
+        return data
+
     async def search(self, query: str, kind: str = "movie") -> list[dict]:
         """Text search. kind: 'movie', 'tv', 'anime'."""
         type_map = {"movies": "movie", "shows": "tv"}
         simkl_type = type_map.get(kind, kind)
-        return await self._get(f"/search/{simkl_type}", params={"q": query}, auth_required=False)
+        return await self._cached_get(f"/search/{simkl_type}", {"q": query},
+                                      ttl=7 * 86400, empty_ttl=2 * 86400)
 
     async def search_by_id(self, id_type: str, id_value: str) -> list[dict]:
         """Lookup by external ID. id_type: 'imdb', 'tmdb', 'tvdb', 'mal', etc."""
         params = {id_type: id_value}
         try:
-            return await self._get("/search/id", params=params, auth_required=False)
+            return await self._cached_get("/search/id", params,
+                                          ttl=30 * 86400, empty_ttl=7 * 86400)
         except Exception:
             return []
 
@@ -1054,10 +1243,14 @@ class SimklClient:
         return results[:limit]
 
     async def get_item_details(self, kind: str, simkl_id: str, **kw) -> dict:
-        """Fetch detail for a movie or show."""
-        if kind in ("movies", "movie"):
-            return await self.get_movie_detail(simkl_id)
-        return await self.get_tv_detail(simkl_id)
+        """Fetch detail for a movie or show.
+        Numeric Simkl IDs hit the free Cloudflare cache. Slugs are uncached on
+        Simkl's side and count against the daily allowance, so cache them here."""
+        section = "movies" if kind in ("movies", "movie") else "tv"
+        if str(simkl_id).isdigit():
+            return await self._get(f"/{section}/{simkl_id}")
+        return await self._cached_get(f"/{section}/{simkl_id}", {},
+                                      ttl=30 * 86400, empty_ttl=7 * 86400)
 
     async def get_my_shows(self, **kw) -> list[dict]:
         """Fetch user's actively-watched shows (watching status).
@@ -1131,7 +1324,8 @@ class SimklClient:
         return results
 
     async def get_my_lists(self, **kw) -> list[dict]:
-        """Simkl has no user-lists endpoint. Return empty."""
+        """Simkl V1 has no user-lists endpoint. Return empty.
+        Use get_user_custom_lists_v2() with a V2 token instead."""
         return []
 
     async def get_popular_lists(self, **kw) -> list[dict]:
@@ -1143,11 +1337,13 @@ class SimklClient:
         return []
 
     async def get_liked_lists(self, **kw) -> list[dict]:
-        """Simkl has no liked lists. Return empty."""
+        """Simkl V1 has no liked lists. Return empty.
+        Use get_user_custom_lists_v2() with a V2 token instead."""
         return []
 
-    async def get_list_items(self, list_id: str, **kw) -> list[dict]:
-        """Simkl has no public lists. Return empty."""
+    async def get_list_items(self, username: str, list_slug: str, **kw) -> list[dict]:
+        """Simkl V1 has no list items. Return empty.
+        Use get_custom_list_items_v2() with a V2 token instead."""
         return []
 
     async def get_friends(self, **kw) -> list[dict]:
@@ -1161,6 +1357,120 @@ class SimklClient:
     async def get_collaborations(self, **kw) -> list[dict]:
         """Simkl has no collaborations. Return empty."""
         return []
+
+    # ------------------------------------------------------------------
+    # Auth V2 — Device flow (RFC 8628) + Custom Lists
+    # ------------------------------------------------------------------
+    # V2 requires a separate client_id registration.  V1 credentials are
+    # rejected by the /oauth2/* endpoints.  Tokens are 7-day access +
+    # 180-day refresh (resetting on each use).
+
+    async def get_device_code_v2(self, client_id_v2: str) -> dict:
+        """V2 Step 1: Request a device code.
+        Returns {device_code, user_code, verification_uri, expires_in, interval}.
+        """
+        resp = await self._client.post(
+            f"{BASE_URL}/oauth2/device",
+            json={"client_id": client_id_v2, "scope": "media:read media:write"},
+            headers={"Content-Type": "application/json", "User-Agent": "emby-simkl-suite/1.0"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def poll_device_token_v2(
+        self, client_id_v2: str, client_secret_v2: str | None, device_code: str,
+    ) -> dict | None:
+        """V2 Step 2: Poll for completed device authorisation.
+        Returns token dict on success, None if still pending.
+        client_secret_v2 is optional — public clients (device flow) don't need it.
+        """
+        body = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "client_id": client_id_v2,
+            "device_code": device_code,
+        }
+        if client_secret_v2:
+            body["client_secret"] = client_secret_v2
+        resp = await self._client.post(
+            f"{BASE_URL}/oauth2/token",
+            json=body,
+            headers={"Content-Type": "application/json", "User-Agent": "emby-simkl-suite/1.0"},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("access_token"):
+                return data
+        # 400 with authorization_pending / slow_down → still waiting
+        return None
+
+    async def refresh_token_v2(
+        self, client_id_v2: str, client_secret_v2: str | None, refresh_token: str,
+    ) -> dict | None:
+        """Exchange a V2 refresh token for a new access + refresh pair.
+        Returns {access_token, refresh_token, expires_in, ...} or None on failure.
+        client_secret_v2 is optional for public clients.
+        """
+        try:
+            body = {
+                "grant_type": "refresh_token",
+                "client_id": client_id_v2,
+                "refresh_token": refresh_token,
+            }
+            if client_secret_v2:
+                body["client_secret"] = client_secret_v2
+            resp = await self._client.post(
+                f"{BASE_URL}/oauth2/token",
+                json=body,
+                headers={"Content-Type": "application/json", "User-Agent": "emby-simkl-suite/1.0"},
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            log.warning("simkl_v2.refresh_failed", status=resp.status_code,
+                        body=resp.text[:200])
+        except Exception as e:
+            log.warning("simkl_v2.refresh_error", error=str(e)[:200])
+        return None
+
+    async def get_user_custom_lists_v2(
+        self, v2_token: str | None = None, user_id: int = 0,
+        limit: int = 50, page: int = 1,
+        followed: bool = True, collaborants: bool = True,
+    ) -> dict:
+        """Fetch a user's custom lists.
+        GET /lists/user/{userId}?limit=...&page=...&followed=true&collaborants=true
+        Returns {pagination: {...}, lists: [...]} or {error: "premium_only", ...}.
+        v2_token param kept for backward compat but ignored — uses self._access_token.
+        """
+        params: dict[str, Any] = {"limit": limit, "page": page}
+        if followed:
+            params["followed"] = "true"
+        if collaborants:
+            params["collaborants"] = "true"
+        data = await self._get(f"/lists/user/{user_id}", params=params,
+                               include_client_id=False)
+        if isinstance(data, dict) and data.get("error") == "premium_only":
+            log.warning("simkl.custom_lists_premium_only")
+        return data
+
+    async def get_custom_list_items_v2(
+        self, v2_token: str | None = None, list_id: int = 0,
+        limit: int = 500, page: int = 1,
+        extended: str | None = None,
+    ) -> dict:
+        """Fetch items from a specific custom list.
+        GET /lists/{id}?limit=...&page=...
+        Returns list metadata + {pagination: {...}, items: [...]}
+        or {error: "premium_only", ...}.
+        v2_token param kept for backward compat but ignored — uses self._access_token.
+        """
+        params: dict[str, Any] = {"limit": limit, "page": page}
+        if extended:
+            params["extended"] = extended
+        data = await self._get(f"/lists/{list_id}", params=params,
+                               include_client_id=False)
+        if isinstance(data, dict) and data.get("error") == "premium_only":
+            log.warning("simkl.list_items_premium_only", list_id=list_id)
+        return data
 
     async def post_comment(self, **kw) -> dict:
         """Simkl has no comments API. Return empty."""

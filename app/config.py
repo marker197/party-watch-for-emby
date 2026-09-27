@@ -56,6 +56,8 @@ class Settings(BaseSettings):
 
     # -- Simkl (optional) ---------------------------------------------------
     simkl_client_id: str = Field(default="", alias="SIMKL_CLIENT_ID")
+    # Auth V2 client ID — required for device flow auth + Custom Lists
+    simkl_client_id_v2: str = Field(default="", alias="SIMKL_CLIENT_ID_V2")
 
     # -- MDBList (optional) -------------------------------------------------
     mdblist_client_id: str = Field(default="", alias="MDBLIST_CLIENT_ID")

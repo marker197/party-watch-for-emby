@@ -240,6 +240,7 @@ class ScrobbleAuditService:
             show_entries = [p for p in payload if p.get("_type") == "show"]
             if show_entries:
                 status_payload = {
+                    "to": "watching",
                     "shows": [
                         {"ids": s["ids"], "to": "watching"}
                         for s in show_entries
@@ -817,6 +818,7 @@ class ScrobbleAuditService:
 
         return SimklClient(
             access_token=user.simkl_access_token,
+            refresh_token=user.simkl_refresh_token,
             token_expires=user.simkl_token_expires,
         )
 

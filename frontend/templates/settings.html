@@ -387,35 +387,51 @@
 
       <div class="form-group">
         <label class="label">
-          Client ID
-          <span class="label-desc">From Simkl.tv OAuth applications</span>
+          Simkl Client ID
+          <span class="label-desc"><a href="https://simkl.com/settings/developer/" target="_blank" style="color:var(--blue);">Create an app</a> — choose Device / PIN flow (no secret needed)</span>
         </label>
-        <input 
-          type="password" 
-          class="input-field" 
-          id="simklClientId"
-          placeholder="••••••••••••••••••••"
-        >
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="password" class="input-field" id="simklClientIdInput" placeholder="Paste your Simkl Client ID" style="flex:1;">
+          <button class="btn btn-blue" id="saveSimklClientId" onclick="saveSimklClientId()" disabled style="white-space:nowrap;">💾 Save</button>
+        </div>
       </div>
 
-      <div class="form-group">
-        <label class="label">
-          Client Secret
-          <span class="label-desc">From Simkl.tv OAuth applications</span>
-        </label>
-        <input 
-          type="password" 
-          class="input-field" 
-          id="simklClientSecret"
-          placeholder="••••••••••••••••••••"
-        >
+      <div id="simklAuthStatus" style="font-size:0.82rem;margin-bottom:12px;"></div>
+      <div id="simklLinkSection" style="display:none;">
+        <button class="btn btn-blue" id="btnSimklLink" onclick="startSimklLink()">🔗 Link Simkl</button>
+        <div id="simklDeviceCode" style="display:none;margin-top:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;">
+          <p style="font-size:0.85rem;margin-bottom:8px;">Go to <a id="simklVerifyUrl" href="#" target="_blank" style="color:var(--blue);font-weight:600;"></a> and enter this code:</p>
+          <div id="simklCode" style="font-size:1.8rem;font-weight:800;letter-spacing:4px;text-align:center;padding:8px;color:var(--accent-light);"></div>
+          <p id="simklPollStatus" style="font-size:0.78rem;color:var(--text-dim);text-align:center;margin-top:8px;">Waiting for approval…</p>
+        </div>
       </div>
 
-      <div class="btn-group">
+      <div class="btn-group" style="margin-top:12px;">
         <button class="btn btn-blue" id="testSimkl">🔗 Test Connection</button>
-        <button class="btn btn-blue" id="saveSimkl" disabled>💾 Save Changes</button>
       </div>
       <div id="simklStatus"></div>
+
+      <div id="simklUsage" style="margin-top:14px;font-size:0.82rem;color:var(--text-dim);">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+          <span>📊 Simkl API usage today</span>
+          <span id="simklUsageText">…</span>
+        </div>
+        <div style="height:6px;background:var(--surface-hover);border-radius:3px;overflow:hidden;">
+          <div id="simklUsageBar" style="height:100%;width:0;background:var(--green);transition:width .4s;"></div>
+        </div>
+        <div id="simklUsageNote" style="margin-top:4px;"></div>
+      </div>
+
+      <!-- Simkl Custom Lists -->
+      <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+        <h3 style="font-size:0.92rem;font-weight:700;color:var(--text);margin-bottom:8px;">
+          📋 Simkl Custom Lists
+          <span id="badgeSimklLists" style="font-size:0.72rem;padding:2px 8px;border-radius:10px;background:var(--surface-hover);color:var(--text-dim);font-weight:600;margin-left:6px;">checking…</span>
+        </h3>
+        <p style="font-size:0.82rem;color:var(--text-dim);margin-bottom:12px;">
+          Import your Simkl Custom Lists into Emby playlists. Requires <strong>Simkl PRO or VIP</strong>.
+        </p>
+      </div>
     </div>
 
     <!-- Emby Credentials -->
@@ -636,6 +652,22 @@
           <span style="font-size: 0.78rem; color: var(--text-dim);">UTC</span>
         </div>
         <input type="hidden" id="cronUniverseScan" value="0 3 * * 0">
+      </div>
+
+      <div class="form-group">
+        <label class="label">
+          Watchlist Sync
+          <span class="label-desc">Radarr/Sonarr ↔ Simkl ↔ MDBList. Each run uses part of your daily Simkl allowance.</span>
+        </label>
+        <select class="input-field" id="watchlistSyncInterval" style="width: auto; min-width: 200px;">
+          <option value="60">Every hour</option>
+          <option value="120">Every 2 hours</option>
+          <option value="180">Every 3 hours</option>
+          <option value="360">Every 6 hours (recommended)</option>
+          <option value="720">Every 12 hours</option>
+          <option value="1440">Once a day</option>
+          <option value="0">Paused</option>
+        </select>
       </div>
 
       <button class="btn btn-blue" id="saveCrons" style="width: 100%;">💾 Save Schedules</button>
@@ -1319,8 +1351,7 @@
     }
 
     function populateForm(settings) {
-      document.getElementById('simklClientId').value = settings.simkl_client_id || '';
-      document.getElementById('simklClientSecret').value = settings.simkl_client_secret || '';
+      // Simkl V1 fields removed — V2 client ID managed by saveSimklClientId/checkSimklStatus
       document.getElementById('embyUrl').value = settings.emby_url || '';
       document.getElementById('embyApiKey').value = settings.emby_api_key || '';
 
@@ -1328,6 +1359,8 @@
       cronToUI('SmartQueue', settings.cron_smart_queue || '0 2 * * *');
       cronToUI('MLRetrain', settings.cron_ml_retrain || '0 4 * * 1');
       cronToUI('UniverseScan', settings.cron_universe_scan || '0 3 * * 0');
+      const wlSel = document.getElementById('watchlistSyncInterval');
+      if (wlSel) wlSel.value = String(settings.watchlist_sync_interval ?? 360);
 
       // Set feature toggles — sync active class to saved state
       Object.entries(settings.features || {}).forEach(([feature, enabled]) => {
@@ -1345,9 +1378,7 @@
     function setupEventListeners() {
       // Simkl
       document.getElementById('testSimkl').addEventListener('click', () => testSimkl());
-      document.getElementById('saveSimkl').addEventListener('click', () => saveSimkl());
-      document.getElementById('simklClientId').addEventListener('input', enableButton('saveSimkl'));
-      document.getElementById('simklClientSecret').addEventListener('input', enableButton('saveSimkl'));
+      // Simkl V1 save removed — V2 client ID managed by saveSimklClientId
 
       // Emby
       document.getElementById('testEmby').addEventListener('click', () => testEmby());
@@ -1415,9 +1446,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            service: 'simkl',
-            client_id: document.getElementById('simklClientId').value,
-            client_secret: document.getElementById('simklClientSecret').value
+            service: 'simkl'
           })
         });
 
@@ -1471,29 +1500,7 @@
       }
     }
 
-    async function saveSimkl() {
-      const data = {
-        simkl_client_id: document.getElementById('simklClientId').value,
-        simkl_client_secret: document.getElementById('simklClientSecret').value
-      };
-
-      try {
-        const response = await fetch('/api/settings', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data)
-        });
-
-        if (response.ok) {
-          showStatus('simklStatus', 'Settings saved!', 'success');
-          document.getElementById('saveSimkl').disabled = true;
-        } else {
-          showStatus('simklStatus', 'Error saving settings', 'error');
-        }
-      } catch (error) {
-        showStatus('simklStatus', `Error: ${error.message}`, 'error');
-      }
-    }
+    // V1 saveSimkl removed — V2 client ID managed by saveSimklClientId
 
     async function saveEmby() {
       const data = {
@@ -1604,7 +1611,8 @@
       const data = {
         cron_smart_queue: uiToCron('SmartQueue'),
         cron_ml_retrain: uiToCron('MLRetrain'),
-        cron_universe_scan: uiToCron('UniverseScan')
+        cron_universe_scan: uiToCron('UniverseScan'),
+        watchlist_sync_interval: parseInt(document.getElementById('watchlistSyncInterval').value, 10)
       };
 
       try {
@@ -3102,6 +3110,215 @@
       btn.disabled = false;
       btn.textContent = '🚀 Confirm & Push to Simkl + MDBList';
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Simkl V2 Auth — Custom Lists
+    // ═══════════════════════════════════════════════════════════════
+
+    // Enable save button when V2 client ID changes
+    document.getElementById('simklClientIdInput').addEventListener('input', function() {
+      document.getElementById('saveSimklClientId').disabled = !this.value.trim();
+    });
+
+    async function saveSimklClientId() {
+      const v2Id = document.getElementById('simklClientIdInput').value.trim();
+      if (!v2Id) return;
+      try {
+        const r = await fetch('/api/settings', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ simkl_client_id_v2: v2Id }),
+        });
+        if (r.ok) {
+          document.getElementById('simklAuthStatus').innerHTML =
+            '<span style="color:var(--green);">✓ Simkl Client ID saved. Now link your account below.</span>';
+          document.getElementById('saveSimklClientId').disabled = true;
+          await checkSimklStatus();
+        } else {
+          document.getElementById('simklAuthStatus').innerHTML =
+            '<span style="color:var(--red);">Save failed.</span>';
+        }
+      } catch(e) {
+        document.getElementById('simklAuthStatus').innerHTML =
+          `<span style="color:var(--red);">Error: ${e.message}</span>`;
+      }
+    }
+
+    async function loadSimklUsage() {
+      try {
+        const r = await fetch('/api/simkl/usage');
+        if (!r.ok) return;
+        const d = await r.json();
+        const pct = Math.min(100, Math.round((d.used / d.limit) * 100));
+        const tier = (d.account_type || 'free').toUpperCase();
+        document.getElementById('simklUsageText').textContent =
+          `${d.used} / ${d.limit} (${tier})`;
+        const bar = document.getElementById('simklUsageBar');
+        bar.style.width = pct + '%';
+        bar.style.background = pct >= 90 ? 'var(--red)' : pct >= 75 ? 'var(--orange)' : 'var(--green)';
+        const note = document.getElementById('simklUsageNote');
+        if (d.blocked_seconds > 0) {
+          const h = Math.floor(d.blocked_seconds / 3600), m = Math.round((d.blocked_seconds % 3600) / 60);
+          note.innerHTML = `<span style="color:var(--red);">Daily limit reached — Simkl calls paused for ${h}h ${m}m (resets midnight US Eastern).</span>`;
+        } else if (pct >= 75) {
+          note.innerHTML = '<span style="color:var(--orange);">Background sync is paused for today to keep the rest free for page use.</span>';
+        } else {
+          note.textContent = 'Counts this app\'s uncached calls. Resets at midnight US Eastern.';
+        }
+      } catch (e) { /* non-fatal */ }
+    }
+
+    async function checkSimklStatus() {
+      loadSimklUsage();
+      const badge = document.getElementById('badgeSimkl');
+      const listsBadge = document.getElementById('badgeSimklLists');
+      const statusEl = document.getElementById('simklAuthStatus');
+      const linkSection = document.getElementById('simklLinkSection');
+      const v2Input = document.getElementById('simklClientIdInput');
+      try {
+        const r = await fetch('/auth/simkl/status');
+        const d = await r.json();
+
+        // Load existing masked V2 client ID into input (if not already typing)
+        try {
+          const sr = await fetch('/api/settings');
+          const sd = await sr.json();
+          if (sd.simkl_client_id_v2 && !v2Input.value) {
+            v2Input.value = sd.simkl_client_id_v2;
+          }
+        } catch(e) {}
+
+        if (!d.v2_configured) {
+          badge.textContent = 'not configured';
+          badge.style.color = 'var(--text-dim)';
+          if (listsBadge) { listsBadge.textContent = 'not configured'; listsBadge.style.color = 'var(--text-dim)'; }
+          if (!statusEl.innerHTML.includes('saved')) {
+            statusEl.innerHTML = '<span style="color:var(--text-dim);">Paste your Simkl Client ID above and save it.</span>';
+          }
+          linkSection.style.display = 'none';
+          return;
+        }
+
+        if (d.linked && !d.expired) {
+          badge.textContent = `linked (${d.days_left}d left)`;
+          badge.style.background = 'rgba(61,154,86,0.15)';
+          badge.style.color = 'var(--green)';
+          if (listsBadge) { listsBadge.textContent = d.simkl_user_id ? 'ready' : 're-link needed'; listsBadge.style.background = d.simkl_user_id ? 'rgba(61,154,86,0.15)' : 'rgba(255,165,0,0.15)'; listsBadge.style.color = d.simkl_user_id ? 'var(--green)' : 'var(--orange)'; }
+          if (d.simkl_user_id) {
+            statusEl.innerHTML = `<span style="color:var(--green);">✓ Linked as <strong>${d.simkl_username || '?'}</strong> (user ID: ${d.simkl_user_id}). Token refreshes automatically.</span>`;
+            linkSection.style.display = 'none';
+          } else {
+            statusEl.innerHTML = `<span style="color:var(--orange);">Token is valid but user ID is missing — re-link below to fix.</span>`;
+            linkSection.style.display = 'block';
+          }
+        } else if (d.linked && d.expired) {
+          badge.textContent = 'expired';
+          badge.style.color = 'var(--red)';
+          if (listsBadge) { listsBadge.textContent = 'expired'; listsBadge.style.color = 'var(--red)'; }
+          statusEl.innerHTML = '<span style="color:var(--red);">Token expired — re-link below.</span>';
+          linkSection.style.display = 'block';
+        } else {
+          badge.textContent = 'not linked';
+          badge.style.color = 'var(--orange)';
+          if (listsBadge) { listsBadge.textContent = 'not linked'; listsBadge.style.color = 'var(--orange)'; }
+          statusEl.innerHTML = '<span style="color:var(--orange);">Client ID saved. Link your account below to enable Custom Lists.</span>';
+          linkSection.style.display = 'block';
+        }
+      } catch(e) {
+        badge.textContent = 'error';
+        badge.style.color = 'var(--red)';
+        if (listsBadge) { listsBadge.textContent = 'error'; listsBadge.style.color = 'var(--red)'; }
+      }
+    }
+
+    let _simklPollTimer = null;
+
+    async function startSimklLink() {
+      const btn = document.getElementById('btnSimklLink');
+      btn.disabled = true;
+      btn.textContent = '⏳ Getting code…';
+
+      // Find emby_user_id from the users list
+      let embyUserId = '';
+      try {
+        const ur = await fetch('/auth/users');
+        const users = await ur.json();
+        if (users.length) embyUserId = users[0].emby_user_id;
+      } catch(e) {}
+
+      if (!embyUserId) {
+        btn.textContent = '🔗 Link Simkl';
+        btn.disabled = false;
+        document.getElementById('simklAuthStatus').innerHTML = '<span style="color:var(--red);">No Emby user found — link Emby first.</span>';
+        return;
+      }
+
+      try {
+        const r = await fetch('/auth/simkl/device-code', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ emby_user_id: embyUserId }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || 'Failed');
+
+        const codeEl = document.getElementById('simklDeviceCode');
+        codeEl.style.display = 'block';
+        document.getElementById('simklCode').textContent = d.user_code;
+        const verifyUrl = d.verification_uri || 'https://simkl.com/pin';
+        const linkEl = document.getElementById('simklVerifyUrl');
+        linkEl.href = verifyUrl;
+        linkEl.textContent = verifyUrl;
+
+        btn.textContent = '⏳ Waiting…';
+
+        // Start polling
+        const interval = (d.interval || 5) * 1000;
+        const expiresAt = Date.now() + (d.expires_in || 900) * 1000;
+
+        if (_simklPollTimer) clearInterval(_simklPollTimer);
+        _simklPollTimer = setInterval(async () => {
+          if (Date.now() > expiresAt) {
+            clearInterval(_simklPollTimer);
+            document.getElementById('simklPollStatus').textContent = 'Code expired — try again.';
+            btn.textContent = '🔗 Link Simkl';
+            btn.disabled = false;
+            return;
+          }
+          try {
+            const pr = await fetch('/auth/simkl/poll', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ device_code: d.device_code, emby_user_id: embyUserId }),
+            });
+            if (!pr.ok) {
+              clearInterval(_simklPollTimer);
+              const errData = await pr.json().catch(() => ({}));
+              document.getElementById('simklPollStatus').innerHTML =
+                `<span style="color:var(--red);">Error: ${errData.detail || pr.statusText}. Try linking again.</span>`;
+              btn.textContent = '🔗 Link Simkl';
+              btn.disabled = false;
+              return;
+            }
+            const pd = await pr.json();
+            if (pd.status === 'linked') {
+              clearInterval(_simklPollTimer);
+              document.getElementById('simklPollStatus').innerHTML = `<span style="color:var(--green);">✓ Linked as <strong>${pd.simkl_username || '?'}</strong>!</span>`;
+              btn.textContent = '✓ Linked';
+              await checkSimklStatus();
+            }
+          } catch(e) {}
+        }, interval);
+
+      } catch(e) {
+        btn.textContent = '🔗 Link Simkl';
+        btn.disabled = false;
+        document.getElementById('simklAuthStatus').innerHTML = `<span style="color:var(--red);">Error: ${e.message}</span>`;
+      }
+    }
+
+    // Check V2 status on page load
+    checkSimklStatus();
 
     init();
   </script>

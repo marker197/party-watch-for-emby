@@ -60,6 +60,7 @@ async def sync_ratings_between_providers(
     if user.simkl_access_token:
         simkl = SimklClient(
             access_token=user.simkl_access_token,
+            refresh_token=user.simkl_refresh_token,
             token_expires=user.simkl_token_expires,
         )
 
@@ -206,6 +207,7 @@ async def get_rating_sync_status(
     if user.simkl_access_token:
         simkl = SimklClient(
             access_token=user.simkl_access_token,
+            refresh_token=user.simkl_refresh_token,
             token_expires=user.simkl_token_expires,
         )
 
@@ -608,6 +610,7 @@ async def rate_item(
             try:
                 simkl = SimklClient(
                     access_token=user.simkl_access_token,
+                    refresh_token=user.simkl_refresh_token,
                     token_expires=user.simkl_token_expires,
                 )
 
@@ -1012,6 +1015,7 @@ async def sync_ratings_from_providers(
         try:
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
+                refresh_token=user.simkl_refresh_token,
                 token_expires=user.simkl_token_expires,
             )
             raw = await simkl.get_user_ratings(kind="all")
@@ -1225,6 +1229,7 @@ async def update_user_rating(
         try:
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
+                refresh_token=user.simkl_refresh_token,
                 token_expires=user.simkl_token_expires,
             )
             simkl_item = {
@@ -1279,6 +1284,7 @@ async def delete_user_rating(
         try:
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
+                refresh_token=user.simkl_refresh_token,
                 token_expires=user.simkl_token_expires,
             )
             simkl_item = {

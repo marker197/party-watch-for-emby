@@ -383,6 +383,7 @@ class WatchPartyService:
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
                 
+                refresh_token=user.simkl_refresh_token,
                 token_expires=user.simkl_token_expires,
             )
             
@@ -422,6 +423,7 @@ class WatchPartyService:
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
                 
+                refresh_token=user.simkl_refresh_token,
                 token_expires=user.simkl_token_expires,
             )
             
@@ -730,13 +732,11 @@ class WatchPartyService:
         user_id = user.id  # capture PK; avoid closing over detached ORM object
 
         async def callback(access_token: str, refresh_token: str, expires: datetime) -> None:
-            # Simkl tokens are ~5 years with no refresh token — the
-            # refresh_token arg is accepted for signature compatibility
-            # but there is no column to persist it to.
             async with async_session() as db:
                 u = await db.get(User, user_id)
                 if u:
                     u.simkl_access_token = access_token
+                    u.simkl_refresh_token = refresh_token
                     u.simkl_token_expires = expires
                     await db.commit()
         return callback

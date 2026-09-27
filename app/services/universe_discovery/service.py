@@ -760,7 +760,22 @@ class UniverseDiscoveryService:
         Resolved IDs are cached on the UniverseItem row so this only hits Simkl
         once per item across all future scans.
         """
-        simkl = SimklClient()
+        # V2 client_id requires a Bearer token on all non-cached endpoints
+        async with async_session() as db:
+            first_user = (await db.execute(
+                select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
+            )).scalar_one_or_none()
+
+        if not first_user or not first_user.simkl_access_token:
+            log.warning("universe_discovery.resolve_ids_skipped",
+                        reason="no authenticated Simkl user")
+            return
+
+        simkl = SimklClient(
+            access_token=first_user.simkl_access_token,
+            refresh_token=first_user.simkl_refresh_token,
+            token_expires=first_user.simkl_token_expires,
+        )
         resolved = 0
         errors = 0
 
@@ -777,9 +792,18 @@ class UniverseDiscoveryService:
                     log.info("universe_discovery.resolve_ids_skip", reason="all_resolved")
                     return
 
-                log.info("universe_discovery.resolve_ids_start", count=len(items))
+                # Cap per run: each item can cost up to 2 uncached Simkl calls.
+                # Leftovers resolve on the next scan; lookups are Redis-cached.
+                from app.utils.simkl_client import budget_allows_background
+                max_per_run = 120
+                log.info("universe_discovery.resolve_ids_start",
+                         count=len(items), this_run=min(len(items), max_per_run))
 
-                for ui in items:
+                for n, ui in enumerate(items[:max_per_run]):
+                    if n % 10 == 0 and not await budget_allows_background():
+                        log.info("universe_discovery.resolve_ids_stopped_budget",
+                                 resolved_so_far=resolved)
+                        break
                     try:
                         ids = None
                         kind = "movies" if ui.item_type == "movie" else "shows"
@@ -822,7 +846,7 @@ class UniverseDiscoveryService:
                                 ui.simkl_id = ids["slug"]
                             resolved += 1
                         else:
-                            log.warning("universe_discovery.resolve_ids_miss",
+                            log.debug("universe_discovery.resolve_ids_miss",
                                         title=ui.title, year=ui.year)
 
                     except Exception as e:

@@ -138,6 +138,7 @@ class WatchlistSyncService:
 
         return SimklClient(
             access_token=user.simkl_access_token,
+            refresh_token=user.simkl_refresh_token,
             token_expires=user.simkl_token_expires,
         )
 
@@ -171,7 +172,6 @@ class WatchlistSyncService:
             missing_tmdb, missing_tvdb)
 
         if not missing_tmdb and not missing_tvdb:
-            log.debug("watchlist_sync.arr_to_simkl.nothing_missing", user_id=user.id)
             return
 
         # Fetch items already on Simkl in ANY status — not just plantowatch.
@@ -215,9 +215,6 @@ class WatchlistSyncService:
                 log.debug("watchlist_sync.arr_to_simkl.status_fetch_failed",
                           status=status, kind="shows")
 
-        log.debug("watchlist_sync.arr_to_simkl.known_ids",
-                  tmdb_count=len(wl_tmdb_ids), tvdb_count=len(wl_tvdb_ids))
-
         # Also filter out items previously sent to Simkl that it couldn't
         # resolve (accepted as "added" but never persisted).  Without this,
         # unresolvable items get re-sent every cycle.
@@ -240,12 +237,6 @@ class WatchlistSyncService:
         ]
 
         if not movies_to_add and not shows_to_add:
-            log.debug("watchlist_sync.arr_to_simkl.all_on_watchlist",
-                     user_id=user.id,
-                     missing_movies=len(missing_tmdb),
-                     missing_shows=len(missing_tvdb),
-                     prev_sent_tmdb=len(prev_sent_tmdb),
-                     prev_sent_tvdb=len(prev_sent_tvdb))
             return
 
         log.info("watchlist_sync.arr_to_simkl.adding",
@@ -323,7 +314,6 @@ class WatchlistSyncService:
             missing_tmdb, missing_tvdb)
 
         if not missing_tmdb and not missing_tvdb:
-            log.debug("watchlist_sync.arr_to_mdblist.nothing_missing", user_id=user.id)
             return
 
         # Fetch current MDBList watchlist for dupe check
@@ -374,10 +364,6 @@ class WatchlistSyncService:
                               tvdb=tvdb)
 
         if not movies_to_add and not shows_to_add:
-            log.debug("watchlist_sync.arr_to_mdblist.all_on_watchlist",
-                     user_id=user.id,
-                     missing_movies=len(missing_tmdb),
-                     missing_shows=len(missing_tvdb))
             return
 
         log.info("watchlist_sync.arr_to_mdblist.adding",
@@ -612,11 +598,6 @@ class WatchlistSyncService:
         await asyncio.sleep(1.1)  # Respect Simkl 1 req/sec rate limit
         wl_shows = await simkl.get_watchlist(kind="shows")
 
-        log.debug("watchlist_sync.simkl_to_arr.raw_counts",
-                 user_id=user.id,
-                 movies=len(wl_movies or []),
-                 shows=len(wl_shows or []))
-
         wl_movie_map: dict[int, dict] = {}  # keyed by TMDB
         wl_movie_imdb_map: dict[str, dict] = {}  # fallback: keyed by IMDB
         for item in (wl_movies or []):
@@ -655,12 +636,6 @@ class WatchlistSyncService:
         if not wl_movie_map and not wl_movie_imdb_map and not wl_show_map:
             log.debug("watchlist_sync.simkl_to_arr.empty_watchlist", user_id=user.id)
             return
-
-        log.debug("watchlist_sync.simkl_to_arr.parsed",
-                 user_id=user.id,
-                 movies_tmdb=len(wl_movie_map),
-                 movies_imdb_only=len(wl_movie_imdb_map),
-                 shows=len(wl_show_map))
 
         # Merge IMDB-only movies: resolve TMDB via Radarr lookup
         if wl_movie_imdb_map:
@@ -970,8 +945,6 @@ class WatchlistSyncService:
                         tmdb = m.get("tmdbId")
                         if tmdb:
                             missing_tmdb.append(tmdb)
-                    log.debug("watchlist_sync.radarr_missing",
-                              server=srv.get("name"), count=len(movies))
                 except Exception:
                     log.exception("watchlist_sync.radarr_fetch_failed",
                                   server=srv.get("name"))
@@ -994,8 +967,6 @@ class WatchlistSyncService:
                         tvdb = s.get("tvdbId")
                         if tvdb:
                             missing_tvdb.append(tvdb)
-                    log.debug("watchlist_sync.sonarr_missing",
-                              server=srv.get("name"), count=len(series))
                 except Exception:
                     log.exception("watchlist_sync.sonarr_fetch_failed",
                                   server=srv.get("name"))
@@ -1047,11 +1018,6 @@ class WatchlistSyncService:
         before_tvdb = len(tvdb_ids)
         tmdb_ids = [t for t in tmdb_ids if t not in exclude_tmdb]
         tvdb_ids = [t for t in tvdb_ids if t not in exclude_tvdb]
-        excluded = (before_tmdb - len(tmdb_ids)) + (before_tvdb - len(tvdb_ids))
-        if excluded:
-            log.debug("watchlist_sync.manual_arr_excluded",
-                     movies=before_tmdb - len(tmdb_ids),
-                     shows=before_tvdb - len(tvdb_ids))
 
         return tmdb_ids, tvdb_ids
 

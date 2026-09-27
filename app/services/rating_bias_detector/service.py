@@ -60,6 +60,7 @@ class RatingBiasDetectorService:
         """Full bias analysis pipeline for a single user."""
         simkl = SimklClient(
             access_token=user.simkl_access_token,
+            refresh_token=user.simkl_refresh_token,
             token_expires=user.simkl_token_expires,
         )
 

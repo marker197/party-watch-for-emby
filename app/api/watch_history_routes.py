@@ -156,6 +156,7 @@ async def get_merged_watchlist(
         from app.utils.simkl_client import SimklClient
         simkl = SimklClient(
             access_token=user.simkl_access_token,
+            refresh_token=user.simkl_refresh_token,
             token_expires=user.simkl_token_expires,
         )
     except Exception:
@@ -353,6 +354,7 @@ async def remove_from_watchlist(
             from app.utils.simkl_client import SimklClient
             client = SimklClient(
                 access_token=user.simkl_access_token,
+                refresh_token=user.simkl_refresh_token,
                 token_expires=user.simkl_token_expires,
             )
             item = {"ids": ids_obj, "title": title, "type": item_type}
@@ -1093,7 +1095,11 @@ async def mark_watched(
     # ── Scrobble stop at 100% to Simkl ──
     if user.simkl_access_token and ids:
         try:
-            simkl = SimklClient(access_token=user.simkl_access_token)
+            simkl = SimklClient(
+                access_token=user.simkl_access_token,
+                refresh_token=user.simkl_refresh_token,
+                token_expires=user.simkl_token_expires,
+            )
             try:
                 if item_type == "episode" and season_number is not None and episode_number is not None:
                     payload = {
@@ -1466,6 +1472,7 @@ async def backfill_watch_history(
         user_db_id = user.id
         user_emby_user_id = user.emby_user_id
         user_simkl_token = user.simkl_access_token
+        user_simkl_refresh = user.simkl_refresh_token
         user_simkl_expires = user.simkl_token_expires
 
         # ── Clean up duplicates from prior buggy runs ─────────────────
@@ -1497,6 +1504,7 @@ async def backfill_watch_history(
                 from app.utils.simkl_client import SimklClient
                 simkl = SimklClient(
                     access_token=user_simkl_token,
+                    refresh_token=user_simkl_refresh,
                     token_expires=user_simkl_expires,
                 )
                 try:

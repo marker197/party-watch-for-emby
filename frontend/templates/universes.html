@@ -1706,9 +1706,26 @@
           return;
         }
         const data = await resp.json();
+
+        if (data.v2_required) {
+          select.innerHTML = `<option value="">${data.message || 'Simkl V2 auth required'}</option>`;
+          badge.textContent = '!';
+          badge.style.color = 'var(--orange)';
+          document.getElementById('simklImportStatus').innerHTML =
+            '<span style="color:var(--orange);font-size:0.82rem;">⚠ Simkl account not fully linked. Complete setup in <a href="/settings" style="color:var(--blue);">Settings</a>.</span>';
+          return;
+        }
+
+        if (data.premium_required) {
+          select.innerHTML = '<option value="">Simkl PRO or VIP required for Custom Lists</option>';
+          badge.textContent = 'PRO';
+          badge.style.color = 'var(--orange)';
+          return;
+        }
+
         const lists = data.lists || [];
         if (!lists.length) {
-          select.innerHTML = '<option value="">No lists found on your Simkl account</option>';
+          select.innerHTML = '<option value="">No custom lists found — create one on simkl.com</option>';
           badge.textContent = '0';
           return;
         }
@@ -1717,54 +1734,41 @@
         badge.style.color = 'var(--green)';
 
         const own = lists.filter(l => l.owner === 'self');
-        const liked = lists.filter(l => l.owner === 'liked');
-        const collab = lists.filter(l => l.owner === 'collaboration');
+        const liked = lists.filter(l => l.owner !== 'self');
 
         let html = '<option value="">— Select a list —</option>';
 
         if (own.length) {
           html += '<optgroup label="My Lists">';
           for (const l of own) {
-            const privTag = l.privacy === 'private' ? ' 🔒' : '';
-            html += `<option value="${escapeHtml(l.slug)}" data-desc="${escapeHtml(l.description || '')}" data-name="${escapeHtml(l.name)}" data-user="${escapeHtml(l.user_name || '')}">📌 ${escapeHtml(l.name)}${privTag} (${l.item_count} items)</option>`;
+            const privTag = l.privacy === 'private' ? ' 🔒' : l.privacy === 'unlisted' ? ' 🔗' : '';
+            const typeTag = l.list_type === 'auto' ? '⚡ ' : l.list_type === 'favorite' ? '⭐ ' : '📌 ';
+            const mediaTag = l.media_type === 'movies' ? ' 🎬' : l.media_type === 'tv' ? ' 📺' : l.media_type === 'anime' ? ' 🎌' : '';
+            html += `<option value="${l.list_id}" data-desc="${escapeHtml(l.description || '')}" data-name="${escapeHtml(l.name)}" data-slug="${escapeHtml(l.slug)}" data-listid="${l.list_id}">${typeTag}${escapeHtml(l.name)}${mediaTag}${privTag} (${l.item_count} items)</option>`;
           }
           html += '</optgroup>';
         }
 
         if (liked.length) {
-          html += '<optgroup label="Liked Lists">';
+          html += '<optgroup label="Followed / Collaborated">';
           for (const l of liked) {
-            html += `<option value="${escapeHtml(l.slug)}" data-desc="${escapeHtml(l.description || '')}" data-name="${escapeHtml(l.name)}" data-user="${escapeHtml(l.user_name || '')}">❤️ ${escapeHtml(l.name)} by ${escapeHtml(l.user_name)} (${l.item_count} items)</option>`;
-          }
-          html += '</optgroup>';
-        }
-
-        if (collab.length) {
-          html += '<optgroup label="Collaborations">';
-          for (const l of collab) {
-            html += `<option value="${escapeHtml(l.slug)}" data-desc="${escapeHtml(l.description || '')}" data-name="${escapeHtml(l.name)}" data-user="${escapeHtml(l.user_name || '')}">🤝 ${escapeHtml(l.name)} by ${escapeHtml(l.user_name)} (${l.item_count} items)</option>`;
+            const mediaTag = l.media_type === 'movies' ? ' 🎬' : l.media_type === 'tv' ? ' 📺' : l.media_type === 'anime' ? ' 🎌' : '';
+            html += `<option value="${l.list_id}" data-desc="${escapeHtml(l.description || '')}" data-name="${escapeHtml(l.name)}" data-slug="${escapeHtml(l.slug)}" data-listid="${l.list_id}">❤️ ${escapeHtml(l.name)}${mediaTag} by ${escapeHtml(l.user_name)} (${l.item_count} items)</option>`;
           }
           html += '</optgroup>';
         }
 
         select.innerHTML = html;
 
-        // Description preview on change
         select.onchange = function() {
           const descEl = document.getElementById('simklListDesc');
           const opt = this.options[this.selectedIndex];
           const desc = opt ? opt.getAttribute('data-desc') : '';
           const name = opt ? opt.getAttribute('data-name') : '';
-          if (desc) {
-            descEl.textContent = desc;
-            descEl.style.display = 'block';
-          } else {
-            descEl.style.display = 'none';
-          }
+          if (desc) { descEl.textContent = desc; descEl.style.display = 'block'; }
+          else { descEl.style.display = 'none'; }
           const nameInput = document.getElementById('simklPlaylistName');
-          if (name && !nameInput.value.trim()) {
-            nameInput.placeholder = `📋 ${name}`;
-          }
+          if (name && !nameInput.value.trim()) { nameInput.placeholder = `📋 ${name}`; }
         };
 
       } catch (err) {
@@ -1774,8 +1778,8 @@
 
     async function importSimklList() {
       const select = document.getElementById('simklListSelect');
-      const slug = select.value;
-      if (!slug) { showToast('Select a list first'); return; }
+      const listId = select.value;
+      if (!listId) { showToast('Select a list first'); return; }
 
       const opt = select.options[select.selectedIndex];
       const listName = opt ? opt.getAttribute('data-name') : '';
@@ -1791,10 +1795,9 @@
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
-            list_slug: slug,
+            list_id: parseInt(listId),
             playlist_name: customName || null,
             description: listDesc || null,
-            username: listUser || null,
           }),
         });
         const data = await resp.json();
@@ -1815,10 +1818,10 @@
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-              list_slug: slug,
-              playlist_name: customName || listName || slug,
+              list_slug: opt ? opt.getAttribute('data-slug') : listId,
+              list_id: parseInt(listId),
+              playlist_name: customName || listName || listId,
               description: listDesc || '',
-              username: listUser || 'me',
               matched: data.matched,
             }),
           });
@@ -1856,7 +1859,7 @@
 
         for (const s of synced) {
           const autoOn = s.auto_sync !== false;
-          html += `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="toggleSyncedListItems('${escapeHtml(s.slug)}', '${escapeHtml(s.username || 'me')}', this)">`;
+          html += `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="toggleSyncedListItems('${escapeHtml(s.slug)}', '${s.list_id || 0}', this)">`;
           html += `<td style="padding:6px 8px;">▶ ${escapeHtml(s.playlist_name || s.slug)}</td>`;
           html += `<td style="padding:6px 8px;text-align:center;">${s.matched || '—'}</td>`;
           html += `<td style="padding:6px 8px;text-align:center;color:var(--text-dim);">${s.last_synced || 'never'}</td>`;
@@ -1865,7 +1868,7 @@
           html += '</td>';
           html += '<td style="padding:6px 8px;text-align:center;" onclick="event.stopPropagation()">';
           html += `<span style="display:flex;gap:4px;justify-content:center;">`;
-          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--blue);color:#fff;" onclick="event.stopPropagation();refreshSingleSimkl('${escapeHtml(s.slug)}', '${escapeHtml(s.playlist_name || '')}', '${escapeHtml(s.description || '')}', '${escapeHtml(s.username || 'me')}')">🔄</button>`;
+          html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--blue);color:#fff;" onclick="event.stopPropagation();refreshSingleSimkl('${escapeHtml(s.slug)}', '${escapeHtml(s.playlist_name || '')}', '${escapeHtml(s.description || '')}', ${s.list_id || 0})">🔄</button>`;
           html += `<button class="btn" style="font-size:0.72rem;padding:3px 8px;background:var(--red);color:#fff;" onclick="event.stopPropagation();removeSimklSync('${escapeHtml(s.slug)}')">✕</button>`;
           html += `</span></td></tr>`;
         }
@@ -1901,21 +1904,20 @@
       }
     }
 
-    async function refreshSingleSimkl(slug, name, desc, username) {
+    async function refreshSingleSimkl(slug, name, desc, listId) {
       showToast('Refreshing…');
       try {
         const r = await fetch('/api/simkl-lists/import', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ list_slug: slug, playlist_name: name, description: desc, username: username }),
+          body: JSON.stringify({ list_id: listId, list_slug: slug, playlist_name: name, description: desc }),
         });
         const d = await r.json();
         if (d.status === 'ok') {
-          // Update tracking
           await fetch('/api/simkl-lists/track', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ list_slug: slug, playlist_name: name, description: desc, username: username, matched: d.matched }),
+            body: JSON.stringify({ list_slug: slug, list_id: listId, playlist_name: name, description: desc, matched: d.matched }),
           });
           showToast(`✓ Refreshed — ${d.matched} items matched`);
           await loadSimklSynced();
@@ -2298,7 +2300,7 @@
     // Expandable Synced List Items
     // ═══════════════════════════════════════════════════════════════════
 
-    async function toggleSyncedListItems(slug, username, rowEl) {
+    async function toggleSyncedListItems(slug, listId, rowEl) {
       const detailId = 'syncDetail-' + slug.replace(/[^a-zA-Z0-9]/g, '_');
       const existing = document.getElementById(detailId);
       if (existing) {
@@ -2312,7 +2314,7 @@
       tr.after(detailRow);
 
       try {
-        const r = await fetch(`/api/simkl-lists/items?slug=${encodeURIComponent(slug)}&username=${encodeURIComponent(username || 'me')}`);
+        const r = await fetch(`/api/simkl-lists/items?slug=${encodeURIComponent(slug)}&list_id=${encodeURIComponent(listId || '0')}`);
         const d = await r.json();
         const items = d.items || [];
         if (!items.length) {

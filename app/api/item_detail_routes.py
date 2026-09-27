@@ -464,6 +464,7 @@ async def toggle_watchlist(
         try:
             simkl = SimklClient(
                 access_token=current_user.simkl_access_token,
+                refresh_token=current_user.simkl_refresh_token,
                 token_expires=current_user.simkl_token_expires,
             )
             try:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -39,7 +39,10 @@ class RewatchSettings(BaseModel):
 
 @router.get("/api/simkl-lists")
 async def get_simkl_lists():
-    """Fetch all Simkl lists available to the user: personal, liked, and collaborations."""
+    """Fetch all Simkl custom lists.
+
+    Requires linked Simkl account + PRO/VIP for Custom Lists.
+    """
     async with async_session_ctx() as db:
         user = (await db.execute(
             select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
@@ -47,68 +50,94 @@ async def get_simkl_lists():
         if not user or not user.simkl_access_token:
             raise HTTPException(400, "No Simkl-linked user found")
 
-        simkl = SimklClient(
-            access_token=user.simkl_access_token,
-            token_expires=user.simkl_token_expires,
-        )
+        if not user.simkl_user_id:
+            return {"lists": [], "v2_required": True,
+                    "message": "Simkl user ID not set — re-link account in Settings"}
 
+        simkl_user_id = user.simkl_user_id
+
+    simkl = SimklClient(
+        access_token=user.simkl_access_token,
+        refresh_token=user.simkl_refresh_token,
+        token_expires=user.simkl_token_expires,
+    )
     try:
-        my_lists = await simkl.get_my_lists()
-        liked_lists = await simkl.get_liked_lists()
-        collab_lists = await simkl.get_collaborations()
+        data = await simkl.get_user_custom_lists_v2(
+            user_id=simkl_user_id,
+            limit=500, followed=True, collaborants=True,
+        )
     finally:
         await simkl.close()
 
-    results = []
-    seen_slugs = set()
+    # Handle premium_only response
+    if isinstance(data, dict) and data.get("error") == "premium_only":
+        return {"lists": [], "premium_required": True,
+                "message": "Custom Lists require a Simkl PRO or VIP account"}
 
-    def _add(lst, owner):
-        ids = lst.get("ids", {})
-        slug = ids.get("slug", "")
-        if slug in seen_slugs:
-            return
-        seen_slugs.add(slug)
+    raw_lists = data.get("lists", [])
+    results = []
+    seen_ids = set()
+
+    for lst in raw_lists:
+        list_id = lst.get("id")
+        if not list_id or list_id in seen_ids:
+            continue
+        seen_ids.add(list_id)
+
         u = lst.get("user", {})
+        counts = lst.get("counts", {})
+        desc_obj = lst.get("description", {})
+        desc_text = ""
+        if isinstance(desc_obj, dict):
+            desc_text = desc_obj.get("short") or desc_obj.get("full") or ""
+        elif isinstance(desc_obj, str):
+            desc_text = desc_obj
+
+        # Determine owner relationship
+        owner = "self"
+        if u.get("id") and user.simkl_user_id and u["id"] != user.simkl_user_id:
+            owner = "liked"  # followed or collaborated list from another user
+
         results.append({
             "name": lst.get("name", ""),
-            "slug": slug,
-            "item_count": lst.get("item_count", 0),
-            "description": lst.get("description") or "",
+            "slug": lst.get("slug", ""),
+            "list_id": list_id,
+            "item_count": counts.get("items", 0),
+            "description": desc_text,
             "privacy": lst.get("privacy", "private"),
-            "likes": lst.get("likes", 0),
+            "likes": counts.get("likes", 0),
+            "media_type": lst.get("media_type", ""),
+            "list_type": lst.get("type", "regular"),
             "owner": owner,
-            "user_name": u.get("username", ""),
+            "user_name": u.get("name", ""),
         })
-
-    for lst in (my_lists or []):
-        _add(lst, "self")
-
-    for entry in (liked_lists or []):
-        # Liked lists response wraps list in a "list" key
-        lst = entry.get("list", entry)
-        _add(lst, "liked")
-
-    for lst in (collab_lists or []):
-        _add(lst, "collaboration")
 
     return {"lists": results}
 
 
 @router.post("/api/simkl-lists/import")
-async def import_simkl_list(payload: dict, _user: User = Depends(get_current_user)):
-    """Import a Simkl list into an Emby playlist.
+async def import_simkl_list_route(payload: dict, _user: User = Depends(get_current_user)):
+    """HTTP endpoint for importing a Simkl custom list — requires auth."""
+    return await import_simkl_list(payload)
 
-    Payload: {"list_slug": "...", "playlist_name": "...", "username": "..."}
-    username defaults to "me" for the user's own lists.
+
+async def import_simkl_list(payload: dict):
+    """Import a Simkl custom list into an Emby playlist via V2 API.
+
+    Payload: {"list_id": 12345, "playlist_name": "...", "description": "..."}
+    Also accepts legacy {"list_slug": "..."} for sync-all compatibility — falls
+    back to the slug-based V1 path (returns empty for now).
+
     Resolves list items against LibraryCache, creates an Emby playlist
     with matched items in list order.
     """
+    list_id = payload.get("list_id")
     list_slug = (payload.get("list_slug") or "").strip()
-    if not list_slug:
-        raise HTTPException(400, "list_slug required")
     playlist_name = (payload.get("playlist_name") or "").strip()
     description = (payload.get("description") or "").strip()
-    username = (payload.get("username") or "").strip() or "me"
+
+    if not list_id and not list_slug:
+        raise HTTPException(400, "list_id or list_slug required")
 
     async with async_session_ctx() as db:
         user = (await db.execute(
@@ -117,18 +146,30 @@ async def import_simkl_list(payload: dict, _user: User = Depends(get_current_use
         if not user or not user.simkl_access_token:
             raise HTTPException(400, "No Simkl-linked user found")
 
-        simkl = SimklClient(
-            access_token=user.simkl_access_token,
-            token_expires=user.simkl_token_expires,
-        )
-
+    # Fetch list items
+    simkl = SimklClient(
+        access_token=user.simkl_access_token,
+        refresh_token=user.simkl_refresh_token,
+        token_expires=user.simkl_token_expires,
+    )
+    items_data = []
+    list_name_from_api = ""
     try:
-        # Fetch items — the endpoint returns items under /users/{username}/lists/{slug}/items
-        items = await simkl.get_list_items(username, list_slug)
+        if list_id:
+            data = await simkl.get_custom_list_items_v2(list_id=int(list_id), limit=500)
+            if isinstance(data, dict) and data.get("error") == "premium_only":
+                return {"status": "error", "message": "Custom Lists require Simkl PRO or VIP"}
+            items_data = data.get("items", [])
+            list_name_from_api = data.get("name", "")
+        else:
+            # Legacy slug-based path — can't resolve to V2 list_id without enumeration
+            log.info("simkl_list.import_slug_fallback", slug=list_slug)
+            return {"status": "ok", "matched": 0, "unmatched": 0,
+                    "message": "Slug-based import requires V2 list_id — refresh your lists"}
     finally:
         await simkl.close()
 
-    if not items:
+    if not items_data:
         return {"status": "ok", "matched": 0, "unmatched": 0, "message": "List is empty"}
 
     emby = EmbyClient()
@@ -136,19 +177,19 @@ async def import_simkl_list(payload: dict, _user: User = Depends(get_current_use
     unmatched = []
 
     try:
-        for entry in items:
-            # Each entry has a type key ("movie", "show") and the item data under that key
+        for entry in items_data:
+            # V2 Custom List items are flat: {title, year, type, ids: {simkl_id, imdb, tmdb, tvdb, ...}, ...}
+            ids = entry.get("ids", {})
+            title = entry.get("title", "Unknown")
+            year = entry.get("year")
             item_type = entry.get("type", "")
-            item_data = entry.get(item_type, {}) if item_type else {}
-            ids = item_data.get("ids", {})
-            title = item_data.get("title", "Unknown")
 
-            # Try to resolve via LibraryCache using provider IDs
             match = None
 
             # Try IMDB
-            if ids.get("imdb"):
-                match = await LibraryCache.find_by_provider_id("Imdb", ids["imdb"])
+            imdb = ids.get("imdb")
+            if imdb:
+                match = await LibraryCache.find_by_provider_id("Imdb", imdb)
 
             # Try TMDB
             if not match and ids.get("tmdb"):
@@ -158,27 +199,33 @@ async def import_simkl_list(payload: dict, _user: User = Depends(get_current_use
             if not match and ids.get("tvdb"):
                 match = await LibraryCache.find_by_provider_id("Tvdb", str(ids["tvdb"]))
 
+            # Title fallback
+            if not match:
+                match = await LibraryCache.find_by_title(title, year=year)
+
             if match and match.get("emby_id"):
                 emby_ids.append(match["emby_id"])
             else:
-                unmatched.append({"title": title, "year": item_data.get("year")})
+                unmatched.append({
+                    "title": title, "year": year, "type": item_type,
+                    "imdb_id": imdb, "tmdb_id": ids.get("tmdb"),
+                    "tvdb_id": ids.get("tvdb"),
+                })
 
         # Create Emby playlist
         playlist_id = None
         if emby_ids:
             emby_user_id = (await _first_emby_user_id()) or None
-            final_name = playlist_name or f"📋 {list_slug}"
+            final_name = playlist_name or f"📋 {list_name_from_api or list_slug or list_id}"
             playlist_id = await emby.recreate_playlist(
                 final_name, emby_ids, user_id=emby_user_id,
             )
-            # Set Overview (description) on the playlist item
             if playlist_id and description:
                 await emby.set_playlist_overview(
-                    playlist_id, description,
-                    user_id=emby_user_id,
+                    playlist_id, description, user_id=emby_user_id,
                 )
-            log.info("simkl_list.imported", slug=list_slug, name=final_name,
-                     matched=len(emby_ids), unmatched=len(unmatched))
+            log.info("simkl_list.imported", list_id=list_id, slug=list_slug,
+                     name=final_name, matched=len(emby_ids), unmatched=len(unmatched))
     finally:
         await emby.close()
 
@@ -186,7 +233,7 @@ async def import_simkl_list(payload: dict, _user: User = Depends(get_current_use
         "status": "ok",
         "matched": len(emby_ids),
         "unmatched": len(unmatched),
-        "unmatched_items": unmatched[:20],  # cap to avoid huge responses
+        "unmatched_items": unmatched[:20],
         "playlist_id": playlist_id,
     }
 
@@ -291,7 +338,11 @@ async def remote_play(request: Request, db: AsyncSession = Depends(get_db), _use
     # Simkl slug → resolve via Simkl API to get provider IDs
     if not matches and ids.get("simkl_slug") and user.simkl_access_token:
         try:
-            simkl = SimklClient(access_token=user.simkl_access_token)
+            simkl = SimklClient(
+                access_token=user.simkl_access_token,
+                refresh_token=user.simkl_refresh_token,
+                token_expires=user.simkl_token_expires,
+            )
             kind = "movie" if media_type == "movie" else "show"
             results = await simkl.search(query=ids["simkl_slug"], kind=kind)
             await simkl.close()
@@ -507,6 +558,7 @@ async def get_playback_sync(
     # Fetch Simkl playback progress
     simkl = SimklClient(
         access_token=user.simkl_access_token,
+        refresh_token=user.simkl_refresh_token,
         token_expires=user.simkl_token_expires,
     )
 
@@ -655,6 +707,7 @@ async def delete_simkl_playback(
 
     simkl = SimklClient(
         access_token=user.simkl_access_token,
+        refresh_token=user.simkl_refresh_token,
         token_expires=user.simkl_token_expires,
     )
 
@@ -952,6 +1005,7 @@ async def get_history_recommendations(
     if user.simkl_access_token:
         simkl = SimklClient(
             access_token=user.simkl_access_token,
+            refresh_token=user.simkl_refresh_token,
             token_expires=user.simkl_token_expires,
         )
         try:
@@ -1084,6 +1138,7 @@ async def sync_watchlist_local(
         try:
             simkl = SimklClient(
                 access_token=current_user.simkl_access_token,
+                refresh_token=current_user.simkl_refresh_token,
                 token_expires=current_user.simkl_token_expires,
             )
             try:

@@ -236,6 +236,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     async def _get_simkl_client():
         return SimklClient(
             access_token=user.simkl_access_token,
+            refresh_token=user.simkl_refresh_token,
             token_expires=user.simkl_token_expires,
         )
 
@@ -330,7 +331,6 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     if val:
                         result[key.lower()] = int(val) if key != "Imdb" else val
                 if result:
-                    log.debug("webhook.series_ids_from_cache", series=series_name, ids=result)
                     return result
 
         # Level 3: Emby API lookup by SeriesId
@@ -1161,6 +1161,7 @@ async def emby_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     try:
                         simkl = SimklClient(
                             access_token=lu.simkl_access_token,
+                            refresh_token=lu.simkl_refresh_token,
                             token_expires=lu.simkl_token_expires,
                         )
 

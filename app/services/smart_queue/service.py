@@ -215,6 +215,7 @@ class SmartQueueService:
 
         simkl = SimklClient(
             access_token=user.simkl_access_token,
+            refresh_token=user.simkl_refresh_token,
             token_expires=user.simkl_token_expires,
         )
         try:
@@ -240,8 +241,7 @@ class SmartQueueService:
             for c in candidates:
                 tid = str(c.get("simkl_id", ""))
                 if tid and tid in watched_movie_ids and c.get("item_type") == "movie":
-                    log.debug("smart_queue.candidate_filtered",
-                              title=c.get("title"), simkl_id=tid, source=c.get("source"))
+                    pass  # filtered — count reported in filtered_watched summary
                 else:
                     filtered.append(c)
             candidates = filtered
@@ -1328,9 +1328,12 @@ class SmartQueueService:
         # Set of Emby IDs already in queue
         existing_emby_ids = {item.emby_item_id for item in current_items}
 
-        simkl = SimklClient(access_token=user.simkl_access_token)
+        simkl = SimklClient(
+            access_token=user.simkl_access_token,
+            refresh_token=user.simkl_refresh_token,
+            token_expires=user.simkl_token_expires,
+        )
         try:
-            # Get watched history to exclude
             watched_ids = await self._get_watched_simkl_ids(simkl)
 
             weights = await self._load_weights(user_id)
@@ -1483,14 +1486,10 @@ class SmartQueueService:
                         unplayed = user_data.get("UnplayedItemCount", 1)
                         if unplayed == 0:
                             fully_watched_shows.add(eid)
-                            log.debug("smart_queue.show_fully_watched",
-                                      title=item.get("Name"), emby_id=eid)
                     else:
                         # Movie (or other): check simple Played flag
                         if user_data.get("Played", False):
                             played_set.add(eid)
-                            log.debug("smart_queue.movie_played_in_emby",
-                                      title=item.get("Name"), emby_id=eid)
             except Exception as e:
                 log.warning("smart_queue.emby_played_check_failed",
                             error=str(e)[:120])
@@ -1500,13 +1499,7 @@ class SmartQueueService:
         result = []
         for c in candidates:
             eid = c.get("_resolved_emby_id")
-            if eid and eid in played_set:
-                log.info("smart_queue.emby_played_filtered",
-                         title=c.get("title"), emby_id=eid)
-                continue
-            if eid and eid in fully_watched_shows:
-                log.info("smart_queue.show_fully_watched_filtered",
-                         title=c.get("title"), emby_id=eid)
+            if eid and (eid in played_set or eid in fully_watched_shows):
                 continue
             result.append(c)
 

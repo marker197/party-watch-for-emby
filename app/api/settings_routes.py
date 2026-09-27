@@ -608,11 +608,13 @@ async def restore_db_backup(request: Request, _user: User = Depends(get_current_
 class SettingsRequest(BaseModel):
     simkl_client_id: str = None
     simkl_client_secret: str = None
+    simkl_client_id_v2: str = None
     emby_url: str = None
     emby_api_key: str = None
     cron_smart_queue: str = None
     cron_ml_retrain: str = None
     cron_universe_scan: str = None
+    watchlist_sync_interval: int = None
     features: dict = None
 
 
@@ -620,14 +622,22 @@ class SettingsRequest(BaseModel):
 @router.get("/api/settings")
 async def read_settings(db: AsyncSession = Depends(get_db)):
     """Read current settings — DB overrides, .env fallbacks."""
+    # V2 client ID — check DB first, then .env
+    v2_raw = await _get_setting(db, "simkl_client_id_v2", "")
+    if not v2_raw:
+        v2_raw = os.getenv("SIMKL_CLIENT_ID_V2", "")
+    v2_masked = (v2_raw[:8] + "****") if v2_raw else ""
+
     return {
         "simkl_client_id": os.getenv("SIMKL_CLIENT_ID", "")[:8] + "****" if os.getenv("SIMKL_CLIENT_ID") else "",
         "simkl_client_secret": os.getenv("SIMKL_CLIENT_SECRET", "")[:8] + "****" if os.getenv("SIMKL_CLIENT_SECRET") else "",
+        "simkl_client_id_v2": v2_masked,
         "emby_url": os.getenv("EMBY_URL", ""),
         "emby_api_key": os.getenv("EMBY_API_KEY", "")[:8] + "****" if os.getenv("EMBY_API_KEY") else "",
         "cron_smart_queue": await _get_setting(db, "cron_smart_queue", os.getenv("SMART_QUEUE_CRON", "0 2 * * *")),
         "cron_ml_retrain": await _get_setting(db, "cron_ml_retrain", os.getenv("ML_RETRAIN_CRON", "0 4 * * 1")),
         "cron_universe_scan": await _get_setting(db, "cron_universe_scan", os.getenv("UNIVERSE_SCAN_CRON", "0 3 * * 0")),
+        "watchlist_sync_interval": int(await _get_setting(db, "watchlist_sync_interval", "360")),
         "features": {
             "smart_queue": (await _get_setting(db, "feature_smart_queue", os.getenv("ENABLE_SMART_QUEUE", "true"))).lower() == "true",
             "ml_predictor": (await _get_setting(db, "feature_ml_predictor", os.getenv("ENABLE_ML_PREDICTOR", "true"))).lower() == "true",
@@ -645,6 +655,14 @@ async def update_settings(request: SettingsRequest, db: AsyncSession = Depends(g
 
     saved = []
 
+    # Simkl V2 Client ID — persist to DB + Redis + update in-memory
+    if request.simkl_client_id_v2 is not None and not _is_masked(request.simkl_client_id_v2):
+        v2_val = request.simkl_client_id_v2.strip()
+        await _put_setting(db, "simkl_client_id_v2", v2_val)
+        await secure_set("simkl_client_id_v2", v2_val)
+        settings.simkl_client_id_v2 = v2_val
+        saved.append("simkl_client_id_v2")
+
     # Scheduler cron settings — persist and reschedule
     cron_map = {
         "cron_smart_queue": ("smart_queue", request.cron_smart_queue),
@@ -656,6 +674,14 @@ async def update_settings(request: SettingsRequest, db: AsyncSession = Depends(g
             await _put_setting(db, db_key, cron_val)
             reschedule_job(job_id, cron_val)
             saved.append(db_key)
+
+    # Watchlist sync interval (minutes, 0 = paused)
+    if request.watchlist_sync_interval is not None:
+        from app.main import reschedule_watchlist_sync
+        minutes = max(0, int(request.watchlist_sync_interval))
+        await _put_setting(db, "watchlist_sync_interval", str(minutes))
+        reschedule_watchlist_sync(minutes)
+        saved.append("watchlist_sync_interval")
 
     # Feature toggles — persist to DB and update in-memory settings
     if request.features and isinstance(request.features, dict):
@@ -722,13 +748,14 @@ async def test_connection(body: TestConnectionRequest, _user: User = Depends(get
 
 @router.post("/api/settings/reset-oauth")
 async def reset_oauth(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
-    """Clear all stored Simkl OAuth tokens (users must re-link)."""
+    """Clear all stored Simkl OAuth tokens (V1 + V2). Users must re-link."""
     users = (await db.execute(select(User))).scalars().all()
     for user in users:
         user.simkl_access_token = None
+        user.simkl_refresh_token = None
         user.simkl_token_expires = None
     await db.commit()
-    return {"status": "ok", "message": f"OAuth tokens cleared for {len(users)} user(s). Re-link on the Link page."}
+    return {"status": "ok", "message": f"OAuth tokens (V1 + V2) cleared for {len(users)} user(s). Re-link on the Link page."}
 
 
 @router.post("/api/settings/factory-reset")
@@ -1017,3 +1044,45 @@ async def test_tmdb_key(payload: dict, _user: User = Depends(get_current_user)):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+
+@router.get("/api/simkl/usage")
+async def simkl_usage(db: AsyncSession = Depends(get_db)):
+    """Today's Simkl API usage vs the account's daily allowance."""
+    from app.utils.simkl_client import (
+        SimklClient, usage_today, daily_limit, quota_blocked_seconds,
+        _ACCOUNT_TYPE_KEY,
+    )
+    from app.utils.redis_cache import get_redis
+
+    r = await get_redis()
+    acct = await r.get(_ACCOUNT_TYPE_KEY)
+    if not acct:
+        # Linked before tier detection existed — look it up once and store it.
+        user = (await db.execute(
+            select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
+        )).scalars().first()
+        if user and not await quota_blocked_seconds():
+            simkl = SimklClient(access_token=user.simkl_access_token,
+                                refresh_token=user.simkl_refresh_token,
+                                token_expires=user.simkl_token_expires)
+            try:
+                me = await simkl.get_me()
+                acct_type = str((me.get("account") or {}).get("type") or "free").lower()
+                await r.set(_ACCOUNT_TYPE_KEY, acct_type)
+                await _put_setting(db, "simkl_account_type", acct_type)
+                await db.commit()
+            except Exception as e:
+                log.warning("simkl_usage.account_type_lookup_failed", error=str(e)[:120])
+            finally:
+                await simkl.close()
+        acct = await r.get(_ACCOUNT_TYPE_KEY)
+
+    acct = (acct.decode() if isinstance(acct, bytes) else acct) or "free"
+    return {
+        "used": await usage_today(),
+        "limit": await daily_limit(),
+        "account_type": acct,
+        "blocked_seconds": await quota_blocked_seconds(),
+    }

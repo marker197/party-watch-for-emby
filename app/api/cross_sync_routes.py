@@ -47,6 +47,7 @@ async def mdblist_sync_status(db: AsyncSession = Depends(get_db)):
 
     simkl = SimklClient(
         access_token=user.simkl_access_token,
+        refresh_token=user.simkl_refresh_token,
         token_expires=user.simkl_token_expires,
     )
     mdb = MDBListClient(api_key=key)
@@ -170,6 +171,7 @@ async def sync_simkl_to_mdblist(request: Request, db: AsyncSession = Depends(get
 
     simkl = SimklClient(
         access_token=user.simkl_access_token,
+        refresh_token=user.simkl_refresh_token,
         token_expires=user.simkl_token_expires,
     )
     mdb = MDBListClient(api_key=key)
@@ -385,6 +387,7 @@ async def sync_mdblist_to_simkl(request: Request, db: AsyncSession = Depends(get
     mdb = MDBListClient(api_key=key)
     simkl = SimklClient(
         access_token=user.simkl_access_token,
+        refresh_token=user.simkl_refresh_token,
         token_expires=user.simkl_token_expires,
     )
 

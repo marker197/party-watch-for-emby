@@ -232,6 +232,7 @@ async def trakt_import_push(
             await _progress("Pushing ratings to Simkl…", "ratings", 30)
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
+                refresh_token=user.simkl_refresh_token,
                 token_expires=user.simkl_token_expires,
             )
             simkl_ok = 0
@@ -391,6 +392,7 @@ async def trakt_import_push(
             await _progress("Pushing watched movies to Simkl…", "watched", 30)
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
+                refresh_token=user.simkl_refresh_token,
                 token_expires=user.simkl_token_expires,
             )
             simkl_ok = 0
@@ -480,6 +482,7 @@ async def trakt_import_push(
         if has_simkl and watchlist:
             simkl = SimklClient(
                 access_token=user.simkl_access_token,
+                refresh_token=user.simkl_refresh_token,
                 token_expires=user.simkl_token_expires,
             )
             wl_items = []

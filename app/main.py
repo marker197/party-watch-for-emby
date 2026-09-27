@@ -226,7 +226,7 @@ async def lifespan(app: FastAPI):
         async with async_session() as db:
             result = await db.execute(sa_text("SELECT version_num FROM alembic_version LIMIT 1"))
             row = result.first()
-            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres", "005_watch_history_progress", "006_dedup_watch_history", "007_simkl", "008_user_rating", "009_episode_ratings", "010_watchlist_items", "011_dismissed_issues", "012_watch_history_null_dedup", "013_job_runs"):
+            if row and row[0] not in ("001_initial", "002_rewatch", "003_watch_history", "004_watch_history_genres", "005_watch_history_progress", "006_dedup_watch_history", "007_simkl", "008_user_rating", "009_episode_ratings", "010_watchlist_items", "011_dismissed_issues", "012_watch_history_null_dedup", "013_job_runs", "014_simkl_v2_auth", "015_simkl_v2_consolidate"):
                 # Pre-squash revision — jump to current head
                 await db.execute(sa_text("UPDATE alembic_version SET version_num = '007_simkl'"))
                 await db.commit()
@@ -270,6 +270,20 @@ async def lifespan(app: FastAPI):
                     log.info("suite.loaded_from_db", key="simkl_client_id")
         except Exception as e:
             log.warning("suite.simkl_creds_load_skipped", error=str(e)[:200])
+
+    # Load wizard/settings-saved Simkl V2 client ID from DB if not in env
+    if not settings.simkl_client_id_v2:
+        try:
+            from app.models.schema import AppSetting as _AppSetting3
+            async with async_session() as db:
+                row = (await db.execute(
+                    select(_AppSetting3).where(_AppSetting3.key == "simkl_client_id_v2")
+                )).scalar_one_or_none()
+                if row and row.value:
+                    settings.simkl_client_id_v2 = row.value
+                    log.info("suite.loaded_from_db", key="simkl_client_id_v2")
+        except Exception as e:
+            log.warning("suite.simkl_v2_creds_load_skipped", error=str(e)[:200])
 
     # Encrypt any plaintext secrets already in Redis (one-time migration)
     try:
@@ -519,6 +533,7 @@ async def _load_schedule_overrides():
             rows = (await db.execute(
                 select(AppSetting).where(AppSetting.key.in_([
                     "cron_smart_queue", "cron_ml_retrain", "cron_universe_scan",
+                    "watchlist_sync_interval", "simkl_account_type",
                 ]))
             )).scalars().all()
         overrides = {r.key: r.value for r in rows}
@@ -528,6 +543,19 @@ async def _load_schedule_overrides():
             settings.ml_retrain_cron = overrides["cron_ml_retrain"]
         if "cron_universe_scan" in overrides:
             settings.universe_scan_cron = overrides["cron_universe_scan"]
+        global _watchlist_interval_min
+        if "watchlist_sync_interval" in overrides:
+            try:
+                _watchlist_interval_min = max(0, int(overrides["watchlist_sync_interval"]))
+            except ValueError:
+                pass
+        if "simkl_account_type" in overrides:
+            try:
+                from app.utils.redis_cache import get_redis
+                await (await get_redis()).set("simkl_account_type",
+                                              overrides["simkl_account_type"])
+            except Exception:
+                pass
         if overrides:
             log.info("suite.schedule_overrides_loaded", keys=list(overrides.keys()))
     except Exception as e:
@@ -691,6 +719,37 @@ async def _tracked_job(job_id: str, func):
 
 # Map of job_id → cron expression for display
 _job_crons: dict[str, str] = {}
+
+# Watchlist sync interval in minutes (0 = paused). Default 6h — Simkl's docs
+# ask apps not to run tight background polling timers, and every run spends
+# part of the user's daily allowance (Free 500 / Pro 1,000 / VIP 10,000).
+_watchlist_interval_min: int = 360
+
+
+def _interval_label(minutes: int) -> str:
+    if minutes <= 0:
+        return "paused"
+    return f"every {minutes // 60}h" if minutes % 60 == 0 else f"every {minutes}m"
+
+
+def reschedule_watchlist_sync(minutes: int):
+    """Apply a new watchlist-sync interval to the live scheduler."""
+    global _watchlist_interval_min
+    _watchlist_interval_min = max(0, int(minutes))
+    try:
+        if _watchlist_interval_min == 0:
+            scheduler.pause_job("watchlist_sync")
+        else:
+            scheduler.reschedule_job(
+                "watchlist_sync",
+                trigger=IntervalTrigger(minutes=_watchlist_interval_min),
+            )
+            scheduler.resume_job("watchlist_sync")
+        _job_crons["watchlist_sync"] = _interval_label(_watchlist_interval_min)
+        log.info("scheduler.job_rescheduled", job="watchlist_sync",
+                 interval=_job_crons["watchlist_sync"])
+    except Exception as e:
+        log.warning("reschedule.failed", job="watchlist_sync", error=str(e))
 
 
 def reschedule_job(job_id: str, cron_expr: str):
@@ -937,18 +996,33 @@ def _register_jobs():
     # refreshes Airing Soon so new watchlisted premieres appear.
     from app.services.watchlist_sync.service import WatchlistSyncService
     _wls_svc = WatchlistSyncService()
-    _job_crons["watchlist_sync"] = "*/30 * * * *"
+    _job_crons["watchlist_sync"] = _interval_label(_watchlist_interval_min)
 
     async def _run_watchlist_sync(_fn=_wls_svc.run_for_all_users):
+        # Leave the last 25% of the daily Simkl allowance for interactive
+        # pages (Library Health, Playlists, etc.) instead of spending it here.
+        from app.utils.simkl_client import (
+            budget_allows_background, usage_today, daily_limit,
+        )
+        if not await budget_allows_background():
+            log.info("watchlist_sync.skipped_budget",
+                     used_today=await usage_today(), limit=await daily_limit())
+            return
         await _tracked_job("watchlist_sync", _fn)
 
     scheduler.add_job(
         _run_watchlist_sync,
-        IntervalTrigger(minutes=30),
+        IntervalTrigger(minutes=_watchlist_interval_min or 360),
         id="watchlist_sync",
         replace_existing=True,
     )
-    log.info("scheduler.job_added", job="watchlist_sync", interval="30m")
+    if _watchlist_interval_min == 0:
+        try:
+            scheduler.pause_job("watchlist_sync")
+        except Exception as e:
+            log.warning("scheduler.pause_failed", job="watchlist_sync", error=str(e))
+    log.info("scheduler.job_added", job="watchlist_sync",
+             interval=_job_crons["watchlist_sync"])
 
     # MDBList Sync — daily at 3:15 AM (after watchlist sync at 2:30 AM)
     # Re-imports all auto-synced MDBList lists into Emby playlists.

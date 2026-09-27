@@ -21,8 +21,10 @@ class User(Base):
     emby_user_id = Column(String(64), unique=True, nullable=False, index=True)
     emby_username = Column(String(128))
     simkl_username = Column(String(128))
-    simkl_access_token = Column(Text)
-    simkl_token_expires = Column(DateTime)
+    simkl_access_token = Column(Text)       # V2 access token (7-day, refreshable)
+    simkl_refresh_token = Column(Text)      # V2 refresh token (180-day, rolling)
+    simkl_token_expires = Column(DateTime)  # V2 token expiry
+    simkl_user_id = Column(Integer)         # numeric Simkl user ID for /lists/user/{id}
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 

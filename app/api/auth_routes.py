@@ -298,12 +298,16 @@ class LinkPollRequest(BaseModel):
 @router.post("/auth/simkl/device-code")
 @limiter.limit(LIMITS["auth"])
 async def simkl_device_code(request: Request, db: AsyncSession = Depends(get_db)):
-    """Start Simkl device-code flow.  Returns user_code + verification_url."""
+    """Start Simkl V2 device-code flow.  Returns device_code + user_code + verification_uri."""
     body = await request.json()
     emby_user_id = body.get("emby_user_id", "").strip()
     emby_username = body.get("emby_username", "").strip()
     if not emby_user_id:
         raise HTTPException(400, "emby_user_id is required")
+
+    v2_client_id = settings.simkl_client_id_v2
+    if not v2_client_id:
+        raise HTTPException(400, "SIMKL_CLIENT_ID_V2 not configured — add it in Settings")
 
     user = (await db.execute(
         select(User).where(User.emby_user_id == emby_user_id)
@@ -317,32 +321,36 @@ async def simkl_device_code(request: Request, db: AsyncSession = Depends(get_db)
 
     simkl = SimklClient()
     try:
-        result = await simkl.get_pin_code()
+        result = await simkl.get_device_code_v2(v2_client_id)
     finally:
         await simkl.close()
 
     return {
+        "device_code": result["device_code"],
         "user_code": result["user_code"],
-        "verification_url": result["verification_url"],
-        "device_code": result["user_code"],   # Simkl polls with user_code, not device_code
-        "expires_in": result["expires_in"],
-        "interval": result["interval"],
+        "verification_url": result.get("verification_uri", "https://simkl.com/pin"),
+        "expires_in": result.get("expires_in", 900),
+        "interval": result.get("interval", 5),
     }
 
 
 @router.post("/auth/simkl/poll")
 @limiter.limit(LIMITS["auth"])
 async def simkl_poll(request: Request, db: AsyncSession = Depends(get_db)):
-    """Poll for completed Simkl authorisation."""
+    """Poll for completed Simkl V2 device authorisation."""
     body = await request.json()
     device_code = body.get("device_code", "").strip()
     emby_user_id = body.get("emby_user_id", "").strip()
     if not device_code or not emby_user_id:
         raise HTTPException(400, "device_code and emby_user_id are required")
 
+    v2_client_id = settings.simkl_client_id_v2
+    if not v2_client_id:
+        raise HTTPException(400, "SIMKL_CLIENT_ID_V2 not configured")
+
     simkl = SimklClient()
     try:
-        token_data = await simkl.poll_pin_token(device_code)
+        token_data = await simkl.poll_device_token_v2(v2_client_id, None, device_code)
     finally:
         await simkl.close()
 
@@ -352,45 +360,81 @@ async def simkl_poll(request: Request, db: AsyncSession = Depends(get_db)):
     user = (await db.execute(
         select(User).where(User.emby_user_id == emby_user_id)
     )).scalar_one_or_none()
-
     if not user:
         raise HTTPException(404, "User not found — call device-code first")
 
+    # Store V2 tokens in the primary columns
     user.simkl_access_token = token_data["access_token"]
-    token_expires_in = token_data.get("expires_in", 157680000)  # 5yr default per Simkl docs
-    user.simkl_token_expires = (datetime.now(timezone.utc) + timedelta(seconds=token_expires_in)).replace(tzinfo=None)
+    user.simkl_refresh_token = token_data.get("refresh_token", "")
+    expires_in = token_data.get("expires_in", 604800)  # 7 days default
+    user.simkl_token_expires = (
+        datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+    ).replace(tzinfo=None)
 
-    # Log token info for debugging auth issues
-    tok = token_data["access_token"]
-    tok_hint = f"{tok[:8]}…{tok[-4:]}" if len(tok) > 12 else tok[:8]
-    log.info("simkl_poll.token_received", **{"token_hint": tok_hint, "expires_in": token_expires_in,
-                       "user_id": user.id, "emby_user_id": emby_user_id})
-
-    # fetch simkl username
+    # Fetch Simkl user ID + username using the new token
     authed = SimklClient(access_token=token_data["access_token"])
     try:
         me = await authed.get_me()
-        user.simkl_username = me.get("user", {}).get("username", "")
+        # Dump response structure for debugging
+        import json as _json
+        me_summary = _json.dumps(me, default=str)[:500]
+        log.info("simkl_poll.get_me_raw", response=me_summary)
+
+        # Try nested user.ids.simkl (V1 format), then account.id, then top-level
+        user_info = me.get("user", {})
+        account_info = me.get("account", {})
+        simkl_uid = (
+            user_info.get("ids", {}).get("simkl", 0)
+            or user_info.get("id", 0)
+            or account_info.get("id", 0)
+            or me.get("ids", {}).get("simkl", 0)
+            or me.get("id", 0)
+        )
+        if simkl_uid:
+            user.simkl_user_id = int(simkl_uid)
+        user.simkl_username = (
+            user_info.get("username", "")
+            or user_info.get("name", "")
+            or account_info.get("username", "")
+            or account_info.get("name", "")
+            or me.get("username", "")
+            or me.get("name", "")
+        )
+        # Subscription tier sets the daily API allowance (free/pro/vip)
+        acct_type = str(account_info.get("type") or "free").lower()
+        try:
+            from app.utils.redis_cache import get_redis
+            await (await get_redis()).set("simkl_account_type", acct_type)
+            row = (await db.execute(
+                select(AppSetting).where(AppSetting.key == "simkl_account_type")
+            )).scalar_one_or_none()
+            if row:
+                row.value = acct_type
+            else:
+                db.add(AppSetting(key="simkl_account_type", value=acct_type))
+        except Exception as e:
+            log.warning("simkl_poll.account_type_store_failed", error=str(e)[:120])
+        log.info("simkl_poll.parsed_user", simkl_uid=simkl_uid,
+                 username=user.simkl_username, account_type=acct_type)
+    except Exception as e:
+        log.warning("simkl_poll.get_me_failed", error=str(e)[:300])
     finally:
         await authed.close()
 
     await db.commit()
 
-    # Post-commit verification: re-read from DB to confirm persistence
-    await db.refresh(user)
-    stored_hint = ""
-    if user.simkl_access_token:
-        st = user.simkl_access_token
-        stored_hint = f"{st[:8]}…{st[-4:]}" if len(st) > 12 else st[:8]
-    log.info("simkl_poll.token_persisted", **{"stored_hint": stored_hint, "match": stored_hint == tok_hint,
-                       "expires": str(user.simkl_token_expires)})
+    tok = token_data["access_token"]
+    tok_hint = f"{tok[:8]}\u2026{tok[-4:]}" if len(tok) > 12 else tok[:8]
+    log.info("simkl_poll.linked", token_hint=tok_hint,
+             simkl_user_id=user.simkl_user_id, expires_in=expires_in)
 
-    # ✅ SECURITY: Issue JWT tokens to user
+    # Issue JWT tokens to user
     tokens = await issue_tokens(user)
 
     return {
         "status": "linked",
         "simkl_username": user.simkl_username,
+        "simkl_user_id": user.simkl_user_id,
         "access_token": tokens.access_token,
         "refresh_token": tokens.refresh_token,
         "token_type": tokens.token_type,
@@ -527,3 +571,64 @@ async def list_all_emby_users(db: AsyncSession = Depends(get_db)):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Simkl Auth Status
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/auth/simkl/status")
+async def simkl_status_check(db: AsyncSession = Depends(get_db)):
+    """Check Simkl auth status: configured, linked, token health."""
+    v2_configured = bool(settings.simkl_client_id_v2)
+
+    # Find any user with a Simkl link
+    user = (await db.execute(
+        select(User).where(User.simkl_access_token.isnot(None)).order_by(User.id)
+    )).scalars().first()
+
+    if not user:
+        return {
+            "v2_configured": v2_configured,
+            "linked": False,
+            "simkl_user_id": None,
+            "simkl_username": None,
+        }
+
+    expired = False
+    days_left = None
+    if user.simkl_token_expires:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        delta = user.simkl_token_expires - now
+        days_left = max(0, delta.days)
+        expired = delta.total_seconds() <= 0
+
+    return {
+        "v2_configured": v2_configured,
+        "linked": True,
+        "expired": expired,
+        "days_left": days_left,
+        "has_refresh_token": bool(user.simkl_refresh_token),
+        "simkl_user_id": user.simkl_user_id,
+        "simkl_username": user.simkl_username,
+        "emby_user_id": user.emby_user_id,
+    }
+
+
+# Keep legacy V2 URL aliases for frontend compat during transition
+@router.get("/auth/simkl-v2/status")
+async def simkl_v2_status_compat(db: AsyncSession = Depends(get_db)):
+    """Legacy alias — redirects to /auth/simkl/status."""
+    return await simkl_status_check(db)
+
+
+@router.post("/auth/simkl-v2/device-code")
+@limiter.limit(LIMITS["auth"])
+async def simkl_v2_device_code_compat(request: Request, db: AsyncSession = Depends(get_db)):
+    """Legacy alias — redirects to /auth/simkl/device-code."""
+    return await simkl_device_code(request, db)
+
+
+@router.post("/auth/simkl-v2/poll")
+@limiter.limit(LIMITS["auth"])
+async def simkl_v2_poll_compat(request: Request, db: AsyncSession = Depends(get_db)):
+    """Legacy alias — redirects to /auth/simkl/poll."""
+    return await simkl_poll(request, db)
