@@ -235,7 +235,7 @@
 <nav class="sidebar" id="sidebar">
   <div class="sidebar-brand">
     <div class="title">Emby-Simkl Suite</div>
-    <div class="subtitle">User Guide v2.2.0</div>
+    <div class="subtitle">User Guide v2.3.0</div>
     <a href="/" style="display:inline-block;margin-top:10px;font-size:0.78rem;color:var(--accent-light);text-decoration:none;padding:4px 10px;border:1px solid var(--border);border-radius:5px;" onmouseover="this.style.background='var(--surface-hover)'" onmouseout="this.style.background='transparent'">← Back to Dashboard</a>
   </div>
 
@@ -340,7 +340,15 @@
   <div class="section">
     <span class="section-anchor" id="link-simkl"></span>
     <h2>Link Simkl Account</h2>
-    <p>Used during initial setup when Simkl is your chosen provider. Enter your Emby User ID and username, click <span class="btn-label">Get Code</span>, then follow the on-screen instructions to authorise via Simkl. You won't need this again unless you add a new user.</p>
+    <p>Used during initial setup when Simkl is your chosen provider. Enter your Emby User ID and username, then click <span class="btn-label">Get Code</span>. The suite requests a device code from Simkl using V2 OAuth2 with <code style="background:var(--surface-hover);padding:2px 6px;border-radius:4px;">media:read media:write</code> scope.</p>
+    <div class="feature">
+      <p><strong>1.</strong> Enter your Emby User ID and username in the fields.</p>
+      <p><strong>2.</strong> Click <span class="btn-label">Get Code</span> — the suite shows a verification URL and a user code.</p>
+      <p><strong>3.</strong> Go to the verification URL in your browser and enter the code on Simkl's site.</p>
+      <p><strong>4.</strong> The suite polls automatically every 5 seconds. Once Simkl confirms, you'll see "Linked as [username]" and the user appears in the linked users list below.</p>
+    </div>
+    <p>Tokens last 7 days and auto-refresh using a 180-day rolling refresh token. The suite handles renewal in the background — you should never need to re-link unless you revoke access on Simkl's site.</p>
+    <p>If you see 403 errors after an upgrade, re-link to get a token with the correct write scope.</p>
     <p>If you're using MDBList only, skip this section — just enter your API key in Settings instead.</p>
   </div>
 
@@ -434,7 +442,7 @@
       <p><strong>Arr → Watchlist</strong> — takes items that are monitored but don't have files yet, and adds them to your watchlist. This means they show up in Airing Soon and your smart queue.</p>
       <p><strong>Watchlist → Arr</strong> — takes items from your watchlist and adds them to Radarr or Sonarr if they're not already there.</p>
     </div>
-    <p>Both directions can be toggled independently in Settings. The sync runs at startup, daily at 2:30 AM, and in the background when you open Airing Soon (throttled to once every 30 minutes).</p>
+    <p>Both directions can be toggled independently in Settings. The sync runs at startup and on a configurable interval (default every 6 hours — adjustable in Settings → Schedules). Opening the Airing Soon card also triggers a background sync, throttled to once per interval.</p>
     <p>The <span class="btn-label">Watchlist Sync</span> button on the dashboard triggers a manual run.</p>
   </div>
 
@@ -442,6 +450,7 @@
     <span class="section-anchor" id="scheduler"></span>
     <h2>Scheduler</h2>
     <p>The scheduler grid on the dashboard shows all background jobs, their schedule, and when they last ran. Jobs include the library cache rebuild, smart queue refresh, ML model retraining, universe scan, bias analysis, watchlist sync, and library health scan. Click <span class="btn-label">Show ▾</span> to expand the grid and <span class="btn-label">Hide ▴</span> to collapse it. The grid refreshes every 60 seconds while visible.</p>
+    <p>Cron schedules for most jobs are configurable in Settings → Schedules. The watchlist sync uses an interval (hourly, 2h, 3h, 6h, 12h, daily, or paused) instead of a cron expression — also set in Settings → Schedules.</p>
   </div>
 
   <div class="section">
@@ -889,7 +898,7 @@
 <!-- PAGE: SETTINGS -->
 <!-- ════════════════════════════════════════════════════════════════════ -->
 
-<div class="page" id="page-settings" data-sections="set-provider,set-mdblist,set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-simkl-import,set-watch-history,set-trakt-import,set-notifications,set-danger">
+<div class="page" id="page-settings" data-sections="set-provider,set-simkl,set-mdblist,set-emby,set-toggles,set-queue-opts,set-blocklist,set-scheduler,set-backup,set-radarr,set-sonarr,set-sabnzbd,set-watchlist-sync,set-tmdb,set-simkl-import,set-watch-history,set-trakt-import,set-notifications,set-danger">
 
   <h1 class="page-title">⚙️ Settings</h1>
   <p class="page-intro">Configure connections, features, schedules, and integrations.</p>
@@ -916,6 +925,20 @@
   </div>
 
   <div class="section">
+    <span class="section-anchor" id="set-simkl"></span>
+    <h2>Simkl</h2>
+    <p>Only shown when Simkl is selected as a provider. Enter your Simkl V2 Client ID (from <a href="https://simkl.com/settings/developer/" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none;">simkl.com/settings/developer</a>) and save. You don't need a Client Secret for V2 auth.</p>
+    <p>A connection badge shows whether your account is linked. If you see "re-link needed", click the Link button — this usually means a token expired or the suite was upgraded and needs a token with the correct V2 write scope.</p>
+
+    <h3>Simkl Custom Lists</h3>
+    <p>When linked, the suite shows your personal Simkl lists. Click <span class="btn-label">Import to Emby</span> to create an Emby playlist from any list. Items are matched against the library cache — unmatched items are reported. Custom Lists are currently import-only (Simkl → Emby) because the Simkl API doesn't yet support creating or modifying lists programmatically.</p>
+
+    <h3>API Usage Meter</h3>
+    <p>A progress bar shows your daily Simkl API usage against the per-account limit (500 for free, 1,000 for VIP, 10,000 for VIP+). The bar turns orange at 75% and red at 90%. When the daily limit is hit, a message shows the time remaining until reset (midnight US Eastern / 5 AM UK).</p>
+    <p>Background jobs reserve 25% of the daily budget for interactive page use. Cached results and Cloudflare-served endpoints don't count against the limit.</p>
+  </div>
+
+  <div class="section">
     <span class="section-anchor" id="set-toggles"></span>
     <h2>Feature Toggles</h2>
     <p>Toggle switches to enable or disable individual features: Smart Watch Queue, ML Rating Predictor, Universe Discovery, and Watch Party Sync. Disabled features stop their background jobs and hide their dashboard cards.</p>
@@ -937,6 +960,7 @@
     <span class="section-anchor" id="set-scheduler"></span>
     <h2>Scheduler</h2>
     <p>Set the time and frequency for each background job: Smart Queue refresh (default daily 2 AM), ML model retraining (default weekly Monday 4 AM), and Universe scan (default weekly Sunday 3 AM). All times are UTC.</p>
+    <p>The watchlist sync interval has its own dropdown (hourly, 2h, 3h, 6h, 12h, daily, or paused) instead of a cron expression. The default is every 6 hours — Simkl's documentation asks apps not to poll more frequently than this.</p>
   </div>
 
   <div class="section">
@@ -974,7 +998,7 @@
     <p>Bi-directional sync between your download managers and your Simkl or MDBList watchlist. When both providers are active, items are synced to both. Two independent toggles:</p>
     <p><strong>Arr → Watchlist</strong> — syncs monitored-but-missing Radarr/Sonarr items to your watchlist so they appear in Airing Soon.</p>
     <p><strong>Watchlist → Arr</strong> — auto-adds watchlist items to Radarr/Sonarr (uses first configured server).</p>
-    <p>Runs at startup, daily at 2:30 AM, and in the background when you open Airing Soon.</p>
+    <p>Runs at startup and on a configurable interval (default every 6 hours). Also triggers in the background when you open Airing Soon, throttled to once per interval. Adjust the interval in Settings → Schedules.</p>
   </div>
 
   <div class="section">
@@ -986,7 +1010,7 @@
   <div class="section">
     <span class="section-anchor" id="set-simkl-import"></span>
     <h2>Simkl List Import</h2>
-    <p>Displays your personal Simkl lists. Click <span class="btn-label">Import to Emby</span> next to any list to create an Emby playlist from it. Items are matched against your library cache — unmatched items are reported.</p>
+    <p>Displays your personal Simkl lists (also accessible from the Simkl section above). Click <span class="btn-label">Import to Emby</span> next to any list to create an Emby playlist from it. Items are matched against your library cache — unmatched items are reported. Two lists may show "premium only" on free accounts — this is expected Simkl behaviour.</p>
   </div>
 
   <div class="section">
@@ -1232,7 +1256,7 @@
     'detail-actions':'Action Buttons','detail-cast':'Cast & Crew',
     'detail-history':'Watch History','detail-keywords':'Keywords',
     // Settings
-    'set-provider':'Integration Provider','set-mdblist':'MDBList',
+    'set-provider':'Integration Provider','set-simkl':'Simkl','set-mdblist':'MDBList',
     'set-emby':'Emby','set-toggles':'Feature Toggles','set-queue-opts':'Queue Options',
     'set-blocklist':'Blocklist','set-scheduler':'Scheduler','set-backup':'Backup',
     'set-radarr':'Radarr','set-sonarr':'Sonarr','set-sabnzbd':'SABnzbd','set-watchlist-sync':'Watchlist Sync',
