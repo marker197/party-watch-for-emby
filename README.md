@@ -1,6 +1,6 @@
 # Emby-Simkl / MDblist Suite
 
-A self-hosted app that connects your Emby media server to your Trakt.tv account. It helps you decide what to watch next, predicts what you'll enjoy, organises movie universes, and lets you watch with friends.
+A self-hosted app that connects your Emby media server to your Simkl/mdblist account. It helps you decide what to watch next, predicts what you'll enjoy, organises movie universes, and lets you watch with friends.
 
 ---
 
@@ -14,11 +14,11 @@ If a show or movie on your queue isn't in your Emby library yet, you can send it
 
 ### Airing Soon
 
-Shows you what's coming up in the next two weeks for shows already in your library. Flags season premieres and finales so you don't miss anything. Also shows movies from your Trakt watchlist that are about to be released.
+Shows you what's coming up in the next two weeks for shows already in your library. Flags season premieres and finales so you don't miss anything. Also shows movies from your simkl/mdblist watchlist that are about to be released.
 
 ### ML Rating Predictor
 
-Learns from everything you've rated on Trakt, then predicts how much you'd enjoy the unwatched movies and shows sitting in your Emby library. Each prediction comes with an explanation of why it thinks you'll like (or dislike) something.
+Learns from everything you've rated on simkl/mdnblist, then predicts how much you'd enjoy the unwatched movies and shows sitting in your Emby library. Each prediction comes with an explanation of why it thinks you'll like (or dislike) something.
 
 ### Shared Universe Discovery
 
@@ -26,8 +26,7 @@ Finds movie and TV universes in your library (Marvel, Star Wars, etc.) and puts 
 
 ### Watch Party
 
-Start a watch party, share a code with friends, and everyone watches together in sync. Pause on one screen, it pauses on all screens. Send emoji reactions during playback. When the party ends, a summary of everyone's reactions gets posted to Trakt.
-
+Start a watch party, share a code with friends, and everyone watches together in sync. Pause on one screen, it pauses on all screens. Send emoji reactions during playback. When the party ends, a summary of everyone's reactions gets posted to mdblist.
 ---
 
 ## What You Need Before Installing
