@@ -1226,3 +1226,159 @@ async def publish_scrobble_misses_to_mdblist(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# MDBList Discussion / Comments
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# MDBList returns 404 when it doesn't recognise the (provider, type, id)
+# combination — e.g. an IMDB id it hasn't mapped, or an *episode* IMDB id
+# sent as a show.  Mirror the watch-party fallback: try every known id for
+# the item (series ids first for shows), then the opposite media type.
+
+
+async def _series_ids_from_emby(emby_id: str, user: User) -> dict:
+    """For an episode's Emby id, return the parent series' provider ids."""
+    if not emby_id:
+        return {}
+    emby = EmbyClient()
+    try:
+        uid = getattr(user, "emby_user_id", None)
+        items = await emby.get_items_by_ids([emby_id], user_id=uid)
+        if not items:
+            return {}
+        item = items[0]
+        if item.get("Type") == "Episode" and item.get("SeriesId"):
+            series = await emby.get_items_by_ids([item["SeriesId"]], user_id=uid)
+            item = series[0] if series else {}
+        elif item.get("Type") != "Series":
+            return {}
+        pids = item.get("ProviderIds") or {}
+        return {
+            "imdb": pids.get("Imdb") or pids.get("IMDB") or pids.get("imdb"),
+            "tmdb": pids.get("Tmdb") or pids.get("TMDB") or pids.get("tmdb"),
+        }
+    except Exception as exc:
+        log.debug("mdblist.discussion.series_lookup_failed", error=str(exc)[:120])
+        return {}
+    finally:
+        try:
+            await emby.close()
+        except Exception:
+            pass
+
+
+async def _discussion_candidates(
+    provider: str, media_type: str, media_id: str,
+    tmdb_id: str | None, emby_id: str | None, user: User,
+) -> list[tuple[str, str, str]]:
+    """Ordered, de-duplicated (provider, type, id) combos to try."""
+    media_type = "show" if media_type in ("show", "episode", "tv", "series") else "movie"
+    ids: list[tuple[str, str]] = []
+    if media_type == "show":
+        s = await _series_ids_from_emby(emby_id or "", user)
+        if s.get("imdb"):
+            ids.append(("imdb", str(s["imdb"])))
+        if s.get("tmdb"):
+            ids.append(("tmdb", str(s["tmdb"])))
+    if media_id:
+        ids.append((provider, media_id))
+    if tmdb_id:
+        ids.append(("tmdb", str(tmdb_id)))
+
+    other = "movie" if media_type == "show" else "show"
+    out: list[tuple[str, str, str]] = []
+    for mt in (media_type, other):
+        for prov, val in ids:
+            combo = (prov, mt, val)
+            if combo not in out:
+                out.append(combo)
+    return out
+
+
+def _is_404(exc: Exception) -> bool:
+    resp = getattr(exc, "response", None)
+    return getattr(resp, "status_code", None) == 404
+
+
+@router.get("/api/mdblist/discussion/{provider}/{media_type}/{media_id}")
+async def get_discussion(
+    provider: str,
+    media_type: str,
+    media_id: str,
+    tmdb_id: str | None = Query(None),
+    emby_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Fetch existing discussion comments for a media item from MDBList."""
+    key = await _get_mdblist_key(db)
+    if not key:
+        raise HTTPException(status_code=400, detail="MDBList API key not configured")
+
+    from app.utils.mdblist_client import MDBListClient
+
+    candidates = await _discussion_candidates(provider, media_type, media_id, tmdb_id, emby_id, user)
+    client = MDBListClient(api_key=key)
+    try:
+        for prov, mt, val in candidates:
+            try:
+                data = await client._get(f"/discussion/{prov}/{mt}/{val}")
+            except Exception as exc:
+                if _is_404(exc):
+                    continue
+                log.warning("mdblist.get_discussion.error", provider=prov, type=mt, id=val, error=str(exc)[:200])
+                continue
+            comments = data if isinstance(data, list) else (
+                (data or {}).get("comments") or (data or {}).get("items") or []
+            )
+            return {"status": "ok", "comments": comments, "target": {"provider": prov, "type": mt, "id": val}}
+        return {"status": "ok", "comments": [], "target": None}
+    finally:
+        await client.close()
+
+
+@router.post("/api/mdblist/discussion/{provider}/{media_type}/{media_id}")
+async def post_discussion(
+    provider: str,
+    media_type: str,
+    media_id: str,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Post a comment to MDBList discussion, falling back across known ids."""
+    key = await _get_mdblist_key(db)
+    if not key:
+        raise HTTPException(status_code=400, detail="MDBList API key not configured")
+
+    comment = (payload.get("content") or "").strip()
+    if not comment:
+        raise HTTPException(status_code=400, detail="Comment cannot be empty")
+
+    from app.utils.mdblist_client import MDBListClient
+
+    candidates = await _discussion_candidates(
+        provider, media_type, media_id,
+        payload.get("tmdb_id"), payload.get("emby_id"), user,
+    )
+    client = MDBListClient(api_key=key)
+    tried: list[str] = []
+    try:
+        for prov, mt, val in candidates:
+            tried.append(f"{prov}/{mt}/{val}")
+            try:
+                result = await client.post_discussion(prov, mt, val, comment)
+                log.info("mdblist.post_discussion.ok", provider=prov, type=mt, id=val, attempts=len(tried))
+                return {"status": "ok", "result": result, "target": {"provider": prov, "type": mt, "id": val}}
+            except Exception as exc:
+                if _is_404(exc):
+                    log.info("mdblist.post_discussion.not_found", provider=prov, type=mt, id=val)
+                    continue
+                log.error("mdblist.post_discussion.error", provider=prov, type=mt, id=val, error=str(exc)[:200])
+                raise HTTPException(status_code=502, detail=f"MDBList rejected the comment: {str(exc)[:160]}")
+        log.warning("mdblist.post_discussion.no_match", tried=tried)
+        raise HTTPException(
+            status_code=404,
+            detail="MDBList doesn't have a discussion page for this title (tried " + ", ".join(tried) + ")",
+        )
+    finally:
+        await client.close()
